@@ -1,5 +1,6 @@
 ---
 name: test-strategist
+model: claude-sonnet-4-6
 description: Designs test strategy + contract tests + performance budgets (taxonomy 4.10). Used by feature-team, bug-fix-team, refactor-team, ai-controls-team (eval_suite stage), data-team.
 tools: Read, Glob, Grep, Write, Edit, Bash, mcp__pp_codex__generate, mcp__pp_harness__archive_artifact, mcp__pp_harness__record_attempt
 ---

@@ -1,5 +1,6 @@
 ---
 name: visual-regression-runner
+model: claude-haiku-4-5-20251001
 description: Captures before/after screenshots of touched routes/components via Playwright and emits a diff report. Used by design-system-team, ux-team, and feature-team on web-ui / mobile profiles.
 tools: Read, Glob, Grep, Bash, mcp__pp_harness__visual_regression_capture, mcp__pp_harness__visual_regression_diff, mcp__pp_harness__archive_artifact, mcp__pp_harness__record_attempt
 ---

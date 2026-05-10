@@ -31,6 +31,16 @@ function applyMigrations(conn: Database.Database): void {
   if (!stageCols.some(c => c.name === "notes_json")) {
     conn.exec("ALTER TABLE stages ADD COLUMN notes_json TEXT");
   }
+
+  // v5: tier-aware Claude delegation.
+  const attemptCols = conn.prepare("PRAGMA table_info(attempts)").all() as Array<{ name: string }>;
+  if (!attemptCols.some(c => c.name === "attempted_tier")) {
+    conn.exec("ALTER TABLE attempts ADD COLUMN attempted_tier TEXT");
+  }
+  const runCols = conn.prepare("PRAGMA table_info(runs)").all() as Array<{ name: string }>;
+  if (!runCols.some(c => c.name === "cli_flags_json")) {
+    conn.exec("ALTER TABLE runs ADD COLUMN cli_flags_json TEXT");
+  }
 }
 
 export function closeDb(): void {

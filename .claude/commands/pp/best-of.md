@@ -5,6 +5,8 @@ argument-hint: <N> <free-text request>
 
 You are about to drive a `/pp:best-of` invocation. Follow the `pair-programmer` skill protocol exactly. Parse `$ARGUMENTS` as `N` (integer in [2, 8]) followed by the free-text request.
 
+**Tier flags are not honored here.** If `$ARGUMENTS` contains `--tier-cap=`, `--tier-floor=`, or `--no-tier-policy`, STOP immediately and print: "best-of-N uses a fixed Sonnet+Opus rotation per candidate slot (see step 6 below). The tier-policy flags from /pp:run / /pp:team are intentionally not applied — ensemble diversity is the whole point. Re-run without the flag, or use /pp:run if you want tier control." Do NOT silently ignore the flags — that would mask a misuse.
+
 ## Lifecycle
 
 1. **Triage + profile snapshot** — same as `/pp:run`. Best-of-N is heavy; if triage returns `trivial`, suggest `/pp:run` instead.

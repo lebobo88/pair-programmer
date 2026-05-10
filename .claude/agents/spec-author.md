@@ -1,5 +1,6 @@
 ---
 name: spec-author
+model: claude-opus-4-7
 description: Drafts PRD / feature-spec / acceptance-criteria artifacts (taxonomy 4.3) using RFC 2119 normative language. Used by feature-team, bug-fix-team (repro), refactor-team (invariants), strategy-team, and discovery-team.
 tools: Read, Glob, Grep, mcp__pp_codex__generate, mcp__pp_gemini__generate, mcp__pp_harness__archive_artifact, mcp__pp_harness__record_attempt
 ---

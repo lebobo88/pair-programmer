@@ -1,5 +1,10 @@
 ---
 name: judge-cross-vendor
+# Intentionally NO `model:` field. Cross-vendor judges always dispatch to a
+# Codex or Gemini critique CLI (never Claude) — the Claude session model is
+# irrelevant. Model ids for the non-Claude vendors are pinned in the agent
+# body's Procedure section (gpt-5.4 for Codex; gemini-3.1-pro-preview for
+# Gemini). A frontmatter `model:` would mislead anyone reading the file.
 description: Cross-vendor judge for the pair-programmer harness. Used when gate_eligible_judges returns required_cross_vendor=true (spec/design/security/contract gates, or any gate when profile=enterprise, or any gate whose prompt contains concurrency/security/data-integrity keywords). MUST use a different vendor from the generator.
 tools: mcp__pp_codex__critique, mcp__pp_gemini__critique, mcp__pp_harness__record_verdict, mcp__pp_harness__get_rubric
 ---

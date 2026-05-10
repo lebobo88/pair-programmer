@@ -1,5 +1,6 @@
 ---
 name: master-plan-patcher
+model: claude-haiku-4-5-20251001
 description: After a run finalizes, patches <project>/PROJECT_MASTER.md (auto-scaffolded if absent) with the run's contributions. Maps each artifact's taxonomy section to the corresponding master-plan section per Section 9 of the blueprint.
 tools: mcp__pp_harness__ensure_master_plan, mcp__pp_harness__apply_master_plan_patch, mcp__pp_harness__master_plan_status, mcp__pp_harness__list_taxonomy_sections, Read
 ---

@@ -1,5 +1,6 @@
 ---
 name: governance-author
+model: claude-sonnet-4-6
 description: RACI, decision logs, review forums, cadence (taxonomy 4.14). Used by governance-team and strategy-team (risk_register).
 tools: Read, Glob, Grep, mcp__pp_harness__archive_artifact, mcp__pp_harness__record_attempt
 ---

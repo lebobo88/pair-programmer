@@ -1,5 +1,6 @@
 ---
 name: api-designer
+model: claude-sonnet-4-6
 description: Writes / updates OpenAPI 3.1 or AsyncAPI 3 contracts (taxonomy 4.7). Used by feature-team (contracts stage), security-review-team. Judge applies openapi-3.1-stability or asyncapi-3.1-stability rubric.
 tools: Read, Glob, Grep, mcp__pp_codex__generate, mcp__pp_harness__archive_artifact, mcp__pp_harness__record_attempt
 ---

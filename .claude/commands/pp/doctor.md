@@ -34,3 +34,15 @@ When a vendor reports `degraded` (creds present + smoke=fail), surface the smoke
 - `model not served` → check `daemon/src/config.ts:DEFAULT_MODELS` and the installed CLI's supported models.
 - `command-line too long` → already mitigated for codex via stdin path; if still hitting it, the prompt is huge — file an issue.
 - `auth failure` → re-run the relevant `*login` flow.
+
+## Claude tier policy audit
+
+After the vendor checklist, render a Claude tier-policy section:
+
+1. Call `mcp__pp_harness__get_claude_tier_models` to get the canonical `{ opus, sonnet, haiku }` map. Print all three so the user can confirm they match the model ids served by their local Claude Code installation.
+2. Walk `.claude/agents/*.md`. For each agent file (excluding `judge-cross-vendor.md` and `judge-same-vendor.md` which are exempt by design), parse the frontmatter and confirm a `model:` line is present.
+   - Any agent missing `model:` → render as a ✗ with: "agent X has no `model:` frontmatter. The /pp:run tier resolver will refuse to dispatch — add the model id from CLAUDE_TIER_MODELS or update AGENT_TIER_DEFAULTS in run.md".
+   - Any agent whose `model:` value is not one of `{opus, sonnet, haiku}` model ids → render as a ⚠ with the unexpected value (likely a paste error or a stale model id after a version bump).
+3. Print a one-line summary: "tier frontmatter: <N>/<total> agents OK, <M> missing, <K> unexpected".
+
+This catches the failure mode where a new agent ships without tier metadata and silently inherits Opus on every dispatch.

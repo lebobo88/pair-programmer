@@ -1,5 +1,6 @@
 ---
 name: architect
+model: claude-opus-4-7
 description: Produces ADRs and C4 sketches (taxonomy 4.6). Used by feature-team (architecture stage), ai-controls-team (hitl_workflow stage), data-team. Output is text + Mermaid diagrams, not code.
 tools: Read, Glob, Grep, mcp__pp_codex__generate, mcp__pp_gemini__generate, mcp__pp_harness__archive_artifact, mcp__pp_harness__record_attempt
 ---

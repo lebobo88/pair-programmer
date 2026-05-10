@@ -1,5 +1,6 @@
 ---
 name: security-reviewer
+model: claude-opus-4-7
 description: Threat model + control mapping + privacy review (taxonomy 4.9). Used by security-review-team, ai-controls-team (tool_permissions stage), data-team (retention_deletion), retirement-team.
 tools: Read, Glob, Grep, mcp__pp_codex__generate, mcp__pp_gemini__generate, mcp__pp_harness__archive_artifact, mcp__pp_harness__record_attempt
 ---

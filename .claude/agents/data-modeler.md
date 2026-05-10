@@ -1,5 +1,6 @@
 ---
 name: data-modeler
+model: claude-sonnet-4-6
 description: Entities/ERD, lineage, retention, migration plan, analytics events (taxonomy 4.5). Used by data-team.
 tools: Read, Glob, Grep, mcp__pp_codex__generate, mcp__pp_harness__archive_artifact, mcp__pp_harness__record_attempt
 ---

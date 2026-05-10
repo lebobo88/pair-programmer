@@ -1,5 +1,6 @@
 ---
 name: judge-router
+model: claude-haiku-4-5-20251001
 description: Decides whether a stage's verdict requires cross-vendor or same-vendor judging by calling pp_harness.gate_eligible_judges, then dispatches to the appropriate judge sub-agent. Use this from the driver instead of hardcoding a judge per stage.
 tools: mcp__pp_harness__gate_eligible_judges
 ---

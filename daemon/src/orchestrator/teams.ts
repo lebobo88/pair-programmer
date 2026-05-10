@@ -10,11 +10,23 @@ import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import YAML from "yaml";
 import { db, txImmediate } from "../db/database.js";
+import { ClaudeTier, isClaudeTier } from "../config.js";
 
 export type TeamStage = {
   kind: string;
   gate_type: string;
-  generator: { agent: string; primary?: string; fallback?: string };
+  generator: {
+    agent: string;
+    primary?: string;
+    fallback?: string;
+    /**
+     * Optional per-stage Claude tier pin. Sits in layer 5 of the driver's
+     * tier resolver (above agent frontmatter, below profile policy /
+     * triage / CLI). Only meaningful when generator.primary resolves to
+     * "claude"; ignored for Codex/Gemini producers.
+     */
+    model_tier?: ClaudeTier;
+  };
   judge:     { tier: "cross_vendor" | "same_vendor"; rubric?: string; model_pref?: string };
 };
 
@@ -49,6 +61,7 @@ export function getTeam(opts: { name: string; project_path: string }): { team: T
       const text = readFileSync(path, "utf8");
       const parsed = YAML.parse(text) as TeamSpec;
       if (!parsed?.name) continue;
+      validateTeamSpec(parsed, path);
       const origin: "project" | "user" | "builtin" =
         dir.startsWith(opts.project_path) ? "project" :
         dir === USER_TEAMS_DIR ? "user" :
@@ -60,6 +73,24 @@ export function getTeam(opts: { name: string; project_path: string }): { team: T
     }
   }
   return null;
+}
+
+/**
+ * Reject team yamls that set generator.model_tier to an unknown value.
+ * Catches typos like "sonet" — silent fallthrough would defeat the tier
+ * policy. Other fields are not validated here (the harness has always
+ * tolerated extra/missing fields on the team-yaml hot path).
+ */
+function validateTeamSpec(spec: TeamSpec, path: string): void {
+  for (const stage of spec.stages ?? []) {
+    const tier = stage.generator?.model_tier;
+    if (tier !== undefined && !isClaudeTier(tier)) {
+      throw new Error(
+        `team yaml ${path}: stage "${stage.kind}" has generator.model_tier="${tier}". ` +
+        `Valid values: "opus" | "sonnet" | "haiku" (or omit the field).`
+      );
+    }
+  }
 }
 
 export function listTeams(opts: { project_path: string }): Array<{ name: string; description: string; origin: "project" | "user" | "builtin"; profiles_compatible?: string[]; taxonomy_required?: string[] }> {

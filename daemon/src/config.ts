@@ -30,6 +30,40 @@ export const DEFAULT_MODELS = {
   gemini_critique: "gemini-3.1-pro-preview",
 } as const;
 
+/**
+ * Claude tier → concrete model id. Single source of truth for the
+ * tier-aware delegation system (see .claude/commands/pp/run.md step 6a).
+ * Sub-agents declare a default tier via `model:` frontmatter; the driver
+ * may override per resolved tier when dispatching via Task(). Judges keep
+ * their own rotation table — they intentionally do not consume this map.
+ * Keep in sync with `daemon/prices.json` when model ids change.
+ */
+export const CLAUDE_TIER_MODELS = {
+  opus:   "claude-opus-4-7",
+  sonnet: "claude-sonnet-4-6",
+  haiku:  "claude-haiku-4-5-20251001",
+} as const;
+
+export type ClaudeTier = keyof typeof CLAUDE_TIER_MODELS;
+
+/** Ladder, low → high. shiftTier walks this. */
+export const TIER_ORDER: ClaudeTier[] = ["haiku", "sonnet", "opus"];
+
+export function tierIndex(t: ClaudeTier): number {
+  return TIER_ORDER.indexOf(t);
+}
+
+/** Shift a tier by N steps; clamps at the ends of the ladder. */
+export function shiftTier(t: ClaudeTier, delta: number): ClaudeTier {
+  const idx = Math.max(0, Math.min(TIER_ORDER.length - 1, tierIndex(t) + delta));
+  // idx is clamped to [0, TIER_ORDER.length-1] so the access is always defined.
+  return TIER_ORDER[idx]!;
+}
+
+export function isClaudeTier(s: string): s is ClaudeTier {
+  return s === "opus" || s === "sonnet" || s === "haiku";
+}
+
 /** Status values for runs/stages — exported as type-safe constants. */
 export const RUN_STATUS = ["pending", "running", "surfaced", "complete", "crashed", "aborted"] as const;
 export type RunStatus = typeof RUN_STATUS[number];

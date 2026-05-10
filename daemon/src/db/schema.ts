@@ -3,7 +3,7 @@
  * doesn't need a separate copy of the SQL file. Mirror this with
  * `daemon/src/db/schema.sql` for human-readable reference.
  */
-export const SCHEMA_VERSION = 4;
+export const SCHEMA_VERSION = 5;
 
 export const SCHEMA_SQL = `
 PRAGMA journal_mode = WAL;
@@ -25,6 +25,10 @@ CREATE TABLE IF NOT EXISTS runs (
   head_sha                 TEXT,
   tree_dirty_hash          TEXT,
   cli_versions_json        TEXT,
+  -- v5: per-run CLI flags captured at /pp:run invocation
+  -- (--tier-cap, --tier-floor, --no-tier-policy, …) so /pp:replay
+  -- can re-issue with the same overrides. JSON object; null on legacy rows.
+  cli_flags_json           TEXT,
   started_at               TEXT NOT NULL,
   finished_at              TEXT
 );
@@ -58,6 +62,10 @@ CREATE TABLE IF NOT EXISTS attempts (
   retry_index         INTEGER NOT NULL DEFAULT 0,
   parent_attempt_id   TEXT,
   status              TEXT NOT NULL,
+  -- v5: tier the driver resolved for this attempt ('opus'|'sonnet'|'haiku').
+  -- NULL on non-claude producers and on legacy rows; the daemon does not
+  -- enforce — recorded for cost-by-tier analytics and replay determinism.
+  attempted_tier      TEXT,
   created_at          TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_attempts_stage  ON attempts(stage_id);

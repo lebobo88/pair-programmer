@@ -7,6 +7,7 @@
 import { readFileSync, existsSync, writeFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import YAML from "yaml";
+import { ClaudeTier } from "../config.js";
 
 export type ProfileName =
   | "web-ui" | "api-platform" | "internal-tool" | "enterprise"
@@ -19,6 +20,31 @@ export type ProfileName =
   | "game-dev"
   | "game-dev-unity" | "game-dev-unreal" | "game-dev-godot"
   | "game-dev-web"   | "game-dev-custom";
+
+/**
+ * Per-profile policy that shapes the driver's Claude-tier resolver. Sits
+ * between the team yaml's `generator.model_tier` and the CLI flags in the
+ * precedence chain (see .claude/commands/pp/run.md step 6a).
+ *
+ * - `default_cap` clamps any resolved tier above the cap down to the cap.
+ * - `per_stage_override` pins the tier for a given stage `kind`
+ *   regardless of frontmatter/team-yaml. Subject to scope_adjust applied
+ *   before this layer in the resolver.
+ * - `scope_adjust` shifts the tier within the ladder
+ *   [haiku, sonnet, opus] by ±1 per triage scope. Clamped at the ends.
+ *
+ * Profiles that omit this block opt out of the policy entirely; the
+ * driver falls through to team-yaml + agent-frontmatter defaults.
+ */
+export type ModelTierPolicy = {
+  default_cap?: ClaudeTier;
+  per_stage_override?: Record<string, ClaudeTier>;
+  scope_adjust?: {
+    trivial?: -1 | 0;
+    standard?: 0;
+    major?: 0 | 1;
+  };
+};
 
 export type RuntimeSmokeTestSpec = {
   enabled: boolean;
@@ -60,6 +86,8 @@ export type ProfileSpec = {
   // `execution_error` so the gate fails closed — useful for enterprise /
   // regulated profiles that demand evidence of validation.
   required_validators_strict?: string[];
+  // Tier-aware Claude delegation policy. See ModelTierPolicy above.
+  model_tier_policy?: ModelTierPolicy;
   notes?: string;
 };
 
@@ -106,6 +134,7 @@ export function resolveProfile(spec: ProfileSpec, seen: Set<string> = new Set())
       ...(merged.required_validators_strict ?? []),
       ...(resolvedBase.required_validators_strict ?? []),
     ]);
+    merged.model_tier_policy = mergeModelTierPolicy(merged.model_tier_policy, resolvedBase.model_tier_policy);
   }
 
   // Spec's own values win over inherited.
@@ -128,9 +157,34 @@ export function resolveProfile(spec: ProfileSpec, seen: Set<string> = new Set())
     ...(merged.required_validators_strict ?? []),
     ...(spec.required_validators_strict ?? []),
   ]);
+  merged.model_tier_policy = mergeModelTierPolicy(merged.model_tier_policy, spec.model_tier_policy);
   if (spec.notes) merged.notes = spec.notes;
 
   return merged;
+}
+
+/**
+ * Last-wins merge for ModelTierPolicy across the extends chain:
+ *  - default_cap: later overrides earlier
+ *  - per_stage_override: shallow object merge, later keys win
+ *  - scope_adjust: shallow object merge, later keys win
+ */
+function mergeModelTierPolicy(
+  a: ModelTierPolicy | undefined,
+  b: ModelTierPolicy | undefined,
+): ModelTierPolicy | undefined {
+  if (!a && !b) return undefined;
+  return {
+    default_cap: b?.default_cap ?? a?.default_cap,
+    per_stage_override: {
+      ...(a?.per_stage_override ?? {}),
+      ...(b?.per_stage_override ?? {}),
+    },
+    scope_adjust: {
+      ...(a?.scope_adjust ?? {}),
+      ...(b?.scope_adjust ?? {}),
+    },
+  };
 }
 
 function mergeStringArrayMap(
@@ -224,7 +278,20 @@ export const BUILTIN_PROFILES: Record<ProfileName, ProfileSpec> = {
       "decision-logging",
     ],
     runtime_smoke_test: { enabled: true, port: 0, routes: ["/"], timeout_ms: 60000 },
-    notes: "Enterprise profile forces cross-vendor on every gate via gate_eligible_judges.",
+    // Regulated work never silently downshifts: cap the ladder at opus and
+    // pin spec/security/contract stages to opus regardless of agent
+    // frontmatter. trivial-scope downshift is disabled.
+    model_tier_policy: {
+      default_cap: "opus",
+      per_stage_override: {
+        spec: "opus",
+        contract: "opus",
+        security: "opus",
+        architecture: "opus",
+      },
+      scope_adjust: { trivial: 0, standard: 0, major: 0 },
+    },
+    notes: "Enterprise profile forces cross-vendor on every gate via gate_eligible_judges. Tier policy pins security/spec stages to opus and disables trivial-scope downshift.",
   },
   "ai-agentic": {
     name: "ai-agentic",
@@ -316,6 +383,16 @@ export const BUILTIN_PROFILES: Record<ProfileName, ProfileSpec> = {
       "font-embedding-license",
     ],
     runtime_smoke_test: { enabled: false },
+    // Perf / cert / netcode stages can't run at sonnet — the reasoning
+    // depth (frame budgets, replication topology, console TRC) is the
+    // whole point. Pin them to opus regardless of frontmatter.
+    model_tier_policy: {
+      per_stage_override: {
+        perf: "opus",
+        cert: "opus",
+        netcode: "opus",
+      },
+    },
     notes: "Base profile — engine sub-mode (game-dev-unity / -unreal / -godot / -web / -custom) selects the right gotcha-pack and additional artifact requirements. Detect_profile sets console-cert/live-service/online/voice flags from build config + spec keywords + middleware presence; the driver applies them via gate_eligible_judges and missability_required.",
   },
   "game-dev-unity": {

@@ -8,6 +8,7 @@ import { db, txImmediate } from "../db/database.js";
 import { projectArtifactDir } from "../util/paths.js";
 import {
   RunMode, RunStatus, StageStatus, AttemptStatus, VerdictOutcome, vendorFor,
+  ClaudeTier, isClaudeTier,
 } from "../config.js";
 import { log } from "../util/logger.js";
 import { scanForSecrets, SecretsFoundError } from "../security/secret-scan.js";
@@ -176,6 +177,12 @@ export type RecordAttemptInput = {
   parent_attempt_id?: string;
   status?: AttemptStatus;
   attempt_slot_id?: string;
+  /**
+   * Resolved Claude tier for this attempt. Only meaningful when
+   * producer === "claude"; ignored otherwise (the driver still records it
+   * for Codex/Gemini attempts as `null` so the column is uniform).
+   */
+  attempted_tier?: ClaudeTier;
 };
 export type RecordAttemptOutput = { attempt_id: string };
 
@@ -202,14 +209,23 @@ export function recordAttempt(input: RecordAttemptInput): RecordAttemptOutput {
     }
   }
 
+  // attempted_tier is opt-in; reject obviously-wrong values rather than
+  // silently dropping them, because cost-by-tier analytics depend on it.
+  const tier = input.attempted_tier;
+  if (tier !== undefined && !isClaudeTier(tier)) {
+    throw new Error(
+      `record_attempt: attempted_tier="${tier}" is not a valid ClaudeTier. Use "opus" | "sonnet" | "haiku" or omit.`
+    );
+  }
+
   txImmediate(() => {
     db()
       .prepare(
         `INSERT INTO attempts(
           id, stage_id, producer, model_id, prompt_hash, artifact_path,
           tokens_in, tokens_out, cost_usd, wall_ms,
-          retry_index, parent_attempt_id, status, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+          retry_index, parent_attempt_id, status, attempted_tier, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
       .run(
         id,
@@ -225,11 +241,19 @@ export function recordAttempt(input: RecordAttemptInput): RecordAttemptOutput {
         input.retry_index ?? 0,
         input.parent_attempt_id ?? null,
         (input.status ?? "ok") satisfies AttemptStatus,
+        tier ?? null,
         now()
       );
 
     if (input.tokens_in || input.tokens_out || input.cost_usd) {
-      tallyBudgets(stage.run_id, input.model_id, input.tokens_in ?? 0, input.tokens_out ?? 0, input.cost_usd ?? 0);
+      tallyBudgets(
+        stage.run_id,
+        input.model_id,
+        tier ?? null,
+        input.tokens_in ?? 0,
+        input.tokens_out ?? 0,
+        input.cost_usd ?? 0,
+      );
     }
   });
 
@@ -750,7 +774,14 @@ function ensureRunOpen(run_id: string): void {
   }
 }
 
-function tallyBudgets(run_id: string, model_id: string, tokens_in: number, tokens_out: number, cost_usd: number): void {
+function tallyBudgets(
+  run_id: string,
+  model_id: string,
+  tier: ClaudeTier | null,
+  tokens_in: number,
+  tokens_out: number,
+  cost_usd: number,
+): void {
   const day = new Date().toISOString().slice(0, 10);
   const stmt = db().prepare(
     `INSERT INTO budgets(scope, tokens_in, tokens_out, cost_usd, updated_at) VALUES (?, ?, ?, ?, ?)
@@ -763,6 +794,9 @@ function tallyBudgets(run_id: string, model_id: string, tokens_in: number, token
   stmt.run(`run:${run_id}`,    tokens_in, tokens_out, cost_usd, now());
   stmt.run(`day:${day}`,       tokens_in, tokens_out, cost_usd, now());
   stmt.run(`model:${model_id}`,tokens_in, tokens_out, cost_usd, now());
+  if (tier) {
+    stmt.run(`tier:${tier}`,   tokens_in, tokens_out, cost_usd, now());
+  }
 }
 
 async function tryGitCommand(cwd: string, args: string[]): Promise<string | null> {

@@ -33,7 +33,7 @@ import { getDesignTemplate, TEMPLATES_BY_KIND } from "../orchestrator/design-tem
 import { listForums, getForum } from "../orchestrator/forums.js";
 import { runJanitor } from "../orchestrator/janitor.js";
 import { buildReplayBundle } from "../orchestrator/replay.js";
-import { RUN_MODE, STAGE_STATUS, ATTEMPT_STATUS, VERDICT_OUTCOME, RUN_STATUS } from "../config.js";
+import { RUN_MODE, STAGE_STATUS, ATTEMPT_STATUS, VERDICT_OUTCOME, RUN_STATUS, CLAUDE_TIER_MODELS, TIER_ORDER } from "../config.js";
 import { log } from "../util/logger.js";
 
 // ─── Input schemas ───────────────────────────────────────────────────────
@@ -71,6 +71,10 @@ const RecordAttemptSchema = z.object({
   // generator agent passes the slot id back here so the row id matches the
   // slot. Idempotent on re-call within the same slot.
   attempt_slot_id:    z.string().optional(),
+  // Tier the driver resolved for this attempt. Only meaningful when
+  // producer === "claude"; the daemon does not enforce — it just records
+  // for cost-by-tier analytics and replay determinism.
+  attempted_tier:     z.enum(["opus", "sonnet", "haiku"]).optional(),
 });
 
 const RecordVerdictSchema = z.object({
@@ -274,6 +278,7 @@ const GetBuiltinProfileSchema = z.object({ name: z.string().min(1) });
 const GetRubricSchema       = z.object({ id: z.string().min(1) });
 const ListRubricsSchema     = z.object({});
 const ListProfilesSchema    = z.object({});
+const GetClaudeTierModelsSchema = z.object({});
 const DetectProfileSchema   = z.object({ project_path: z.string().min(1) });
 const WriteProfileSchema    = z.object({
   project_path: z.string().min(1),
@@ -604,6 +609,13 @@ const TOOLS: ToolDef[] = [
     description: "Return the 10 built-in profile templates (id + description) so the user can pick one.",
     schema: ListProfilesSchema,
     handler: () => listBuiltinProfiles(),
+  },
+  {
+    name: "get_claude_tier_models",
+    description:
+      "Return the canonical Claude tier→model-id map used by the tier-aware delegation system. Driver consumes this in /pp:run step 6a so the source of truth lives in daemon/src/config.ts (CLAUDE_TIER_MODELS). Returns { tiers: { opus, sonnet, haiku }, order: ['haiku','sonnet','opus'] }.",
+    schema: GetClaudeTierModelsSchema,
+    handler: () => ({ tiers: CLAUDE_TIER_MODELS, order: TIER_ORDER }),
   },
   {
     name: "detect_profile",

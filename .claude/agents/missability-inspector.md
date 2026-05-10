@@ -1,5 +1,6 @@
 ---
 name: missability-inspector
+model: claude-haiku-4-5-20251001
 description: Runs the 20-item Section 6 missability check library against a run's archived artifacts before finalize_run. A failed check downgrades the run to "surfaced" with the evidence path. Required-check-ids come from the taxonomy mapping.
 tools: mcp__pp_harness__run_missability_checks, mcp__pp_harness__list_missability_checks
 ---

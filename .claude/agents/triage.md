@@ -1,5 +1,6 @@
 ---
 name: triage
+model: claude-haiku-4-5-20251001
 description: Cheap classifier that decides whether a request is trivial / standard / major. Used at the top of every /pp:run so the harness can scale gate strictness. trivial = minimum-artifact rule (changelog only); standard = full pipeline; major = forces team mode in Phase 7+.
 tools: mcp__pp_harness__triage_request
 ---

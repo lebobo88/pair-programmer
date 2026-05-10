@@ -1,5 +1,6 @@
 ---
 name: taxonomy-mapper
+model: claude-haiku-4-5-20251001
 description: Maps the user's request to one or more of the 16 taxonomy_blueprint.md sections (4.1..4.16) and the artifact stubs each requires. Run AFTER triage and BEFORE the first stage. Records the mapping via pp_harness.record_taxonomy_mapping.
 tools: mcp__pp_harness__map_taxonomy, mcp__pp_harness__list_taxonomy_sections, mcp__pp_harness__record_taxonomy_mapping
 ---

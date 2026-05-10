@@ -1,5 +1,6 @@
 ---
 name: tech-animator
+model: claude-sonnet-4-6
 description: Technical animator sub-agent. Produces rig specs, IK setups, blend-tree designs, animation state machines, root-motion vs in-place decisions (taxonomy 4.6, 4.4). Used by game-feature-team for character / creature work.
 tools: Read, Glob, Grep, mcp__pp_codex__generate, mcp__pp_gemini__generate, mcp__pp_harness__archive_artifact, mcp__pp_harness__record_attempt
 ---

@@ -1,5 +1,6 @@
 ---
 name: game-security
+model: claude-opus-4-7
 description: Game security / anti-cheat specialist sub-agent. Owns server-authority audits, anti-cheat (EAC / BattlEye / VAC / Ricochet) integration, exploit threat models, fair-play posture (taxonomy 4.9). Used by game-cert-team and game-feature-team for online: true. DISTINCT from the web-AppSec security-reviewer agent.
 tools: Read, Glob, Grep, mcp__pp_codex__generate, mcp__pp_gemini__generate, mcp__pp_harness__archive_artifact, mcp__pp_harness__record_attempt
 ---
