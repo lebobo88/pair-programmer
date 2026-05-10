@@ -1,0 +1,22 @@
+name: release-team
+description: Rollout plan, rollback plan, migration runbook, comms. Maps to taxonomy section 4.11.
+profiles_compatible: [web-ui, api-platform, internal-tool, mobile, sdk, ai-agentic, enterprise, embedded, non-ui-cli, data-product]
+stages:
+  - kind: rollout_plan
+    gate_type: design
+    generator: { agent: release-planner, primary: claude }
+    judge:     { tier: cross_vendor, rubric: rfc-2119-normative@1, model_pref: gemini }
+  - kind: rollback_plan
+    gate_type: design
+    generator: { agent: release-planner, primary: claude }
+    judge:     { tier: cross_vendor, model_pref: gemini }
+  - kind: migration_runbook
+    gate_type: docs_polish
+    generator: { agent: ops-author, primary: claude }
+    judge:     { tier: same_vendor }
+  - kind: comms
+    gate_type: docs_polish
+    generator: { agent: docs-author, primary: claude }
+    judge:     { tier: same_vendor }
+taxonomy_required: ["4.11", "4.13"]
+missability_required: ["rollout-reversibility", "feature-flag-lifecycle"]

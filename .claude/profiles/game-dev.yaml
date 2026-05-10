@@ -1,0 +1,44 @@
+name: game-dev
+description: |
+  Professional game development (base profile). Engine sub-mode required:
+  game-dev-unity, game-dev-unreal, game-dev-godot, game-dev-web, game-dev-custom.
+
+  Posture (indie vs console-cert vs live-service) is auto-detected from project
+  state. Console TRC/XR/Lotcheck gates kick in when build config targets
+  PS5/XSX/Switch; live-ops + economy gates kick in on monetization keywords;
+  SAG-AFTRA voice gate warns when voice tags present.
+
+required_taxonomy_sections: ["4.1", "4.3", "4.4", "4.6", "4.10", "4.12", "4.13"]
+
+required_rubrics:
+  design: game-accessibility-guidelines@1
+  spec:   rfc-2119-normative@1
+
+required_artifacts:
+  - gdd
+  - tech_design_doc
+  - art_bible
+  - performance_profile
+  - accessibility_plan
+  - localization_plan
+  - build_release_plan
+  - telemetry_event_taxonomy
+
+required_missability_checks:
+  - perf-budget-evidence
+  - accessibility-gag-basic
+  - ai-provenance-record
+  - audio-license-record
+  - font-embedding-license
+
+runtime_smoke_test:
+  enabled: false      # native-engine builds — engine-side validation, not browser
+
+notes: |
+  Copy this file (or one of the engine sub-mode yamls) to <project>/.harness/profile.yaml
+  to activate. Engine sub-mode (game-dev-unity / -unreal / -godot / -web / -custom) selects
+  the right gotcha-pack and adds engine-specific artifact requirements.
+
+  Detect_profile sets console-cert / live-service / online / voice flags from build config,
+  spec keywords, and middleware presence; the driver applies them via gate_eligible_judges
+  and missability_required at run time.

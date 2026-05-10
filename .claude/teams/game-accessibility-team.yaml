@@ -1,0 +1,37 @@
+name: game-accessibility-team
+description: Game accessibility audit and plan — GAG / XAG / IGDA-GASIG against the artifact set. Always available under game-dev family.
+profiles_compatible: [game-dev, game-dev-unity, game-dev-unreal, game-dev-godot, game-dev-web, game-dev-custom]
+stages:
+  - kind: accessibility_plan
+    gate_type: design
+    generator: { agent: game-accessibility-specialist, primary: claude }
+    judge:     { tier: cross_vendor, rubric: game-accessibility-guidelines@1, model_pref: gemini }
+  - kind: gag_audit
+    gate_type: design
+    generator: { agent: game-accessibility-specialist, primary: claude }
+    judge:     { tier: same_vendor, rubric: game-accessibility-guidelines@1 }
+  - kind: xag_audit
+    gate_type: design
+    generator: { agent: game-accessibility-specialist, primary: claude }
+    judge:     { tier: same_vendor, rubric: xbox-accessibility-guidelines@1 }
+  - kind: caption_pass
+    gate_type: design
+    generator: { agent: game-accessibility-specialist, primary: claude }
+    judge:     { tier: same_vendor }
+  - kind: remap_pass
+    gate_type: design
+    generator: { agent: game-accessibility-specialist, primary: claude }
+    judge:     { tier: same_vendor }
+  - kind: docs
+    gate_type: docs_polish
+    generator: { agent: docs-author, primary: claude }
+    judge:     { tier: same_vendor }
+taxonomy_required: ["4.4", "4.13"]
+missability_required:
+  - subtitles-cinematics
+  - control-remap-core
+  - color-only-information
+  - flashing-strobe-control
+  - timing-accessibility
+  - text-size-tv-distance
+  - accessibility-gag-basic

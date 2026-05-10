@@ -1,0 +1,44 @@
+name: game-cert-team
+description: Pre-cert sweep against TRC / XR / Lotcheck (non-authoritative — studio's NDA docs are source of truth). Plus IARC questionnaire, store listing, accessibility cert pass, final smoke. Profile-gated to console-cert: true.
+profiles_compatible: [game-dev, game-dev-unity, game-dev-unreal, game-dev-godot, game-dev-custom]
+stages:
+  - kind: cert_submission_packet
+    gate_type: contract
+    generator: { agent: docs-author, primary: claude }
+    judge:     { tier: cross_vendor, rubric: console-cert-checklist@1, model_pref: gemini }
+  - kind: iarc_rating_questionnaire
+    gate_type: spec
+    generator: { agent: spec-author, primary: claude }
+    judge:     { tier: same_vendor, rubric: iarc-rating-questionnaire@1 }
+  - kind: accessibility_cert_pass
+    gate_type: design
+    generator: { agent: game-accessibility-specialist, primary: claude }
+    judge:     { tier: cross_vendor, rubric: xbox-accessibility-guidelines@1, model_pref: codex }
+  - kind: server_authority_audit
+    gate_type: security
+    generator: { agent: game-security, primary: claude }
+    judge:     { tier: cross_vendor, rubric: owasp-asvs-l2@1, model_pref: gemini }
+  - kind: final_smoke
+    gate_type: contract
+    generator: { agent: test-strategist, primary: codex }
+    judge:     { tier: cross_vendor, model_pref: gemini }
+  - kind: docs
+    gate_type: docs_polish
+    generator: { agent: docs-author, primary: claude }
+    judge:     { tier: same_vendor }
+taxonomy_required: ["4.4", "4.9", "4.10", "4.11", "4.13"]
+missability_required:
+  - controller-disconnect-handling
+  - save-data-atomicity
+  - save-format-versioning
+  - suspend-resume-handling
+  - language-switch-ux
+  - achievement-server-authority
+  - profile-switch-stability
+  - region-content-gating
+  - boot-time-budget
+  - mature-content-age-gate
+  - subtitles-cinematics
+  - control-remap-core
+  - color-only-information
+  - accessibility-gag-basic

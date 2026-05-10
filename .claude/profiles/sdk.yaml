@@ -1,0 +1,7 @@
+name: sdk
+description: Developer SDK / library. SemVer policy; deprecation policy; sample-app artifact required.
+required_taxonomy_sections: ["4.7", "4.13", "4.16"]
+required_rubrics:
+  contract: openapi-3.1-stability@1
+required_artifacts: ["semver_policy", "deprecation_policy", "sample_app"]
+required_missability_checks: ["deprecation-sunset"]

@@ -1,0 +1,24 @@
+name: game-dev-unreal
+description: |
+  Unreal Engine 5 (C++/Blueprints). Lumen + Nanite + World Partition + Mass + Niagara
+  composition; GAS for replicated abilities; DataAsset / PrimaryDataAsset config pattern;
+  Chaos physics; Unreal Insights captures required for perf-tagged stages.
+
+extends: ["game-dev"]
+
+required_artifacts:
+  - gas_design
+
+required_missability_checks:
+  - save-data-atomicity
+  - language-switch-ux
+
+runtime_smoke_test:
+  enabled: false
+
+notes: |
+  Engineer + technical-artist + netcode-programmer + game-ai-programmer agents read
+  .claude/gotchas/unreal-5.md before composing.
+
+  World-partition open-world projects also require a `world_partition_plan` artifact
+  (driver enforces when an open-world tag is present in the spec / metadata).

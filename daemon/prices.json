@@ -1,0 +1,21 @@
+{
+  "_comment": "Per-1M-token USD prices. User-editable. Used to compute cost_usd per attempt. Update as vendor pricing changes.",
+  "_updated": "2026-05-05",
+  "openai": {
+    "gpt-5.5":          { "input": 5.00,  "output": 15.00 },
+    "gpt-5.4":          { "input": 4.00,  "output": 12.00 },
+    "gpt-5.3-codex":    { "input": 3.00,  "output": 9.00  },
+    "gpt-5.1-codex-max":{ "input": 6.00,  "output": 18.00 }
+  },
+  "google": {
+    "gemini-3.1-pro-preview": { "input": 7.00, "output": 21.00 },
+    "gemini-2.5-pro":   { "input": 3.50,  "output": 10.50 },
+    "gemini-2.5-flash": { "input": 0.30,  "output": 0.90  }
+  },
+  "anthropic": {
+    "claude-opus-4-7":   { "input": 15.00, "output": 75.00 },
+    "claude-opus-4-6":   { "input": 15.00, "output": 75.00 },
+    "claude-sonnet-4-6": { "input": 3.00,  "output": 15.00 },
+    "claude-haiku-4-5":  { "input": 0.80,  "output": 4.00  }
+  }
+}

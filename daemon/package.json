@@ -1,0 +1,44 @@
+{
+  "name": "pp-daemon",
+  "version": "0.1.0",
+  "description": "Pair Programmer harness daemon: orchestration state, MCP servers for Claude Code, Codex CLI, Gemini CLI",
+  "type": "module",
+  "bin": {
+    "pp-daemon": "dist/index.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "start": "node dist/index.js",
+    "dev": "tsx watch src/index.ts",
+    "test": "npm run build && node test/smoke.mjs && node test/artifact-validators.smoke.mjs && node test/artifact-validators.unit.mjs"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0",
+    "@playwright/test": "^1.48.0",
+    "better-sqlite3": "^11.0.0",
+    "execa": "^9.0.0",
+    "nanoid": "^5.0.0",
+    "pino": "^9.0.0",
+    "pixelmatch": "^6.0.0",
+    "pngjs": "^7.0.0",
+    "yaml": "^2.4.0",
+    "zod": "^3.23.0"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.0",
+    "@types/node": "^22.0.0",
+    "@types/pixelmatch": "^5.2.6",
+    "@types/pngjs": "^6.0.5",
+    "tsx": "^4.0.0",
+    "typescript": "^5.5.0"
+  },
+  "files": [
+    "dist",
+    "schema.sql",
+    "prices.json"
+  ]
+}

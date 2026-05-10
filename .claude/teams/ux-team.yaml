@@ -1,0 +1,34 @@
+name: ux-team
+description: Information architecture, flows, screen states, content, accessibility. Maps to taxonomy section 4.4.
+profiles_compatible: [web-ui, mobile, internal-tool]
+stages:
+  - kind: ia_map
+    gate_type: design
+    generator: { agent: designer, primary: claude }
+    judge:     { tier: cross_vendor, rubric: c4-system-context@1, model_pref: gemini }
+  - kind: user_flows
+    gate_type: design
+    generator: { agent: designer, primary: claude }
+    judge:     { tier: cross_vendor, rubric: rfc-2119-normative@1, model_pref: gemini }
+  - kind: screen_state_matrix
+    gate_type: design
+    generator: { agent: designer, primary: claude }
+    judge:     { tier: cross_vendor, rubric: wcag-2.2-aa@1, model_pref: gemini }
+  - kind: wireframes
+    gate_type: design
+    generator: { agent: designer, primary: claude }
+    judge:     { tier: same_vendor, rubric: wcag-2.2-aa@1 }
+  - kind: content_guide
+    gate_type: docs_polish
+    generator: { agent: docs-author, primary: claude }
+    judge:     { tier: same_vendor }
+  - kind: a11y_plan
+    gate_type: design
+    generator: { agent: designer, primary: claude }
+    judge:     { tier: cross_vendor, rubric: wcag-2.2-aa@1, model_pref: gemini }
+  - kind: browser_validation
+    gate_type: contract
+    generator: { agent: browser-validator, primary: claude }
+    judge:     { tier: same_vendor, rubric: web-runtime-validation@2 }
+taxonomy_required: ["4.4", "4.10"]
+missability_required: ["ui-error-empty-loading", "accessibility-localization", "browser-validation-evidence"]

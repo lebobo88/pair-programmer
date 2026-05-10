@@ -1,0 +1,24 @@
+name: game-dev-godot
+description: |
+  Godot 4 (GDScript / C# hybrid). Scenes-first architecture; autoloads + custom Resource
+  classes; GDScript for game logic, C# for perf-critical (note: C# web export not yet
+  supported in Godot 4).
+
+extends: ["game-dev"]
+
+required_artifacts:
+  - scene_topology
+
+required_missability_checks:
+  - save-data-atomicity
+  - language-switch-ux
+
+runtime_smoke_test:
+  enabled: false
+
+notes: |
+  Engineer + game-ai-programmer agents read .claude/gotchas/godot-4.md before composing.
+
+  Scene + resource colocation is mandatory: scenes and their exclusive resources live
+  in the same folder. The engineer agent refuses to emit a scene that pulls resources
+  from elsewhere unless they're explicitly shared.

@@ -1,0 +1,34 @@
+name: web-ui
+description: User-facing web product. UX gates required; WCAG 2.2 AA on UI artifacts; screen-state matrix (8 states); visual regression on UI changes; localization plan and responsive matrix when shipping.
+required_taxonomy_sections: ["4.4", "4.13"]
+required_rubrics:
+  design: wcag-2.2-aa@1
+required_artifacts:
+  - screen_state_matrix
+  - a11y_plan
+  - localization_plan
+  - responsive_matrix
+  - visual_regression_report
+  - browser_validation_report
+required_missability_checks:
+  - ui-error-empty-loading
+  - accessibility-localization
+  - rollout-reversibility
+  - browser-validation-evidence
+runtime_smoke_test:
+  enabled: true
+  port: 0          # 0 = ephemeral; engineer parses bound port from "Local:" line
+  routes: ["/"]
+  timeout_ms: 60000
+notes: |
+  Copy this file to <project>/.harness/profile.yaml to activate.
+  The harness will require a screen-state matrix and a11y plan on UI changes,
+  judge UI design artifacts against WCAG 2.2 AA, run visual regression
+  (Playwright before/after with pixel diff), and demand a localization plan +
+  responsive matrix when the app ships.
+
+  Runtime smoke test: every best-of-N candidate must boot the dev server,
+  hit "/" (or the listed routes), and pass a log-pattern scan for runtime
+  crashes (e.g. "Maximum update depth", "getServerSnapshot should be cached")
+  BEFORE the daemon will merge it. archive_winner_and_losers refuses to merge
+  a candidate whose smoke status="fail" — override with PP_ALLOW_SMOKE_FAILED_WINNER=1.

@@ -1,0 +1,32 @@
+name: game-refactor-team
+description: Game-flavored refactor — invariants, tests, code, regression. Engineer reads .claude/gotchas/<engine>.md before composing.
+profiles_compatible: [game-dev, game-dev-unity, game-dev-unreal, game-dev-godot, game-dev-web, game-dev-custom]
+stages:
+  - kind: invariants
+    gate_type: spec
+    generator: { agent: spec-author, primary: claude }
+    judge:     { tier: cross_vendor, rubric: rfc-2119-normative@1, model_pref: gemini }
+  - kind: tests_pre
+    gate_type: contract
+    generator: { agent: test-strategist, primary: codex }
+    judge:     { tier: cross_vendor, model_pref: gemini }
+  - kind: code
+    gate_type: code_style
+    generator: { agent: engineer, primary: codex }
+    judge:     { tier: same_vendor, model_pref: codex_alt_model }
+  - kind: tests
+    gate_type: contract
+    generator: { agent: test-strategist, primary: codex }
+    judge:     { tier: cross_vendor, model_pref: gemini }
+  - kind: performance_profile
+    gate_type: code_style
+    generator: { agent: technical-artist, primary: claude }
+    judge:     { tier: same_vendor, rubric: game-perf-budget@1 }
+  - kind: docs
+    gate_type: docs_polish
+    generator: { agent: docs-author, primary: claude }
+    judge:     { tier: same_vendor }
+taxonomy_required: ["4.6", "4.8", "4.10", "4.13"]
+missability_required:
+  - decision-logging
+  - perf-budget-evidence

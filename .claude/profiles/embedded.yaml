@@ -1,0 +1,5 @@
+name: embedded
+description: Embedded / edge / OT. Device lifecycle; fleet-update plan; failure-safe policy; edge-observability spec.
+required_taxonomy_sections: ["4.11", "4.12", "4.13"]
+required_artifacts: ["device_lifecycle", "fleet_update_plan", "failure_safe_policy"]
+required_missability_checks: ["rollout-reversibility", "operational-ownership"]

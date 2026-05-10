@@ -1,0 +1,26 @@
+name: game-dev-unity
+description: |
+  Unity (C#). ScriptableObjects + Addressables / DOTS conventions; asmdef boundaries;
+  SRP / URP / HDRP perf budget; Unity Profiler captures required for perf-tagged stages.
+
+extends: ["game-dev"]
+
+required_artifacts:
+  - addressables_strategy
+  - asmdef_layout
+
+required_missability_checks:
+  - save-data-atomicity
+  - language-switch-ux
+
+runtime_smoke_test:
+  enabled: false
+
+notes: |
+  Engineer + technical-artist + game-ai-programmer agents read .claude/gotchas/unity.md
+  before composing.
+
+  When detect_profile reports a mobile target (iOS/Android in Unity Build Settings),
+  the driver layers `mobile` profile on top — this surfaces the offline-state matrix,
+  permission-UX table, and crash-reporting plan as required artifacts in addition to
+  the game-dev base set.

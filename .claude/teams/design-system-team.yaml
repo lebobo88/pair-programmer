@@ -1,0 +1,26 @@
+name: design-system-team
+description: Design tokens, component specs, component preview, contract tests vs tokens. Maps to 4.4 + 4.7.
+profiles_compatible: [web-ui, mobile, internal-tool]
+stages:
+  - kind: design_tokens
+    gate_type: design
+    generator: { agent: design-system-curator, primary: claude }
+    judge:     { tier: cross_vendor, rubric: wcag-2.2-aa@1, model_pref: gemini }
+  - kind: component_specs
+    gate_type: contract
+    generator: { agent: design-system-curator, primary: claude }
+    judge:     { tier: cross_vendor, rubric: wcag-2.2-aa@1, model_pref: gemini }
+  - kind: component_preview
+    gate_type: design
+    generator: { agent: visual-regression-runner, primary: claude }
+    judge:     { tier: same_vendor, rubric: wcag-2.2-aa@1 }
+  - kind: token_contract_tests
+    gate_type: contract
+    generator: { agent: test-strategist, primary: codex }
+    judge:     { tier: cross_vendor, model_pref: gemini }
+  - kind: browser_validation
+    gate_type: contract
+    generator: { agent: browser-validator, primary: claude }
+    judge:     { tier: same_vendor, rubric: web-runtime-validation@2 }
+taxonomy_required: ["4.4", "4.7", "4.10"]
+missability_required: ["ui-error-empty-loading", "accessibility-localization", "browser-validation-evidence"]

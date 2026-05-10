@@ -1,0 +1,36 @@
+name: game-live-ops-team
+description: Live-ops planning — season plan, telemetry taxonomy, A/B test plan, patch notes, hotfix runbook. Profile-gated to live-service: true.
+profiles_compatible: [game-dev, game-dev-unity, game-dev-unreal, game-dev-godot, game-dev-web, game-dev-custom]
+stages:
+  - kind: liveops_season_plan
+    gate_type: spec
+    generator: { agent: live-ops-manager, primary: claude }
+    judge:     { tier: cross_vendor, rubric: rfc-2119-normative@1, model_pref: gemini }
+  - kind: telemetry_event_taxonomy
+    gate_type: contract
+    generator: { agent: data-modeler, primary: claude }
+    judge:     { tier: cross_vendor, rubric: metric-dictionary@1, model_pref: codex }
+  - kind: ab_test_plan
+    gate_type: spec
+    generator: { agent: live-ops-manager, primary: claude }
+    judge:     { tier: same_vendor, model_pref: claude_alt_model }
+  - kind: economy_review
+    gate_type: security
+    generator: { agent: economy-designer, primary: claude }
+    judge:     { tier: cross_vendor, rubric: loot-box-jurisdiction@1, model_pref: gemini }
+  - kind: patch_notes
+    gate_type: docs_polish
+    generator: { agent: docs-author, primary: claude }
+    judge:     { tier: same_vendor }
+  - kind: hotfix_runbook
+    gate_type: docs_polish
+    generator: { agent: ops-author, primary: claude }
+    judge:     { tier: same_vendor }
+taxonomy_required: ["4.5", "4.11", "4.12", "4.13"]
+missability_required:
+  - lootbox-jurisdiction-declared
+  - lootbox-drop-rates-published
+  - coppa-real-money-under-13
+  - coppa-persistent-id-under-13
+  - gdpr-k-eu-under-16
+  - decision-logging

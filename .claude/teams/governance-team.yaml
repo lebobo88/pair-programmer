@@ -1,0 +1,22 @@
+name: governance-team
+description: RACI, decision log, review forums, cadence. Maps to taxonomy section 4.14.
+profiles_compatible: [web-ui, api-platform, internal-tool, mobile, sdk, ai-agentic, enterprise, embedded, non-ui-cli, data-product]
+stages:
+  - kind: raci
+    gate_type: spec
+    generator: { agent: governance-author, primary: claude }
+    judge:     { tier: cross_vendor, rubric: rfc-2119-normative@1, model_pref: gemini }
+  - kind: decision_log
+    gate_type: docs_polish
+    generator: { agent: governance-author, primary: claude }
+    judge:     { tier: same_vendor }
+  - kind: review_forums
+    gate_type: spec
+    generator: { agent: governance-author, primary: claude }
+    judge:     { tier: same_vendor }
+  - kind: cadence
+    gate_type: docs_polish
+    generator: { agent: governance-author, primary: claude }
+    judge:     { tier: same_vendor }
+taxonomy_required: ["4.14"]
+missability_required: ["decision-logging", "doc-ownership"]

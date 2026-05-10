@@ -1,0 +1,34 @@
+name: feature-team-tdd
+description: New customer-facing feature, end to end (TDD variant). Spec → architecture → contracts → failing tests → code → tests → docs.
+profiles_compatible: [web-ui, api-platform, internal-tool, mobile, ai-agentic]
+stages:
+  - kind: spec
+    gate_type: spec
+    generator: { agent: spec-author, primary: claude, fallback: codex }
+    judge:     { tier: cross_vendor, rubric: rfc-2119-normative@1, model_pref: gemini }
+  - kind: architecture
+    gate_type: design
+    generator: { agent: architect, primary: claude }
+    judge:     { tier: cross_vendor, rubric: c4-system-context@1, model_pref: codex }
+  - kind: contracts
+    gate_type: contract
+    generator: { agent: api-designer, primary: codex }
+    judge:     { tier: cross_vendor, rubric: openapi-3.1-stability@1, model_pref: gemini }
+  - kind: tests_pre
+    gate_type: contract
+    generator: { agent: test-strategist, primary: codex }
+    judge:     { tier: cross_vendor, model_pref: gemini }
+  - kind: code
+    gate_type: code_style
+    generator: { agent: engineer, primary: codex }
+    judge:     { tier: same_vendor, model_pref: codex_alt_model }
+  - kind: tests
+    gate_type: contract
+    generator: { agent: test-strategist, primary: codex }
+    judge:     { tier: cross_vendor, model_pref: gemini }
+  - kind: docs
+    gate_type: docs_polish
+    generator: { agent: docs-author, primary: claude }
+    judge:     { tier: same_vendor, model_pref: claude_alt_model }
+taxonomy_required: ["4.3", "4.6", "4.7", "4.10", "4.13"]
+missability_required: ["nfrs-declared", "decision-logging", "test-data-management"]

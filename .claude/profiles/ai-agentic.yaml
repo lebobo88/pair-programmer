@@ -1,0 +1,18 @@
+name: ai-agentic
+description: Product with AI/agentic features. NIST AI RMF rubric; eval-suite gate; tool-permission matrix; HITL workflow doc; data-egress review.
+required_taxonomy_sections: ["4.9", "4.10", "4.13", "4.15"]
+required_rubrics:
+  security: owasp-asvs-l1@1
+  design: nist-ai-rmf-govern@1
+required_artifacts:
+  - ai_system_spec
+  - eval_suite
+  - tool_permission_matrix
+  - hitl_workflow
+  - data_egress_review
+required_missability_checks:
+  - ai-evals-hitl
+notes: |
+  ai-agentic profile demands a data_egress_review in addition to the AI-specific
+  artifacts. Cross-vendor judging is forced on any gate touching evals or tool
+  permissions (the gate decision applies the upgrade automatically).

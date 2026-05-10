@@ -1,0 +1,27 @@
+name: mobile
+description: iOS/Android native or cross-platform mobile app. Offline-state matrix; permission UX; crash-reporting plan; store-rollout plan.
+required_taxonomy_sections: ["4.4", "4.11", "4.13"]
+required_artifacts:
+  - offline_state_matrix
+  - store_rollout_plan
+  - permission_ux_table
+  - crash_reporting_plan
+  - browser_validation_report
+required_missability_checks:
+  - rollout-reversibility
+  - operational-ownership
+  - browser-validation-evidence
+runtime_smoke_test:
+  enabled: true
+  port: 0          # 0 = ephemeral; for React Native web preview / Expo dev server
+  routes: ["/"]
+  timeout_ms: 90000  # mobile dev shells (RN, Expo) often slower to boot than web-ui
+notes: |
+  Mobile profile demands a permission_ux_table (role × action × resource × condition × visible-affordance)
+  and a crash_reporting_plan in addition to the offline-state matrix and store-rollout plan.
+
+  Runtime smoke test: enabled by default for React Native web preview / Expo
+  dev-server flows. archive_winner_and_losers refuses to merge a candidate
+  whose smoke status="fail". Disable with `runtime_smoke_test.enabled: false`
+  in <project>/.harness/profile.yaml if your mobile pipeline doesn't expose a
+  web preview surface.

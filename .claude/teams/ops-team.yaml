@@ -1,0 +1,26 @@
+name: ops-team
+description: SLO doc, telemetry taxonomy, dashboards, alerts, runbooks. Maps to taxonomy section 4.12.
+profiles_compatible: [web-ui, api-platform, internal-tool, mobile, ai-agentic, enterprise, embedded, non-ui-cli, data-product]
+stages:
+  - kind: slo_doc
+    gate_type: spec
+    generator: { agent: ops-author, primary: claude }
+    judge:     { tier: cross_vendor, rubric: rfc-2119-normative@1, model_pref: gemini }
+  - kind: telemetry_taxonomy
+    gate_type: contract
+    generator: { agent: ops-author, primary: claude }
+    judge:     { tier: cross_vendor, rubric: metric-dictionary@1, model_pref: gemini }
+  - kind: dashboards
+    gate_type: design
+    generator: { agent: ops-author, primary: claude }
+    judge:     { tier: same_vendor }
+  - kind: alerts
+    gate_type: contract
+    generator: { agent: ops-author, primary: claude }
+    judge:     { tier: cross_vendor, model_pref: gemini }
+  - kind: runbooks
+    gate_type: docs_polish
+    generator: { agent: ops-author, primary: claude }
+    judge:     { tier: same_vendor }
+taxonomy_required: ["4.12", "4.13"]
+missability_required: ["operational-ownership", "supportability"]

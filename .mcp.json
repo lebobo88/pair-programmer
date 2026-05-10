@@ -1,0 +1,26 @@
+{
+  "_comment": "Project-scoped MCP servers. Claude Code launches these with cwd=<project root>, so the relative path resolves correctly after `cd daemon && npm install && npm run build`.",
+  "mcpServers": {
+    "pp_harness": {
+      "command": "node",
+      "args": [
+        "daemon/dist/index.js",
+        "mcp"
+      ]
+    },
+    "pp_codex": {
+      "command": "node",
+      "args": [
+        "daemon/dist/index.js",
+        "mcp-codex"
+      ]
+    },
+    "pp_gemini": {
+      "command": "node",
+      "args": [
+        "daemon/dist/index.js",
+        "mcp-gemini"
+      ]
+    }
+  }
+}

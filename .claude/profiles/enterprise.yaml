@@ -1,0 +1,19 @@
+name: enterprise
+description: Regulated / B2B enterprise. SBOM + supply-chain (SLSA) gate; PIA/DPIA on data changes; cross-vendor on every gate; control matrix on security gates.
+required_taxonomy_sections: ["4.9", "4.10", "4.13", "4.14"]
+required_rubrics:
+  security: owasp-asvs-l2@1
+  supply_chain: slsa-l2@1
+required_artifacts:
+  - sbom
+  - dpia
+  - control_matrix
+required_missability_checks:
+  - supply-chain-integrity
+  - operational-ownership
+  - decision-logging
+notes: |
+  Enterprise profile forces cross-vendor on every gate via gate_eligible_judges.
+  Use this when the project ships into a regulated environment (SOX, HIPAA, etc.)
+  or any context with formal audit obligations. The DPIA artifact is required on
+  any data-handling change; the SBOM tracks supply-chain integrity at SLSA L2.

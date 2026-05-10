@@ -1,0 +1,5 @@
+name: non-ui-cli
+description: CLI tool, batch job, or non-UI service. Operator-experience gate; runbook + retry/backoff doc.
+required_taxonomy_sections: ["4.12", "4.13"]
+required_artifacts: ["runbook", "retry_backoff_doc"]
+required_missability_checks: ["supportability"]

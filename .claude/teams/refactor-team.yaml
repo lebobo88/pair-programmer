@@ -1,0 +1,26 @@
+name: refactor-team
+description: Behavior-preserving change with explicit invariants.
+profiles_compatible: [web-ui, api-platform, internal-tool, mobile, sdk, ai-agentic, embedded, non-ui-cli, data-product, enterprise]
+stages:
+  - kind: invariants
+    gate_type: spec
+    generator: { agent: spec-author, primary: claude }
+    judge:     { tier: cross_vendor, rubric: rfc-2119-normative@1, model_pref: gemini }
+  - kind: tests_pre
+    gate_type: contract
+    generator: { agent: test-strategist, primary: codex }
+    judge:     { tier: cross_vendor, model_pref: gemini }
+  - kind: code
+    gate_type: code_style
+    generator: { agent: engineer, primary: codex }
+    judge:     { tier: same_vendor, model_pref: codex_alt_model }
+  - kind: tests
+    gate_type: contract
+    generator: { agent: test-strategist, primary: codex }
+    judge:     { tier: cross_vendor, model_pref: gemini }
+  - kind: browser_validation
+    gate_type: contract
+    generator: { agent: browser-validator, primary: claude }
+    judge:     { tier: same_vendor, rubric: web-runtime-validation@2 }
+taxonomy_required: ["4.3", "4.8", "4.10"]
+missability_required: ["test-data-management", "decision-logging", "browser-validation-evidence"]

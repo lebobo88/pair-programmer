@@ -1,0 +1,7 @@
+name: api-platform
+description: External API or platform. Contract gates required (OpenAPI/AsyncAPI rubric); versioning and compatibility ADR; SDK ergonomics if SDKs ship.
+required_taxonomy_sections: ["4.7", "4.13"]
+required_rubrics:
+  contract: openapi-3.1-stability@1
+required_artifacts: ["openapi"]
+required_missability_checks: ["third-party-failure"]

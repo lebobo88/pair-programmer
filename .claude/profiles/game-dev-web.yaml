@@ -1,0 +1,26 @@
+name: game-dev-web
+description: |
+  Web-based game (Babylon.js 9 / three.js / PlayCanvas / Phaser). Inherits browser-validator
+  and visual-regression-runner from the web-ui profile; adds web-engine perf concerns
+  (frame budget on browsers, GC pauses, asset streaming via fetch + IndexedDB).
+
+extends: ["game-dev", "web-ui"]
+
+required_missability_checks:
+  - save-data-atomicity
+
+runtime_smoke_test:
+  enabled: true
+  port: 0
+  routes: ["/"]
+  timeout_ms: 60000
+
+notes: |
+  Engineer + technical-artist read .claude/gotchas/web-engines.md (covers Babylon.js
+  NodeMaterials / GLTF / IBL, three.js renderer + scene-graph + postprocessing, shared
+  web-engine perf concerns).
+
+  Browser-validator and visual-regression-runner stages inherited from web-ui apply
+  unchanged — game-feature-team's `code` and `browser_validation` stages run against
+  the dev server's index route by default; override `runtime_smoke_test.routes` in
+  <project>/.harness/profile.yaml to add deeper canvas-driven flows.

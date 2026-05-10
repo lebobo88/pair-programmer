@@ -1,0 +1,22 @@
+name: game-dev-custom
+description: |
+  Custom or non-mainstream engine (Bevy, GameMaker, in-house). Project must ship
+  .harness/engine-conventions.md describing engine idioms; the engineer agent reads it
+  before composing.
+
+extends: ["game-dev"]
+
+required_missability_checks:
+  - save-data-atomicity
+
+runtime_smoke_test:
+  enabled: false
+
+notes: |
+  If <project>/.harness/engine-conventions.md is missing, the engineer agent surfaces
+  a clear error rather than guessing engine idioms.
+
+  The harness ships .claude/gotchas/{bevy,gamemaker,custom}.md as starter packs:
+    - Bevy: ECS-first, Rust, plugin-based, system ordering matters, no scene editor.
+    - GameMaker: GML, room/object model, events vs classes.
+    - custom: read .harness/engine-conventions.md from the project root.

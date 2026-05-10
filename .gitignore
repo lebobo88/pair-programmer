@@ -1,0 +1,32 @@
+# Node / TypeScript build artifacts
+node_modules/
+dist/
+*.tsbuildinfo
+
+# Env files
+.env
+.env.local
+.env.*.local
+
+# Editor / OS
+.DS_Store
+Thumbs.db
+*.swp
+
+# Claude Code local overrides (per-machine)
+.claude/settings.local.json
+
+# Per-machine rendered hook config (paths). Render via scripts/install-user.ps1
+# from .claude/settings.template.json.
+.claude/settings.json
+
+# Dev verification logs/reports (May 2026 bring-up)
+.verify-stream.log
+.verify-prompt.txt
+verification-report*.md
+
+# Harness per-run artifacts (written locally by /pp:run)
+.harness/runs/
+
+# Lock file written by scheduled-task subsystem
+.claude/scheduled_tasks.lock

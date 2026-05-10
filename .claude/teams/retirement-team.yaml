@@ -1,0 +1,26 @@
+name: retirement-team
+description: EOL plan, migration guide, archive/retention, sunset comms, shutdown checklist. Maps to taxonomy section 4.16.
+profiles_compatible: [web-ui, api-platform, internal-tool, mobile, sdk, ai-agentic, enterprise, embedded, non-ui-cli, data-product]
+stages:
+  - kind: eol_plan
+    gate_type: spec
+    generator: { agent: retirement-planner, primary: claude }
+    judge:     { tier: cross_vendor, rubric: rfc-2119-normative@1, model_pref: gemini }
+  - kind: migration_guide
+    gate_type: docs_polish
+    generator: { agent: docs-author, primary: claude }
+    judge:     { tier: cross_vendor, model_pref: gemini }
+  - kind: archive_retention
+    gate_type: security
+    generator: { agent: security-reviewer, primary: claude }
+    judge:     { tier: cross_vendor, rubric: owasp-asvs-l1@1, model_pref: gemini }
+  - kind: sunset_comms
+    gate_type: docs_polish
+    generator: { agent: docs-author, primary: claude }
+    judge:     { tier: same_vendor }
+  - kind: shutdown_checklist
+    gate_type: docs_polish
+    generator: { agent: ops-author, primary: claude }
+    judge:     { tier: same_vendor }
+taxonomy_required: ["4.16"]
+missability_required: ["deprecation-sunset", "retention-deletion"]

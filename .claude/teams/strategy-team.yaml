@@ -1,0 +1,26 @@
+name: strategy-team
+description: Vision, business case, OKRs, kill-criteria, risk register. Maps to taxonomy section 4.1.
+profiles_compatible: [web-ui, api-platform, internal-tool, mobile, sdk, ai-agentic, enterprise, data-product]
+stages:
+  - kind: vision
+    gate_type: spec
+    generator: { agent: strategy-author, primary: claude }
+    judge:     { tier: cross_vendor, rubric: rfc-2119-normative@1, model_pref: gemini }
+  - kind: business_case
+    gate_type: spec
+    generator: { agent: strategy-author, primary: claude }
+    judge:     { tier: cross_vendor, model_pref: gemini }
+  - kind: okrs
+    gate_type: spec
+    generator: { agent: strategy-author, primary: claude }
+    judge:     { tier: cross_vendor, model_pref: gemini }
+  - kind: kill_criteria
+    gate_type: spec
+    generator: { agent: strategy-author, primary: claude }
+    judge:     { tier: cross_vendor, model_pref: gemini }
+  - kind: risk_register
+    gate_type: spec
+    generator: { agent: governance-author, primary: claude }
+    judge:     { tier: same_vendor, model_pref: claude_alt_model }
+taxonomy_required: ["4.1"]
+missability_required: ["decision-logging"]

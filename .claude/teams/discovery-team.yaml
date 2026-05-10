@@ -1,0 +1,26 @@
+name: discovery-team
+description: Research brief, personas, journey maps, workflow maps, glossary. Maps to taxonomy section 4.2.
+profiles_compatible: [web-ui, internal-tool, mobile, ai-agentic, enterprise, data-product]
+stages:
+  - kind: research_brief
+    gate_type: spec
+    generator: { agent: discovery-researcher, primary: claude }
+    judge:     { tier: cross_vendor, rubric: rfc-2119-normative@1, model_pref: gemini }
+  - kind: personas
+    gate_type: design
+    generator: { agent: discovery-researcher, primary: claude }
+    judge:     { tier: cross_vendor, model_pref: gemini }
+  - kind: journey_maps
+    gate_type: design
+    generator: { agent: discovery-researcher, primary: claude }
+    judge:     { tier: cross_vendor, model_pref: gemini }
+  - kind: workflow_maps
+    gate_type: design
+    generator: { agent: discovery-researcher, primary: claude }
+    judge:     { tier: cross_vendor, model_pref: gemini }
+  - kind: glossary
+    gate_type: docs_polish
+    generator: { agent: docs-author, primary: claude }
+    judge:     { tier: same_vendor }
+taxonomy_required: ["4.2"]
+missability_required: ["workflow-exceptions"]

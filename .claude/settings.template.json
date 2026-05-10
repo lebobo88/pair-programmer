@@ -1,0 +1,73 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-settings.json",
+  "_comment": "Template for Phase 10 settings (24 hooks across 5 events). The installer (`scripts/install-user.ps1`) substitutes `__PP_DAEMON__` with the absolute path to `daemon/dist/index.js` on the installing machine before merging into `~/.claude/settings.json`. Each hook calls `node <daemon> hook <event> <name>` which dispatches to a typed handler in `src/hooks/dispatcher.ts`. PreToolUse blockers default to advisory; set PP_ENFORCE_ACTIVE_RUN=1 / PP_ALLOW_DANGER=0 to harden.",
+  "permissions": {
+    "allow": [
+      "mcp__pp_harness__doctor",
+      "mcp__pp_harness__list_runs",
+      "mcp__pp_harness__get_run",
+      "mcp__pp_harness__budget_status",
+      "mcp__pp_harness__loop_ceiling_status",
+      "mcp__pp_harness__list_taxonomy_sections",
+      "mcp__pp_harness__completion_checklist",
+      "mcp__pp_harness__list_missability_checks",
+      "mcp__pp_harness__list_rubrics",
+      "mcp__pp_harness__list_profiles",
+      "mcp__pp_harness__list_forums",
+      "mcp__pp_harness__team_list",
+      "mcp__pp_harness__list_design_templates",
+      "mcp__pp_harness__master_plan_status",
+      "mcp__pp_harness__browser_validation_start",
+      "mcp__pp_harness__browser_validation_finalize",
+      "mcp__claude-in-chrome__tabs_context_mcp",
+      "mcp__claude-in-chrome__tabs_create_mcp",
+      "mcp__claude-in-chrome__tabs_close_mcp",
+      "mcp__claude-in-chrome__navigate",
+      "mcp__claude-in-chrome__find",
+      "mcp__claude-in-chrome__form_input",
+      "mcp__claude-in-chrome__javascript_tool",
+      "mcp__claude-in-chrome__read_console_messages",
+      "mcp__claude-in-chrome__read_network_requests",
+      "mcp__claude-in-chrome__read_page",
+      "mcp__claude-in-chrome__gif_creator"
+    ]
+  },
+  "hooks": {
+    "SessionStart": [
+      { "hooks": [{ "type": "command", "command": "node \"__PP_DAEMON__\" hook SessionStart daemon-up" }] },
+      { "hooks": [{ "type": "command", "command": "node \"__PP_DAEMON__\" hook SessionStart vendor-matrix" }] },
+      { "hooks": [{ "type": "command", "command": "node \"__PP_DAEMON__\" hook SessionStart cli-version-pin" }] },
+      { "hooks": [{ "type": "command", "command": "node \"__PP_DAEMON__\" hook SessionStart master-plan-load" }] },
+      { "hooks": [{ "type": "command", "command": "node \"__PP_DAEMON__\" hook SessionStart surfaced-runs" }] }
+    ],
+    "PreToolUse": [
+      { "matcher": "Bash|PowerShell", "hooks": [{ "type": "command", "command": "node \"__PP_DAEMON__\" hook PreToolUse block-destructive-shell" }] },
+      { "matcher": "Edit|Write|MultiEdit|NotebookEdit", "hooks": [{ "type": "command", "command": "node \"__PP_DAEMON__\" hook PreToolUse enforce-active-run" }] },
+      { "matcher": "mcp__pp_codex__.*|mcp__pp_gemini__.*", "hooks": [{ "type": "command", "command": "node \"__PP_DAEMON__\" hook PreToolUse enforce-vendor-matrix" }] },
+      { "matcher": "mcp__pp_codex__generate", "hooks": [{ "type": "command", "command": "node \"__PP_DAEMON__\" hook PreToolUse enforce-sandbox-policy" }] },
+      { "matcher": "Edit|Write|MultiEdit|mcp__pp_harness__archive_artifact", "hooks": [{ "type": "command", "command": "node \"__PP_DAEMON__\" hook PreToolUse enforce-no-secrets" }] },
+      { "matcher": "Edit|Write|MultiEdit", "hooks": [{ "type": "command", "command": "node \"__PP_DAEMON__\" hook PreToolUse enforce-validator-gate" }] },
+      { "matcher": "Write|Edit|mcp__pp_harness__archive_artifact", "hooks": [{ "type": "command", "command": "node \"__PP_DAEMON__\" hook PreToolUse enforce-rfc2119-language" }] }
+    ],
+    "PostToolUse": [
+      { "matcher": "mcp__pp_codex__.*|mcp__pp_gemini__.*", "hooks": [{ "type": "command", "command": "node \"__PP_DAEMON__\" hook PostToolUse cost-tally" }] },
+      { "matcher": "mcp__pp_codex__.*|mcp__pp_gemini__.*", "hooks": [{ "type": "command", "command": "node \"__PP_DAEMON__\" hook PostToolUse record-attempt" }] },
+      { "matcher": "mcp__pp_harness__archive_artifact", "hooks": [{ "type": "command", "command": "node \"__PP_DAEMON__\" hook PostToolUse taxonomy-coverage-update" }] },
+      { "matcher": "mcp__pp_harness__archive_artifact", "hooks": [{ "type": "command", "command": "node \"__PP_DAEMON__\" hook PostToolUse hash-artifact" }] },
+      { "matcher": "mcp__pp_harness__record_verdict", "hooks": [{ "type": "command", "command": "node \"__PP_DAEMON__\" hook PostToolUse loop-ceiling-tally" }] },
+      { "matcher": "mcp__pp_harness__record_verdict", "hooks": [{ "type": "command", "command": "node \"__PP_DAEMON__\" hook PostToolUse verdict-rubric-coverage" }] },
+      { "matcher": "mcp__pp_harness__finalize_run", "hooks": [{ "type": "command", "command": "node \"__PP_DAEMON__\" hook PostToolUse update-master-plan" }] }
+    ],
+    "UserPromptSubmit": [
+      { "hooks": [{ "type": "command", "command": "node \"__PP_DAEMON__\" hook UserPromptSubmit taxonomy-nudge" }] },
+      { "hooks": [{ "type": "command", "command": "node \"__PP_DAEMON__\" hook UserPromptSubmit team-suggester" }] },
+      { "hooks": [{ "type": "command", "command": "node \"__PP_DAEMON__\" hook UserPromptSubmit risk-flag" }] },
+      { "hooks": [{ "type": "command", "command": "node \"__PP_DAEMON__\" hook UserPromptSubmit surfaced-run-reminder" }] },
+      { "hooks": [{ "type": "command", "command": "node \"__PP_DAEMON__\" hook UserPromptSubmit profile-aware-nudge" }] }
+    ],
+    "Stop": [
+      { "hooks": [{ "type": "command", "command": "node \"__PP_DAEMON__\" hook Stop decision-log-required" }] },
+      { "hooks": [{ "type": "command", "command": "node \"__PP_DAEMON__\" hook Stop summary-format-check" }] }
+    ]
+  }
+}

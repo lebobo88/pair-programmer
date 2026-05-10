@@ -1,0 +1,11 @@
+name: internal-tool
+description: Internal admin/ops tool. Workflow-fit + admin-UX gates; audit-log spec required; lighter UX rubric (RFC 2119 normative compliance instead of full WCAG).
+required_taxonomy_sections: ["4.3", "4.4", "4.13"]
+required_rubrics:
+  ux: rfc-2119-normative@1
+required_artifacts:
+  - audit_log_spec
+notes: |
+  Internal-tool profile uses RFC 2119 normative-language compliance as the UX gate
+  rubric instead of WCAG, reflecting the lighter accessibility / polish bar typical
+  of internal admin tooling. An audit_log_spec is still mandatory for accountability.

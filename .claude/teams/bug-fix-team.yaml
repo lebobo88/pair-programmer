@@ -1,0 +1,30 @@
+name: bug-fix-team
+description: Reproduce, localize, fix, regression-test, changelog.
+profiles_compatible: [web-ui, api-platform, internal-tool, mobile, sdk, ai-agentic, embedded, non-ui-cli, data-product]
+stages:
+  - kind: repro
+    gate_type: spec
+    generator: { agent: spec-author, primary: claude }
+    judge:     { tier: same_vendor, model_pref: claude_alt_model }
+  - kind: tests_pre
+    gate_type: contract
+    generator: { agent: test-strategist, primary: codex }
+    judge:     { tier: cross_vendor, model_pref: gemini }
+  - kind: code
+    gate_type: code_style
+    generator: { agent: engineer, primary: codex }
+    judge:     { tier: same_vendor, model_pref: codex_alt_model }
+  - kind: tests
+    gate_type: contract
+    generator: { agent: test-strategist, primary: codex }
+    judge:     { tier: cross_vendor, model_pref: gemini }
+  - kind: browser_validation
+    gate_type: contract
+    generator: { agent: browser-validator, primary: claude }
+    judge:     { tier: same_vendor, rubric: web-runtime-validation@2 }
+  - kind: docs
+    gate_type: docs_polish
+    generator: { agent: docs-author, primary: claude }
+    judge:     { tier: same_vendor }
+taxonomy_required: ["4.3", "4.10", "4.13"]
+missability_required: ["decision-logging", "browser-validation-evidence"]
