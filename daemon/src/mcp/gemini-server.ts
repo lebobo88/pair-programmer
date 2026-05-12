@@ -9,7 +9,7 @@ import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { nanoid } from "nanoid";
 import { errorContent, jsonContent, zodToJsonSchema } from "./helpers.js";
-import { buildCritiqueOutputSchema, normalizeCritiqueResult } from "./critique-schema.js";
+import { buildCritiqueOutputSchema, extractJsonValue, normalizeCritiqueResult } from "./critique-schema.js";
 import { wrapUntrusted } from "../security/untrusted-envelope.js";
 import { computeCost } from "../util/prices.js";
 import { SANDBOX_DIR, ensureDirs } from "../util/paths.js";
@@ -112,15 +112,8 @@ async function geminiGenerate(args: z.infer<typeof GenerateSchema>): Promise<Gem
 
   let parsedJson: unknown;
   if (args.output_schema) {
-    const trimmed = text.trim();
-    if (trimmed) {
-      // Strip ```json fences if Gemini ignored the no-fences directive.
-      const stripped = trimmed
-        .replace(/^```(?:json)?\s*/i, "")
-        .replace(/\s*```$/i, "")
-        .trim();
-      try { parsedJson = JSON.parse(stripped); } catch { /* leave undefined */ }
-    }
+    const extracted = extractJsonValue(text);
+    if (extracted.found) parsedJson = extracted.value;
   }
 
   return {

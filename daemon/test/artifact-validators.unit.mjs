@@ -26,6 +26,7 @@ const {
 } = await import(url("validator-policy.js"));
 const {
   buildCritiqueOutputSchema,
+  extractJsonValue,
   normalizeCritiqueResult,
 } = await import(pathToFileURL(join(__dirname, "..", "dist", "mcp", "critique-schema.js")).href);
 
@@ -305,6 +306,52 @@ it("normalizeCritiqueResult converts score_entries into legacy score object", ()
   assert.doesNotMatch(normalized.text, /score_entries/);
 });
 
+it("extractJsonValue recovers fenced JSON wrapped in prose", () => {
+  const extracted = extractJsonValue(`I reviewed the artifact.
+
+\`\`\`json
+{"outcome":"pass","critique_md":"Looks good","score_entries":[{"dimension":"correctness","score":0.95}]}
+\`\`\`
+
+Verdict complete.`);
+  assert.equal(extracted.found, true);
+  assert.deepEqual(extracted.value, {
+    outcome: "pass",
+    critique_md: "Looks good",
+    score_entries: [{ dimension: "correctness", score: 0.95 }],
+  });
+});
+
+it("extractJsonValue recovers a top-level JSON object surrounded by prose", () => {
+  const extracted = extractJsonValue('Result follows: {"outcome":"revise","critique_md":"Needs work","score":{"correctness":0.5}} Thanks.');
+  assert.equal(extracted.found, true);
+  assert.deepEqual(extracted.value, {
+    outcome: "revise",
+    critique_md: "Needs work",
+    score: { correctness: 0.5 },
+  });
+});
+
+it("normalizeCritiqueResult normalizes fenced verdict JSON wrapped in prose", () => {
+  const normalized = normalizeCritiqueResult({
+    text: `Here is the verdict:
+
+\`\`\`json
+{"outcome":"pass","critique_md":"Looks good","score_entries":[{"dimension":"correctness","score":0.9},{"dimension":"safety","score":0.8}]}
+\`\`\`
+
+Done.`,
+  });
+  assert.deepEqual(normalized.parsed, {
+    outcome: "pass",
+    critique_md: "Looks good",
+    score: {
+      correctness: 0.9,
+      safety: 0.8,
+    },
+  });
+});
+
 it("normalizeCritiqueResult preserves legacy score objects", () => {
   const normalized = normalizeCritiqueResult({
     text: '{"outcome":"revise","critique_md":"Needs work","score":{"correctness":0.55,"safety":0.7}}',
@@ -317,6 +364,14 @@ it("normalizeCritiqueResult preserves legacy score objects", () => {
       safety: 0.7,
     },
   });
+});
+
+it("normalizeCritiqueResult keeps invalid wrapped output unparsed", () => {
+  const normalized = normalizeCritiqueResult({
+    text: 'Here is a malformed block:\n```json\n{"outcome":"pass"\n```',
+  });
+  assert.equal(normalized.parsed, undefined);
+  assert.match(normalized.text, /malformed block/);
 });
 
 console.log(`\n${pass} passed, ${fail} failed`);
