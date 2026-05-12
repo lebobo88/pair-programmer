@@ -1,7 +1,8 @@
 /**
  * Project profile loader. Reads <project>/.harness/profile.yaml and
- * surfaces gate overrides per project type. Phase 6 ships 10 profile
- * templates that the user can copy into their project.
+ * surfaces gate overrides per project type. Phase 6 ships 16 built-in
+ * profile templates, including the game-dev family, that the user can
+ * copy into their project.
  */
 
 import { readFileSync, existsSync, writeFileSync, mkdirSync } from "node:fs";
@@ -9,17 +10,20 @@ import { join } from "node:path";
 import YAML from "yaml";
 import { ClaudeTier } from "../config.js";
 
-export type ProfileName =
-  | "web-ui" | "api-platform" | "internal-tool" | "enterprise"
-  | "ai-agentic" | "mobile" | "sdk" | "data-product"
-  | "embedded" | "non-ui-cli"
+export const BUILTIN_PROFILE_NAMES = [
+  "web-ui", "api-platform", "internal-tool", "enterprise",
+  "ai-agentic", "mobile", "sdk", "data-product",
+  "embedded", "non-ui-cli",
   // Game-dev family (engine sub-modes). `game-dev` is the base; the engine
   // sub-modes extend it. detect_profile picks the right sub-mode from engine
   // manifests; mobile/web targets layer the corresponding non-game profile via
   // the `extends` field at runtime.
-  | "game-dev"
-  | "game-dev-unity" | "game-dev-unreal" | "game-dev-godot"
-  | "game-dev-web"   | "game-dev-custom";
+  "game-dev",
+  "game-dev-unity", "game-dev-unreal", "game-dev-godot",
+  "game-dev-web", "game-dev-custom",
+] as const;
+
+export type ProfileName = typeof BUILTIN_PROFILE_NAMES[number];
 
 /**
  * Per-profile policy that shapes the driver's Claude-tier resolver. Sits

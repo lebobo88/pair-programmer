@@ -2,7 +2,7 @@
 
 > **Counts auto-verified against the source tree.** When you add or remove a slash command, sub-agent, team, profile, rubric, hook, missability check, forum, or MCP tool, regenerate the counts in this doc by running `Get-ChildItem` against the corresponding directory, or `grep` against the relevant source file. The numbers here are real, not aspirational.
 
-The pair-programmer harness is a **multi-vendor coding system**: Claude Code drives, Codex CLI (OpenAI) and Gemini CLI (Google) act as sub-agent generators and cross-vendor judges, and every artifact is validated by a different model than the one that produced it. On top of that base loop sit specialized teams, project profiles, governance forums, standard-aligned rubrics, and a 16-section taxonomy that anchors every run to a durable master plan.
+The pair-programmer harness is a **multi-vendor coding system**: **Claude Code or GitHub Copilot CLI** can act as the entrypoint, Codex CLI (OpenAI) and Gemini CLI (Google) act as sub-agent generators and cross-vendor judges, and every artifact is validated by a different model than the one that produced it. On top of that base loop sit specialized teams, project profiles, governance forums, standard-aligned rubrics, and a 16-section taxonomy that anchors every run to a durable master plan.
 
 This guide is the single canonical reference for using the harness day-to-day. The shorter guides under `docs/` (INSTALL, profiles, rubrics, teams, troubleshooting, validator-policy) remain as deep-dives and are linked from the relevant sections.
 
@@ -116,18 +116,38 @@ npm install
 npm run build
 ```
 
-The daemon is invoked by Claude Code over stdio MCP (no background service). State lives at `~/.pair-programmer/state.db` (SQLite + WAL). Logs at `~/.pair-programmer/logs/pp-daemon-YYYY-MM-DD.log`.
+The daemon is invoked by Claude Code or GitHub Copilot CLI over stdio MCP (no background service). State lives at `~/.pair-programmer/state.db` (SQLite + WAL). Logs at `~/.pair-programmer/logs/pp-daemon-YYYY-MM-DD.log`.
 
-### Wire the plugin into your project
+### Wire the entrypoint into your project
 
-Either:
+Use one of these entrypoints:
 
-- Run Claude Code from `<repo-root>/pair-programmer/` (the `.claude/` directory and `.mcp.json` are already there), or
-- Copy / symlink **both** `<repo>/.claude/` **and** `<repo>/.mcp.json` into your own project root. The MCP servers register on Claude Code restart.
+- **Claude Code (repo-local):** run Claude Code from `<repo-root>\pair-programmer\` (the `.claude\` directory and `.mcp.json` are already there).
+- **Claude Code (consumer repo):** copy or symlink **both** `<repo>\.claude\` **and** `<repo>\.mcp.json` into your own project root. The MCP servers register on Claude Code restart.
+- **GitHub Copilot CLI (recommended no-copy path):** install the plugin once at user scope from the repo root with `.\scripts\install-user-copilot.ps1`. This makes the harness available in every Copilot CLI session for the current Windows user, and consumer repos do **not** need their own `.github\` copy.
 
-> **Important:** `.mcp.json` and `.claude/settings.json` both contain **absolute paths** to `<harness-repo>/daemon/dist/index.js`. If you move the harness repo, you must rewrite these paths (or symlink rather than copy and keep the harness in place). Using only `.claude/` without `.mcp.json` leaves you with **no MCP servers registered** — `/pp:*` commands won't work.
+> **Important:** `.mcp.json` and `.claude/settings.json` both contain **absolute paths** to `<harness-repo>/daemon/dist/index.js`. If you move the harness repo, you must rewrite these paths (or symlink rather than copy and keep the harness in place). Using only `.claude/` without `.mcp.json` leaves you with **no MCP servers registered** — `/pp:*` commands won't work. The Copilot plugin path avoids per-repo copies, but Copilot caches plugin contents, so you must re-run `.\scripts\install-user-copilot.ps1` after `git pull`, daemon rebuilds, or prompt / hook changes.
 
 Optional: drop a profile YAML at `<project>/.harness/profile.yaml` to activate profile-aware gates (§10).
+
+### Copilot orchestrator agent
+
+After installing the plugin, the recommended Copilot entrypoint is:
+
+```powershell
+copilot --agent pair-programmer-orchestrator
+```
+
+When the `pair-programmer-orchestrator` custom agent is active, ordinary chat requests are routed into the appropriate pair-programmer surface automatically:
+
+- diagnostics / setup questions → `pp:doctor`
+- status / replay / profile / taxonomy / budget / teams / rubrics / master-plan queries → the matching info command
+- normal coding requests → `pp:run`
+- team-shaped requests → `pp:team`
+- governance reviews → `pp:review`
+- multi-candidate comparison requests → `pp:best-of`
+
+The orchestrator is a **router over the existing `/pp:*` contracts**, not a second harness implementation. If you already know the exact command you want, you can still invoke `/pp:*` directly.
 
 ### First run
 
@@ -496,7 +516,7 @@ DB reachable? · CLI versions (codex, gemini, git, node) · vendor credentials (
 
 ### `/pp:profile [show|list|template <name>]`
 
-`show` (default) → active profile from `<project>/.harness/profile.yaml` or "no profile.yaml". `list` → 10 built-ins. `template <name>` → renders YAML body in a fenced block for copy-paste into `.harness/profile.yaml`.
+`show` (default) → active profile from `<project>/.harness/profile.yaml` or "no profile.yaml". `list` → 16 built-ins. `template <name>` → renders YAML body in a fenced block for copy-paste into `.harness/profile.yaml`.
 
 ### `/pp:rubrics [list|show <id>]`
 
@@ -1460,7 +1480,7 @@ The harness's MCP wrapper passes `--cd` but currently does not pass `--skip-git-
 | **loop ceiling** | Anti-runaway cap on validator (judge) calls per run. Default 6. |
 | **master plan** | `<project>/PROJECT_MASTER.md` — 20-section template auto-patched per run. |
 | **missability check** | Heuristic inspector that scans artifacts for evidence of an easy-to-miss topic. 20 in the library. |
-| **profile** | YAML at `<project>/.harness/profile.yaml` that activates project-type-specific gates. 10 built-ins. |
+| **profile** | YAML at `<project>/.harness/profile.yaml` that activates project-type-specific gates. 16 built-ins. |
 | **Reflexion ×1** | At most one critique-fed retry per failed attempt. Then surface. |
 | **rubric** | Standard-aligned scoring guide applied at a gate. 13 ship; project overrides allowed. |
 | **run** | One invocation of `/pp:run` / `/pp:best-of` / `/pp:team` / `/pp:review`. Has a `run_id` and a directory. |

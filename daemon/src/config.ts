@@ -44,6 +44,17 @@ export const CLAUDE_TIER_MODELS = {
   haiku:  "claude-haiku-4-5-20251001",
 } as const;
 
+/**
+ * GitHub Copilot mirrors intentionally pin Opus one rev lower than the shared
+ * Claude entrypoint. Keep this divergence explicit so the daemon can expose a
+ * Copilot-only tier map without changing the Claude defaults above.
+ */
+export const COPILOT_CLAUDE_TIER_MODELS = {
+  opus:   "claude-opus-4-6",
+  sonnet: "claude-sonnet-4-6",
+  haiku:  "claude-haiku-4-5-20251001",
+} as const;
+
 export type ClaudeTier = keyof typeof CLAUDE_TIER_MODELS;
 
 /** Ladder, low → high. shiftTier walks this. */

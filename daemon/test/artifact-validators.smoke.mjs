@@ -9,13 +9,18 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
-import { tmpdir } from "node:os";
-import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const DAEMON = join(__dirname, "..", "dist", "index.js");
 
 function pretty(json) { return JSON.stringify(json, null, 2); }
+
+function makeRuntimeProject(root, name) {
+  const dir = join(root, name);
+  mkdirSync(dir, { recursive: true });
+  return dir;
+}
 
 async function callTool(client, name, args = {}) {
   const result = await client.callTool({ name, arguments: args });
@@ -111,6 +116,8 @@ async function main() {
   });
   const client = new Client({ name: "av-smoke", version: "0.0.1" }, { capabilities: {} });
   await client.connect(transport);
+  const runtimeRoot = join(__dirname, ".artifact-validators-runtime", `${process.pid}-${Date.now()}`);
+  mkdirSync(runtimeRoot, { recursive: true });
 
   try {
     const tools = await client.listTools();
@@ -118,7 +125,7 @@ async function main() {
     if (!tools.tools.find(t => t.name === "get_artifact_validation")) throw new Error("get_artifact_validation not registered");
     console.log(`✓ artifact_validate + get_artifact_validation registered (${tools.tools.length} tools total)`);
 
-    const projectPath = mkdtempSync(join(tmpdir(), "pp-av-smoke-"));
+    const projectPath = makeRuntimeProject(runtimeRoot, "project");
 
     // ─── Happy path: valid ADR → verified → finalize_stage(passed) succeeds. ──
     {
@@ -157,6 +164,59 @@ async function main() {
       await callTool(client, "finalize_stage", { stage_id: stage.stage_id, status: "passed", winner_attempt_id: att.attempt_id });
       console.log(`✓ finalize_stage(passed) succeeds when validator verified`);
 
+      await callTool(client, "finalize_run", { run_id: run.run_id, status: "complete" });
+    }
+
+    // ─── Regression: explicit path binds an older ADR on a multi-ADR stage. ──
+    {
+      const run = await callTool(client, "start_run", { request_text: "av-smoke explicit older adr", project_path: projectPath, mode: "single" });
+      const stage = await callTool(client, "start_stage", { run_id: run.run_id, kind: "architecture", gate_type: "design" });
+      const att = await callTool(client, "record_attempt", {
+        stage_id: stage.stage_id, producer: "claude", model_id: "claude-opus-4-7",
+        tokens_in: 1, tokens_out: 1, cost_usd: 0.0001, status: "ok",
+      });
+      const older = await callTool(client, "archive_artifact", {
+        run_id: run.run_id, stage_id: stage.stage_id,
+        taxonomy_section: "4.6", kind: "adr",
+        relative_path: "architecture/adr-0042-older.md",
+        bytes: VALID_ADR,
+      });
+      const newer = await callTool(client, "archive_artifact", {
+        run_id: run.run_id, stage_id: stage.stage_id,
+        taxonomy_section: "4.6", kind: "adr",
+        relative_path: "architecture/adr-0043-newer.md",
+        bytes: VALID_ADR.replace("ADR-0042", "ADR-0043"),
+      });
+      if (older.status !== "ok" || newer.status !== "ok") {
+        throw new Error(`expected both ADR archives to succeed: ${pretty({ older, newer })}`);
+      }
+      await callTool(client, "record_verdict", {
+        attempt_id: att.attempt_id, judge_producer: "claude", judge_model_id: "claude-sonnet-4-6",
+        outcome: "pass",
+        critique_md: "Two ADRs were archived on the same stage. The older one will be validated by explicit path and must still bind back to its artifacts row so finalize_stage can see both validations.",
+        score_json: { structure: 0.9, linkage: 0.9 },
+      });
+
+      const olderPath = process.platform === "win32"
+        ? older.absolute_path.replaceAll("\\", "/")
+        : older.absolute_path;
+      const olderValidation = await callTool(client, "artifact_validate", {
+        stage_id: stage.stage_id,
+        kind: "adr_structure_lint",
+        artifact_path: olderPath,
+      });
+      if (olderValidation.status !== "verified") throw new Error(`expected verified for older ADR, got ${pretty(olderValidation)}`);
+      if (olderValidation.artifact_id !== older.artifact_id) {
+        throw new Error(`expected older ADR validation to bind artifact_id ${older.artifact_id}, got ${pretty(olderValidation)}`);
+      }
+      const newerValidation = await callTool(client, "artifact_validate", { stage_id: stage.stage_id, kind: "adr_structure_lint" });
+      if (newerValidation.status !== "verified") throw new Error(`expected verified for newer ADR, got ${pretty(newerValidation)}`);
+      if (newerValidation.artifact_id !== newer.artifact_id) {
+        throw new Error(`expected newest ADR validation to bind artifact_id ${newer.artifact_id}, got ${pretty(newerValidation)}`);
+      }
+
+      await callTool(client, "finalize_stage", { stage_id: stage.stage_id, status: "passed", winner_attempt_id: att.attempt_id });
+      console.log(`✓ explicit artifact_path binds an older ADR on a multi-ADR stage`);
       await callTool(client, "finalize_run", { run_id: run.run_id, status: "complete" });
     }
 
@@ -698,7 +758,7 @@ operations:
 
     // ─── c4_render: profile-strict promotion turns 'skipped' into hard fail. ─
     {
-      const strictProj = mkdtempSync(join(tmpdir(), "pp-av-strict-"));
+      const strictProj = makeRuntimeProject(runtimeRoot, "strict-project");
       mkdirSync(join(strictProj, ".harness"), { recursive: true });
       writeFileSync(join(strictProj, ".harness", "profile.yaml"), [
         "name: api-platform",
@@ -758,6 +818,7 @@ operations:
     console.log("\nALL ARTIFACT-VALIDATOR SMOKE CHECKS PASSED");
   } finally {
     await client.close();
+    rmSync(runtimeRoot, { recursive: true, force: true });
   }
 }
 

@@ -23,7 +23,7 @@ import {
   getLatestArtifactValidation,
   VALIDATOR_KINDS,
 } from "../orchestrator/artifact-validators/index.js";
-import { loadProjectProfile, getBuiltinProfile, listBuiltinProfiles, writeProjectProfile, BUILTIN_PROFILES, type ProfileName } from "../orchestrator/profiles.js";
+import { loadProjectProfile, getBuiltinProfile, listBuiltinProfiles, writeProjectProfile, BUILTIN_PROFILES, BUILTIN_PROFILE_NAMES, type ProfileName } from "../orchestrator/profiles.js";
 import { detectProfile } from "../orchestrator/profile-detect.js";
 import { visualRegressionCapture, visualRegressionDiff } from "../orchestrator/visual-regression.js";
 import { browserValidationStart, browserValidationFinalize } from "../orchestrator/browser-validation.js";
@@ -33,7 +33,16 @@ import { getDesignTemplate, TEMPLATES_BY_KIND } from "../orchestrator/design-tem
 import { listForums, getForum } from "../orchestrator/forums.js";
 import { runJanitor } from "../orchestrator/janitor.js";
 import { buildReplayBundle } from "../orchestrator/replay.js";
-import { RUN_MODE, STAGE_STATUS, ATTEMPT_STATUS, VERDICT_OUTCOME, RUN_STATUS, CLAUDE_TIER_MODELS, TIER_ORDER } from "../config.js";
+import {
+  RUN_MODE,
+  STAGE_STATUS,
+  ATTEMPT_STATUS,
+  VERDICT_OUTCOME,
+  RUN_STATUS,
+  CLAUDE_TIER_MODELS,
+  COPILOT_CLAUDE_TIER_MODELS,
+  TIER_ORDER,
+} from "../config.js";
 import { log } from "../util/logger.js";
 
 // ─── Input schemas ───────────────────────────────────────────────────────
@@ -149,13 +158,12 @@ const GetRunSchema = z.object({ run_id: z.string().min(1) });
 const BudgetStatusSchema = z.object({ scope: z.string().optional() });
 
 const GATE_TYPES = ["spec", "design", "security", "contract", "code_style", "docs_polish", "lint_class"] as const;
-const PROFILES = ["web-ui", "api-platform", "internal-tool", "enterprise", "ai-agentic", "mobile", "sdk", "data-product", "embedded", "non-ui-cli"] as const;
 
 const GateEligibleJudgesSchema = z.object({
   gate_type:           z.enum(GATE_TYPES),
   generator_producer:  z.string().min(1),
   prompt_keywords:     z.string().optional(),
-  profile:             z.enum(PROFILES).optional(),
+  profile:             z.enum(BUILTIN_PROFILE_NAMES).optional(),
   artifact_kind:       z.string().optional(),
 });
 
@@ -274,7 +282,7 @@ const TeardownCandidatesSchema = z.object({
 });
 
 const GetProfileSchema      = z.object({ project_path: z.string().min(1) });
-const GetBuiltinProfileSchema = z.object({ name: z.string().min(1) });
+const GetBuiltinProfileSchema = z.object({ name: z.enum(BUILTIN_PROFILE_NAMES) });
 const GetRubricSchema       = z.object({ id: z.string().min(1) });
 const ListRubricsSchema     = z.object({});
 const ListProfilesSchema    = z.object({});
@@ -282,7 +290,7 @@ const GetClaudeTierModelsSchema = z.object({});
 const DetectProfileSchema   = z.object({ project_path: z.string().min(1) });
 const WriteProfileSchema    = z.object({
   project_path: z.string().min(1),
-  name:         z.string().min(1),
+  name:         z.enum(BUILTIN_PROFILE_NAMES),
   source:       z.enum(["detected", "user-selected"]),
   run_id:       z.string().optional(),
   signals:      z.array(z.string()).optional(),
@@ -600,13 +608,13 @@ const TOOLS: ToolDef[] = [
   {
     name: "get_builtin_profile",
     description:
-      "Return one of the 10 built-in profile templates by name (web-ui, api-platform, internal-tool, enterprise, ai-agentic, mobile, sdk, data-product, embedded, non-ui-cli). User copies this into <project>/.harness/profile.yaml to activate.",
+      "Return one of the 16 built-in profile templates by name, including the game-dev family. User copies this into <project>/.harness/profile.yaml to activate.",
     schema: GetBuiltinProfileSchema,
     handler: (args) => getBuiltinProfile(GetBuiltinProfileSchema.parse(args).name),
   },
   {
     name: "list_profiles",
-    description: "Return the 10 built-in profile templates (id + description) so the user can pick one.",
+    description: "Return the 16 built-in profile templates (id + description), including the game-dev family, so the user can pick one.",
     schema: ListProfilesSchema,
     handler: () => listBuiltinProfiles(),
   },
@@ -618,16 +626,23 @@ const TOOLS: ToolDef[] = [
     handler: () => ({ tiers: CLAUDE_TIER_MODELS, order: TIER_ORDER }),
   },
   {
+    name: "get_copilot_claude_tier_models",
+    description:
+      "Return the GitHub Copilot-specific Claude tier→model-id map. This keeps the Copilot mirrors on their pinned model ids without changing the shared Claude Code defaults in daemon/src/config.ts. Returns { tiers: { opus, sonnet, haiku }, order: ['haiku','sonnet','opus'] }.",
+    schema: GetClaudeTierModelsSchema,
+    handler: () => ({ tiers: COPILOT_CLAUDE_TIER_MODELS, order: TIER_ORDER }),
+  },
+  {
     name: "detect_profile",
     description:
-      "Sniff <project_path> for framework / packaging signals and recommend one of the 10 built-in profiles. Pure: reads files only, never writes. Returns {recommendation, confidence: 'high'|'medium'|'low'|'none', signals, alternatives}. Driver decides whether to accept; persistence happens via write_profile.",
+      "Sniff <project_path> for framework / packaging signals and recommend one of the 16 built-in profiles, including the game-dev family. Pure: reads files only, never writes. Returns {recommendation, confidence: 'high'|'medium'|'low'|'none', signals, alternatives}. Driver decides whether to accept; persistence happens via write_profile.",
     schema: DetectProfileSchema,
     handler: (args) => detectProfile(DetectProfileSchema.parse(args).project_path),
   },
   {
     name: "write_profile",
     description:
-      "Persist a built-in profile to <project_path>/.harness/profile.yaml with a provenance header (source, ISO timestamp, optional run_id, optional signal list, hand-edit notice). source must be 'detected' or 'user-selected'. name must be one of the 10 built-in ProfileNames; unknown names error out. Returns {path, yaml}.",
+      "Persist a built-in profile to <project_path>/.harness/profile.yaml with a provenance header (source, ISO timestamp, optional run_id, optional signal list, hand-edit notice). source must be 'detected' or 'user-selected'. name must be one of the 16 built-in ProfileNames, including the game-dev family. Returns {path, yaml}.",
     schema: WriteProfileSchema,
     handler: (args) => {
       const parsed = WriteProfileSchema.parse(args);

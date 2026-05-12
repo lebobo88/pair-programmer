@@ -1,0 +1,256 @@
+#!/usr/bin/env node
+
+import { mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { basename, dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+
+const ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
+const CLAUDE_DIR = join(ROOT, ".claude");
+const GITHUB_DIR = join(ROOT, ".github");
+const GENERATED_AGENTS_DIR = join(GITHUB_DIR, "agents");
+const GENERATED_COMMANDS_DIR = join(GITHUB_DIR, "commands", "pp");
+const GENERATED_HOOKS_DIR = join(GITHUB_DIR, "hooks");
+const GENERATED_PLUGIN_HOOKS_PATH = join(ROOT, "hooks.json");
+const GENERATED_REPO_HOOKS_PATH = join(GENERATED_HOOKS_DIR, "pair-programmer.json");
+const GENERATED_SKILLS_DIR = join(GITHUB_DIR, "skills");
+const COPILOT_MIRROR_REWRITES = [
+  [/claude-opus-4-7/g, "claude-opus-4-6"],
+  [/mcp__pp_harness__get_claude_tier_models/g, "mcp__pp_harness__get_copilot_claude_tier_models"],
+  [/\.claude\/skills\/pair-programmer\.md/g, ".github/skills/pair-programmer/SKILL.md"],
+  [/\.claude\/commands\/pp\//g, ".github/commands/pp/"],
+  [/`\.claude\/agents\/\*\.md`/g, "`.github/agents/*.agent.md`"],
+  [/\.claude\/agents\/([A-Za-z0-9_-]+)\.md/g, ".github/agents/$1.agent.md"],
+  [/excluding `judge-cross-vendor\.md` and `judge-same-vendor\.md`/g, "excluding `judge-cross-vendor.agent.md` and `judge-same-vendor.agent.md`"],
+];
+
+function ensureDir(path) {
+  mkdirSync(path, { recursive: true });
+}
+
+function resetDir(path) {
+  rmSync(path, { recursive: true, force: true });
+  ensureDir(path);
+}
+
+function readText(path) {
+  return readFileSync(path, "utf8").replace(/\r\n/g, "\n");
+}
+
+function splitFrontmatter(content) {
+  if (!content.startsWith("---\n")) return { frontmatter: "", body: content };
+  const end = content.indexOf("\n---\n", 4);
+  if (end === -1) return { frontmatter: "", body: content };
+  return {
+    frontmatter: content.slice(4, end),
+    body: content.slice(end + 5),
+  };
+}
+
+function parseFlatFrontmatter(frontmatter) {
+  const out = {};
+  for (const rawLine of frontmatter.split("\n")) {
+    const line = rawLine.trim();
+    if (!line || line.startsWith("#")) continue;
+    const match = line.match(/^([A-Za-z0-9_-]+):\s*(.*)$/);
+    if (!match) continue;
+    out[match[1]] = match[2];
+  }
+  return out;
+}
+
+function quoteYaml(value) {
+  return JSON.stringify(String(value));
+}
+
+function generatedBanner(source) {
+  return `<!-- Generated from ${source}. Edit the .claude source file and rerun node scripts/sync-copilot-assets.mjs. -->\n\n`;
+}
+
+function writeJson(path, value) {
+  writeFileSync(path, `${JSON.stringify(value, null, 2)}\n`);
+}
+
+function normalizeCommand(sourcePath, targetPath) {
+  const content = readText(sourcePath);
+  const { frontmatter, body } = splitFrontmatter(content);
+  const data = parseFlatFrontmatter(frontmatter);
+  const commandName = `pp:${basename(sourcePath, ".md")}`;
+
+  const lines = [];
+  lines.push("---");
+  lines.push(`name: ${quoteYaml(commandName)}`);
+  if (data.description) lines.push(`description: ${data.description}`);
+  if (data["argument-hint"]) lines.push(`argument-hint: ${data["argument-hint"]}`);
+  if (data["allowed-tools"]) lines.push(`allowed-tools: ${data["allowed-tools"]}`);
+  lines.push("---");
+  lines.push("");
+  lines.push(generatedBanner(sourcePath.replace(`${ROOT}\\`, "")) + body.trimStart());
+
+  writeFileSync(targetPath, `${lines.join("\n").trimEnd()}\n`);
+}
+
+function mapAgentTools(rawTools) {
+  if (!rawTools) return [];
+  const mapped = new Set();
+  for (const token of rawTools.split(",").map((part) => part.trim()).filter(Boolean)) {
+    if (/^(Read|NotebookRead)$/i.test(token)) mapped.add("read");
+    else if (/^(Edit|Write|MultiEdit|NotebookEdit)$/i.test(token)) mapped.add("edit");
+    else if (/^(Glob|Grep)$/i.test(token)) mapped.add("search");
+    else if (/^(Bash|PowerShell|shell|execute)$/i.test(token)) mapped.add("execute");
+    else if (/^(Task|Agent|custom-agent)$/i.test(token)) mapped.add("agent");
+    else if (/^mcp__pp_harness__/i.test(token)) mapped.add("pp_harness/*");
+    else if (/^mcp__pp_codex__/i.test(token)) mapped.add("pp_codex/*");
+    else if (/^mcp__pp_gemini__/i.test(token)) mapped.add("pp_gemini/*");
+    else if (/^mcp__claude-in-chrome__/i.test(token)) mapped.add("web");
+  }
+  return [...mapped];
+}
+
+function normalizeAgent(sourcePath, targetPath) {
+  const content = readText(sourcePath);
+  const { frontmatter, body } = splitFrontmatter(content);
+  const data = parseFlatFrontmatter(frontmatter);
+  const tools = mapAgentTools(data.tools ?? "");
+  const copilotModel = (data["copilot-model"] || data.model || "").replace(/^["']|["']$/g, "");
+
+  const lines = [];
+  lines.push("---");
+  lines.push(`name: ${quoteYaml(data.name || basename(sourcePath, ".md"))}`);
+  if (copilotModel) lines.push(`model: ${quoteYaml(copilotModel)}`);
+  lines.push(`description: ${quoteYaml((data.description || "").replace(/^["']|["']$/g, ""))}`);
+  lines.push("target: github-copilot");
+  if (tools.length) {
+    lines.push("tools:");
+    for (const tool of tools) lines.push(`  - ${quoteYaml(tool)}`);
+  }
+  lines.push("---");
+  lines.push("");
+  lines.push(generatedBanner(sourcePath.replace(`${ROOT}\\`, "")) + body.trimStart());
+
+  writeFileSync(targetPath, `${lines.join("\n").trimEnd()}\n`);
+}
+
+function normalizeSkill(sourcePath, targetDir) {
+  const content = readText(sourcePath);
+  const targetPath = join(targetDir, "SKILL.md");
+  const { frontmatter, body } = splitFrontmatter(content);
+  const lines = [];
+  lines.push("---");
+  lines.push(frontmatter.trim());
+  lines.push("---");
+  lines.push("");
+  lines.push(generatedBanner(sourcePath.replace(`${ROOT}\\`, "")) + body.trimStart());
+  writeFileSync(targetPath, `${lines.join("\n").trimEnd()}\n`);
+}
+
+function mapHookMatcher(rawMatcher = "") {
+  const mapped = [];
+  for (const token of rawMatcher.split("|").map((part) => part.trim()).filter(Boolean)) {
+    if (/^Bash$/i.test(token)) mapped.push("bash");
+    else if (/^PowerShell$/i.test(token)) mapped.push("powershell");
+    else if (/^(Edit|MultiEdit|NotebookEdit)$/i.test(token)) mapped.push("edit");
+    else if (/^Write$/i.test(token)) mapped.push("create");
+    else mapped.push(token);
+  }
+  return [...new Set(mapped)].join("|");
+}
+
+function normalizeHooks(sourcePath, targetPaths) {
+  const settings = JSON.parse(readText(sourcePath));
+  const hooks = { version: 1, hooks: {} };
+
+  for (const [eventName, entries] of Object.entries(settings.hooks ?? {})) {
+    hooks.hooks[eventName] = [];
+    for (const entry of entries) {
+      for (const hook of entry.hooks ?? []) {
+        if (hook.type !== "command" || !hook.command) continue;
+        const command = hook.command.replaceAll("__PP_DAEMON__", "daemon/dist/index.js");
+        const mapped = {
+          type: "command",
+          bash: command,
+          powershell: command,
+          timeoutSec: 30,
+        };
+        const matcher = mapHookMatcher(entry.matcher ?? "");
+        if (matcher) mapped.matcher = matcher;
+        hooks.hooks[eventName].push(mapped);
+      }
+    }
+  }
+
+  for (const targetPath of targetPaths) {
+    ensureDir(dirname(targetPath));
+    writeJson(targetPath, hooks);
+  }
+}
+
+function listMarkdownFiles(rootPath) {
+  const files = [];
+  for (const entry of readdirSync(rootPath, { withFileTypes: true })) {
+    const entryPath = join(rootPath, entry.name);
+    if (entry.isDirectory()) files.push(...listMarkdownFiles(entryPath));
+    else if (entry.isFile() && entry.name.endsWith(".md")) files.push(entryPath);
+  }
+  return files;
+}
+
+function rewriteCopilotMirrorText(text) {
+  let rewritten = text;
+  for (const [pattern, replacement] of COPILOT_MIRROR_REWRITES) {
+    rewritten = rewritten.replace(pattern, replacement);
+  }
+  return rewritten;
+}
+
+function rewriteGeneratedCopilotMirrors() {
+  for (const rootPath of [GENERATED_AGENTS_DIR, join(GITHUB_DIR, "commands"), GENERATED_SKILLS_DIR]) {
+    for (const filePath of listMarkdownFiles(rootPath)) {
+      const original = readText(filePath);
+      const rewritten = rewriteCopilotMirrorText(original);
+      if (rewritten !== original) writeFileSync(filePath, `${rewritten.trimEnd()}\n`);
+    }
+  }
+}
+
+function main() {
+  resetDir(GENERATED_AGENTS_DIR);
+  resetDir(join(GITHUB_DIR, "commands"));
+  ensureDir(GENERATED_COMMANDS_DIR);
+  resetDir(GENERATED_SKILLS_DIR);
+
+  for (const file of readdirSync(join(CLAUDE_DIR, "commands", "pp"))) {
+    if (!file.endsWith(".md")) continue;
+    normalizeCommand(
+      join(CLAUDE_DIR, "commands", "pp", file),
+      join(GENERATED_COMMANDS_DIR, file),
+    );
+  }
+
+  for (const file of readdirSync(join(CLAUDE_DIR, "agents"))) {
+    if (!file.endsWith(".md")) continue;
+    normalizeAgent(
+      join(CLAUDE_DIR, "agents", file),
+      join(GENERATED_AGENTS_DIR, `${basename(file, ".md")}.agent.md`),
+    );
+  }
+
+  for (const file of readdirSync(join(CLAUDE_DIR, "skills"))) {
+    if (!file.endsWith(".md")) continue;
+    const skillDir = join(GENERATED_SKILLS_DIR, basename(file, ".md"));
+    ensureDir(skillDir);
+    normalizeSkill(join(CLAUDE_DIR, "skills", file), skillDir);
+  }
+
+  normalizeHooks(join(CLAUDE_DIR, "settings.template.json"), [
+    GENERATED_PLUGIN_HOOKS_PATH,
+    GENERATED_REPO_HOOKS_PATH,
+  ]);
+
+  // Keep `.claude` untouched while letting Copilot mirrors diverge where the
+  // GitHub entrypoint intentionally uses different model ids and lookup paths.
+  rewriteGeneratedCopilotMirrors();
+
+  console.log("Synced Copilot assets and hooks from .claude, then applied Copilot-only mirror rewrites");
+}
+
+main();

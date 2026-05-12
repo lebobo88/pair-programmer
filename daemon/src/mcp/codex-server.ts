@@ -9,6 +9,7 @@ import { mkdirSync, writeFileSync, readFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { nanoid } from "nanoid";
 import { errorContent, jsonContent, zodToJsonSchema } from "./helpers.js";
+import { buildCritiqueOutputSchema, normalizeCritiqueResult } from "./critique-schema.js";
 import { wrapUntrusted } from "../security/untrusted-envelope.js";
 import { computeCost } from "../util/prices.js";
 import { SANDBOX_DIR, ensureDirs } from "../util/paths.js";
@@ -187,28 +188,21 @@ async function codexCritique(args: z.infer<typeof CritiqueSchema>): Promise<Code
   const wrappedArtifact = wrapUntrusted("artifact-under-review", args.artifact_text);
   const judgePrompt =
     `You are an impartial code/spec/design judge. Apply the rubric below to the artifact.\n` +
-    `Return a JSON object with fields: outcome (\"pass\" | \"fail\" | \"revise\"), critique_md, score (a record of rubric dimensions to numeric 0..1).\n\n` +
+    `Return a JSON object with fields: outcome ("pass" | "fail" | "revise"), critique_md, and score_entries (an array of { dimension, score } entries where score is numeric 0..1).\n\n` +
     `## Rubric\n${args.rubric_md}\n\n` +
     `## Artifact\n${wrappedArtifact}\n`;
-  return codexGenerate({
+  const useDefaultSchema = !args.output_schema;
+  const result = await codexGenerate({
     prompt: judgePrompt,
     cwd: args.cwd,
     model: pinnedModel,
     sandbox: "read-only",
     skip_recap: true,
     reasoning_effort: "high",
-    output_schema: args.output_schema ?? {
-      type: "object",
-      properties: {
-        outcome:     { type: "string", enum: ["pass", "fail", "revise"] },
-        critique_md: { type: "string" },
-        score:       { type: "object", additionalProperties: { type: "number" } },
-      },
-      required: ["outcome", "critique_md"],
-      additionalProperties: false,
-    },
+    output_schema: args.output_schema ?? buildCritiqueOutputSchema(),
     timeout_ms: args.timeout_ms,
   });
+  return useDefaultSchema ? normalizeCritiqueResult(result) : result;
 }
 
 // ─── JSONL parsing ───────────────────────────────────────────────────────

@@ -36,9 +36,9 @@ You are about to drive a `/pp:best-of` invocation. Follow the `pair-programmer` 
 
 7. **Diff entropy.** Collect the N artifact texts (read from each worktree). `mcp__pp_harness__diff_entropy(candidate_texts=[…])`. If `warning` is non-null, capture it for the user-facing summary.
 
-8. **Judge.** Use the Task tool to invoke `judge-router`. Since every candidate has `producer="claude"`, cross-vendor gates route to `pp_codex.critique` or `pp_gemini.critique` (whichever the gate decision returned in `allowed_judges`). Same-vendor gates use a different Claude model. The judge agent receives all N artifacts in the daemon-randomized order and applies the rubric. For N≥3, optionally invoke a second judge (the OTHER non-Claude vendor) and call `mcp__pp_harness__borda_count` with both rankings.
+8. **Judge routing.** Use the Task tool to invoke `judge-router`. Since every candidate has `producer="claude"`, cross-vendor gates should route to `judge-cross-vendor`; same-vendor gates should route to `judge-same-vendor`. Capture `{ judge_agent, preferred_producers, rubric_id, decision_reason }`.
 
-9. **Record verdicts.** One `record_verdict` per attempt. Store the rubric_id on every verdict.
+9. **Judge execution + verdicts.** Invoke the chosen judge agent on the candidate artifacts in the daemon-randomized order. The chosen judge agent records one `record_verdict` per attempt; store the routed `rubric_id` on every verdict. For N≥3, optionally route to a second judge (the OTHER eligible judge lane) and call `mcp__pp_harness__borda_count` with both rankings.
 
 9.5. **Smoke post-filter.** Read `smoke_summary` from step 6.5 and apply this rule before picking the winner:
    - If the rubric/Borda winner has `smoke_status="fail"`, walk the ranking in order (rank 1, 2, 3, …) and pick the FIRST candidate with `smoke_status` ∈ {`pass`, `skipped`}.

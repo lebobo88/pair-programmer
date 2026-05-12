@@ -21,7 +21,8 @@ You are about to drive a `/pp:review` invocation. Follow the `pair-programmer` s
    - `start_stage(kind=stage.kind, gate_type=stage.gate_type)`.
    - `gate_eligible_judges(gate_type, generator_producer=stage.generator_agent_producer, prompt_keywords=<context>, profile, artifact_kind=stage.kind)`.
    - Generator: use the Task tool to invoke `stage.generator_agent` with the per-stage inputs. Output paths land under `<run_id>/review-<forum>/<stage.kind>/`.
-   - Judge: use the Task tool to invoke `judge-router`. The judge applies `stage.rubric_id` (which the daemon decision should also recommend; if they conflict, follow the daemon decision and warn).
+   - Judge routing: use the Task tool to invoke `judge-router`. Capture `{ judge_agent, preferred_producers, rubric_id, decision_reason }`. The routed rubric should normally match `stage.rubric_id`; if they conflict, follow the daemon decision and warn.
+   - Judge execution: use the Task tool to invoke the chosen judge agent with the review artifact plus `rubric_id` (or `rubric_md` if already resolved). Only the chosen judge agent records the verdict.
    - **If judge returns `judge_tool_failed=true`**: archive the failure to `critique_failures/<stage_id>.json` via `archive_artifact` (`kind: "critique_failure"`), `finalize_stage(surfaced)`, `finalize_run(status="aborted", summary_md=<failure context>)`, STOP. Do NOT Reflexion. Do NOT fabricate a verdict.
    - On `pass`: continue. On `fail/revise`: invoke `reflexion-coach` once. If still failing, finalize stage as `surfaced` and BREAK.
 

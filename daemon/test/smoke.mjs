@@ -153,6 +153,18 @@ async function main() {
     if (!gate3.required_cross_vendor) throw new Error(`expected cross-vendor on enterprise profile, got: ${pretty(gate3)}`);
     console.log(`✓ gate_eligible_judges (enterprise profile) -> required_cross_vendor=true`);
 
+    // 12a. Game-dev profiles must also be accepted by the gate schema.
+    const gateGame = await callTool(client, "gate_eligible_judges", {
+      gate_type: "spec",
+      generator_producer: "claude",
+      prompt_keywords: "reproduce a Phaser collision regression",
+      profile: "game-dev-web",
+    });
+    if (!gateGame.required_cross_vendor || gateGame.rubric_id !== "rfc-2119-normative@1") {
+      throw new Error(`expected game-dev-web spec gate to be accepted with RFC 2119 rubric, got: ${pretty(gateGame)}`);
+    }
+    console.log(`✓ gate_eligible_judges (game-dev-web profile) -> accepted`);
+
     // 13a. Phase 3: triage classifier.
     const tri1 = await callTool(client, "triage_request", { request_text: "fix typo in README" });
     if (tri1.scope !== "trivial") throw new Error(`expected trivial for typo, got ${tri1.scope}`);
@@ -356,11 +368,13 @@ async function main() {
     if (!wrv2?.markdown.includes("carve_outs")) throw new Error(`web-runtime-validation@2 rubric body missing carve_outs language`);
     console.log(`✓ list_rubrics: ${rubricList.length} rubrics, get_rubric works (incl. web-runtime-validation@2 carve-outs)`);
 
-    // 22. Phase 6: 10 built-in profiles.
+    // 22. Phase 6: 16 built-in profiles, including the game-dev family.
     const profiles = await callTool(client, "list_profiles");
     if (profiles.length !== 16) throw new Error(`expected 16 profiles, got ${profiles.length}`);
     const ent = await callTool(client, "get_builtin_profile", { name: "enterprise" });
     if (!ent?.notes?.includes("cross-vendor")) throw new Error(`enterprise profile should mention cross-vendor`);
+    const webGameProfile = await callTool(client, "get_builtin_profile", { name: "game-dev-web" });
+    if (!webGameProfile?.description?.includes("Web-based game")) throw new Error(`game-dev-web profile should resolve`);
     console.log(`✓ list_profiles: ${profiles.length} profiles, get_builtin_profile works`);
 
     // 23. Phase 6: get_profile returns null when no profile.yaml present.
@@ -386,6 +400,18 @@ async function main() {
       throw new Error(`expected web-ui/high, got ${detectWeb.recommendation}/${detectWeb.confidence}`);
     }
     console.log(`✓ detect_profile (next dep): ${detectWeb.recommendation}/${detectWeb.confidence}`);
+
+    // 23b2. Web-game fixture -> recommendation=game-dev-web, confidence=high.
+    const webGameFixture = mkdtempSync(join(tmpdir(), "pp-smoke-gameweb-"));
+    writeFileSync(join(webGameFixture, "package.json"), JSON.stringify({
+      name: "web-game-fixture",
+      dependencies: { phaser: "^3.90.0" },
+    }));
+    const detectWebGame = await callTool(client, "detect_profile", { project_path: webGameFixture });
+    if (detectWebGame.recommendation !== "game-dev-web" || detectWebGame.confidence !== "high") {
+      throw new Error(`expected game-dev-web/high, got ${detectWebGame.recommendation}/${detectWebGame.confidence}`);
+    }
+    console.log(`✓ detect_profile (web game dep): ${detectWebGame.recommendation}/${detectWebGame.confidence}`);
 
     // 23c. Profile bootstrap: write_profile persists with provenance header.
     const written = await callTool(client, "write_profile", {

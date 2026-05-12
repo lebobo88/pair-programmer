@@ -37,6 +37,49 @@ type HookInput = {
   transcript_path?: string;
 };
 
+let CURRENT_EVENT = "";
+
+function parseMaybeJson<T>(value: T): T | unknown {
+  if (typeof value !== "string") return value;
+  try { return JSON.parse(value) as unknown; } catch { return value; }
+}
+
+function normalizeToolName(name: unknown): string | undefined {
+  if (typeof name !== "string" || !name) return undefined;
+  const lower = name.toLowerCase();
+  const builtinMap: Record<string, string> = {
+    bash: "Bash",
+    powershell: "PowerShell",
+    edit: "Edit",
+    create: "Write",
+    grep: "Grep",
+    glob: "Glob",
+    view: "Read",
+    task: "Task",
+    ask_user: "AskUserQuestion",
+    web_fetch: "WebFetch",
+  };
+  if (builtinMap[lower]) return builtinMap[lower];
+  const mcp = name.match(/^([A-Za-z0-9_-]+)[/:]([A-Za-z0-9_-]+)$/);
+  if (mcp) return `mcp__${mcp[1]!}__${mcp[2]!.replace(/-/g, "_")}`;
+  return name;
+}
+
+function normalizeHookInput(raw: unknown): HookInput {
+  const input = (raw ?? {}) as Record<string, unknown>;
+  const toolInput = parseMaybeJson(input.tool_input ?? input.toolArgs ?? input.tool_args);
+  return {
+    hook_event_name: (input.hook_event_name ?? input.hookEventName) as string | undefined,
+    tool_name: normalizeToolName(input.tool_name ?? input.toolName),
+    tool_input: (typeof toolInput === "string" ? parseMaybeJson(toolInput) : toolInput) as Record<string, unknown> | undefined,
+    tool_response: (input.tool_response ?? input.toolResult ?? input.tool_result) as Record<string, unknown> | undefined,
+    prompt: (input.prompt ?? input.initial_prompt ?? input.initialPrompt) as string | undefined,
+    cwd: input.cwd as string | undefined,
+    session_id: (input.session_id ?? input.sessionId) as string | undefined,
+    transcript_path: (input.transcript_path ?? input.transcriptPath) as string | undefined,
+  };
+}
+
 async function readStdin(): Promise<string> {
   return await new Promise<string>((resolve) => {
     let buf = "";
@@ -50,12 +93,34 @@ async function readStdin(): Promise<string> {
 }
 
 function reply(allow: boolean, message?: string, jsonExtras?: Record<string, unknown>): never {
+  const structuredPreToolUse = CURRENT_EVENT === "PreToolUse";
+  const structuredStop = CURRENT_EVENT === "Stop";
   if (!allow) {
+    if (structuredPreToolUse) {
+      process.stdout.write(JSON.stringify({
+        permissionDecision: "deny",
+        permissionDecisionReason: message ?? "[pp] blocked by hook",
+        ...(jsonExtras ?? {}),
+      }));
+      process.exit(0);
+    }
+    if (structuredStop) {
+      process.stdout.write(JSON.stringify({
+        decision: "block",
+        reason: message ?? "[pp] blocked by hook",
+        ...(jsonExtras ?? {}),
+      }));
+      process.exit(0);
+    }
     if (message) {
       console.error(message);
     }
     process.exit(2);
   } else {
+    if (structuredPreToolUse || structuredStop) {
+      if (message) console.error(message);
+      process.exit(0);
+    }
     if (message) console.log(message);
     if (jsonExtras) console.log(JSON.stringify(jsonExtras));
     process.exit(0);
@@ -661,6 +726,7 @@ const HANDLERS: Record<string, Record<string, (input: HookInput) => Promise<void
 export async function runHookDispatcher(args: string[]): Promise<void> {
   const event = args[0];
   const name = args[1];
+  CURRENT_EVENT = event ?? "";
   if (!event || !name) {
     console.error(`usage: pp-daemon hook <event> <name>\nevents: ${Object.keys(HANDLERS).join(", ")}`);
     process.exit(2);
@@ -672,7 +738,7 @@ export async function runHookDispatcher(args: string[]): Promise<void> {
   }
   const stdin = await readStdin();
   let input: HookInput = {};
-  try { input = stdin ? JSON.parse(stdin) as HookInput : {}; } catch { /* ignore */ }
+  try { input = normalizeHookInput(stdin ? JSON.parse(stdin) : {}); } catch { /* ignore */ }
   try {
     await handler(input);
     process.exit(0);

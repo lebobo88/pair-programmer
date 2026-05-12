@@ -1,7 +1,8 @@
 /**
  * Project profile detector. Sniffs <projectPath> for framework / packaging
- * signals and recommends one of the 10 built-in profiles. Used by the
- * profile-loader sub-agent when the target project has no
+ * signals and recommends one of the 16 built-in profiles, including the
+ * game-dev family. Used by the profile-loader sub-agent when the target
+ * project has no
  * `<project>/.harness/profile.yaml`, so the driver can bootstrap one
  * instead of silently degrading to generic mode.
  *

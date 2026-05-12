@@ -14,7 +14,7 @@
  */
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { isAbsolute, join, resolve } from "node:path";
 import { nanoid } from "nanoid";
 import { db, txImmediate } from "../../db/database.js";
 import { projectArtifactDir } from "../../util/paths.js";
@@ -242,6 +242,11 @@ type ResolvedTarget = {
   absPath: string;
 };
 
+function normalizePathForMatch(path: string): string {
+  const normalized = path.replaceAll("\\", "/").replace(/\/+/g, "/").replace(/\/$/, "");
+  return process.platform === "win32" ? normalized.toLowerCase() : normalized;
+}
+
 function resolveTargetArtifact(opts: {
   stage_id: string;
   project_path: string;
@@ -249,17 +254,24 @@ function resolveTargetArtifact(opts: {
   validator_kind: ValidatorKind;
 }): ResolvedTarget {
   if (opts.explicit_path) {
-    const abs = opts.explicit_path.startsWith("/") || /^[A-Za-z]:[\\/]/.test(opts.explicit_path)
-      ? opts.explicit_path
-      : join(opts.project_path, opts.explicit_path);
-    const stagedArtifact = db()
+    const abs = isAbsolute(opts.explicit_path)
+      ? resolve(opts.explicit_path)
+      : resolve(opts.project_path, opts.explicit_path);
+    const explicitAbs = normalizePathForMatch(abs);
+    const explicitRel = isAbsolute(opts.explicit_path)
+      ? null
+      : normalizePathForMatch(opts.explicit_path);
+    const stagedArtifacts = db()
       .prepare(
         `SELECT id, kind, path FROM artifacts
          WHERE stage_id = ?
-         ORDER BY created_at DESC LIMIT 1`,
+         ORDER BY created_at DESC`,
       )
       .all(opts.stage_id) as Array<{ id: string; kind: string | null; path: string }>;
-    const match = stagedArtifact.find(a => abs.endsWith(a.path));
+    const match = stagedArtifacts.find(a => {
+      if (normalizePathForMatch(resolve(opts.project_path, a.path)) === explicitAbs) return true;
+      return explicitRel !== null && normalizePathForMatch(a.path) === explicitRel;
+    });
     return {
       artifactId: match?.id ?? null,
       artifactKind: match?.kind ?? null,

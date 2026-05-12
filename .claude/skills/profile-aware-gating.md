@@ -10,7 +10,7 @@ A project declares its type by placing a YAML file at `<project>/.harness/profil
 ## How profile.yaml looks
 
 ```yaml
-name: web-ui                              # one of the 10 built-in names
+name: web-ui                              # one of the 16 built-in names
 description: User-facing web product
 required_taxonomy_sections: ["4.4", "4.13"]
 required_rubrics:
@@ -33,6 +33,8 @@ If the file is missing, the driver invokes `mcp__pp_harness__detect_profile` and
 
 ## What each built-in profile does (summary)
 
+The built-in set is 16 profiles total: the 10 non-game profiles in the table below plus the 6 game-dev profiles listed after it.
+
 | Profile | Forces cross-vendor everywhere? | Notable rubric bindings | Notable required artifacts | Notable missability ids |
 |---|---|---|---|---|
 | `web-ui` | no | design: WCAG 2.2 AA | screen_state_matrix, a11y_plan, localization_plan, responsive_matrix, visual_regression_report | ui-error-empty-loading, accessibility-localization, rollout-reversibility |
@@ -45,6 +47,13 @@ If the file is missing, the driver invokes `mcp__pp_harness__detect_profile` and
 | `data-product` | no | spec: metric-dictionary | metric_dictionary, lineage_map, freshness_sla | analytics-semantics, schema-evolution |
 | `embedded` | no | — | device_lifecycle, fleet_update_plan, failure_safe_policy | rollout-reversibility, operational-ownership |
 | `non-ui-cli` | no | — | runbook, retry_backoff_doc | supportability |
+
+Game-dev family:
+
+- `game-dev` — base game-development profile. Binds game accessibility on design artifacts, adds game-dev missability checks, and seeds the shared artifact set for design/tech/perf/localization/release/telemetry.
+- `game-dev-unity` / `game-dev-unreal` / `game-dev-godot` — engine-specific game profiles layered on top of `game-dev`.
+- `game-dev-web` — web-game profile layered on top of `game-dev` and `web-ui`; it inherits browser-validation / visual-regression expectations.
+- `game-dev-custom` — custom-engine game profile layered on top of `game-dev`; expects an engine-conventions document instead of guessing project idioms.
 
 ## How `gate_eligible_judges` uses the profile
 

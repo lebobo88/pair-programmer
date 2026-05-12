@@ -2,14 +2,14 @@
 
 A profile is a YAML file at `<project>/.harness/profile.yaml` declaring the project type. The harness reads it at run start, persists the snapshot into `runs.profile_snapshot_json` for replay, and applies overrides on every gate.
 
-## Built-ins (10)
+## Built-ins (16)
 
-`web-ui`, `api-platform`, `internal-tool`, `enterprise`, `ai-agentic`, `mobile`, `sdk`, `data-product`, `embedded`, `non-ui-cli`. See `.claude/profiles/*.yaml` for the templates.
+`web-ui`, `api-platform`, `internal-tool`, `enterprise`, `ai-agentic`, `mobile`, `sdk`, `data-product`, `embedded`, `non-ui-cli`, `game-dev`, `game-dev-unity`, `game-dev-unreal`, `game-dev-godot`, `game-dev-web`, `game-dev-custom`. See `daemon/src/orchestrator/profiles.ts` for the built-in templates.
 
 ## Schema
 
 ```yaml
-name: web-ui                         # one of the 10 built-in names (or a custom one)
+name: web-ui                         # one of the 16 built-in names (or a custom one)
 description: ...
 required_taxonomy_sections: ["4.4", "4.13"]
 required_rubrics:                    # gate_type → rubric_id
@@ -40,4 +40,4 @@ These escalations are unconditional — they cannot be downgraded by team yaml o
 
 ## Custom profile
 
-Drop your own YAML at `<project>/.harness/profile.yaml` with any name (it does NOT need to be one of the 10 built-ins). The daemon will load it as-is and apply the fields above. The `gate_eligible_judges` content-aware upgrade still runs on top.
+Drop your own YAML at `<project>/.harness/profile.yaml` with any name (it does NOT need to be one of the 16 built-ins). The daemon will load it as-is and apply the fields above. The `gate_eligible_judges` content-aware upgrade still runs on top.

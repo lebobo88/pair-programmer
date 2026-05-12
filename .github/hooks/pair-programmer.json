@@ -1,0 +1,185 @@
+{
+  "version": 1,
+  "hooks": {
+    "SessionStart": [
+      {
+        "type": "command",
+        "bash": "node \"daemon/dist/index.js\" hook SessionStart daemon-up",
+        "powershell": "node \"daemon/dist/index.js\" hook SessionStart daemon-up",
+        "timeoutSec": 30
+      },
+      {
+        "type": "command",
+        "bash": "node \"daemon/dist/index.js\" hook SessionStart vendor-matrix",
+        "powershell": "node \"daemon/dist/index.js\" hook SessionStart vendor-matrix",
+        "timeoutSec": 30
+      },
+      {
+        "type": "command",
+        "bash": "node \"daemon/dist/index.js\" hook SessionStart cli-version-pin",
+        "powershell": "node \"daemon/dist/index.js\" hook SessionStart cli-version-pin",
+        "timeoutSec": 30
+      },
+      {
+        "type": "command",
+        "bash": "node \"daemon/dist/index.js\" hook SessionStart master-plan-load",
+        "powershell": "node \"daemon/dist/index.js\" hook SessionStart master-plan-load",
+        "timeoutSec": 30
+      },
+      {
+        "type": "command",
+        "bash": "node \"daemon/dist/index.js\" hook SessionStart surfaced-runs",
+        "powershell": "node \"daemon/dist/index.js\" hook SessionStart surfaced-runs",
+        "timeoutSec": 30
+      }
+    ],
+    "PreToolUse": [
+      {
+        "type": "command",
+        "bash": "node \"daemon/dist/index.js\" hook PreToolUse block-destructive-shell",
+        "powershell": "node \"daemon/dist/index.js\" hook PreToolUse block-destructive-shell",
+        "timeoutSec": 30,
+        "matcher": "bash|powershell"
+      },
+      {
+        "type": "command",
+        "bash": "node \"daemon/dist/index.js\" hook PreToolUse enforce-active-run",
+        "powershell": "node \"daemon/dist/index.js\" hook PreToolUse enforce-active-run",
+        "timeoutSec": 30,
+        "matcher": "edit|create"
+      },
+      {
+        "type": "command",
+        "bash": "node \"daemon/dist/index.js\" hook PreToolUse enforce-vendor-matrix",
+        "powershell": "node \"daemon/dist/index.js\" hook PreToolUse enforce-vendor-matrix",
+        "timeoutSec": 30,
+        "matcher": "mcp__pp_codex__.*|mcp__pp_gemini__.*"
+      },
+      {
+        "type": "command",
+        "bash": "node \"daemon/dist/index.js\" hook PreToolUse enforce-sandbox-policy",
+        "powershell": "node \"daemon/dist/index.js\" hook PreToolUse enforce-sandbox-policy",
+        "timeoutSec": 30,
+        "matcher": "mcp__pp_codex__generate"
+      },
+      {
+        "type": "command",
+        "bash": "node \"daemon/dist/index.js\" hook PreToolUse enforce-no-secrets",
+        "powershell": "node \"daemon/dist/index.js\" hook PreToolUse enforce-no-secrets",
+        "timeoutSec": 30,
+        "matcher": "edit|create|mcp__pp_harness__archive_artifact"
+      },
+      {
+        "type": "command",
+        "bash": "node \"daemon/dist/index.js\" hook PreToolUse enforce-validator-gate",
+        "powershell": "node \"daemon/dist/index.js\" hook PreToolUse enforce-validator-gate",
+        "timeoutSec": 30,
+        "matcher": "edit|create"
+      },
+      {
+        "type": "command",
+        "bash": "node \"daemon/dist/index.js\" hook PreToolUse enforce-rfc2119-language",
+        "powershell": "node \"daemon/dist/index.js\" hook PreToolUse enforce-rfc2119-language",
+        "timeoutSec": 30,
+        "matcher": "create|edit|mcp__pp_harness__archive_artifact"
+      }
+    ],
+    "PostToolUse": [
+      {
+        "type": "command",
+        "bash": "node \"daemon/dist/index.js\" hook PostToolUse cost-tally",
+        "powershell": "node \"daemon/dist/index.js\" hook PostToolUse cost-tally",
+        "timeoutSec": 30,
+        "matcher": "mcp__pp_codex__.*|mcp__pp_gemini__.*"
+      },
+      {
+        "type": "command",
+        "bash": "node \"daemon/dist/index.js\" hook PostToolUse record-attempt",
+        "powershell": "node \"daemon/dist/index.js\" hook PostToolUse record-attempt",
+        "timeoutSec": 30,
+        "matcher": "mcp__pp_codex__.*|mcp__pp_gemini__.*"
+      },
+      {
+        "type": "command",
+        "bash": "node \"daemon/dist/index.js\" hook PostToolUse taxonomy-coverage-update",
+        "powershell": "node \"daemon/dist/index.js\" hook PostToolUse taxonomy-coverage-update",
+        "timeoutSec": 30,
+        "matcher": "mcp__pp_harness__archive_artifact"
+      },
+      {
+        "type": "command",
+        "bash": "node \"daemon/dist/index.js\" hook PostToolUse hash-artifact",
+        "powershell": "node \"daemon/dist/index.js\" hook PostToolUse hash-artifact",
+        "timeoutSec": 30,
+        "matcher": "mcp__pp_harness__archive_artifact"
+      },
+      {
+        "type": "command",
+        "bash": "node \"daemon/dist/index.js\" hook PostToolUse loop-ceiling-tally",
+        "powershell": "node \"daemon/dist/index.js\" hook PostToolUse loop-ceiling-tally",
+        "timeoutSec": 30,
+        "matcher": "mcp__pp_harness__record_verdict"
+      },
+      {
+        "type": "command",
+        "bash": "node \"daemon/dist/index.js\" hook PostToolUse verdict-rubric-coverage",
+        "powershell": "node \"daemon/dist/index.js\" hook PostToolUse verdict-rubric-coverage",
+        "timeoutSec": 30,
+        "matcher": "mcp__pp_harness__record_verdict"
+      },
+      {
+        "type": "command",
+        "bash": "node \"daemon/dist/index.js\" hook PostToolUse update-master-plan",
+        "powershell": "node \"daemon/dist/index.js\" hook PostToolUse update-master-plan",
+        "timeoutSec": 30,
+        "matcher": "mcp__pp_harness__finalize_run"
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "type": "command",
+        "bash": "node \"daemon/dist/index.js\" hook UserPromptSubmit taxonomy-nudge",
+        "powershell": "node \"daemon/dist/index.js\" hook UserPromptSubmit taxonomy-nudge",
+        "timeoutSec": 30
+      },
+      {
+        "type": "command",
+        "bash": "node \"daemon/dist/index.js\" hook UserPromptSubmit team-suggester",
+        "powershell": "node \"daemon/dist/index.js\" hook UserPromptSubmit team-suggester",
+        "timeoutSec": 30
+      },
+      {
+        "type": "command",
+        "bash": "node \"daemon/dist/index.js\" hook UserPromptSubmit risk-flag",
+        "powershell": "node \"daemon/dist/index.js\" hook UserPromptSubmit risk-flag",
+        "timeoutSec": 30
+      },
+      {
+        "type": "command",
+        "bash": "node \"daemon/dist/index.js\" hook UserPromptSubmit surfaced-run-reminder",
+        "powershell": "node \"daemon/dist/index.js\" hook UserPromptSubmit surfaced-run-reminder",
+        "timeoutSec": 30
+      },
+      {
+        "type": "command",
+        "bash": "node \"daemon/dist/index.js\" hook UserPromptSubmit profile-aware-nudge",
+        "powershell": "node \"daemon/dist/index.js\" hook UserPromptSubmit profile-aware-nudge",
+        "timeoutSec": 30
+      }
+    ],
+    "Stop": [
+      {
+        "type": "command",
+        "bash": "node \"daemon/dist/index.js\" hook Stop decision-log-required",
+        "powershell": "node \"daemon/dist/index.js\" hook Stop decision-log-required",
+        "timeoutSec": 30
+      },
+      {
+        "type": "command",
+        "bash": "node \"daemon/dist/index.js\" hook Stop summary-format-check",
+        "powershell": "node \"daemon/dist/index.js\" hook Stop summary-format-check",
+        "timeoutSec": 30
+      }
+    ]
+  }
+}

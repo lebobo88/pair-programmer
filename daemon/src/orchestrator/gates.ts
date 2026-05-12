@@ -3,16 +3,15 @@
  * for each gate type, with content-aware and profile-aware upgrades.
  */
 
+import type { ProfileName } from "./profiles.js";
+
 export type GateType =
   | "spec" | "design" | "security" | "contract"
   | "code_style" | "docs_polish" | "lint_class";
 
 export type Tier = "cross_vendor" | "same_vendor";
 
-export type Profile =
-  | "web-ui" | "api-platform" | "internal-tool" | "enterprise"
-  | "ai-agentic" | "mobile" | "sdk" | "data-product"
-  | "embedded" | "non-ui-cli";
+export type Profile = ProfileName;
 
 const BASE_TIERS: Record<GateType, Tier> = {
   spec:        "cross_vendor",

@@ -1,0 +1,11 @@
+{
+  "name": "pair-programmer",
+  "description": "Pair Programmer harness entrypoint for GitHub Copilot CLI",
+  "version": "0.1.0",
+  "strict": false,
+  "agents": ".github/agents",
+  "skills": ".github/skills",
+  "commands": ".github/commands",
+  "hooks": "hooks.json",
+  "mcpServers": ".mcp.json"
+}

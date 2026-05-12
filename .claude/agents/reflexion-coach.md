@@ -44,6 +44,7 @@ Address the critique specifically. Do NOT defend the previous attempt. Produce a
 ```
 
 4. Return to the driver: `{ ok: true, parent_attempt_id, retry_prompt }`.
+5. The driver then re-invokes the original generator with `retry_prompt`, records the retry attempt (`retry_index=1`, `parent_attempt_id`), re-runs the judge, and verifies the daemon ledger contains the new retry attempt + verdict before advancing. You do **not** perform any of those steps yourself.
 
 ## Tier escalation contract
 
@@ -62,4 +63,5 @@ The driver also archives the escalation in `<run_id>/tier_decisions.json` (`{ st
 - Reflexion ×1 is a hard invariant: never coach more than one retry per attempt chain. The daemon enforces this; you are the human-readable check.
 - Do NOT add new requirements not in the original prompt or critique. Reflexion is *correction*, not *expansion*.
 - Do NOT call generator tools yourself — only compose the retry prompt and hand it back.
+- Do NOT imply that the retry already happened. Your success condition is returning a valid `retry_prompt`; the driver owns the actual retry execution and ledger verification.
 - Do NOT pick the retry tier yourself — the driver owns that decision and passes it in. Echo it; do not override.

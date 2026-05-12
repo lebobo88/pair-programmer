@@ -24,6 +24,10 @@ const {
   strictValidators,
   VALIDATOR_KINDS,
 } = await import(url("validator-policy.js"));
+const {
+  buildCritiqueOutputSchema,
+  normalizeCritiqueResult,
+} = await import(pathToFileURL(join(__dirname, "..", "dist", "mcp", "critique-schema.js")).href);
 
 let pass = 0;
 let fail = 0;
@@ -265,6 +269,54 @@ it("strictValidators filters unknown kinds", () => {
   const got = strictValidators(profile);
   assert.ok(got.has("mermaid_render"));
   assert.ok(!got.has("bogus"));
+});
+
+// ─── Judge schema compatibility ─────────────────────────────────────────────
+
+it("buildCritiqueOutputSchema sets additionalProperties=false on every object node", () => {
+  const schema = buildCritiqueOutputSchema();
+  const queue = [schema];
+  while (queue.length) {
+    const node = queue.shift();
+    if (!node || typeof node !== "object" || Array.isArray(node)) continue;
+    if (node.type === "object") {
+      assert.equal(node.additionalProperties, false, `object node missing strict additionalProperties=false: ${JSON.stringify(node)}`);
+    }
+    if (node.properties && typeof node.properties === "object") {
+      queue.push(...Object.values(node.properties));
+    }
+    if (node.items) queue.push(node.items);
+  }
+});
+
+it("normalizeCritiqueResult converts score_entries into legacy score object", () => {
+  const normalized = normalizeCritiqueResult({
+    text: '{"outcome":"pass","critique_md":"Looks good","score_entries":[{"dimension":"correctness","score":0.9},{"dimension":"safety","score":0.8}]}',
+  });
+  assert.deepEqual(normalized.parsed, {
+    outcome: "pass",
+    critique_md: "Looks good",
+    score: {
+      correctness: 0.9,
+      safety: 0.8,
+    },
+  });
+  assert.match(normalized.text, /"score"\s*:/);
+  assert.doesNotMatch(normalized.text, /score_entries/);
+});
+
+it("normalizeCritiqueResult preserves legacy score objects", () => {
+  const normalized = normalizeCritiqueResult({
+    text: '{"outcome":"revise","critique_md":"Needs work","score":{"correctness":0.55,"safety":0.7}}',
+  });
+  assert.deepEqual(normalized.parsed, {
+    outcome: "revise",
+    critique_md: "Needs work",
+    score: {
+      correctness: 0.55,
+      safety: 0.7,
+    },
+  });
 });
 
 console.log(`\n${pass} passed, ${fail} failed`);
