@@ -9,7 +9,8 @@ import { mkdirSync, writeFileSync, readFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { nanoid } from "nanoid";
 import { errorContent, jsonContent, zodToJsonSchema } from "./helpers.js";
-import { buildCritiqueOutputSchema, normalizeCritiqueResult } from "./critique-schema.js";
+import { buildCritiqueOutputSchema } from "./critique-schema.js";
+import { stabilizeCritiqueResult } from "./critique-bridge.js";
 import { wrapUntrusted } from "../security/untrusted-envelope.js";
 import { computeCost } from "../util/prices.js";
 import { SANDBOX_DIR, ensureDirs } from "../util/paths.js";
@@ -66,9 +67,40 @@ type CodexResult = {
   attempts?: CliAttempt[];
   /** Path under <cwd>/.harness/critique_failures/ — present only on final non-zero exit. */
   failure_archive_path?: string;
+  /** Present when the bridge converted an exit-0 malformed payload into a hard failure. */
+  reason?: string;
 };
 
-async function codexGenerate(args: z.infer<typeof GenerateSchema>): Promise<CodexResult> {
+type CodexGenerateInternalOptions = {
+  skip_git_repo_check?: boolean;
+};
+
+type CodexCliArgOptions = {
+  cwd: string;
+  sandbox: SandboxPolicy;
+  model: string;
+  reasoning_effort?: "minimal" | "low" | "medium" | "high" | "xhigh";
+  resumeSessionId?: string;
+  outputSchemaPath?: string;
+  skip_git_repo_check?: boolean;
+};
+
+export function buildCodexExecArgs(opts: CodexCliArgOptions): string[] {
+  const cliArgs: string[] = ["exec", "--json", "--cd", opts.cwd, "--sandbox", opts.sandbox, "--model", opts.model];
+  // The daemon already chooses the target cwd and sandbox; bypass Codex's
+  // interactive trust gate for headless MCP runs unless a caller opts out.
+  if (opts.skip_git_repo_check ?? true) cliArgs.push("--skip-git-repo-check");
+  if (opts.reasoning_effort) cliArgs.push("--config", `model_reasoning_effort=${opts.reasoning_effort}`);
+  if (opts.resumeSessionId) cliArgs.push("--resume", opts.resumeSessionId);
+  if (opts.outputSchemaPath) cliArgs.push("--output-schema", opts.outputSchemaPath);
+  cliArgs.push("-");
+  return cliArgs;
+}
+
+async function codexGenerate(
+  args: z.infer<typeof GenerateSchema>,
+  opts: CodexGenerateInternalOptions = {}
+): Promise<CodexResult> {
   ensureDirs();
   const sandboxId = nanoid(8);
   const tmpDir = join(SANDBOX_DIR, `codex-${sandboxId}`);
@@ -85,7 +117,7 @@ async function codexGenerate(args: z.infer<typeof GenerateSchema>): Promise<Code
   // Session continuity: resume the prior Codex session for this project if
   // one exists, otherwise inject a recap so cold starts have grounding.
   const existing = getSession(args.cwd, "codex");
-  const cliArgs: string[] = ["exec", "--json", "--cd", args.cwd, "--sandbox", args.sandbox, "--model", args.model];
+  let reasoningEffort = args.reasoning_effort;
   // Pin reasoning effort per-invocation when the caller specifies one. The
   // user's ~/.codex/config.toml has `model_reasoning_effort = "xhigh"` as a
   // global default, but critique calls want "high" deterministically. Codex
@@ -100,32 +132,36 @@ async function codexGenerate(args: z.infer<typeof GenerateSchema>): Promise<Code
   // any caller that explicitly asked for "minimal" knows we degraded their
   // request — and why. If the user disables the default tools in
   // ~/.codex/config.toml, this can be revisited.
-  if (args.reasoning_effort) {
-    let effort: typeof args.reasoning_effort = args.reasoning_effort;
-    if (effort === "minimal") {
+  if (reasoningEffort) {
+    if (reasoningEffort === "minimal") {
       process.stderr.write(
         `[pp_codex.generate] reasoning_effort="minimal" is incompatible with codex CLI's default tools (image_gen, web_search) — OpenAI API rejects with 400 invalid_request_error. Coercing to "low".\n`,
       );
-      effort = "low";
+      reasoningEffort = "low";
     }
-    cliArgs.push("--config", `model_reasoning_effort=${effort}`);
   }
+  let resumeSessionId: string | undefined;
   if (existing) {
-    cliArgs.push("--resume", existing.session_id);
+    resumeSessionId = existing.session_id;
   } else if (!args.skip_recap) {
     const recap = synthesizeRecap(args.cwd, "codex");
     if (recap) prompt = `${recap}\n${prompt}`;
   }
+  let outputSchemaPath: string | undefined;
   if (args.output_schema) {
     const schemaPath = join(tmpDir, "schema.json");
     writeFileSync(schemaPath, JSON.stringify(args.output_schema, null, 2), "utf8");
-    cliArgs.push("--output-schema", schemaPath);
+    outputSchemaPath = schemaPath;
   }
-  // Pass the prompt via stdin (using `-` as the explicit stdin marker per
-  // `codex exec --help`) instead of as a positional CLI arg. This bypasses the
-  // Windows 8191-char CMDLINE limit that previously caused critique calls to
-  // fail with "The command line is too long." on artifacts of any real size.
-  cliArgs.push("-");
+  const cliArgs = buildCodexExecArgs({
+    cwd: args.cwd,
+    sandbox: args.sandbox,
+    model: args.model,
+    reasoning_effort: reasoningEffort,
+    resumeSessionId,
+    outputSchemaPath,
+    skip_git_repo_check: opts.skip_git_repo_check,
+  });
 
   const run = await runCliWithRetry({
     bin: "codex",
@@ -172,7 +208,10 @@ async function codexGenerate(args: z.infer<typeof GenerateSchema>): Promise<Code
   };
 }
 
-async function codexCritique(args: z.infer<typeof CritiqueSchema>): Promise<CodexResult> {
+export async function codexCritique(
+  args: z.infer<typeof CritiqueSchema>,
+  opts: CodexGenerateInternalOptions = {}
+): Promise<CodexResult> {
   // Pin the critique model and reasoning effort regardless of what the
   // sub-agent passes. Sub-agent prompts (judge-cross-vendor / judge-same-
   // vendor) ALSO require gpt-5.4, but Claude Code drivers have repeatedly
@@ -192,7 +231,7 @@ async function codexCritique(args: z.infer<typeof CritiqueSchema>): Promise<Code
     `## Rubric\n${args.rubric_md}\n\n` +
     `## Artifact\n${wrappedArtifact}\n`;
   const useDefaultSchema = !args.output_schema;
-  const result = await codexGenerate({
+  const invoke = async () => await codexGenerate({
     prompt: judgePrompt,
     cwd: args.cwd,
     model: pinnedModel,
@@ -201,8 +240,9 @@ async function codexCritique(args: z.infer<typeof CritiqueSchema>): Promise<Code
     reasoning_effort: "high",
     output_schema: args.output_schema ?? buildCritiqueOutputSchema(),
     timeout_ms: args.timeout_ms,
-  });
-  return useDefaultSchema ? normalizeCritiqueResult(result) : result;
+  }, opts);
+  if (!useDefaultSchema) return await invoke();
+  return await stabilizeCritiqueResult(invoke, { cwd: args.cwd, vendor: "codex" });
 }
 
 // ─── JSONL parsing ───────────────────────────────────────────────────────
@@ -210,7 +250,7 @@ async function codexCritique(args: z.infer<typeof CritiqueSchema>): Promise<Code
 // so we extract defensively: token counts from any field that looks like
 // {tokens|usage} on a final event, and concatenate text-bearing events.
 
-function parseCodexJsonl(stdout: string): {
+export function parseCodexJsonl(stdout: string): {
   text?: string;
   tokens_in?: number;
   tokens_out?: number;
@@ -232,8 +272,14 @@ function parseCodexJsonl(stdout: string): {
     try { evt = JSON.parse(trimmed) as Record<string, unknown>; } catch { continue; }
 
     const t = (evt.type ?? evt.event ?? "") as string;
-    const text = (evt.text ?? evt.content ?? evt.delta ?? "") as string | undefined;
-    if (typeof text === "string" && text && (t.includes("text") || t.includes("message") || t.includes("output") || t === "")) {
+    const text = extractCodexEventText(evt);
+    if (typeof text === "string" && text && (
+      t.includes("text") ||
+      t.includes("message") ||
+      t.includes("output") ||
+      t === "item.completed" ||
+      t === ""
+    )) {
       out.text += text;
     }
 
@@ -256,6 +302,25 @@ function parseCodexJsonl(stdout: string): {
     }
   }
   return out.text ? out : { ...out, text: undefined };
+}
+
+function extractCodexEventText(evt: Record<string, unknown>): string | undefined {
+  const direct = evt.text ?? evt.content ?? evt.delta;
+  if (typeof direct === "string" && direct) return direct;
+
+  const item = evt.item as { type?: unknown; text?: unknown; content?: unknown } | undefined;
+  if (!item || typeof item !== "object") return undefined;
+  if (typeof item.text === "string" && item.text) return item.text;
+  if (!Array.isArray(item.content)) return undefined;
+
+  const parts = item.content
+    .map(entry => {
+      if (!entry || typeof entry !== "object") return "";
+      const record = entry as { text?: unknown };
+      return typeof record.text === "string" ? record.text : "";
+    })
+    .filter(Boolean);
+  return parts.length ? parts.join("") : undefined;
 }
 
 function num(v: unknown): number | null {

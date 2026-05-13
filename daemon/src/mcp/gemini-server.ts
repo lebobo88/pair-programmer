@@ -9,7 +9,8 @@ import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { nanoid } from "nanoid";
 import { errorContent, jsonContent, zodToJsonSchema } from "./helpers.js";
-import { buildCritiqueOutputSchema, extractJsonValue, normalizeCritiqueResult } from "./critique-schema.js";
+import { buildCritiqueOutputSchema, extractJsonValue } from "./critique-schema.js";
+import { stabilizeCritiqueResult } from "./critique-bridge.js";
 import { wrapUntrusted } from "../security/untrusted-envelope.js";
 import { computeCost } from "../util/prices.js";
 import { SANDBOX_DIR, ensureDirs } from "../util/paths.js";
@@ -55,6 +56,8 @@ type GeminiResult = {
   attempts?: CliAttempt[];
   /** Path under <cwd>/.harness/critique_failures/ — present only on final non-zero exit. */
   failure_archive_path?: string;
+  /** Present when the bridge converted an exit-0 malformed payload into a hard failure. */
+  reason?: string;
 };
 
 async function geminiGenerate(args: z.infer<typeof GenerateSchema>): Promise<GeminiResult> {
@@ -132,7 +135,13 @@ async function geminiGenerate(args: z.infer<typeof GenerateSchema>): Promise<Gem
   };
 }
 
-async function geminiCritique(args: z.infer<typeof CritiqueSchema>): Promise<GeminiResult> {
+export async function geminiCritique(args: z.infer<typeof CritiqueSchema>): Promise<GeminiResult> {
+  const pinnedModel = DEFAULT_MODELS.gemini_critique;
+  if (args.model && args.model !== pinnedModel) {
+    process.stderr.write(
+      `[pp_gemini.critique] ignoring model="${args.model}" passed by caller; pinning to "${pinnedModel}". The judge agent contract requires this model.\n`,
+    );
+  }
   const wrappedArtifact = wrapUntrusted("artifact-under-review", args.artifact_text);
   const judgePrompt =
     `You are an impartial cross-vendor judge for the pair-programmer harness. Apply the rubric below to the artifact.\n` +
@@ -140,15 +149,16 @@ async function geminiCritique(args: z.infer<typeof CritiqueSchema>): Promise<Gem
     `## Rubric\n${args.rubric_md}\n\n` +
     `## Artifact\n${wrappedArtifact}\n`;
   const useDefaultSchema = !args.output_schema;
-  const result = await geminiGenerate({
+  const invoke = async () => await geminiGenerate({
     prompt: judgePrompt,
     cwd: args.cwd,
-    model: args.model,
-        skip_recap: true,
+    model: pinnedModel,
+    skip_recap: true,
     output_schema: args.output_schema ?? buildCritiqueOutputSchema(),
     timeout_ms: args.timeout_ms,
   });
-  return useDefaultSchema ? normalizeCritiqueResult(result) : result;
+  if (!useDefaultSchema) return await invoke();
+  return await stabilizeCritiqueResult(invoke, { cwd: args.cwd, vendor: "gemini" });
 }
 
 function parseGeminiOutput(stdout: string): {

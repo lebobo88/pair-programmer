@@ -1,4 +1,10 @@
 type JsonObject = Record<string, unknown>;
+export type CritiqueOutcome = "pass" | "fail" | "revise";
+export type CritiqueVerdict = {
+  outcome: CritiqueOutcome;
+  critique_md: string;
+  score: Record<string, number>;
+};
 
 type ExtractedJson =
   | { found: false }
@@ -33,18 +39,42 @@ export function buildCritiqueOutputSchema(): JsonObject {
 }
 
 export function normalizeCritiqueResult<T extends { text: string; parsed?: unknown }>(result: T): T {
-  const extracted = extractJsonValue(result.text);
-  const source = result.parsed ?? (extracted.found ? extracted.value : undefined);
-  const normalized = normalizeCritiqueVerdict(source);
-  if (!normalized) return result;
+  const validated = validateCritiqueResult(result);
+  if (!validated.ok) return result;
   return {
     ...result,
-    text: JSON.stringify(normalized, null, 2),
-    parsed: normalized,
+    text: JSON.stringify(validated.verdict, null, 2),
+    parsed: validated.verdict,
   };
 }
 
-function normalizeCritiqueVerdict(value: unknown): JsonObject | null {
+export function validateCritiqueResult(input: { text: string; parsed?: unknown }):
+  | { ok: true; verdict: CritiqueVerdict }
+  | { ok: false; reason: string } {
+  if (!input.text.trim()) return { ok: false, reason: "empty output" };
+
+  const extracted = extractJsonValue(input.text);
+  const source = input.parsed ?? (extracted.found ? extracted.value : undefined);
+  if (source === undefined) return { ok: false, reason: "malformed JSON" };
+
+  const normalized = normalizeCritiqueVerdict(source);
+  if (!normalized) {
+    const record = asObject(source);
+    if (!record) return { ok: false, reason: "malformed JSON" };
+
+    const outcome = typeof record.outcome === "string" ? record.outcome.trim() : "";
+    if (!outcome) return { ok: false, reason: "missing outcome" };
+    if (outcome !== "pass" && outcome !== "fail" && outcome !== "revise") {
+      return { ok: false, reason: `invalid outcome: ${outcome}` };
+    }
+    if (typeof record.critique_md !== "string") return { ok: false, reason: "missing critique_md" };
+    return { ok: false, reason: "missing score" };
+  }
+
+  return { ok: true, verdict: normalized };
+}
+
+function normalizeCritiqueVerdict(value: unknown): CritiqueVerdict | null {
   const record = asObject(value);
   if (!record) return null;
 
@@ -53,9 +83,17 @@ function normalizeCritiqueVerdict(value: unknown): JsonObject | null {
   const score = legacyScore ?? strictScore;
   if (!score) return null;
 
-  const normalized: JsonObject = { ...record, score };
-  delete normalized.score_entries;
-  return normalized;
+  const outcome = typeof record.outcome === "string" ? record.outcome.trim() : "";
+  if (outcome !== "pass" && outcome !== "fail" && outcome !== "revise") return null;
+
+  const critique_md = typeof record.critique_md === "string" ? record.critique_md : null;
+  if (critique_md === null) return null;
+
+  return {
+    outcome,
+    critique_md,
+    score,
+  };
 }
 
 function extractScoreObject(value: unknown): Record<string, number> | null {

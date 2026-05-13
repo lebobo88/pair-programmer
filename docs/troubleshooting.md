@@ -49,6 +49,16 @@ If artifact writes fail with `ENAMETOOLONG`:
 
 The npm shim wraps the binary's exit code on Windows. The wrappers in `daemon/src/mcp/{codex,gemini}-server.ts` already handle this — they read `exitCode` from execa's structured result rather than `$LASTEXITCODE`.
 
+## Codex "Not inside a trusted directory"
+
+For harness-driven Codex calls (`pp_codex.generate` / `pp_codex.critique`), the daemon already adds `--skip-git-repo-check`, so bridge calls should not fail on Codex's trusted-directory prompt.
+
+If you run `codex` directly in your own shell and hit the same error, invoke it as:
+
+```bash
+codex exec --skip-git-repo-check --cd <project> ...
+```
+
 ## Visual regression unavailable
 
 The `visual_regression_capture` tool returns `{ status: "unavailable", reason }` when:

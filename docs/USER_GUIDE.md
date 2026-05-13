@@ -1316,8 +1316,8 @@ Schema-level defaults are pinned in [`daemon/src/config.ts`](../daemon/src/confi
 
 | Tool | Purpose |
 |---|---|
-| `generate` | Run `codex exec` headless. Inputs: `prompt`, `cwd`, `model?` (default `gpt-5.4`), `sandbox?`, `output_schema?`, `untrusted_inputs?`. Returns text + tokens + cost. |
-| `critique` | Use Codex as a judge. Inputs: `artifact_text`, `rubric_md`, `cwd`, `model?` (default `gpt-5.4`). Returns `{ outcome, critique_md, score }`. |
+| `generate` | Run `codex exec` headless. Inputs: `prompt`, `cwd`, `model?` (default `gpt-5.4`), `sandbox?`, `output_schema?`, `untrusted_inputs?`. Returns text + tokens + cost. The daemon automatically adds `--skip-git-repo-check` for bridge calls. |
+| `critique` | Use Codex as a judge. Inputs: `artifact_text`, `rubric_md`, `cwd`, `model?` (default `gpt-5.4`). Returns `{ outcome, critique_md, score }`. The daemon automatically adds `--skip-git-repo-check` for bridge calls. |
 
 ### `pp_gemini` (2 tools)
 
@@ -1617,13 +1617,15 @@ The npm shim wraps the binary's exit code. The daemon's wrappers (`codex-server.
 
 ### Codex "Not inside a trusted directory"
 
-When invoking `codex` from a non-git directory or one Codex hasn't seen before:
+When the daemon invokes Codex via `pp_codex.generate` or `pp_codex.critique`, it already passes `--skip-git-repo-check` for you.
+
+If you invoke `codex` directly from a shell in a non-git directory or one Codex hasn't seen before, use:
 
 ```
 codex exec --skip-git-repo-check --cd <project> ...
 ```
 
-The harness's MCP wrapper passes `--cd` but currently does not pass `--skip-git-repo-check`; if the project is non-git, run `git init` (the daemon doesn't use the git history, but Codex needs to see a repo).
+You should only need the manual flag when calling the Codex CLI yourself outside the harness bridge.
 
 > Deep-dive: [`docs/troubleshooting.md`](troubleshooting.md).
 

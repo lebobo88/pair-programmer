@@ -16,9 +16,10 @@ import { loadProjectProfile } from "./profiles.js";
 import { applyMasterPlanPatch, ensureMasterPlan } from "./master-plan.js";
 import { TAXONOMY_BY_ID, MASTER_PLAN_SECTIONS } from "./taxonomy.js";
 import { ProjectLock } from "../util/lock.js";
-import { runCliWithRetry } from "../mcp/cli-runner.js";
 import { tmpdir } from "node:os";
 import { DEFAULT_MODELS } from "../config.js";
+import { codexCritique } from "../mcp/codex-server.js";
+import { geminiCritique } from "../mcp/gemini-server.js";
 import { findPriorTestsPreStage, getLatestTddCheck } from "./tdd-gate.js";
 import {
   requiredValidatorsForStage,
@@ -970,7 +971,10 @@ async function probeBrowserEngines(): Promise<{
 }
 
 const SMOKE_TIMEOUT_MS = 90 * 1000;
-const SMOKE_PROMPT = "Reply with the single word OK and nothing else.";
+const SMOKE_ARTIFACT = "Smoke artifact: a tiny placeholder used to confirm the critique bridge returns a structured verdict.";
+const SMOKE_RUBRIC =
+  "Score 0..1 on correctness and minimality.\n" +
+  "Return pass, fail, or revise according to the rubric and include a concise critique.";
 
 async function codexCritiqueSmoke(): Promise<{
   status: "ok" | "fail" | "skipped";
@@ -981,35 +985,27 @@ async function codexCritiqueSmoke(): Promise<{
   reason?: string;
 }> {
   const cwd = tmpdir();
-  const cliArgs = [
-    "exec", "--json", "--cd", cwd, "--sandbox", "read-only",
-    // codex 0.128.0 requires cwd to be a git repo AND trusted unless this
-    // flag is passed. tmpdir is neither — and shouldn't be (security). The
-    // smoke is a 1-token ping with --sandbox read-only, so the trust check
-    // is redundant here. Real /pp:run flows use the project cwd, which the
-    // user trusts via ~/.codex/config.toml.
-    "--skip-git-repo-check",
-    "--model", DEFAULT_MODELS.codex_critique, "-",
-  ];
   try {
-    const run = await runCliWithRetry({
-      bin: "codex",
-      cliArgs,
+    const run = await codexCritique({
+      artifact_text: SMOKE_ARTIFACT,
+      rubric_md: SMOKE_RUBRIC,
       cwd,
-      vendor: "codex",
-      input: SMOKE_PROMPT,
+      model: DEFAULT_MODELS.codex_critique,
       timeout_ms: SMOKE_TIMEOUT_MS,
+    }, {
+      skip_git_repo_check: true,
     });
     if (run.exit_code === 0) {
-      return { status: "ok", model: DEFAULT_MODELS.codex_critique, exit_code: 0, wall_ms: run.wall_ms };
+      return { status: "ok", model: run.model, exit_code: 0, wall_ms: run.wall_ms };
     }
+    const stderr_tail = run.attempts?.[run.attempts.length - 1]?.stderr_tail;
     return {
       status: "fail",
-      model: DEFAULT_MODELS.codex_critique,
+      model: run.model,
       exit_code: run.exit_code,
-      stderr_tail: run.stderr.slice(-512),
+      stderr_tail,
       wall_ms: run.wall_ms,
-      reason: classifySmokeFailure(run.stderr),
+      reason: run.reason ?? classifySmokeFailure(stderr_tail ?? ""),
     };
   } catch (err) {
     return {
@@ -1029,29 +1025,25 @@ async function geminiCritiqueSmoke(): Promise<{
   reason?: string;
 }> {
   const cwd = tmpdir();
-  const cliArgs = [
-    "--model", DEFAULT_MODELS.gemini_critique,
-    "--prompt", SMOKE_PROMPT,
-    "--output-format", "json",
-  ];
   try {
-    const run = await runCliWithRetry({
-      bin: "gemini",
-      cliArgs,
+    const run = await geminiCritique({
+      artifact_text: SMOKE_ARTIFACT,
+      rubric_md: SMOKE_RUBRIC,
       cwd,
-      vendor: "gemini",
+      model: DEFAULT_MODELS.gemini_critique,
       timeout_ms: SMOKE_TIMEOUT_MS,
     });
     if (run.exit_code === 0) {
-      return { status: "ok", model: DEFAULT_MODELS.gemini_critique, exit_code: 0, wall_ms: run.wall_ms };
+      return { status: "ok", model: run.model, exit_code: 0, wall_ms: run.wall_ms };
     }
+    const stderr_tail = run.attempts?.[run.attempts.length - 1]?.stderr_tail;
     return {
       status: "fail",
-      model: DEFAULT_MODELS.gemini_critique,
+      model: run.model,
       exit_code: run.exit_code,
-      stderr_tail: run.stderr.slice(-512),
+      stderr_tail,
       wall_ms: run.wall_ms,
-      reason: classifySmokeFailure(run.stderr),
+      reason: run.reason ?? classifySmokeFailure(stderr_tail ?? ""),
     };
   } catch (err) {
     return {

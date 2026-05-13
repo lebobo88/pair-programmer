@@ -6,6 +6,8 @@
 import { strict as assert } from "node:assert";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { dirname, join } from "node:path";
+import { existsSync, mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const DIST = join(__dirname, "..", "dist", "orchestrator", "artifact-validators");
@@ -28,7 +30,15 @@ const {
   buildCritiqueOutputSchema,
   extractJsonValue,
   normalizeCritiqueResult,
+  validateCritiqueResult,
 } = await import(pathToFileURL(join(__dirname, "..", "dist", "mcp", "critique-schema.js")).href);
+const {
+  stabilizeCritiqueResult,
+} = await import(pathToFileURL(join(__dirname, "..", "dist", "mcp", "critique-bridge.js")).href);
+const {
+  buildCodexExecArgs,
+  parseCodexJsonl,
+} = await import(pathToFileURL(join(__dirname, "..", "dist", "mcp", "codex-server.js")).href);
 
 let pass = 0;
 let fail = 0;
@@ -36,6 +46,18 @@ let fail = 0;
 function it(label, fn) {
   try {
     fn();
+    pass++;
+    console.log(`✓ ${label}`);
+  } catch (err) {
+    fail++;
+    console.error(`✗ ${label}`);
+    console.error(`  ${err.message}`);
+  }
+}
+
+async function itAsync(label, fn) {
+  try {
+    await fn();
     pass++;
     console.log(`✓ ${label}`);
   } catch (err) {
@@ -372,6 +394,104 @@ it("normalizeCritiqueResult keeps invalid wrapped output unparsed", () => {
   });
   assert.equal(normalized.parsed, undefined);
   assert.match(normalized.text, /malformed block/);
+});
+
+it("validateCritiqueResult rejects missing verdict fields with a specific reason", () => {
+  const validated = validateCritiqueResult({
+    text: '{"outcome":"pass","critique_md":"Looks good"}',
+  });
+  assert.equal(validated.ok, false);
+  assert.equal(validated.reason, "missing score");
+});
+
+it("validateCritiqueResult rejects invalid outcome values", () => {
+  const validated = validateCritiqueResult({
+    text: '{"outcome":"ship-it","critique_md":"Looks good","score_entries":[{"dimension":"correctness","score":0.9}]}',
+  });
+  assert.equal(validated.ok, false);
+  assert.equal(validated.reason, "invalid outcome: ship-it");
+});
+
+await itAsync("stabilizeCritiqueResult retries exit-0 malformed critique output once before succeeding", async () => {
+  let callCount = 0;
+  const result = await stabilizeCritiqueResult(async () => {
+    callCount++;
+    if (callCount === 1) {
+      return {
+        text: "not json at all",
+        exit_code: 0,
+        wall_ms: 5,
+        attempts: [{ exit_code: 0, stderr_tail: "", wall_ms: 5 }],
+      };
+    }
+    return {
+      text: '{"outcome":"revise","critique_md":"Needs one more assertion","score_entries":[{"dimension":"correctness","score":0.7}]}',
+      exit_code: 0,
+      wall_ms: 7,
+      attempts: [{ exit_code: 0, stderr_tail: "", wall_ms: 7 }],
+    };
+  }, {
+    cwd: mkdtempSync(join(tmpdir(), "pp-critique-bridge-")),
+    vendor: "gemini",
+  });
+
+  assert.equal(callCount, 2);
+  assert.equal(result.exit_code, 0);
+  assert.deepEqual(result.parsed, {
+    outcome: "revise",
+    critique_md: "Needs one more assertion",
+    score: { correctness: 0.7 },
+  });
+});
+
+await itAsync("stabilizeCritiqueResult converts repeated malformed output into an archived bridge failure", async () => {
+  const cwd = mkdtempSync(join(tmpdir(), "pp-critique-bridge-"));
+  const result = await stabilizeCritiqueResult(async () => ({
+    text: "still not json",
+    exit_code: 0,
+    wall_ms: 3,
+    attempts: [{ exit_code: 0, stderr_tail: "", wall_ms: 3 }],
+  }), {
+    cwd,
+    vendor: "gemini",
+  });
+
+  assert.equal(result.exit_code, 1);
+  assert.equal(result.reason, "malformed JSON");
+  assert.ok(result.failure_archive_path, "expected failure archive path");
+  assert.ok(existsSync(result.failure_archive_path), "expected failure archive to be written");
+});
+
+it("buildCodexExecArgs includes skip-git-repo-check by default", () => {
+  const cliArgs = buildCodexExecArgs({
+    cwd: "C:\\proj",
+    sandbox: "read-only",
+    model: "gpt-5.4",
+  });
+  assert.ok(cliArgs.includes("--skip-git-repo-check"));
+  assert.equal(cliArgs.at(-1), "-");
+});
+
+it("buildCodexExecArgs omits skip-git-repo-check when explicitly disabled", () => {
+  const cliArgs = buildCodexExecArgs({
+    cwd: "C:\\proj",
+    sandbox: "workspace-write",
+    model: "gpt-5.4",
+    skip_git_repo_check: false,
+  });
+  assert.equal(cliArgs.includes("--skip-git-repo-check"), false);
+});
+
+it("parseCodexJsonl extracts item.completed agent_message text payloads", () => {
+  const parsed = parseCodexJsonl(
+    '{"type":"thread.started","thread_id":"abc"}\n' +
+    '{"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"{\\"outcome\\":\\"pass\\",\\"critique_md\\":\\"Looks good\\",\\"score_entries\\":[{\\"dimension\\":\\"correctness\\",\\"score\\":0.9}]}"}}\n' +
+    '{"type":"turn.completed","usage":{"input_tokens":12,"output_tokens":34}}\n'
+  );
+
+  assert.equal(parsed.tokens_in, 12);
+  assert.equal(parsed.tokens_out, 34);
+  assert.equal(parsed.text, '{"outcome":"pass","critique_md":"Looks good","score_entries":[{"dimension":"correctness","score":0.9}]}');
 });
 
 console.log(`\n${pass} passed, ${fail} failed`);

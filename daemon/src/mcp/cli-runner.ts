@@ -81,6 +81,18 @@ export interface CliRunOptions {
   timeout_ms?: number;
 }
 
+export interface CliFailureArchiveOptions {
+  cwd: string;
+  vendor: "codex" | "gemini";
+  attempts: CliAttempt[];
+  stdout: string;
+  stderr?: string;
+  cliArgs?: string[];
+  bin?: string;
+  exit_code?: number;
+  reason?: string;
+}
+
 export function isPersistentStderr(stderr: string): boolean {
   if (!stderr) return false;
   return PERSISTENT_STDERR_PATTERNS.some(re => re.test(stderr));
@@ -154,7 +166,16 @@ export async function runCliWithRetry(opts: CliRunOptions): Promise<CliRunResult
 
   let failure_archive_path: string | undefined;
   if (lastExit !== 0) {
-    failure_archive_path = archiveFailure(opts, attempts, lastStderr, lastStdout);
+    failure_archive_path = archiveCliFailureContext({
+      cwd: opts.cwd,
+      vendor: opts.vendor,
+      attempts,
+      stdout: lastStdout,
+      stderr: lastStderr,
+      cliArgs: opts.cliArgs,
+      bin: opts.bin,
+      exit_code: lastExit,
+    });
   }
 
   return {
@@ -179,14 +200,17 @@ function toStr(v: unknown): string {
   return String(v);
 }
 
-function archiveFailure(opts: CliRunOptions, attempts: CliAttempt[], stderr: string, stdout: string): string | undefined {
+export function archiveCliFailureContext(opts: CliFailureArchiveOptions): string | undefined {
   try {
     const dir = join(opts.cwd, ".harness", "critique_failures");
     mkdirSync(dir, { recursive: true });
     const ts = Date.now();
     const path = join(dir, `${opts.vendor}_${ts}.txt`);
-    const sanitizedArgs = opts.cliArgs.map(sanitizePath);
-    const totalPromptChars = opts.cliArgs.reduce((n, a) => n + a.length, 0);
+    const cliArgs = opts.cliArgs ?? [];
+    const sanitizedArgs = cliArgs.map(sanitizePath);
+    const totalPromptChars = cliArgs.reduce((n, a) => n + a.length, 0);
+    const stdout = opts.stdout ?? "";
+    const stderr = opts.stderr ?? "";
     const stdoutTail = stdout.length > 4096 ? stdout.slice(-4096) : stdout;
     const stdoutHeader = stdout.length > 4096
       ? `## stdout (last 4096 of ${stdout.length} chars; codex --json emits errors here)`
@@ -195,9 +219,11 @@ function archiveFailure(opts: CliRunOptions, attempts: CliAttempt[], stderr: str
       `# ${opts.vendor} bridge failure\n` +
       `timestamp_unix_ms: ${ts}\n` +
       `cwd: ${sanitizePath(opts.cwd)}\n` +
-      `bin: ${opts.bin}\n` +
-      `attempts: ${attempts.length}\n` +
-      attempts
+      (opts.bin ? `bin: ${opts.bin}\n` : "") +
+      `attempts: ${opts.attempts.length}\n` +
+      (opts.exit_code !== undefined ? `final_exit_code: ${opts.exit_code}\n` : "") +
+      (opts.reason ? `bridge_reason: ${opts.reason}\n` : "") +
+      opts.attempts
         .map(
           (a, i) =>
             `  attempt[${i}]: exit=${a.exit_code} wall_ms=${a.wall_ms} class=${a.classification ?? "ok"}`
