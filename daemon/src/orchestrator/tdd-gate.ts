@@ -222,15 +222,18 @@ export function parseTestOutcome(runner: string, exitCode: number, stdout: strin
 }
 
 function parseVitest(exitCode: number, out: string): ParsedOutcome {
-  // Vitest: "Tests  3 passed | 2 failed (5)" or "Tests  5 passed (5)".
+  // Vitest: "Tests  3 passed | 2 failed (5)", "Tests  2 failed | 3 passed (5)",
+  // "Tests  5 passed (5)", or "Tests  15 failed (15)" (vitest omits the zero side).
   let passed: number | null = null;
   let failed: number | null = null;
   const both = out.match(/Tests\s+(\d+)\s+passed\s*\|\s*(\d+)\s+failed/i);
   const reverse = out.match(/Tests\s+(\d+)\s+failed\s*\|\s*(\d+)\s+passed/i);
   const onlyPassed = out.match(/Tests\s+(\d+)\s+passed\b(?!\s*\|)/i);
-  if (both) { passed = maybeInt(both[1]); failed = maybeInt(both[2]); }
-  else if (reverse) { failed = maybeInt(reverse[1]); passed = maybeInt(reverse[2]); }
+  const onlyFailed = out.match(/Tests\s+(\d+)\s+failed\b(?!\s*\|)/i);
+  if (both)            { passed = maybeInt(both[1]);       failed = maybeInt(both[2]); }
+  else if (reverse)    { failed = maybeInt(reverse[1]);    passed = maybeInt(reverse[2]); }
   else if (onlyPassed) { passed = maybeInt(onlyPassed[1]); failed = 0; }
+  else if (onlyFailed) { failed = maybeInt(onlyFailed[1]); passed = 0; }
   return classify(exitCode, passed, failed, out, /\bFAIL\b|✗|×/i);
 }
 
