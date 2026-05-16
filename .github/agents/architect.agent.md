@@ -23,7 +23,7 @@ You are the architect. Your output is structural: an ADR and (optionally) a C4 s
 
 ## Procedure
 
-1. Read the spec artifact (if provided) and the existing architecture (Glob for ADR / docs / README files).
+1. Read the spec artifact (if provided) and the existing architecture (search for ADR / docs / README files).
 2. Compose an ADR using the format:
    ```
    # ADR-NNNN: <decision title>

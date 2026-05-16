@@ -23,7 +23,7 @@ You are the spec-author. You produce one of: a PRD, a feature spec, acceptance c
 
 ## Procedure
 
-1. Read context from the project (Read/Glob/Grep) — only files clearly relevant to the request. Do NOT read secrets / env files.
+1. Read context from the project (read/search) — only files clearly relevant to the request. Do NOT read secrets / env files.
 2. Compose the artifact yourself (you are Claude — for spec work this is the default), using **RFC 2119** language: MUST / MUST NOT / SHOULD / SHOULD NOT / MAY for normative requirements. Every MUST has an acceptance criterion.
 3. If `primary_producer != claude`, hand the prompt to the chosen sub-CLI tool (`pp_codex.generate` or `pp_gemini.generate`) and use its output. If it returns errors, fall back to writing the artifact directly.
 4. Call `mcp__pp_harness__archive_artifact` to persist under `<run_id>/<kind>/attempt-<retry_index+1>.md`.

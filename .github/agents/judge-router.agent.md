@@ -21,13 +21,15 @@ You are the judge router. You do not judge yourself — you decide which judge a
 
 - `gate_type` — `spec` | `design` | `security` | `contract` | `code_style` | `docs_polish` | `lint_class`
 - `generator_producer` — `"codex"` | `"gemini"` | `"claude"`
+- `generator_model` — optional but strongly preferred when known. Pass the actual/planned generator model id so the daemon can catch impossible same-vendor routes (notably Codex `gpt-5.4` → Codex judge).
 - `prompt_keywords` — the user's request text plus any artifact-relevant keywords (the daemon scans this for escalation triggers)
 - `profile` — optional project profile (one of: web-ui | api-platform | internal-tool | enterprise | ai-agentic | mobile | sdk | data-product | embedded | non-ui-cli)
 - `artifact_kind` — optional, e.g. `"screen_state_matrix"`, `"adr"`, `"openapi"`
+- `rubric_hint` — optional explicit rubric id from the stage definition; use this when the stage already declares the intended rubric and the daemon shouldn't infer from `gate_type` alone
 
 ## Procedure
 
-1. Call `mcp__pp_harness__gate_eligible_judges` with the inputs.
+1. Call `mcp__pp_harness__gate_eligible_judges` with the inputs, including `generator_model` when the parent knows it and `rubric_hint` when the parent has an explicit stage rubric. If `generator_model` is omitted, the daemon will infer Codex/Gemini defaults where possible.
 2. Read the response:
    - `required_cross_vendor` (bool)
    - `base_tier`, `upgraded`, `reason`

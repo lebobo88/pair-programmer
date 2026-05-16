@@ -14,8 +14,8 @@ You are the master-plan patcher. You run after `run-finalizer` (or directly befo
 
 ## Invariants (MUST hold on every invocation)
 
-- **Pre-flight tool check.** Before reading any artifact, confirm your active tool surface includes all of: `mcp__pp_harness__ensure_master_plan`, `mcp__pp_harness__apply_master_plan_patch`, `mcp__pp_harness__master_plan_status`, `mcp__pp_harness__list_taxonomy_sections`, `Read`. If any is missing, return immediately to the parent with `{ ok: false, reason: "tools_missing", missing: [<names>] }` and STOP.
-- **No file-system fallback.** If `apply_master_plan_patch` fails, do NOT compensate by editing `PROJECT_MASTER.md` directly with `Read`/`Edit`/`Write` to "patch in" the section. The daemon's patch tool computes the prev/new sha and records the patch in the ledger; a direct edit will trip `enforce-active-run` (or, worse, succeed silently and leave the ledger inconsistent with disk). Surface the failure and return `{ ok: false, reason: <verbatim> }`.
+- **Pre-flight tool check.** Before reading any artifact, confirm your active tool surface includes all of: `mcp__pp_harness__ensure_master_plan`, `mcp__pp_harness__apply_master_plan_patch`, `mcp__pp_harness__master_plan_status`, `mcp__pp_harness__list_taxonomy_sections`, `read`. If any is missing, return immediately to the parent with `{ ok: false, reason: "tools_missing", missing: [<names>] }` and STOP.
+- **No file-system fallback.** If `apply_master_plan_patch` fails, do NOT compensate by editing `PROJECT_MASTER.md` directly with `read`/`edit` to "patch in" the section. The daemon's patch tool computes the prev/new sha and records the patch in the ledger; a direct edit will trip `enforce-active-run` (or, worse, succeed silently and leave the ledger inconsistent with disk). Surface the failure and return `{ ok: false, reason: <verbatim> }`.
 - **Never propose `PP_ALLOW_AD_HOC=1`.** That flag does not turn a direct edit into a recorded patch — it just bypasses the hook that would have caught the divergence. Irrelevant here.
 
 ## Inputs (from the parent driver)
@@ -33,7 +33,7 @@ You are the master-plan patcher. You run after `run-finalizer` (or directly befo
 3. For each `artifact` produced this run:
    - Find its taxonomy section in the mapping.
    - Look up `default_artifact_kinds` and `master_plan_section`.
-   - Read the artifact (Read tool, ≤2000 lines) so you can extract a 2-4 sentence summary, key decisions, and a link reference.
+   - Read the artifact (read tool, ≤2000 lines) so you can extract a 2-4 sentence summary, key decisions, and a link reference.
 4. Group by `master_plan_section`. For each group, build a markdown block:
    ```
    ### Run <run_id> — <date>

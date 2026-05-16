@@ -22,6 +22,39 @@ const COPILOT_MIRROR_REWRITES = [
   [/\.claude\/agents\/([A-Za-z0-9_-]+)\.md/g, ".github/agents/$1.agent.md"],
   [/excluding `judge-cross-vendor\.md` and `judge-same-vendor\.md`/g, "excluding `judge-cross-vendor.agent.md` and `judge-same-vendor.agent.md`"],
 ];
+const COPILOT_TOOL_REFERENCE_REWRITES = new Map([
+  ["Read", "read"],
+  ["NotebookRead", "read"],
+  ["Edit", "edit"],
+  ["Write", "edit"],
+  ["MultiEdit", "edit"],
+  ["NotebookEdit", "edit"],
+  ["Glob", "search"],
+  ["Grep", "search"],
+  ["Bash", "execute"],
+  ["PowerShell", "execute"],
+  ["shell", "execute"],
+]);
+const COPILOT_TOOL_REFERENCE_TOKEN_PATTERN = [...COPILOT_TOOL_REFERENCE_REWRITES.keys()]
+  .sort((left, right) => right.length - left.length)
+  .join("|");
+const COPILOT_TOOL_REFERENCE_SEQUENCE_PATTERN = new RegExp(
+  `\\b(?:${COPILOT_TOOL_REFERENCE_TOKEN_PATTERN})\\b(?:\\s*(?:/|,|and|or)\\s*\\b(?:${COPILOT_TOOL_REFERENCE_TOKEN_PATTERN})\\b)+`,
+  "g",
+);
+const COPILOT_EXPLICIT_TOOL_REFERENCE_TOKEN_PATTERN = [
+  "NotebookRead",
+  "NotebookEdit",
+  "MultiEdit",
+  "PowerShell",
+  "Read",
+  "Edit",
+  "Write",
+  "Glob",
+  "Grep",
+  "Bash",
+].join("|");
+const COPILOT_COLLAPSED_TOOL_REFERENCES = ["read", "edit", "search", "execute"];
 
 function ensureDir(path) {
   mkdirSync(path, { recursive: true });
@@ -198,6 +231,42 @@ function rewriteCopilotMirrorText(text) {
   let rewritten = text;
   for (const [pattern, replacement] of COPILOT_MIRROR_REWRITES) {
     rewritten = rewritten.replace(pattern, replacement);
+  }
+  rewritten = rewritten.replace(COPILOT_TOOL_REFERENCE_SEQUENCE_PATTERN, (match) =>
+    match.replace(new RegExp(`\\b(${COPILOT_TOOL_REFERENCE_TOKEN_PATTERN})\\b`, "g"), (tokenMatch, token) => {
+      const replacement = COPILOT_TOOL_REFERENCE_REWRITES.get(token);
+      return replacement ?? tokenMatch;
+    }),
+  );
+  rewritten = rewritten.replace(/`([A-Za-z][A-Za-z0-9-]*)`/g, (match, token) => {
+    const replacement = COPILOT_TOOL_REFERENCE_REWRITES.get(token);
+    return replacement ? `\`${replacement}\`` : match;
+  });
+  rewritten = rewritten.replace(
+    new RegExp(`\\b(${COPILOT_TOOL_REFERENCE_TOKEN_PATTERN})\\b(?=\\s+tools?\\b)`, "g"),
+    (match, token) => COPILOT_TOOL_REFERENCE_REWRITES.get(token) ?? match,
+  );
+  rewritten = rewritten.replace(
+    new RegExp(`\\b(${COPILOT_TOOL_REFERENCE_TOKEN_PATTERN})\\b(?=\\s+for\\b)`, "g"),
+    (match, token) => COPILOT_TOOL_REFERENCE_REWRITES.get(token) ?? match,
+  );
+  rewritten = rewritten.replace(
+    new RegExp(`\\bvia\\s+(${COPILOT_TOOL_REFERENCE_TOKEN_PATTERN})\\b`, "g"),
+    (match, token) => `via ${COPILOT_TOOL_REFERENCE_REWRITES.get(token) ?? token}`,
+  );
+  rewritten = rewritten.replace(
+    new RegExp(`\\b([Uu]se|[Uu]sing)\\s+(${COPILOT_EXPLICIT_TOOL_REFERENCE_TOKEN_PATTERN})\\b`, "g"),
+    (match, verb, token) => `${verb} ${COPILOT_TOOL_REFERENCE_REWRITES.get(token) ?? token}`,
+  );
+  for (const token of COPILOT_COLLAPSED_TOOL_REFERENCES) {
+    rewritten = rewritten.replace(
+      new RegExp(`\\b${token}\\b(?:\\s*(?:/|,|and|or)\\s*\\b${token}\\b)+`, "g"),
+      token,
+    );
+    rewritten = rewritten.replace(
+      new RegExp(`\`${token}\`(?:\\s*(?:/|,|and|or)\\s*\`${token}\`)+`, "g"),
+      `\`${token}\``,
+    );
   }
   return rewritten;
 }

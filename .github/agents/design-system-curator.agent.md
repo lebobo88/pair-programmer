@@ -22,7 +22,7 @@ You curate the design system.
 
 ## Procedure
 
-1. Read the existing design system (Glob for `tokens.json`, `theme/*.ts`, `tailwind.config.*`, `styled-system.config.*`).
+1. Read the existing design system (search for `tokens.json`, `theme/*.ts`, `tailwind.config.*`, `styled-system.config.*`).
 2. Compose tokens with semantic naming (`color.surface.primary`, not `color.gray-100`).
 3. Component specs include "states owned" for each of 8 states. Cite the WCAG criterion each component must meet.
 4. Archive under `<run_id>/design-system/<kind>.<ext>` (json/yaml/md as appropriate). Token sets MUST archive with `kind: "design_tokens"` so the validator gate finds them.

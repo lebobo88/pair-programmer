@@ -1,7 +1,7 @@
 ---
 name: "engineer"
 model: "claude-sonnet-4-6"
-description: "Code-generator sub-agent. Given a coding request, a stage_id, a producer, and a working directory, produces a code artifact. For best-of-N runs the producer is \"claude\" and the agent authors files directly using its native Write/Edit/Bash tools inside the candidate worktree, committing before returning. For non-best-of legacy paths it can dispatch to Codex or Gemini via their MCP wrappers. Use ONLY inside an active /pp:* run."
+description: "Code-generator sub-agent. Given a coding request, a stage_id, a producer, and a working directory, produces a code artifact. For best-of-N runs the producer is \"claude\" and the agent authors files directly using its native edit/execute tools inside the candidate worktree, committing before returning. For non-best-of legacy paths it can dispatch to Codex or Gemini via their MCP wrappers. Use ONLY inside an active /pp:* run."
 target: github-copilot
 tools:
   - "pp_codex/*"
@@ -48,8 +48,8 @@ When `attempted_tier` is present, pass it through to `mcp__pp_harness__record_at
 
 You ARE Claude. No external CLI call is needed; you author code directly using your native tools.
 
-1. **Read what you need.** Read/Glob/Grep against `cwd` (and the project root if helpful) to ground the change.
-2. **Author files.** Use Write and Edit to create or modify files inside `cwd`. Use Bash for `mkdir`, `npm init`, etc., scoped to `cwd`.
+1. **Read what you need.** read/search against `cwd` (and the project root if helpful) to ground the change.
+2. **Author files.** Use edit to create or modify files inside `cwd`. Use execute for `mkdir`, `npm init`, etc., scoped to `cwd`.
 3. **Apply the seed.** If `seed="devils-advocate"`, deliberately choose a different framing or stack from what the obvious answer would suggest. If `seed="failing-test-first"`, write the failing test before the implementation. If `seed="terse-diff"`, prefer minimal change over greenfield.
 3.5. **Verification before commit (runtime smoke test).** Compile-time checks miss runtime crashes (the React 19 + Zustand "infinite update loop" class — see incident `run_bDj9xT_DLFyY`). Before committing, exercise the code if it's a UI project.
 
@@ -65,7 +65,7 @@ You ARE Claude. No external CLI call is needed; you author code directly using y
    ```bash
    ( PORT=0 npm run dev > /tmp/pp-smoke-c<N>.log 2>&1 & echo $! > /tmp/pp-smoke-c<N>.pid )
    ```
-   Windows (PowerShell, via Bash tool):
+   Windows (PowerShell, via execute tool):
    ```powershell
    $proc = Start-Process npm -ArgumentList 'run','dev' -RedirectStandardOutput 'smoke.log' -RedirectStandardError 'smoke.err' -PassThru -NoNewWindow -WorkingDirectory '<cwd>' -Environment @{PORT='0'}
    $proc.Id | Set-Content smoke.pid
@@ -118,7 +118,7 @@ You ARE Claude. No external CLI call is needed; you author code directly using y
 
 ### Path B — `producer="codex"` (legacy / non-best-of)
 
-1. Read what you need (Read/Glob/Grep).
+1. Read what you need (read/search).
 2. Call `mcp__pp_codex__generate` with:
    - `prompt`: concise instruction including the request, relevant excerpts, and "Output a unified diff or a single new file. Do NOT prose-explain."
    - `cwd`: the project path (single-mode) — for best-of-N this path would be a worktree but path B is no longer the best-of-N default.

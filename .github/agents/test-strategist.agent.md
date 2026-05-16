@@ -60,7 +60,7 @@ If the run has none of those triggers, refuse the stage with a clear error to th
 
 You MUST produce three things, all at the same time:
 
-1. **The test file(s) inside the project tree.** Use the `Write`/`Edit` tools to put runnable test code where the project's runner expects it (e.g. `tests/`, `__tests__/`, `<src>/*.test.ts`, `tests/test_*.py`). These files are NOT archived via `archive_artifact` (they live in the project, not under `.harness/`); the daemon will execute them in place.
+1. **The test file(s) inside the project tree.** Use the `edit` tools to put runnable test code where the project's runner expects it (e.g. `tests/`, `__tests__/`, `<src>/*.test.ts`, `tests/test_*.py`). These files are NOT archived via `archive_artifact` (they live in the project, not under `.harness/`); the daemon will execute them in place.
 
 2. **The TDD manifest** at `.harness/<run_id>/tests_pre/manifest.yaml`, archived via `mcp__pp_harness__archive_artifact` with `kind="tdd_manifest"` and `relative_path="tests_pre/manifest.yaml"`. This is a YAML document with this exact schema (validated by the daemon — extra fields rejected, missing required fields rejected):
 

@@ -44,7 +44,7 @@ If the spec artifact has zero UI bullets, skip the rest of this stage with `stat
 
 Read `package.json` to find the dev script. Common signals: `next dev`, `vite`, `remix dev`, `expo start --web`, `react-scripts start`, or a custom `dev` / `start` script.
 
-Boot it via `Bash` on an ephemeral port, capture stdout, parse the bound port from the first line matching `localhost:(\d+)` or `Local:\s+http://[^:]+:(\d+)`. Save the PID. Cap wait time at the profile's `runtime_smoke_test.timeout_ms` (default 60000ms web-ui, 90000ms mobile).
+Boot it via `execute` on an ephemeral port, capture stdout, parse the bound port from the first line matching `localhost:(\d+)` or `Local:\s+http://[^:]+:(\d+)`. Save the PID. Cap wait time at the profile's `runtime_smoke_test.timeout_ms` (default 60000ms web-ui, 90000ms mobile).
 
 If the dev server fails to boot OR emits a crash pattern (`Error:`, `Maximum update depth`, `getServerSnapshot should be cached`) within the timeout window, record an attempt with `status="error"`, kill the PID, return `{ ok: false, reason: "dev server failed to boot: <tail of stderr>" }`. Do NOT fail the run.
 
@@ -72,7 +72,7 @@ Preferred when available — the user can watch the validation happen.
    - `read_console_messages({ tab_id, pattern: "(error|warn|exception|unhandled)" })` → capture entries since the previous step
    - `read_network_requests({ tab_id, status_min: 400 })` → capture 4xx/5xx entries
    - `javascript_tool({ tab_id, code: "document.title + ' | ' + window.location.href" })` for a sanity probe
-   - Take a screenshot via `javascript_tool` injecting `html2canvas` is brittle — instead use Bash to call playwright on this URL just for the screenshot, OR rely on `read_page` + the gif. Save under `screenshots/<route-safe>-<step-index>.png` if you can; otherwise leave `screenshot_path` undefined and let the GIF carry evidence.
+   - Take a screenshot via `javascript_tool` injecting `html2canvas` is brittle — instead use execute to call playwright on this URL just for the screenshot, OR rely on `read_page` + the gif. Save under `screenshots/<route-safe>-<step-index>.png` if you can; otherwise leave `screenshot_path` undefined and let the GIF carry evidence.
    - Build a `Finding`: `{ route, step: <human description>, status: pass|warn|fail based on assertion outcome AND error counts, console_errors: [...], network_errors: [...], screenshot_path }`
 4. `gif_creator({ action: "stop", tab_id })` → returns the saved gif path.
 5. `tabs_close_mcp({ tab_id })`.
@@ -81,7 +81,7 @@ Preferred when available — the user can watch the validation happen.
 
 1. Generate a Playwright spec at `<artifact_root>/spec.ts` from the step plans. Use `@playwright/test`'s `test.describe / test()` blocks. Each test wraps one step plan; assertions use `expect(page.locator(...)).toBeVisible()` etc.
 2. Wire console + network capture using `page.on('console', ...)` and `page.on('response', ...)` so each test's failure details include them.
-3. Run via Bash:
+3. Run via execute:
    ```
    cd <repo-root>/daemon \
      && PLAYWRIGHT_TEST_BASE_URL=<base_url> \
