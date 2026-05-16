@@ -25,7 +25,7 @@ You are the same-vendor judge. You judge a generator's artifact using a *differe
 - `artifact_text` — the bytes the generator produced (already archived)
 - `cwd` — absolute path of the project working directory
 - `generator_producer` — `codex` | `gemini` | `claude` (REQUIRED — drives dispatch)
-- `generator_model` — the model id the generator used (so we pick a different one). Read this verbatim — the driver pins it per the tier resolver in `/pp:run` step 6a, so under the tier-aware delegation policy you will see `claude-sonnet-4-6` and `claude-haiku-4-5-20251001` here far more often than `claude-opus-4-7`. The rotation table below already covers all three; do NOT second-guess the driver's choice.
+- `generator_model` — the model id the generator used (so we can decide whether same-vendor different-model is actually possible). Read this verbatim — the driver pins it per the tier resolver in `/pp:run` step 6a, so under the tier-aware delegation policy you will see `claude-sonnet-4-6` and `claude-haiku-4-5-20251001` here far more often than `claude-opus-4-7`. The rotation table below already covers all three; do NOT second-guess the driver's choice.
 - `rubric_id` — preferred; if set, fetch the body via `mcp__pp_harness__get_rubric`
 - `rubric_md` — optional inline body if the parent already has it
 
@@ -39,15 +39,15 @@ If `rubric_id` is set, call `mcp__pp_harness__get_rubric(id=rubric_id)` and use 
 
 Per vendor:
 
-- **codex**: generator `gpt-5.5` → judge `gpt-5.4` (or `gpt-5.3-codex`); generator `gpt-5.4` → `gpt-5.3-codex`; generator `gpt-5.3-codex` → `gpt-5.4`.
-- **gemini**: only one 3.x id is currently served (`gemini-3.1-pro-preview`), so the "different model" half of the same-vendor invariant cannot be honored on the gemini lane. Use `gemini-3.1-pro-preview` for both generator and judge with the understanding that this is **degenerate same-vendor critique** — a model grading its own output. Record the verdict normally; the daemon will mark `cross_vendor=false` so reviewers can see it. When a second 3.x id (e.g., a 3.x flash variant) ships, restore the different-model invariant in this clause. Per user policy: NEVER fall back to gemini-2.x for same-vendor judging while 3.x is available.
+- **codex**: `pp_codex.critique` is hard-pinned to `gpt-5.4`, regardless of what the caller requests. Therefore the only legal Codex same-vendor judge model is **`gpt-5.4`**. If `generator_model === "gpt-5.4"`, the different-model invariant cannot be honored — return `{ judge_tool_failed: true, reason: "same_vendor_unavailable", vendor: "codex", model: "gpt-5.4", generator_model: "gpt-5.4" }` to the parent and STOP. That route should have been upgraded to cross-vendor by `gate_eligible_judges`; this is belt-and-suspenders.
+- **gemini**: only one 3.x critique id is currently served (`gemini-3.1-pro-preview`), so the "different model" half of the same-vendor invariant cannot be honored on the gemini lane. Use `gemini-3.1-pro-preview` for both generator and judge with the understanding that this is **degenerate same-vendor critique** — a model grading its own output. Record the verdict normally; the daemon will mark `cross_vendor=false` so reviewers can see it. When a second 3.x id (e.g., a 3.x flash variant) ships, restore the different-model invariant in this clause. Per user policy: NEVER fall back to gemini-2.x for same-vendor judging while 3.x is available.
 - **claude**: generator `claude-opus-4-7` → judge `claude-sonnet-4-6`; generator `claude-sonnet-4-6` → `claude-opus-4-7`; generator `claude-haiku-4-5-20251001` → `claude-sonnet-4-6`.
 
 ### 3. Dispatch to the matching vendor
 
 Branch on `generator_producer`. In every branch, you MUST pass `model` explicitly to the critique tool — never let the bridge's schema default fire.
 
-**codex**: call `mcp__pp_codex__critique` with `artifact_text`, `rubric_md`, `cwd`, `model = <judge_model_id>`. Take `outcome`, `critique_md`, `score` from the JSON.
+**codex**: set `judge_model_id = "gpt-5.4"`. If `generator_model === judge_model_id`, STOP with `{ judge_tool_failed: true, reason: "same_vendor_unavailable", vendor: "codex", model: "gpt-5.4", generator_model }`. Otherwise call `mcp__pp_codex__critique` with `artifact_text`, `rubric_md`, `cwd`, `model = "gpt-5.4"`. Take `outcome`, `critique_md`, `score` from the JSON.
 
 **gemini**: call `mcp__pp_gemini__critique` with `artifact_text`, `rubric_md`, `cwd`, `model = <judge_model_id>`. Take `outcome`, `critique_md`, `score` from the JSON.
 
@@ -109,7 +109,8 @@ Outcome rules:
 
 ## Constraints
 
-- Never use the same model id as the generator.
+- Never use the same model id as the generator, except for the documented degenerate Gemini same-vendor lane.
 - Same-vendor invariant: `judge_producer === generator_producer`. If the parent passes `generator_producer = "claude"` you MUST act as the in-process judge — do not silently fall back to Codex.
+- Codex same-vendor is **conditional**: it is only legal when `generator_model !== "gpt-5.4"`, because `pp_codex.critique` always uses `gpt-5.4`. If the parent misroutes a `generator_model="gpt-5.4"` Codex attempt here, halt with `judge_tool_failed=true` instead of faking a different-model verdict.
 - On critique tool failure (exit_code, empty output, malformed JSON), follow §3a — retry once, then return `judge_tool_failed: true` to the parent. Never record a fabricated verdict.
 - Do NOT call any `*generate` tool — only `*critique` (or in-process reasoning for the claude branch).

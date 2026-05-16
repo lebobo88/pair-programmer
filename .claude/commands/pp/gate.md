@@ -9,7 +9,7 @@ Parse $ARGUMENTS as `run_id` and `stage_id` (both required).
 
 1. Call `mcp__pp_harness__get_run` to find the stage and its winning attempt (or most recent attempt).
 2. Read the artifact via Read tool from `<project>/.harness/<run_id>/<artifact_path>`.
-3. Use the Task tool to invoke the `judge-router` agent with the stage's `gate_type`, the attempt's `producer`, and the user's `prompt_keywords` (use the run's `request_text`).
+3. Use the Task tool to invoke the `judge-router` agent with the stage's `gate_type`, the attempt's `producer`, the attempt's `model_id`, and the user's `prompt_keywords` (use the run's `request_text`).
 4. Invoke the chosen judge agent (`judge-cross-vendor` or `judge-same-vendor`) with the artifact. Records a fresh verdict.
 5. **If the judge returns `judge_tool_failed=true`** (instead of a verdict): print the failure context to the user (vendor, model, exit_code, stderr_tail, failure_archive_path) and STOP. Do NOT record a fabricated verdict. The user must fix the bridge and re-run.
 6. Show the user: prior verdict, new verdict, diff in scores.

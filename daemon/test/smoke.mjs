@@ -40,6 +40,13 @@ async function main() {
     // 1. Doctor.
     const health = await callTool(client, "doctor");
     console.log(`✓ doctor: db_reachable=${health.db_reachable}, cross_vendor_ready=${health.cross_vendor_ready}`);
+    if (health.judge_capabilities?.codex?.same_vendor_mode !== "conditional_cross_vendor") {
+      throw new Error(`expected codex judge capability summary, got: ${pretty(health.judge_capabilities)}`);
+    }
+    if (health.judge_capabilities?.codex?.critique_model !== "gpt-5.4") {
+      throw new Error(`expected codex critique model gpt-5.4, got: ${pretty(health.judge_capabilities?.codex)}`);
+    }
+    console.log(`✓ doctor judge_capabilities: codex=${health.judge_capabilities.codex.same_vendor_mode}, gemini=${health.judge_capabilities.gemini.same_vendor_mode}`);
 
     // 2. Start a run inside a temp dir (so we don't litter the project).
     const projectPath = mkdtempSync(join(tmpdir(), "pp-smoke-"));
@@ -95,7 +102,16 @@ async function main() {
     });
     console.log(`✓ record_verdict -> ${verdict.verdict_id} (cross_vendor=${verdict.cross_vendor})`);
 
-    // 7. Finalize stage and run.
+    // 7. Readiness preflight should already allow a passed finalize.
+    const readiness = await callTool(client, "get_stage_finalize_readiness", {
+      stage_id: stage.stage_id,
+    });
+    if (!readiness.can_pass || readiness.next_action !== "finalize_passed") {
+      throw new Error(`expected finalize_passed readiness, got ${pretty(readiness)}`);
+    }
+    console.log(`✓ get_stage_finalize_readiness (happy path) -> ${readiness.next_action}`);
+
+    // 8. Finalize stage and run.
     await callTool(client, "finalize_stage", {
       stage_id: stage.stage_id,
       status: "passed",
@@ -109,7 +125,7 @@ async function main() {
     });
     console.log(`✓ finalize_run`);
 
-    // 8. Read back the run tree.
+    // 9. Read back the run tree.
     const tree = await callTool(client, "get_run", { run_id: run.run_id });
     if (!tree?.run) throw new Error("get_run returned no run");
     if (tree.stages.length !== 1)   throw new Error(`expected 1 stage, got ${tree.stages.length}`);
@@ -118,22 +134,39 @@ async function main() {
     if (tree.artifacts.length !== 1) throw new Error(`expected 1 artifact, got ${tree.artifacts.length}`);
     console.log(`✓ get_run roundtrip: 1 stage, 1 attempt, 1 verdict, 1 artifact`);
 
-    // 9. Budgets should reflect the attempt cost.
+    // 10. Budgets should reflect the attempt cost.
     const budget = await callTool(client, "budget_status", { scope: `run:${run.run_id}` });
     if (!budget || budget.cost_usd !== 0.012) throw new Error(`budget mismatch: ${pretty(budget)}`);
     console.log(`✓ budget_status: $${budget.cost_usd} for ${budget.tokens_in} in / ${budget.tokens_out} out`);
 
-    // 10. Phase 2: gate_eligible_judges — same-vendor on plain code_style.
+    // 11. Phase 2: gate_eligible_judges — plain Codex code_style upgrades to
+    // cross-vendor because the default codex generator model equals the pinned
+    // codex critique model (gpt-5.4), so same-vendor different-model is
+    // impossible on that path.
     const gate1 = await callTool(client, "gate_eligible_judges", {
       gate_type: "code_style",
       generator_producer: "codex",
       prompt_keywords: "rename a variable from foo to bar",
     });
-    if (gate1.required_cross_vendor) throw new Error(`expected same-vendor for plain code_style, got: ${pretty(gate1)}`);
-    if (gate1.allowed_judges[0].agent !== "judge-same-vendor") throw new Error(`expected judge-same-vendor first`);
-    console.log(`✓ gate_eligible_judges (code_style/plain) -> ${gate1.base_tier}, judges=[${gate1.allowed_judges.map(j => j.agent).join(",")}]`);
+    if (!gate1.required_cross_vendor) throw new Error(`expected cross-vendor for default codex code_style, got: ${pretty(gate1)}`);
+    if (!gate1.upgraded) throw new Error(`expected upgraded=true for default codex code_style, got: ${pretty(gate1)}`);
+    if (gate1.allowed_judges[0].agent !== "judge-cross-vendor") throw new Error(`expected judge-cross-vendor first`);
+    if (!/hard-pinned/.test(gate1.reason)) throw new Error(`expected codex pin reason, got: ${gate1.reason}`);
+    console.log(`✓ gate_eligible_judges (code_style/plain codex default) -> upgraded cross-vendor, reason="${gate1.reason}"`);
 
-    // 11. Phase 2: cross-vendor required when prompt mentions security keywords.
+    // 11a. Explicit non-default Codex generator models can still use
+    // same-vendor, because the pinned critique model differs.
+    const gate1b = await callTool(client, "gate_eligible_judges", {
+      gate_type: "code_style",
+      generator_producer: "codex",
+      generator_model: "gpt-5.5",
+      prompt_keywords: "rename a variable from foo to bar",
+    });
+    if (gate1b.required_cross_vendor) throw new Error(`expected same-vendor when codex generator_model differs, got: ${pretty(gate1b)}`);
+    if (gate1b.allowed_judges[0].agent !== "judge-same-vendor") throw new Error(`expected judge-same-vendor first when codex models differ`);
+    console.log(`✓ gate_eligible_judges (code_style/plain codex gpt-5.5) -> same-vendor`);
+
+    // 12. Phase 2: cross-vendor required when prompt mentions security keywords.
     const gate2 = await callTool(client, "gate_eligible_judges", {
       gate_type: "code_style",
       generator_producer: "codex",
@@ -143,7 +176,7 @@ async function main() {
     if (!gate2.upgraded) throw new Error(`expected upgraded=true after content escalation`);
     console.log(`✓ gate_eligible_judges (security keywords) -> upgraded=true, reason="${gate2.reason}"`);
 
-    // 12. Phase 2: enterprise profile forces cross-vendor on every gate.
+    // 13. Phase 2: enterprise profile forces cross-vendor on every gate.
     const gate3 = await callTool(client, "gate_eligible_judges", {
       gate_type: "docs_polish",
       generator_producer: "claude",
@@ -231,6 +264,53 @@ async function main() {
     if (!gate4.required_cross_vendor) throw new Error(`expected cross-vendor for spec base tier`);
     if (gate4.upgraded) throw new Error(`expected base tier (not upgraded) for spec`);
     console.log(`✓ gate_eligible_judges (spec base tier) -> required_cross_vendor=true, rubric_id=${gate4.rubric_id}`);
+
+    const gate5 = await callTool(client, "gate_eligible_judges", {
+      gate_type: "contract",
+      generator_producer: "codex",
+      prompt_keywords: "write the test plan",
+      artifact_kind: "test_plan",
+    });
+    if (gate5.rubric_id !== null) throw new Error(`test_plan should not inherit the OpenAPI rubric, got: ${pretty(gate5)}`);
+
+    const gate6 = await callTool(client, "gate_eligible_judges", {
+      gate_type: "contract",
+      generator_producer: "claude",
+      prompt_keywords: "validate the runtime flow in a browser",
+      artifact_kind: "browser_validation_report",
+    });
+    if (gate6.rubric_id !== "web-runtime-validation@2") {
+      throw new Error(`browser_validation_report should bind web-runtime-validation@2, got: ${pretty(gate6)}`);
+    }
+
+    const gate7 = await callTool(client, "gate_eligible_judges", {
+      gate_type: "design",
+      generator_producer: "claude",
+      prompt_keywords: "review user flows",
+      artifact_kind: "user_flows",
+      rubric_hint: "rfc-2119-normative@1",
+    });
+    if (gate7.rubric_id !== "rfc-2119-normative@1") {
+      throw new Error(`rubric_hint should override design default when recognized, got: ${pretty(gate7)}`);
+    }
+    console.log(`✓ gate_eligible_judges artifact/rubric overrides: test_plan→null, browser_validation_report→${gate6.rubric_id}, rubric_hint→${gate7.rubric_id}`);
+
+    // 15a. record_verdict refuses a same-vendor same-model codex verdict.
+    let sameModelRejected = false;
+    try {
+      await callTool(client, "record_verdict", {
+        attempt_id: att.attempt_id,
+        judge_producer: "codex",
+        judge_model_id: "gpt-5.5",
+        outcome: "pass",
+        critique_md: "This should fail because Codex critique is pinned to gpt-5.4 and same-vendor same-model metadata must never be recorded by the daemon.",
+        score_json: { correctness: 0.9, minimality: 0.95 },
+      });
+    } catch (err) {
+      sameModelRejected = /hard-pinned to that model|same-vendor verdict requires different model ids/i.test(String(err));
+    }
+    if (!sameModelRejected) throw new Error(`expected record_verdict to reject impossible codex judge metadata`);
+    console.log(`✓ record_verdict rejects impossible codex same-vendor metadata`);
 
     // 15. Phase 4: missability library is the right size.
     const checks = await callTool(client, "list_missability_checks");
@@ -454,6 +534,10 @@ async function main() {
     const featureTeam = await callTool(client, "team_get", { name: "feature-team", project_path: projectPath });
     if (!featureTeam?.team || featureTeam.origin !== "builtin") throw new Error(`feature-team should resolve to builtin`);
     if (featureTeam.team.stages.length !== 7) throw new Error(`feature-team should have 7 stages, got ${featureTeam.team.stages.length}`);
+    const featureTests = featureTeam.team.stages.find(s => s.kind === "tests");
+    const featureBrowser = featureTeam.team.stages.find(s => s.kind === "browser_validation");
+    if (featureTests?.artifact_kind !== "test_plan") throw new Error(`feature-team tests stage should declare artifact_kind=test_plan`);
+    if (featureBrowser?.artifact_kind !== "browser_validation_report") throw new Error(`feature-team browser_validation stage should declare artifact_kind=browser_validation_report`);
     console.log(`✓ team_get feature-team: ${featureTeam.team.stages.length} stages, origin=${featureTeam.origin}`);
 
     // 25. Phase 8: design templates.

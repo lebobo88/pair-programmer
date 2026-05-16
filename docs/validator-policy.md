@@ -6,6 +6,7 @@ The driver MUST call `mcp__pp_harness__gate_eligible_judges` before invoking any
 
 - `gate_type` — `spec | design | security | contract | code_style | docs_polish | lint_class`
 - `generator_producer` — `codex | gemini | claude | <subagent name>`
+- `generator_model` — optional but recommended; if omitted, the daemon infers Codex/Gemini defaults where possible
 - `prompt_keywords` — typically the user request text
 - `profile` — the profile snapshot's `name` (when set)
 - `artifact_kind` — the canonical artifact kind being judged (when known)
@@ -21,6 +22,7 @@ The driver MUST call `mcp__pp_harness__gate_eligible_judges` before invoking any
 
 - **Content-aware**: regex over the prompt for security / concurrency / data-integrity / auth / migration vocabulary.
 - **Profile-aware**: `enterprise` → all gates cross-vendor; `ai-agentic` → cross-vendor on eval or tool-permission gates.
+- **Capability-aware**: if same-vendor would be impossible for the chosen vendor/model pairing, the daemon upgrades to cross-vendor instead of letting the run discover the contradiction later. Example: Codex same-vendor is unavailable when `generator_model` resolves to `gpt-5.4`, because `pp_codex.critique` is pinned to that same model.
 
 ## Decision payload
 

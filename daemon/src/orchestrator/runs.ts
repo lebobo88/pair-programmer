@@ -20,7 +20,8 @@ import { tmpdir } from "node:os";
 import { DEFAULT_MODELS } from "../config.js";
 import { codexCritique } from "../mcp/codex-server.js";
 import { geminiCritique } from "../mcp/gemini-server.js";
-import { findPriorTestsPreStage, getLatestTddCheck } from "./tdd-gate.js";
+import { describeJudgeCapabilities } from "./gates.js";
+import { findPriorTestsPreStage, getLatestTddCheck, type TddCheckRow } from "./tdd-gate.js";
 import {
   requiredValidatorsForStage,
   type ValidatorKind,
@@ -275,9 +276,28 @@ export type RecordVerdictOutput = { verdict_id: string; cross_vendor: boolean };
 export function recordVerdict(input: RecordVerdictInput): RecordVerdictOutput {
   const id = `verdict_${nanoid(10)}`;
   const att = db()
-    .prepare(`SELECT producer FROM attempts WHERE id = ?`)
-    .get(input.attempt_id) as { producer: string } | undefined;
+    .prepare(`SELECT producer, model_id FROM attempts WHERE id = ?`)
+    .get(input.attempt_id) as { producer: string; model_id: string } | undefined;
   if (!att) throw new Error(`attempt ${input.attempt_id} not found`);
+
+  if (input.judge_producer === "codex" && input.judge_model_id !== DEFAULT_MODELS.codex_critique) {
+    throw new Error(
+      `judge_producer=codex must record judge_model_id="${DEFAULT_MODELS.codex_critique}" ` +
+      `because pp_codex.critique is hard-pinned to that model`
+    );
+  }
+  if (input.judge_producer === "gemini" && input.judge_model_id !== DEFAULT_MODELS.gemini_critique) {
+    throw new Error(
+      `judge_producer=gemini must record judge_model_id="${DEFAULT_MODELS.gemini_critique}" ` +
+      `because pp_gemini.critique is hard-pinned to that model`
+    );
+  }
+  if (att.producer === input.judge_producer && att.model_id === input.judge_model_id && att.producer !== "gemini") {
+    throw new Error(
+      `same-vendor verdict requires different model ids for producer=${att.producer}: ` +
+      `generator=${att.model_id}, judge=${input.judge_model_id}`
+    );
+  }
 
   const genVendor = vendorFor(att.producer);
   const judgeVendor = vendorFor(input.judge_producer);
@@ -314,6 +334,48 @@ export type FinalizeStageInput = {
   status: StageStatus;
 };
 
+export type StageFinalizeNextAction =
+  | "finalize_passed"
+  | "run_tdd_pre_check"
+  | "run_tdd_post_check"
+  | "run_artifact_validate"
+  | "retry_or_surface"
+  | "surface_stage";
+
+export type StageFinalizeTddBlocker = {
+  gate: "tdd";
+  phase: "pre" | "post";
+  status: "missing" | "violation" | "execution_error";
+  next_action: "run_tdd_pre_check" | "run_tdd_post_check" | "retry_or_surface" | "surface_stage";
+  message: string;
+  check: TddCheckRow | null;
+  prior_stage_id?: string;
+};
+
+export type StageFinalizeArtifactBlocker = {
+  gate: "artifact_validation";
+  validator_kind: ValidatorKind;
+  status: "missing" | "violation" | "execution_error";
+  next_action: "run_artifact_validate" | "retry_or_surface" | "surface_stage";
+  message: string;
+  artifact_id: string;
+  artifact_kind: string | null;
+  artifact_path: string;
+  check: ArtifactValidationRow | null;
+};
+
+export type StageFinalizeBlocker = StageFinalizeTddBlocker | StageFinalizeArtifactBlocker;
+
+export type StageFinalizeReadiness = {
+  stage_id: string;
+  stage_kind: string;
+  can_pass: boolean;
+  recommended_status: "passed" | "surfaced";
+  next_action: StageFinalizeNextAction;
+  blockers: StageFinalizeBlocker[];
+  summary: string;
+};
+
 export class TddGateViolation extends Error {
   constructor(
     message: string,
@@ -339,6 +401,58 @@ export class ValidatorGateViolation extends Error {
   }
 }
 
+export function getStageFinalizeReadiness(stage_id: string): StageFinalizeReadiness {
+  const stageRow = db()
+    .prepare(`SELECT id, kind FROM stages WHERE id = ?`)
+    .get(stage_id) as { id: string; kind: string } | undefined;
+  if (!stageRow) throw new Error(`stage ${stage_id} not found`);
+
+  const blockers: StageFinalizeBlocker[] = [];
+
+  if (stageRow.kind === "tests_pre") {
+    const check = getLatestTddCheck(stage_id, "pre");
+    if (!check || check.status !== "verified") {
+      blockers.push(buildTddFinalizeBlocker({ stage_id, phase: "pre", check }));
+    }
+  } else if (stageRow.kind === "code") {
+    const prior = findPriorTestsPreStage(stage_id);
+    if (prior) {
+      const check = getLatestTddCheck(stage_id, "post");
+      if (!check || check.status !== "verified") {
+        blockers.push(buildTddFinalizeBlocker({ stage_id, phase: "post", check, prior_stage_id: prior.stage_id }));
+      }
+    }
+  }
+
+  const reqs = requiredValidatorsForStage(stage_id);
+  for (const req of reqs) {
+    for (const vk of req.validators) {
+      const av = getLatestArtifactValidation(stage_id, vk, req.artifact_id);
+      if (!av || av.status === "violation" || av.status === "execution_error") {
+        blockers.push(buildArtifactFinalizeBlocker({
+          stage_id,
+          validator_kind: vk,
+          requirement: req,
+          check: av,
+        }));
+      }
+    }
+  }
+
+  const can_pass = blockers.length === 0;
+  return {
+    stage_id,
+    stage_kind: stageRow.kind,
+    can_pass,
+    recommended_status: can_pass ? "passed" : "surfaced",
+    next_action: can_pass ? "finalize_passed" : blockers[0]!.next_action,
+    blockers,
+    summary: can_pass
+      ? `stage ${stage_id} is ready to finalize as 'passed'`
+      : blockers.map(blocker => blocker.message).join(" "),
+  };
+}
+
 export function finalizeStage(input: FinalizeStageInput): void {
   // TDD execution gate. The harness has TDD-shaped team pipelines (refactor,
   // bug-fix, feature-tdd) where a `tests_pre` stage runs before the `code`
@@ -347,68 +461,24 @@ export function finalizeStage(input: FinalizeStageInput): void {
   // row. Surfacing/skipping is always allowed — that's how a TDD violation
   // gets reported up rather than swept under the rug.
   if (input.status === "passed") {
-    const stageRow = db()
-      .prepare(`SELECT id, kind FROM stages WHERE id = ?`)
-      .get(input.stage_id) as { id: string; kind: string } | undefined;
-    if (!stageRow) throw new Error(`stage ${input.stage_id} not found`);
-
-    if (stageRow.kind === "tests_pre") {
-      const check = getLatestTddCheck(input.stage_id, "pre");
-      if (!check || check.status !== "verified") {
+    const readiness = getStageFinalizeReadiness(input.stage_id);
+    if (!readiness.can_pass) {
+      const blocker = readiness.blockers[0]!;
+      if (blocker.gate === "tdd") {
         throw new TddGateViolation(
-          `finalize_stage refused: tests_pre stage ${input.stage_id} cannot be marked 'passed' without a verified tdd_check (phase='pre'). ` +
-          (check
-            ? `Latest check: status=${check.status}, expected=${check.expected}, actual=${check.actual}, reason=${check.reason ?? "n/a"}, output=${check.output_path ?? "n/a"}.`
-            : `No tdd_check recorded yet. Call mcp__pp_harness__tdd_pre_check after the stage's judge passes.`) +
-          ` To accept the violation, finalize the stage with status='surfaced' instead.`,
+          blocker.message,
           input.stage_id,
-          "pre",
-          check,
+          blocker.phase,
+          blocker.check,
         );
       }
-    } else if (stageRow.kind === "code") {
-      const prior = findPriorTestsPreStage(input.stage_id);
-      if (prior) {
-        const check = getLatestTddCheck(input.stage_id, "post");
-        if (!check || check.status !== "verified") {
-          throw new TddGateViolation(
-            `finalize_stage refused: code stage ${input.stage_id} cannot be marked 'passed' because its immediate predecessor was tests_pre stage ${prior.stage_id} and no verified tdd_check (phase='post') exists. ` +
-            (check
-              ? `Latest check: status=${check.status}, expected=${check.expected}, actual=${check.actual}, reason=${check.reason ?? "n/a"}, output=${check.output_path ?? "n/a"}.`
-              : `No tdd_check recorded yet. Call mcp__pp_harness__tdd_post_check after the code stage's judge passes.`) +
-            ` To accept the violation, finalize the stage with status='surfaced' instead.`,
-            input.stage_id,
-            "post",
-            check,
-          );
-        }
-      }
-    }
-
-    // Artifact-validator gate. For every archived artifact on this stage,
-    // walk the policy table (built-in defaults ∪ profile.required_validators)
-    // and refuse 'passed' if any required validator has no row, a 'violation',
-    // or an 'execution_error'. 'skipped' is allowed unless promoted to
-    // 'execution_error' by profile.required_validators_strict (handled inside
-    // runArtifactValidator). Surfacing always succeeds.
-    const reqs = requiredValidatorsForStage(input.stage_id);
-    for (const req of reqs) {
-      for (const vk of req.validators) {
-        const av = getLatestArtifactValidation(input.stage_id, vk, req.artifact_id);
-        if (!av || av.status === "violation" || av.status === "execution_error") {
-          throw new ValidatorGateViolation(
-            `finalize_stage refused: artifact ${req.artifact_id} (kind=${req.artifact_kind ?? "n/a"}) requires validator '${vk}' but ` +
-            (av
-              ? `latest row is status=${av.status}, reason=${av.reason ?? "n/a"}, output=${av.output_path ?? "n/a"}.`
-              : `no artifact_validations row exists yet. Call mcp__pp_harness__artifact_validate({stage_id: '${input.stage_id}', kind: '${vk}'}) after the judge passes.`) +
-            ` To accept the violation, finalize the stage with status='surfaced' instead.`,
-            input.stage_id,
-            vk,
-            req.artifact_id,
-            av,
-          );
-        }
-      }
+      throw new ValidatorGateViolation(
+        blocker.message,
+        input.stage_id,
+        blocker.validator_kind,
+        blocker.artifact_id,
+        blocker.check,
+      );
     }
   }
 
@@ -419,6 +489,85 @@ export function finalizeStage(input: FinalizeStageInput): void {
       )
       .run(input.status, input.winner_attempt_id ?? null, now(), input.stage_id);
   });
+}
+
+function buildTddFinalizeBlocker(opts: {
+  stage_id: string;
+  phase: "pre" | "post";
+  check: TddCheckRow | null;
+  prior_stage_id?: string;
+}): StageFinalizeTddBlocker {
+  const status: StageFinalizeTddBlocker["status"] = !opts.check
+    ? "missing"
+    : opts.check.status === "violation"
+      ? "violation"
+      : "execution_error";
+  const next_action: StageFinalizeTddBlocker["next_action"] =
+    status === "missing"
+      ? opts.phase === "pre"
+        ? "run_tdd_pre_check"
+        : "run_tdd_post_check"
+      : status === "violation"
+        ? "retry_or_surface"
+        : "surface_stage";
+
+  const message = opts.phase === "pre"
+    ? `finalize_stage refused: tests_pre stage ${opts.stage_id} cannot be marked 'passed' without a verified tdd_check (phase='pre'). ` +
+      (opts.check
+        ? `Latest check: status=${opts.check.status}, expected=${opts.check.expected}, actual=${opts.check.actual}, reason=${opts.check.reason ?? "n/a"}, output=${opts.check.output_path ?? "n/a"}.`
+        : `No tdd_check recorded yet. Call mcp__pp_harness__tdd_pre_check after the stage's judge passes.`) +
+      ` To accept the violation, finalize the stage with status='surfaced' instead.`
+    : `finalize_stage refused: code stage ${opts.stage_id} cannot be marked 'passed' because its immediate predecessor was tests_pre stage ${opts.prior_stage_id} and no verified tdd_check (phase='post') exists. ` +
+      (opts.check
+        ? `Latest check: status=${opts.check.status}, expected=${opts.check.expected}, actual=${opts.check.actual}, reason=${opts.check.reason ?? "n/a"}, output=${opts.check.output_path ?? "n/a"}.`
+        : `No tdd_check recorded yet. Call mcp__pp_harness__tdd_post_check after the code stage's judge passes.`) +
+      ` To accept the violation, finalize the stage with status='surfaced' instead.`;
+
+  return {
+    gate: "tdd",
+    phase: opts.phase,
+    status,
+    next_action,
+    message,
+    check: opts.check,
+    prior_stage_id: opts.prior_stage_id,
+  };
+}
+
+function buildArtifactFinalizeBlocker(opts: {
+  stage_id: string;
+  validator_kind: ValidatorKind;
+  requirement: ReturnType<typeof requiredValidatorsForStage>[number];
+  check: ArtifactValidationRow | null;
+}): StageFinalizeArtifactBlocker {
+  const status: StageFinalizeArtifactBlocker["status"] = !opts.check
+    ? "missing"
+    : opts.check.status === "violation"
+      ? "violation"
+      : "execution_error";
+  const next_action: StageFinalizeArtifactBlocker["next_action"] =
+    status === "missing"
+      ? "run_artifact_validate"
+      : status === "violation"
+        ? "retry_or_surface"
+        : "surface_stage";
+
+  return {
+    gate: "artifact_validation",
+    validator_kind: opts.validator_kind,
+    status,
+    next_action,
+    message:
+      `finalize_stage refused: artifact ${opts.requirement.artifact_id} (kind=${opts.requirement.artifact_kind ?? "n/a"}) requires validator '${opts.validator_kind}' but ` +
+      (opts.check
+        ? `latest row is status=${opts.check.status}, reason=${opts.check.reason ?? "n/a"}, output=${opts.check.output_path ?? "n/a"}.`
+        : `no artifact_validations row exists yet. Call mcp__pp_harness__artifact_validate({stage_id: '${opts.stage_id}', kind: '${opts.validator_kind}'}) after the judge passes.`) +
+      ` To accept the violation, finalize the stage with status='surfaced' instead.`,
+    artifact_id: opts.requirement.artifact_id,
+    artifact_kind: opts.requirement.artifact_kind,
+    artifact_path: opts.requirement.artifact_path,
+    check: opts.check,
+  };
 }
 
 export type FinalizeRunInput = {
@@ -907,6 +1056,7 @@ export async function doctor(opts: DoctorOptions = {}): Promise<unknown> {
     db_reachable: dbReachable,
     vendors_configured: vendors,
     vendor_credentials,
+    judge_capabilities: describeJudgeCapabilities(),
     vendor_degraded,
     cross_vendor_ready: vendorCount >= 2,
     critique_smoke,

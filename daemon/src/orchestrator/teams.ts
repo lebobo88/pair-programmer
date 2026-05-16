@@ -14,6 +14,7 @@ import { ClaudeTier, isClaudeTier } from "../config.js";
 
 export type TeamStage = {
   kind: string;
+  artifact_kind?: string;
   gate_type: string;
   generator: {
     agent: string;

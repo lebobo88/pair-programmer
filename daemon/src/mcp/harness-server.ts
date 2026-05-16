@@ -9,7 +9,7 @@ import { errorContent, jsonContent, zodToJsonSchema } from "./helpers.js";
 import {
   startRun, startStage, recordAttempt, recordVerdict, finalizeStage,
   finalizeRun, archiveArtifact, listRuns, getRun, budgetStatus, doctor,
-  recordTaxonomyMapping,
+  recordTaxonomyMapping, getStageFinalizeReadiness,
 } from "../orchestrator/runs.js";
 import { evaluateGate, listAllowedJudges, type GateType, type Profile } from "../orchestrator/gates.js";
 import { heuristicTriage, heuristicMapping, TAXONOMY_SECTIONS, COMPLETION_CHECKLIST } from "../orchestrator/taxonomy.js";
@@ -129,6 +129,10 @@ const FinalizeStageSchema = z.object({
   winner_attempt_id: z.string().optional(),
 });
 
+const GetStageFinalizeReadinessSchema = z.object({
+  stage_id: z.string().min(1),
+});
+
 const FinalizeRunSchema = z.object({
   run_id:     z.string().min(1),
   status:     z.enum(["complete", "surfaced", "aborted"] as const),
@@ -162,9 +166,11 @@ const GATE_TYPES = ["spec", "design", "security", "contract", "code_style", "doc
 const GateEligibleJudgesSchema = z.object({
   gate_type:           z.enum(GATE_TYPES),
   generator_producer:  z.string().min(1),
+  generator_model:     z.string().min(1).optional(),
   prompt_keywords:     z.string().optional(),
   profile:             z.enum(BUILTIN_PROFILE_NAMES).optional(),
   artifact_kind:       z.string().optional(),
+  rubric_hint:         z.string().min(1).optional(),
 });
 
 const TriageRequestSchema = z.object({
@@ -378,6 +384,13 @@ const TOOLS: ToolDef[] = [
     handler: (args) => recordVerdict(RecordVerdictSchema.parse(args)),
   },
   {
+    name: "get_stage_finalize_readiness",
+    description:
+      "Read-only preflight for finalize_stage(status='passed'). Returns {can_pass, recommended_status, next_action, blockers[]} based on the same TDD and artifact-validator gate logic the daemon enforces inside finalize_stage. Call this after judge pass and after any tdd_* / artifact_validate tools to choose the correct branch before attempting finalize_stage. Typical outcomes: next_action='run_tdd_pre_check' | 'run_tdd_post_check' | 'run_artifact_validate' for missing gate rows, 'retry_or_surface' for gate violations, 'surface_stage' for execution_error, or 'finalize_passed' when the stage may be closed as passed.",
+    schema: GetStageFinalizeReadinessSchema,
+    handler: (args) => getStageFinalizeReadiness(GetStageFinalizeReadinessSchema.parse(args).stage_id),
+  },
+  {
     name: "finalize_stage",
     description:
       "Close a stage row with status passed | surfaced | skipped. winner_attempt_id is required when status=passed.",
@@ -422,7 +435,7 @@ const TOOLS: ToolDef[] = [
   {
     name: "doctor",
     description:
-      "Health-check: reports CLI versions, DB reachability, configured vendors, and whether cross_vendor is satisfied. Pass `smoke: true` to also exercise each vendor's critique CLI end-to-end (catches model-not-served / auth / command-line-too-long failures); adds 10–60s per configured vendor. Use this at session start.",
+      "Health-check: reports CLI versions, DB reachability, configured vendors, judge capability summaries, and whether cross_vendor is satisfied. Pass `smoke: true` to also exercise each vendor's critique CLI end-to-end (catches model-not-served / auth / command-line-too-long failures); adds 10–60s per configured vendor. Use this at session start.",
     schema: z.object({ smoke: z.boolean().optional() }),
     handler: async (args) => await doctor({ smoke: !!(args as { smoke?: boolean }).smoke }),
   },
@@ -706,7 +719,7 @@ const TOOLS: ToolDef[] = [
   },
   {
     name: "get_forum",
-    description: "Get a forum's full pipeline: id, title, description, produces, stages [{kind, gate_type, generator_agent, judge_tier, rubric_id}], required_missability_checks. The /pp:review <forum> command runs these stages.",
+    description: "Get a forum's full pipeline: id, title, description, produces, stages [{kind, artifact_kind?, gate_type, generator_agent, judge_tier, rubric_id}], required_missability_checks. The /pp:review <forum> command runs these stages.",
     schema: GetForumSchema,
     handler: (args) => getForum(GetForumSchema.parse(args).id),
   },
@@ -766,15 +779,18 @@ const TOOLS: ToolDef[] = [
   {
     name: "gate_eligible_judges",
     description:
-      "Given a gate_type, the generator's producer, optional prompt keywords, optional profile, and optional artifact_kind, returns the judge tier policy: required_cross_vendor (bool), base_tier, whether it was upgraded by content/profile, the reason, the recommended rubric_id, and the list of allowed judges with preferred providers. Driver MUST call this before invoking any judge.",
+      "Given a gate_type, the generator's producer, optional generator_model, optional prompt keywords, optional profile, optional artifact_kind, and optional rubric_hint, returns the judge tier policy: required_cross_vendor (bool), base_tier, whether it was upgraded by content/profile/capability, the reason, the recommended rubric_id, and the list of allowed judges with preferred providers. rubric_hint lets a team/forum stage declare its intended rubric when that intent cannot be inferred from gate_type alone; unknown hints are ignored. If generator_model is omitted, the daemon infers Codex/Gemini defaults from DEFAULT_MODELS where possible. Driver MUST call this before invoking any judge.",
     schema: GateEligibleJudgesSchema,
     handler: (args) => {
       const parsed = GateEligibleJudgesSchema.parse(args);
       const decision = evaluateGate({
         gate_type:       parsed.gate_type as GateType,
+        generator_producer: parsed.generator_producer,
+        generator_model: parsed.generator_model,
         prompt_keywords: parsed.prompt_keywords,
         profile:         parsed.profile as Profile | undefined,
         artifact_kind:   parsed.artifact_kind,
+        rubric_hint:     parsed.rubric_hint,
       });
       const judges = listAllowedJudges(decision, parsed.generator_producer);
       return { ...decision, allowed_judges: judges };

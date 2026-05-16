@@ -17,7 +17,7 @@ The driver MUST call `mcp__pp_harness__gate_eligible_judges` before invoking any
 | `design` | YES |
 | `security` | YES |
 | `contract` | YES |
-| `code_style` | NO (same-vendor different-model OK) |
+| `code_style` | NO (same-vendor OK only when the chosen vendor can honor the model invariant) |
 | `docs_polish` | NO |
 | `lint_class` | NO |
 
@@ -50,16 +50,19 @@ For best-of-2, the driver should ask the judge for a structured rubric score per
 
 ## Self-bias
 
-A generator and judge from the same vendor must use **different model ids**. The Codex/Gemini wrappers default to a slightly different model for `critique` than for `generate`; if the driver overrides, it MUST keep them distinct.
+- **Codex:** `pp_codex.critique` is hard-pinned to `gpt-5.4`. Same-vendor Codex judging is therefore only legal when the generator used a different model id. If the generator already used `gpt-5.4`, `gate_eligible_judges` upgrades the gate to cross-vendor.
+- **Gemini:** `pp_gemini.critique` is hard-pinned to `gemini-3.1-pro-preview`. Same-vendor Gemini judging is a documented degenerate case (same model on both sides) until a second supported 3.x critique model ships.
+- **Claude:** same-vendor Claude judging still requires a different model id from the generator.
 
 ## What the driver actually does
 
-1. Call `gate_eligible_judges(gate_type, generator_producer, prompt_keywords, profile, artifact_kind)`.
+1. Call `gate_eligible_judges(gate_type, generator_producer, generator_model?, prompt_keywords, profile, artifact_kind, rubric_hint?)`.
 2. Read `required_cross_vendor`, `rubric_id`, and `allowed_judges`.
 3. If `required_cross_vendor` and the generator was Codex → invoke `judge-cross-vendor` (which calls `pp_gemini.critique`). If the generator was Gemini → `judge-cross-vendor` calls `pp_codex.critique`.
-4. If `required_cross_vendor` is false → invoke `judge-same-vendor` (which calls `pp_<same>.critique` with a different `model_id`).
-5. The judge fetches the rubric body via `mcp__pp_harness__get_rubric(rubric_id)` and applies it to score the artifact.
-6. Verdict recorded via `record_verdict`. The daemon computes the `cross_vendor` flag from `judge_producer` vs `attempt.producer` and stores it.
+4. If `required_cross_vendor` is false → invoke `judge-same-vendor` (which calls `pp_<same>.critique` with a different `model_id`, except for the documented degenerate Gemini lane).
+5. `rubric_hint` is for stage-declared intent (for example a forum stage that already names `rfc-2119-normative@1` or `web-runtime-validation@2`). It does not bypass the daemon; it gives the daemon enough context to return the right `rubric_id`.
+6. The judge fetches the rubric body via `mcp__pp_harness__get_rubric(rubric_id)` and applies it to score the artifact when `rubric_id` is non-null. If `rubric_id` is null, the judge falls back to its default critique rubric.
+7. Verdict recorded via `record_verdict`. The daemon computes the `cross_vendor` flag from `judge_producer` vs `attempt.producer` and stores it.
 
 ## Reading the verdict
 

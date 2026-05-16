@@ -39,6 +39,10 @@ const {
   buildCodexExecArgs,
   parseCodexJsonl,
 } = await import(pathToFileURL(join(__dirname, "..", "dist", "mcp", "codex-server.js")).href);
+const {
+  resolveSameVendorCapability,
+  describeJudgeCapabilities,
+} = await import(pathToFileURL(join(__dirname, "..", "dist", "orchestrator", "gates.js")).href);
 
 let pass = 0;
 let fail = 0;
@@ -480,6 +484,34 @@ it("buildCodexExecArgs omits skip-git-repo-check when explicitly disabled", () =
     skip_git_repo_check: false,
   });
   assert.equal(cliArgs.includes("--skip-git-repo-check"), false);
+});
+
+it("resolveSameVendorCapability upgrades default Codex same-vendor to cross-vendor", () => {
+  const capability = resolveSameVendorCapability({ generator_producer: "codex" });
+  assert.equal(capability.available, false);
+  assert.equal(capability.effective_generator_model, "gpt-5.4");
+  assert.equal(capability.inferred_generator_model, true);
+  assert.equal(capability.judge_model_id, "gpt-5.4");
+  assert.match(capability.reason, /hard-pinned/);
+});
+
+it("resolveSameVendorCapability allows Codex same-vendor when generator model differs", () => {
+  const capability = resolveSameVendorCapability({
+    generator_producer: "codex",
+    generator_model: "gpt-5.5",
+  });
+  assert.equal(capability.available, true);
+  assert.equal(capability.effective_generator_model, "gpt-5.5");
+  assert.equal(capability.inferred_generator_model, false);
+  assert.equal(capability.judge_model_id, "gpt-5.4");
+  assert.equal(capability.reason, null);
+});
+
+it("describeJudgeCapabilities reports Codex as conditional and Gemini as degenerate", () => {
+  const caps = describeJudgeCapabilities();
+  assert.equal(caps.codex.same_vendor_mode, "conditional_cross_vendor");
+  assert.deepEqual(caps.codex.unavailable_when_generator_model_is, ["gpt-5.4"]);
+  assert.equal(caps.gemini.same_vendor_mode, "degenerate_same_model_allowed");
 });
 
 it("parseCodexJsonl extracts item.completed agent_message text payloads", () => {

@@ -7,6 +7,7 @@ stages:
     generator: { agent: spec-author, primary: claude }
     judge:     { tier: cross_vendor, rubric: rfc-2119-normative@1, model_pref: gemini }
   - kind: tests_pre
+    artifact_kind: tdd_manifest
     gate_type: contract
     generator: { agent: test-strategist, primary: codex }
     judge:     { tier: cross_vendor, model_pref: gemini }
@@ -15,10 +16,12 @@ stages:
     generator: { agent: engineer, primary: codex }
     judge:     { tier: same_vendor, model_pref: codex_alt_model }
   - kind: tests
+    artifact_kind: test_plan
     gate_type: contract
     generator: { agent: test-strategist, primary: codex }
     judge:     { tier: cross_vendor, model_pref: gemini }
   - kind: browser_validation
+    artifact_kind: browser_validation_report
     gate_type: contract
     generator: { agent: browser-validator, primary: claude }
     judge:     { tier: same_vendor, rubric: web-runtime-validation@2 }

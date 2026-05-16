@@ -7,6 +7,7 @@
 
 export type ForumStage = {
   kind: string;
+  artifact_kind?: string;
   gate_type: "spec" | "design" | "security" | "contract" | "code_style" | "docs_polish" | "lint_class";
   generator_agent: string;
   judge_tier: "cross_vendor" | "same_vendor";

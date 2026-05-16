@@ -69,11 +69,11 @@ Every artifact lands under `<project>/.harness/<run_id>/` and is recorded in `~/
 
 If the same model that writes the spec also grades the spec, you get the same blind spots in both directions. The harness defaults to **judging spec / design / security / contract artifacts with a different vendor** — Codex code, Gemini judges (or vice versa). Bias compounds less; two different training corpora have to agree before a verdict passes.
 
-For lower-stakes gates (`code_style`, `docs_polish`, `lint_class`) the harness allows **same-vendor different-model** judging — still independent, but cheaper. Section 6 covers the full policy.
+For lower-stakes gates (`code_style`, `docs_polish`, `lint_class`) the harness prefers **same-vendor different-model** judging — still independent, but cheaper — when the vendor can actually honor that invariant. Section 6 covers the full policy.
 
 ### The 5 invariants
 
-1. **Tiered validator policy** — cross-vendor by default on high-stakes gates; same-vendor different-model OK on style/lint/docs (§6). The Gemini lane currently only serves one 3.x model, so same-vendor Gemini critique is a documented **degenerate** case (same model on both sides) until a sibling 3.x id ships.
+1. **Tiered validator policy** — cross-vendor by default on high-stakes gates; same-vendor different-model OK on style/lint/docs when the vendor can honor it (§6). The Gemini lane currently only serves one 3.x model, so same-vendor Gemini critique is a documented **degenerate** case (same model on both sides) until a sibling 3.x id ships. Codex same-vendor is now **conditional** because `pp_codex.critique` is pinned to `gpt-5.4`.
 2. **Taxonomy adherence on every task** — every run is mapped to ≥1 of the 16 sections in `taxonomy_blueprint.md` (§7).
 3. **Reflexion ×1 then surface** — at most one critique-fed retry per failed verdict; after that, the stage is `surfaced` and waits for human direction.
 4. **Anti-runaway loop ceiling** — default 6 validator calls per run. The 7th is rejected.
@@ -302,9 +302,9 @@ The harness has 7 gate types:
 | `design` | UX, IA, screen-state matrix, ADRs, C4 sketches | **Cross-vendor** |
 | `security` | Threat models, control mappings, supply-chain | **Cross-vendor** |
 | `contract` | OpenAPI / AsyncAPI / SDK ergonomics / contract tests | **Cross-vendor** |
-| `code_style` | Implementation code | Same-vendor different-model |
-| `docs_polish` | Changelogs, runbooks, sunset comms | Same-vendor different-model |
-| `lint_class` | Lint-shaped corrections | Same-vendor different-model |
+| `code_style` | Implementation code | Same-vendor different-model when the vendor can honor it; otherwise auto-upgraded to cross-vendor |
+| `docs_polish` | Changelogs, runbooks, sunset comms | Same-vendor different-model when the vendor can honor it; otherwise auto-upgraded to cross-vendor |
+| `lint_class` | Lint-shaped corrections | Same-vendor different-model when the vendor can honor it; otherwise auto-upgraded to cross-vendor |
 
 ### Content-aware upgrades
 
@@ -327,6 +327,7 @@ Other profiles (including all `game-dev*` sub-modes) document `required_rubrics`
 gate_eligible_judges({
   gate_type,
   generator_producer,    // "codex" | "gemini" | "claude"
+  generator_model?,      // optional; daemon infers Codex/Gemini defaults when omitted
   prompt_keywords?,      // the request text
   profile?,              // active profile name
   artifact_kind?         // canonical kind from artifact-conventions
@@ -367,7 +368,7 @@ For best-of-2, the driver asks the judge for a structured rubric score per candi
 
 ### Self-bias guard
 
-When same-vendor judging is in play, the generator and judge MUST use **different model ids**. The Codex and Gemini wrappers' schema defaults are intentionally pinned to the same per-vendor model today (see [`DEFAULT_MODELS` in `daemon/src/config.ts`](../daemon/src/config.ts)) — that means the sub-agent prompts (`judge-same-vendor`, `engineer`) MUST pass an explicit `model:` override when invoking the wrapper, and the driver MUST keep the generator and judge model ids distinct. Falling back to the wrapper defaults on both sides is self-bias and rejected by the daemon's `record_verdict` invariant.
+When same-vendor judging is in play, the generator and judge MUST use **different model ids**, except for the documented degenerate Gemini lane. `pp_codex.critique` is hard-pinned to `gpt-5.4`, so Codex same-vendor is only legal when the generator used a different model id; otherwise `gate_eligible_judges` upgrades to cross-vendor. The daemon's `record_verdict` path now rejects impossible Codex/Gemini judge metadata so a stale prompt cannot claim a model the wrapper did not actually use.
 
 > Deep-dive: [`docs/validator-policy.md`](validator-policy.md), [`.claude/skills/judge-policy.md`](../.claude/skills/judge-policy.md), source: [`daemon/src/orchestrator/gates.ts`](../daemon/src/orchestrator/gates.ts).
 
@@ -1182,13 +1183,13 @@ Stage-kind → sandbox mapping is in [`daemon/src/hooks/dispatcher.ts`](../daemo
 
 ---
 
-## 19. MCP tools reference (60)
+## 19. MCP tools reference (61)
 
-Three MCP servers register with Claude Code over stdio (`pp_harness` 56 + `pp_codex` 2 + `pp_gemini` 2). Tool schemas live in [`daemon/src/mcp/`](../daemon/src/mcp/).
+Three MCP servers register with Claude Code over stdio (`pp_harness` 57 + `pp_codex` 2 + `pp_gemini` 2). Tool schemas live in [`daemon/src/mcp/`](../daemon/src/mcp/).
 
-### `pp_harness` (56 tools)
+### `pp_harness` (57 tools)
 
-#### Run lifecycle (6)
+#### Run lifecycle (7)
 
 | Tool | Purpose |
 |---|---|
@@ -1196,6 +1197,7 @@ Three MCP servers register with Claude Code over stdio (`pp_harness` 56 + `pp_co
 | `start_stage` | Open a stage row inside a run. |
 | `record_attempt` | Log a generation attempt (producer, model, tokens, cost, retry index). |
 | `record_verdict` | Log a judge verdict (outcome, rubric_id, critique_md, score_json). |
+| `get_stage_finalize_readiness` | Read-only preflight for `finalize_stage(status="passed")`; returns whether the stage may pass now and what gate action is still required. |
 | `finalize_stage` | Close a stage with `passed | surfaced | skipped`. |
 | `finalize_run` | Close a run with `complete | surfaced | aborted`. |
 
@@ -1653,7 +1655,7 @@ You should only need the manual flag when calling the Codex CLI yourself outside
 | **Reflexion ×1** | At most one critique-fed retry per failed attempt. Then surface. |
 | **rubric** | Standard-aligned scoring guide applied at a gate. 25 ship in the registry; project files at `<project>/.claude/rubrics/<bare-id>.md` are loaded only for IDs the registry doesn't have (registry-first). |
 | **run** | One invocation of `/pp:run` / `/pp:best-of` / `/pp:team` / `/pp:review`. Has a `run_id` and a directory. |
-| **same-vendor judge** | Judge whose vendor matches the generator but whose model differs. Allowed on code_style/docs_polish/lint_class. |
+| **same-vendor judge** | Judge whose vendor matches the generator. Usually a different model id; Gemini is a documented degenerate same-model exception, and Codex is only allowed when the generator model differs from the pinned `gpt-5.4` critique model. |
 | **sandbox** | Codex's `read-only | workspace-write | danger-full-access` flag. Mapped per stage kind. |
 | **stage** | One slot in a run's pipeline (e.g. `spec`, `code`, `tests`). |
 | **sub-agent** | Specialized Claude Code agent invoked via the Task tool. 41 ship (19 generic generators + 11 game-dev generators + 5 lifecycle + 3 judging + 1 recovery + 1 closing + 1 Copilot orchestrator). |

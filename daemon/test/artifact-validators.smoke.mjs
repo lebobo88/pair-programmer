@@ -246,6 +246,11 @@ async function main() {
       if (!/Decision/.test(v.reason ?? "")) throw new Error(`reason should mention missing Decision section, got: ${v.reason}`);
       console.log(`✓ artifact_validate adr_structure_lint (bad) → violation: ${v.reason.slice(0, 80)}`);
 
+      const readiness = await callTool(client, "get_stage_finalize_readiness", { stage_id: stage.stage_id });
+      if (readiness.can_pass) throw new Error(`expected blocked readiness for bad ADR, got ${pretty(readiness)}`);
+      if (readiness.next_action !== "retry_or_surface") throw new Error(`expected retry_or_surface readiness, got ${pretty(readiness)}`);
+      console.log(`✓ get_stage_finalize_readiness (validator violation) -> ${readiness.next_action}`);
+
       // The gate must refuse 'passed'.
       await expectThrow(
         () => callTool(client, "finalize_stage", { stage_id: stage.stage_id, status: "passed", winner_attempt_id: att.attempt_id }),
@@ -280,6 +285,11 @@ async function main() {
         critique_md: "Critique long enough to satisfy the anti-vacuous-pass refine. The validator was intentionally not called to exercise the missing-row branch of the validator gate.",
         score_json: { structure: 0.9 },
       });
+
+      const readiness = await callTool(client, "get_stage_finalize_readiness", { stage_id: stage.stage_id });
+      if (readiness.can_pass) throw new Error(`expected blocked readiness when validator was never called, got ${pretty(readiness)}`);
+      if (readiness.next_action !== "run_artifact_validate") throw new Error(`expected run_artifact_validate readiness, got ${pretty(readiness)}`);
+      console.log(`✓ get_stage_finalize_readiness (missing validator call) -> ${readiness.next_action}`);
 
       await expectThrow(
         () => callTool(client, "finalize_stage", { stage_id: stage.stage_id, status: "passed", winner_attempt_id: att.attempt_id }),

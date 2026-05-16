@@ -27,6 +27,7 @@ stages:
     generator: { agent: designer, primary: claude }
     judge:     { tier: cross_vendor, rubric: wcag-2.2-aa@1, model_pref: gemini }
   - kind: browser_validation
+    artifact_kind: browser_validation_report
     gate_type: contract
     generator: { agent: browser-validator, primary: claude }
     judge:     { tier: same_vendor, rubric: web-runtime-validation@2 }

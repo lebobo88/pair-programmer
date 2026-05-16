@@ -27,7 +27,7 @@ You are about to drive a `/pp:best-of` invocation. Follow the `pair-programmer` 
    - candidate 2: `producer="claude"`, `model="claude-opus-4-6"`, `seed="primary"`
    - candidate 3: `producer="claude"`, `model="claude-sonnet-4-6"`, `seed="devils-advocate"`
    - if N>3: cycle adding `claude-opus-4-6` with `seed="terse-diff"`, `claude-sonnet-4-6` with `seed="failing-test-first"`, etc.
-   Pass `cwd=<worktree_path[i]>` and `attempt_slot_id` from the per-candidate slot. **Also pass `profile.runtime_smoke_test`** if the active profile sets it — the engineer reads this to decide whether to run the dev-server smoke test before committing. Each engineer authors files DIRECTLY into its worktree using its native Write/Edit/Bash tools (see engineer.md), runs the verification step (3.5) on UI projects, then `git add -A && git commit -m "<msg>"` inside the worktree before returning. The harness will auto-commit if the engineer forgets, but explicit is preferred.
+   Pass `cwd=<worktree_path[i]>` and `attempt_slot_id` from the per-candidate slot. **Also pass `profile.runtime_smoke_test`** if the active profile sets it — the engineer reads this to decide whether to run the dev-server smoke test before committing. Each engineer authors files DIRECTLY into its worktree using its native edit/execute tools (see engineer.md), runs the verification step (3.5) on UI projects, then `git add -A && git commit -m "<msg>"` inside the worktree before returning. The harness will auto-commit if the engineer forgets, but explicit is preferred.
 
    Codex and Gemini do NOT generate candidates. Their CLIs are reserved for the judge stage (step 8) when cross-vendor is required.
 

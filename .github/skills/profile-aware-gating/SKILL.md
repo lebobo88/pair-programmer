@@ -59,14 +59,15 @@ Game-dev family:
 
 ## How `gate_eligible_judges` uses the profile
 
-When the driver calls `gate_eligible_judges(gate_type, generator_producer, prompt_keywords, profile, artifact_kind)`:
+When the driver calls `gate_eligible_judges(gate_type, generator_producer, generator_model?, prompt_keywords, profile, artifact_kind, rubric_hint?)`:
 
 1. Compute the **base tier** from `gate_type` (cross-vendor required for spec/design/security/contract; same-vendor OK otherwise).
 2. Apply **content-aware upgrade** by scanning `prompt_keywords` for the security/concurrency regex set.
 3. Apply **profile-aware upgrade**:
    - `enterprise` → cross-vendor on every gate.
    - `ai-agentic` → cross-vendor on any gate touching evals or tool permissions.
-4. Pick the **rubric** in this priority order: profile's `required_rubrics[gate_type]` → built-in default for the gate (WCAG for design, ASVS for security, OpenAPI for contract, RFC 2119 for spec).
+4. Apply any **vendor capability upgrade**. Example: same-vendor Codex is impossible when `generator_model` resolves to `gpt-5.4`, because `pp_codex.critique` is pinned to that same model; the daemon upgrades that path to cross-vendor automatically.
+5. Pick the **rubric** in this priority order: explicit `rubric_hint` (when it names a real rubric) → artifact-kind-specific mapping (including explicit null overrides for test-plan/test-strategy-style artifacts) → built-in default for the gate (WCAG for design, ASVS for security, OpenAPI for contract, RFC 2119 for spec).
 
 The decision payload returned to the driver carries `upgraded`, `reason`, and `rubric_id`, so the user can see *why* a gate was tightened.
 

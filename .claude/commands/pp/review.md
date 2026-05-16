@@ -19,12 +19,13 @@ You are about to drive a `/pp:review` invocation. Follow the `pair-programmer` s
 
 5. **Stage loop.** For each stage in `forum.stages` (in order):
    - `start_stage(kind=stage.kind, gate_type=stage.gate_type)`.
-   - `gate_eligible_judges(gate_type, generator_producer=stage.generator_agent_producer, prompt_keywords=<context>, profile, artifact_kind=stage.kind)`.
+   - `gate_eligible_judges(gate_type, generator_producer=stage.generator_agent_producer, generator_model=<attempt.model_id when known>, prompt_keywords=<context>, profile, artifact_kind=(stage.artifact_kind ?? stage.kind), rubric_hint=stage.rubric_id when set)`.
    - Generator: use the Task tool to invoke `stage.generator_agent` with the per-stage inputs. Output paths land under `<run_id>/review-<forum>/<stage.kind>/`.
-   - Judge routing: use the Task tool to invoke `judge-router`. Capture `{ judge_agent, preferred_producers, rubric_id, decision_reason }`. The routed rubric should normally match `stage.rubric_id`; if they conflict, follow the daemon decision and warn.
+   - Judge routing: use the Task tool to invoke `judge-router`, passing the same `artifact_kind=(stage.artifact_kind ?? stage.kind)` and `rubric_hint=stage.rubric_id when set` that you used for the preflight daemon call. Capture `{ judge_agent, preferred_producers, rubric_id, decision_reason }`. The routed rubric should normally match `stage.rubric_id`; if they conflict, follow the daemon decision and warn.
    - Judge execution: use the Task tool to invoke the chosen judge agent with the review artifact plus `rubric_id` (or `rubric_md` if already resolved). Only the chosen judge agent records the verdict.
    - **If judge returns `judge_tool_failed=true`**: archive the failure to `critique_failures/<stage_id>.json` via `archive_artifact` (`kind: "critique_failure"`), `finalize_stage(surfaced)`, `finalize_run(status="aborted", summary_md=<failure context>)`, STOP. Do NOT Reflexion. Do NOT fabricate a verdict.
-   - On `pass`: continue. On `fail/revise`: invoke `reflexion-coach` once. If still failing, finalize stage as `surfaced` and BREAK.
+   - On `pass`: call `mcp__pp_harness__get_stage_finalize_readiness(stage_id)` before advancing. If it returns `next_action="run_tdd_pre_check" | "run_tdd_post_check" | "run_artifact_validate"`, call that tool and re-check readiness. If readiness returns `next_action="finalize_passed"`, finalize the stage as `passed` and continue. If it returns `next_action="surface_stage"`, finalize as `surfaced` and BREAK. If it returns `next_action="retry_or_surface"`, treat the blocker as critique and enter the Reflexion path below.
+   - On `fail/revise` **or** readiness `next_action="retry_or_surface"`: invoke `reflexion-coach` once, re-run the same `judge-router` flow against the retry attempt, then re-check `get_stage_finalize_readiness(stage_id)`. If the retry now returns `next_action="finalize_passed"`, finalize the stage as `passed`; otherwise finalize it as `surfaced` and BREAK.
 
 6. **Missability** — pass `required_check_ids` = (mapping ∪ `forum.required_missability_checks` ∪ profile).
 

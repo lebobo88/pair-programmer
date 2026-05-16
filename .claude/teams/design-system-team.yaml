@@ -19,6 +19,7 @@ stages:
     generator: { agent: test-strategist, primary: codex }
     judge:     { tier: cross_vendor, model_pref: gemini }
   - kind: browser_validation
+    artifact_kind: browser_validation_report
     gate_type: contract
     generator: { agent: browser-validator, primary: claude }
     judge:     { tier: same_vendor, rubric: web-runtime-validation@2 }
