@@ -32,6 +32,7 @@ export type CheckId =
   | "deprecation-sunset"
   | "decision-logging"
   | "ai-evals-hitl"
+  | "agents-md-present"
   | "browser-validation-evidence"
   // Game-dev — console / TRC / XR / Lotcheck (gated behind console-cert: true)
   | "controller-disconnect-handling"
@@ -73,11 +74,15 @@ export type CheckId =
   // Game-dev — perf
   | "perf-budget-evidence";
 
+export type MissabilityCtx = {
+  project_path: string;
+};
+
 export const CHECK_DEFINITIONS: Array<{
   id: CheckId;
   name: string;
   triggers: (artifactKinds: Set<string>, requiredSections: Set<string>) => boolean;
-  evaluate: (texts: ArtifactBundle[]) => { status: "pass" | "fail" | "n/a"; evidence?: string };
+  evaluate: (texts: ArtifactBundle[], ctx: MissabilityCtx) => { status: "pass" | "fail" | "n/a"; evidence?: string };
 }> = [
   {
     id: "nfrs-declared",
@@ -205,6 +210,39 @@ export const CHECK_DEFINITIONS: Array<{
     name: "AI eval suite + HITL escalation rule",
     triggers: (k, s) => s.has("4.15") || k.has("ai_system_spec"),
     evaluate: ts => textPatternCheck(ts, /\b(eval(uation)?|benchmark|hitl|human[- ]?in[- ]?the[- ]?loop|guardrail|hallucinat)\w*/i),
+  },
+  {
+    // MC-21 (Phase 12): every run-managed project must have an AGENTS.md (the
+    // cross-tool behavioral contract Claude / Codex / Gemini read at session
+    // start). CLAUDE.md is its Claude-specific import shim. Both are
+    // scaffolded by step 5c of /pp:run via ensure_agents_md, so a missing
+    // file at finalize means the lifecycle was bypassed somehow. Triggered
+    // on every run.
+    id: "agents-md-present",
+    name: "AGENTS.md (cross-tool behavioral contract) present at project root",
+    triggers: () => true,
+    evaluate: (_texts, ctx) => {
+      const agentsPath = join(ctx.project_path, "AGENTS.md");
+      const claudePath = join(ctx.project_path, "CLAUDE.md");
+      const agentsExists = existsSync(agentsPath);
+      const claudeExists = existsSync(claudePath);
+      if (!agentsExists) {
+        return { status: "fail", evidence: `AGENTS.md missing at ${agentsPath}` };
+      }
+      if (!claudeExists) {
+        return { status: "fail", evidence: `CLAUDE.md missing at ${claudePath} (should be a one-line @AGENTS.md import)` };
+      }
+      // Sanity-check the import shim is wired.
+      try {
+        const claudeText = readFileSync(claudePath, "utf8");
+        if (!/^@AGENTS\.md\b/m.test(claudeText)) {
+          return { status: "fail", evidence: `${claudePath}: missing @AGENTS.md import on its own line` };
+        }
+      } catch {
+        return { status: "fail", evidence: `${claudePath}: read error` };
+      }
+      return { status: "pass", evidence: agentsPath };
+    },
   },
   {
     id: "browser-validation-evidence",
@@ -551,7 +589,7 @@ export function runMissabilityChecks(opts: {
       results.push({ check_id: def.id, status: "n/a" });
       continue;
     }
-    const r = def.evaluate(texts);
+    const r = def.evaluate(texts, { project_path: run.project_path });
     results.push({ check_id: def.id, status: r.status, evidence: r.evidence });
   }
 

@@ -12,9 +12,11 @@ You are the architect. Your output is structural: an ADR and (optionally) a C4 s
 - `run_id`, `stage_id`, `request_text`, `cwd`, `artifact_dir`
 - `spec_artifact_path` (optional) — earlier spec stage output to ground in
 - `primary_producer`
+- `agents_md_path` — optional absolute path to `<project>/AGENTS.md`. The harness ensures this file exists in step 5c of `/pp:run`. Read it before composing the ADR — its "Project layout" section names existing top-level directories that any architecture change must respect or explicitly supersede.
 
 ## Procedure
 
+0. If `agents_md_path` is set, Read it first. Architecture decisions that contradict AGENTS.md's "Project layout" or "Workflow rules" sections need an explicit "Supersedes AGENTS.md §<section>" note in the ADR's Consequences.
 1. Read the spec artifact (if provided) and the existing architecture (Glob for ADR / docs / README files).
 2. Compose an ADR using the format:
    ```

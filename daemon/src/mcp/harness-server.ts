@@ -14,6 +14,14 @@ import {
 import { evaluateGate, listAllowedJudges, type GateType, type Profile } from "../orchestrator/gates.js";
 import { heuristicTriage, heuristicMapping, TAXONOMY_SECTIONS, COMPLETION_CHECKLIST } from "../orchestrator/taxonomy.js";
 import { applyMasterPlanPatch, masterPlanStatus, ensureMasterPlan } from "../orchestrator/master-plan.js";
+import {
+  applyAgentsMdPatch,
+  agentsMdStatus,
+  ensureAgentsMd,
+  ensureClaudeMd,
+  ensureAgentsAndClaudeMd,
+  AGENTS_MD_SECTIONS,
+} from "../orchestrator/agents-md.js";
 import { runMissabilityChecks, CHECK_DEFINITIONS, type CheckId } from "../orchestrator/missability.js";
 import { loopCeilingStatus, checkRetryEligible } from "../orchestrator/loop-ceiling.js";
 import { startBestOfStage, diffEntropy, bordaCount, archiveWinnerAndLosers, teardownCandidates, recordSmokeStatus } from "../orchestrator/best-of-n.js";
@@ -206,6 +214,23 @@ const MasterPlanPatchSchema = z.object({
 
 const MasterPlanStatusSchema = z.object({ project_path: z.string().min(1) });
 const EnsureMasterPlanSchema  = z.object({ project_path: z.string().min(1) });
+
+const AgentsMdPatchSchema = z.object({
+  run_id:       z.string().min(1),
+  project_path: z.string().min(1),
+  section:      z.enum(AGENTS_MD_SECTIONS as unknown as [string, ...string[]]),
+  kind:         z.enum(["create", "update", "append"]),
+  content_md:   z.string().min(1),
+});
+const AgentsMdStatusSchema = z.object({ project_path: z.string().min(1) });
+const EnsureAgentsMdSchema = z.object({
+  project_path: z.string().min(1),
+  profile:      z.string().optional(),
+  conventions:  z.array(z.string()).optional(),
+  build_commands: z.array(z.string()).optional(),
+  extra_sections: z.array(z.object({ heading: z.string(), body: z.string() })).optional(),
+  also_claude_md: z.boolean().optional(),
+});
 const TaxonomyListSchema      = z.object({});
 
 const RunMissabilitySchema = z.object({
@@ -487,6 +512,37 @@ const TOOLS: ToolDef[] = [
       "Returns the current state of <project>/PROJECT_MASTER.md: which of the 20 sections are populated, total bytes, and Section 10's 15-item completion checklist (each item pass/fail based on its mapped section).",
     schema: MasterPlanStatusSchema,
     handler: (args) => masterPlanStatus(MasterPlanStatusSchema.parse(args).project_path),
+  },
+  {
+    name: "ensure_agents_md",
+    description:
+      "Creates <project>/AGENTS.md (and optionally CLAUDE.md) from the harness template if absent. AGENTS.md is the cross-tool behavioral contract loaded by Claude, Codex, Gemini, Cursor, etc.; CLAUDE.md is a one-line `@AGENTS.md` import plus Claude-specific add-ons. Idempotent. Pass `profile`, `conventions`, `build_commands`, `extra_sections` to seed the template with profile-specific content. Pass `also_claude_md: true` to scaffold CLAUDE.md alongside.",
+    schema: EnsureAgentsMdSchema,
+    handler: (args) => {
+      const p = EnsureAgentsMdSchema.parse(args);
+      const extras = {
+        profile: p.profile,
+        conventions: p.conventions,
+        build_commands: p.build_commands,
+        extra_sections: p.extra_sections,
+      };
+      if (p.also_claude_md) return ensureAgentsAndClaudeMd(p.project_path, extras);
+      return ensureAgentsMd(p.project_path, extras);
+    },
+  },
+  {
+    name: "apply_agents_md_patch",
+    description:
+      "Patches a section of <project>/AGENTS.md and records prev/new sha to agents_md_patches. Section must be one of the six canonical headings (Build and test commands, Project layout, Coding conventions, Workflow rules, Do not, Notes from the harness). kind=create scaffolds the section if missing; update replaces; append concatenates after existing content. append is idempotent when the content contains a `Run <run_id>` block already present in the section.",
+    schema: AgentsMdPatchSchema,
+    handler: (args) => applyAgentsMdPatch(AgentsMdPatchSchema.parse(args)),
+  },
+  {
+    name: "agents_md_status",
+    description:
+      "Returns the current state of <project>/AGENTS.md and <project>/CLAUDE.md: existence, byte size, line count (with over_adherence_cliff=true when AGENTS.md exceeds 200 lines per Anthropic guidance), per-section populated flags for AGENTS.md, and whether CLAUDE.md imports AGENTS.md via the @-syntax.",
+    schema: AgentsMdStatusSchema,
+    handler: (args) => agentsMdStatus(AgentsMdStatusSchema.parse(args).project_path),
   },
   {
     name: "completion_checklist",

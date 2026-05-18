@@ -95,6 +95,24 @@ export async function startRun(input: StartRunInput): Promise<StartRunOutput> {
     log.warn({ err }, "loadProjectProfile failed at start_run");
   }
 
+  // Snapshot AGENTS.md / CLAUDE.md if present. The harness treats AGENTS.md as
+  // the cross-tool behavioral contract and CLAUDE.md as its Claude-specific
+  // import shim. We snapshot at run-start (rather than ensure-on-start) because
+  // ensuring is a finalize-time concern — the run might not need to touch
+  // either file, and the missability check (MC-21) prefers absence-as-evidence.
+  try {
+    const agentsPath = join(input.project_path, "AGENTS.md");
+    if (existsSync(agentsPath)) {
+      writeFileSync(join(dir, "agents_md_snapshot.md"), readFileSync(agentsPath, "utf8"), "utf8");
+    }
+    const claudePath = join(input.project_path, "CLAUDE.md");
+    if (existsSync(claudePath)) {
+      writeFileSync(join(dir, "claude_md_snapshot.md"), readFileSync(claudePath, "utf8"), "utf8");
+    }
+  } catch (err) {
+    log.warn({ err }, "AGENTS.md/CLAUDE.md snapshot failed at start_run");
+  }
+
   const headSha = await tryGitCommand(input.project_path, ["rev-parse", "HEAD"]);
   const dirty = await tryGitCommand(input.project_path, ["status", "--porcelain"]);
   const treeDirtyHash = dirty

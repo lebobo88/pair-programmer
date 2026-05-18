@@ -11,7 +11,7 @@
     "typecheck": "tsc --noEmit",
     "start": "node dist/index.js",
     "dev": "tsx watch src/index.ts",
-    "test": "npm run build && node test/smoke.mjs && node test/artifact-validators.smoke.mjs && node test/artifact-validators.unit.mjs && node test/tdd-parser.unit.mjs"
+    "test": "npm run build && node test/smoke.mjs && node test/artifact-validators.smoke.mjs && node test/artifact-validators.unit.mjs && node test/tdd-parser.unit.mjs && node test/agents-md.unit.mjs"
   },
   "engines": {
     "node": ">=20.0.0"

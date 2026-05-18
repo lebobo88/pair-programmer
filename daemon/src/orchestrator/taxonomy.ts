@@ -25,7 +25,7 @@ export const TAXONOMY_SECTIONS: TaxonomySection[] = [
   { id: "4.10", title: "Quality engineering and verification",                    default_artifact_kinds: ["test_strategy", "test_plan", "contract_tests", "performance_budget", "performance_profile"], master_plan_section: "15. Test and verification strategy" },
   { id: "4.11", title: "Delivery, environments, release, and change management", default_artifact_kinds: ["rollout_plan", "rollback_plan", "migration_runbook", "release_notes", "build_release_plan", "cert_submission_packet", "liveops_season_plan"], master_plan_section: "19. Launch, migration, and rollback plan" },
   { id: "4.12", title: "Observability, reliability, operations, and support",     default_artifact_kinds: ["slo_doc", "telemetry_taxonomy", "runbook", "alert_catalog"], master_plan_section: "16. Operations and support model" },
-  { id: "4.13", title: "Documentation, enablement, and knowledge management",     default_artifact_kinds: ["changelog", "release_notes", "runbook", "user_doc", "patch_notes", "post_mortem"], master_plan_section: "Appendices" },
+  { id: "4.13", title: "Documentation, enablement, and knowledge management",     default_artifact_kinds: ["changelog", "release_notes", "runbook", "user_doc", "patch_notes", "post_mortem", "agents_md", "claude_md"], master_plan_section: "Appendices" },
   { id: "4.14", title: "Team operating model, decision governance, and execution cadence", default_artifact_kinds: ["raci", "decision_log", "delivery_plan"], master_plan_section: "17. Team operating model and governance" },
   { id: "4.15", title: "AI and agentic system controls",                          default_artifact_kinds: ["ai_system_spec", "eval_suite", "tool_permission_matrix", "hitl_workflow"], master_plan_section: "Appendices" },
   { id: "4.16", title: "Deprecation, retirement, and lifecycle exit",             default_artifact_kinds: ["eol_plan", "migration_guide", "sunset_comms"], master_plan_section: "20. Deprecation and retirement plan" },
@@ -147,8 +147,10 @@ export function heuristicMapping(opts: {
   if (/\b(cert|trc|xr|lotcheck|submission|rating|iarc|esrb|pegi|usk|cero)\b/i.test(text)) add("4.11", "cert/submission-shaped request", "cert_submission_packet");
   if (/\b(post[-\s]?mortem|retrospective)\b/.test(text)) add("4.13", "post-mortem-shaped request", "post_mortem");
 
-  // Missability: every task owes 19 (decision-logging) at minimum.
-  const missability_required: string[] = ["decision-logging"];
+  // Missability: every task owes 19 (decision-logging) and 21 (AGENTS.md
+  // presence) at minimum. The latter is enforced by /pp:run step 5c's
+  // ensure_agents_md call; the check confirms it actually wrote the file.
+  const missability_required: string[] = ["decision-logging", "agents-md-present"];
   if (triage.scope !== "trivial") missability_required.push("nfrs-declared", "test-data-management");
   if (out.has("4.4")) missability_required.push("ui-error-empty-loading", "accessibility-localization");
   if (out.has("4.5")) missability_required.push("schema-evolution", "retention-deletion");

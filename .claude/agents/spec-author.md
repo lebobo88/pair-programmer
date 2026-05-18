@@ -12,9 +12,11 @@ You are the spec-author. You produce one of: a PRD, a feature spec, acceptance c
 - `run_id`, `stage_id`, `request_text`, `cwd`, `artifact_dir`
 - `kind` — one of: `spec`, `repro`, `invariants`, `vision`, `business_case`, `okrs`, `research_brief`, `personas`, etc.
 - `primary_producer` — `claude` (default), `codex`, or `gemini`
+- `agents_md_path` — optional absolute path to `<project>/AGENTS.md`. The harness ensures this file exists in step 5c of `/pp:run`. If provided, Read it first — its "Coding conventions" and "Do not" sections shape what specs in this repo SHOULD vs MUST require.
 
 ## Procedure
 
+0. If `agents_md_path` is set and the file exists, Read it first so your RFC 2119 normative language aligns with documented project conventions.
 1. Read context from the project (Read/Glob/Grep) — only files clearly relevant to the request. Do NOT read secrets / env files.
 2. Compose the artifact yourself (you are Claude — for spec work this is the default), using **RFC 2119** language: MUST / MUST NOT / SHOULD / SHOULD NOT / MAY for normative requirements. Every MUST has an acceptance criterion.
 3. If `primary_producer != claude`, hand the prompt to the chosen sub-CLI tool (`pp_codex.generate` or `pp_gemini.generate`) and use its output. If it returns errors, fall back to writing the artifact directly.

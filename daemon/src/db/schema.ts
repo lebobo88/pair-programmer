@@ -3,7 +3,7 @@
  * doesn't need a separate copy of the SQL file. Mirror this with
  * `daemon/src/db/schema.sql` for human-readable reference.
  */
-export const SCHEMA_VERSION = 5;
+export const SCHEMA_VERSION = 6;
 
 export const SCHEMA_SQL = `
 PRAGMA journal_mode = WAL;
@@ -117,6 +117,21 @@ CREATE TABLE IF NOT EXISTS master_plan_patches (
   new_sha             TEXT NOT NULL,
   applied_at          TEXT NOT NULL
 );
+
+-- v6: AGENTS.md patch audit trail. Mirrors master_plan_patches; one row per
+-- write to <project>/AGENTS.md by the harness, including 'noop_already_applied'
+-- rows for idempotent retries. The section column is one of AGENTS_MD_SECTIONS
+-- (see agents-md-template.ts).
+CREATE TABLE IF NOT EXISTS agents_md_patches (
+  id                  TEXT PRIMARY KEY,
+  run_id              TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+  section             TEXT NOT NULL,
+  kind                TEXT NOT NULL,
+  prev_sha            TEXT,
+  new_sha             TEXT NOT NULL,
+  applied_at          TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_agents_md_patches_run ON agents_md_patches(run_id);
 
 CREATE TABLE IF NOT EXISTS budgets (
   scope               TEXT PRIMARY KEY,

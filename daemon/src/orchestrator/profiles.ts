@@ -92,7 +92,23 @@ export type ProfileSpec = {
   required_validators_strict?: string[];
   // Tier-aware Claude delegation policy. See ModelTierPolicy above.
   model_tier_policy?: ModelTierPolicy;
+  // Profile-specific seed content for AGENTS.md (the cross-tool behavioral
+  // contract /pp:run step 5c scaffolds via ensure_agents_md). The harness
+  // passes these through verbatim to mcp__pp_harness__ensure_agents_md so
+  // profile-flavored projects get profile-flavored AGENTS.md from day one.
+  // Conventions and build_commands append to the canonical sections;
+  // extra_sections add new top-level headings below the managed block.
+  agents_md_template?: AgentsMdProfileTemplate;
   notes?: string;
+};
+
+export type AgentsMdProfileTemplate = {
+  /** Build / test / lint command hints — bullets appended to AGENTS.md "Build and test commands". */
+  build_commands?: string[];
+  /** Profile-flavored conventions — bullets appended to AGENTS.md "Coding conventions". */
+  conventions?: string[];
+  /** Extra top-level sections appended below the canonical six. */
+  extra_sections?: Array<{ heading: string; body: string }>;
 };
 
 /**
@@ -139,6 +155,7 @@ export function resolveProfile(spec: ProfileSpec, seen: Set<string> = new Set())
       ...(resolvedBase.required_validators_strict ?? []),
     ]);
     merged.model_tier_policy = mergeModelTierPolicy(merged.model_tier_policy, resolvedBase.model_tier_policy);
+    merged.agents_md_template = mergeAgentsMdTemplate(merged.agents_md_template, resolvedBase.agents_md_template);
   }
 
   // Spec's own values win over inherited.
@@ -162,9 +179,22 @@ export function resolveProfile(spec: ProfileSpec, seen: Set<string> = new Set())
     ...(spec.required_validators_strict ?? []),
   ]);
   merged.model_tier_policy = mergeModelTierPolicy(merged.model_tier_policy, spec.model_tier_policy);
+  merged.agents_md_template = mergeAgentsMdTemplate(merged.agents_md_template, spec.agents_md_template);
   if (spec.notes) merged.notes = spec.notes;
 
   return merged;
+}
+
+function mergeAgentsMdTemplate(
+  a: AgentsMdProfileTemplate | undefined,
+  b: AgentsMdProfileTemplate | undefined,
+): AgentsMdProfileTemplate | undefined {
+  if (!a && !b) return undefined;
+  return {
+    build_commands: uniq([...(a?.build_commands ?? []), ...(b?.build_commands ?? [])]),
+    conventions:    uniq([...(a?.conventions    ?? []), ...(b?.conventions    ?? [])]),
+    extra_sections: [...(a?.extra_sections ?? []), ...(b?.extra_sections ?? [])],
+  };
 }
 
 /**
@@ -249,6 +279,20 @@ export const BUILTIN_PROFILES: Record<ProfileName, ProfileSpec> = {
       "browser-validation-evidence",
     ],
     runtime_smoke_test: { enabled: true, port: 0, routes: ["/"], timeout_ms: 60000 },
+    agents_md_template: {
+      build_commands: [
+        "`npm install` / `pnpm install` (use the lockfile that's present)",
+        "`npm run dev` — Vite/Next/Remix dev server. Honor `PORT=0` for ephemeral ports.",
+        "`npm run build` before considering a change ready.",
+        "`npm test` — unit + integration. Add Playwright/visual-regression if the change is UI-shaped.",
+      ],
+      conventions: [
+        "Every UI component handles all 8 states: default, hover, focus, active, loading, empty, error, disabled.",
+        "WCAG 2.2 AA is the floor: visible focus rings, semantic landmarks, alt text, contrast ≥ 4.5:1.",
+        "Localization-ready by default: no hardcoded user-facing strings, RTL-safe layout.",
+        "Component preview state matrix in the design-system file when adding shared components.",
+      ],
+    },
   },
   "api-platform": {
     name: "api-platform",
@@ -258,6 +302,19 @@ export const BUILTIN_PROFILES: Record<ProfileName, ProfileSpec> = {
     required_artifacts: ["openapi"],
     required_missability_checks: ["third-party-failure"],
     runtime_smoke_test: { enabled: false },
+    agents_md_template: {
+      build_commands: [
+        "Contract-first: edit `openapi.yaml` (or `asyncapi.yaml`) before touching handler code.",
+        "`npx @redocly/cli lint openapi.yaml` — fail the change if the contract doesn't lint.",
+        "`npm test` runs contract-tests; new endpoints need a contract test before merge.",
+      ],
+      conventions: [
+        "All endpoints return the standard error envelope (`{ code, message, request_id }`).",
+        "Versioning: breaking changes ship under a new `/vN` prefix; deprecate-don't-delete the old surface.",
+        "Document third-party-failure modes (quota, rate-limit, outage) for every external call — circuit-break + backoff.",
+        "Idempotency keys on every POST that creates state.",
+      ],
+    },
   },
   "internal-tool": {
     name: "internal-tool",
@@ -266,6 +323,13 @@ export const BUILTIN_PROFILES: Record<ProfileName, ProfileSpec> = {
     required_rubrics: { ux: "rfc-2119-normative@1" },
     required_artifacts: ["audit_log_spec"],
     runtime_smoke_test: { enabled: true, port: 0, routes: ["/"], timeout_ms: 60000 },
+    agents_md_template: {
+      conventions: [
+        "Every privileged action writes an audit-log entry: `{ actor, target, action, before, after, ts }`.",
+        "Workflow-fit beats polish: prefer keyboard shortcuts + dense tables over marketing-grade UI.",
+        "Manual override paths and escalation routes are first-class — the happy path is rarely enough for ops.",
+      ],
+    },
   },
   "enterprise": {
     name: "enterprise",
@@ -296,6 +360,22 @@ export const BUILTIN_PROFILES: Record<ProfileName, ProfileSpec> = {
       scope_adjust: { trivial: 0, standard: 0, major: 0 },
     },
     notes: "Enterprise profile forces cross-vendor on every gate via gate_eligible_judges. Tier policy pins security/spec stages to opus and disables trivial-scope downshift.",
+    agents_md_template: {
+      conventions: [
+        "Every change ships with an SBOM update (CycloneDX or SPDX) and a signed-artifact entry.",
+        "PIA / DPIA required for any change that touches personal data, even read paths.",
+        "Cross-vendor judging is mandatory on every gate — do not propose disabling it.",
+      ],
+      extra_sections: [
+        {
+          heading: "Compliance reminders",
+          body:
+            "- Secrets never enter logs, error messages, or audit-log payloads.\n" +
+            "- Retention windows are documented per data class; default-retain is forbidden.\n" +
+            "- Decision logs (ADRs) for every architectural choice; tradeoffs section must list at least two alternatives.",
+        },
+      ],
+    },
   },
   "ai-agentic": {
     name: "ai-agentic",
@@ -311,6 +391,23 @@ export const BUILTIN_PROFILES: Record<ProfileName, ProfileSpec> = {
     ],
     required_missability_checks: ["ai-evals-hitl"],
     runtime_smoke_test: { enabled: true, port: 0, routes: ["/"], timeout_ms: 60000 },
+    agents_md_template: {
+      conventions: [
+        "Every model/tool boundary documents tool permissions, sandbox, network, filesystem reach.",
+        "HITL escalation rules are explicit: which actions auto-execute, which require human review, who is paged.",
+        "Eval suite is the spec — adding capability without eval coverage is forbidden.",
+        "Data-egress review for any change that ships user data to a model provider.",
+      ],
+      extra_sections: [
+        {
+          heading: "AI behavior contract",
+          body:
+            "- The agent never silently retries a failed tool — it surfaces the failure and asks for guidance.\n" +
+            "- Hallucination guardrails: cite sources for any factual claim; refuse-with-explanation when uncertain.\n" +
+            "- Tool-permission matrix lives in `docs/tool-permissions.md` and is the source of truth for sandbox capabilities.",
+        },
+      ],
+    },
   },
   "mobile": {
     name: "mobile",
@@ -325,6 +422,19 @@ export const BUILTIN_PROFILES: Record<ProfileName, ProfileSpec> = {
     ],
     required_missability_checks: ["rollout-reversibility", "operational-ownership", "browser-validation-evidence"],
     runtime_smoke_test: { enabled: true, port: 0, routes: ["/"], timeout_ms: 90000 },
+    agents_md_template: {
+      build_commands: [
+        "iOS: `xcodebuild -scheme <App> -destination 'platform=iOS Simulator,name=iPhone 15'`.",
+        "Android: `./gradlew :app:assembleDebug` then `:app:installDebug`.",
+        "Cross-platform: respect the project's chosen toolchain (Expo, RN-cli, Flutter) — do not switch toolchains as a side-effect.",
+      ],
+      conventions: [
+        "Offline-first: every screen has a defined offline state (cached / empty / error / retry).",
+        "Permission UX is explicit: pre-prompt explains why before triggering the system dialog.",
+        "Crash reporting is wired before launch; symbolicated stacks required for store submissions.",
+        "Store-rollout plan (phased %, kill-switch, version-pin) for every release.",
+      ],
+    },
   },
   "sdk": {
     name: "sdk",
@@ -334,6 +444,14 @@ export const BUILTIN_PROFILES: Record<ProfileName, ProfileSpec> = {
     required_artifacts: ["semver_policy", "deprecation_policy", "sample_app"],
     required_missability_checks: ["deprecation-sunset"],
     runtime_smoke_test: { enabled: false },
+    agents_md_template: {
+      conventions: [
+        "SemVer is non-negotiable: breaking changes bump major, period.",
+        "Deprecation: 2 minor versions of warning before removal, with a working migration path documented in the changelog.",
+        "Every public symbol has a sample-app entry exercising it — if no sample uses the symbol, it's not public yet.",
+        "API surface stability: no \"experimental\" public exports — gate them behind a `_unstable` namespace.",
+      ],
+    },
   },
   "data-product": {
     name: "data-product",
@@ -343,6 +461,14 @@ export const BUILTIN_PROFILES: Record<ProfileName, ProfileSpec> = {
     required_artifacts: ["metric_dictionary", "lineage_map", "freshness_sla"],
     required_missability_checks: ["analytics-semantics", "schema-evolution"],
     runtime_smoke_test: { enabled: false },
+    agents_md_template: {
+      conventions: [
+        "Every metric/event has owner, business definition, lineage upstream, and a freshness SLA.",
+        "Schema evolution: additive-only for production tables; renames go through a dual-write window.",
+        "PII columns are tagged; retention/deletion procedures are documented per-column, not per-table.",
+        "Reconciliation plan for every pipeline — `count_in == count_out` checks are the floor, not the ceiling.",
+      ],
+    },
   },
   "embedded": {
     name: "embedded",
@@ -351,6 +477,18 @@ export const BUILTIN_PROFILES: Record<ProfileName, ProfileSpec> = {
     required_artifacts: ["device_lifecycle", "fleet_update_plan", "failure_safe_policy"],
     required_missability_checks: ["rollout-reversibility", "operational-ownership"],
     runtime_smoke_test: { enabled: false },
+    agents_md_template: {
+      build_commands: [
+        "Cross-compile targets are pinned in the build manifest — do not switch targets as a side-effect.",
+        "Image artifact is the deliverable: every change should produce a reproducible image hash.",
+      ],
+      conventions: [
+        "Fleet-update plan covers staged rollout, rollback, and bricked-device recovery.",
+        "Failure-safe defaults: every actuator has a safe-state and watchdog timeout.",
+        "Edge-observability spec lists what gets reported up vs. what stays local (bandwidth budget matters).",
+        "No GUI assumptions — the device may run headless. Logs are the UX.",
+      ],
+    },
   },
   "non-ui-cli": {
     name: "non-ui-cli",
@@ -359,6 +497,14 @@ export const BUILTIN_PROFILES: Record<ProfileName, ProfileSpec> = {
     required_artifacts: ["runbook", "retry_backoff_doc"],
     required_missability_checks: ["supportability"],
     runtime_smoke_test: { enabled: false },
+    agents_md_template: {
+      conventions: [
+        "Every command exits non-zero on failure with a clear stderr message; never log+swallow.",
+        "Correlation IDs in every log line; structured logging (JSON) is the default.",
+        "Retry-with-backoff for transient failures; idempotency for any operation that could be retried.",
+        "Runbook covers normal ops, common failure modes, and escalation contacts — not just installation.",
+      ],
+    },
   },
   // ─── Game-dev family ─────────────────────────────────────────────────
   "game-dev": {
@@ -398,6 +544,22 @@ export const BUILTIN_PROFILES: Record<ProfileName, ProfileSpec> = {
       },
     },
     notes: "Base profile — engine sub-mode (game-dev-unity / -unreal / -godot / -web / -custom) selects the right gotcha-pack and additional artifact requirements. Detect_profile sets console-cert/live-service/online/voice flags from build config + spec keywords + middleware presence; the driver applies them via gate_eligible_judges and missability_required.",
+    agents_md_template: {
+      conventions: [
+        "Frame budget is the contract: every system declares its ms-per-frame target on its target platform.",
+        "Save-data writes are atomic (temp-file + rename); save format carries a version field with a migration path.",
+        "Accessibility (GAG / XAG / APX) is in-scope from day one: subtitles, remappable controls, color-blind palette.",
+        "Localization-ready: no hardcoded UI strings, no text baked into textures, runtime language switch without restart.",
+        "Asset pipeline is canonical — do not commit binaries outside the registered art/audio paths.",
+      ],
+      extra_sections: [
+        {
+          heading: "Performance evidence",
+          body:
+            "Every perf-tagged stage attaches a capture from the engine's profiler (Unity Profiler / Unreal Insights / RenderDoc / PIX / Razor). \"It feels fast\" is not evidence.",
+        },
+      ],
+    },
   },
   "game-dev-unity": {
     name: "game-dev-unity",
@@ -407,6 +569,18 @@ export const BUILTIN_PROFILES: Record<ProfileName, ProfileSpec> = {
     required_missability_checks: ["save-data-atomicity", "language-switch-ux"],
     runtime_smoke_test: { enabled: false },
     notes: "Engineer + technical-artist + game-ai-programmer agents read .claude/gotchas/unity.md before composing. When build config targets iOS/Android, layer `mobile` profile; the detector sets mobile-target=true and the driver merges accordingly.",
+    agents_md_template: {
+      build_commands: [
+        "Open the project in the Unity Editor version pinned in `ProjectSettings/ProjectVersion.txt`. Do not auto-upgrade.",
+        "CLI build: `Unity -batchmode -quit -projectPath . -executeMethod Build.Player`.",
+      ],
+      conventions: [
+        "ScriptableObjects for data; MonoBehaviours for behavior; no data in scenes.",
+        "Addressables for any asset loaded at runtime — no `Resources.Load`.",
+        "asmdef boundaries are enforced; new modules get their own asmdef with explicit references.",
+        "URP/HDRP/Built-in is a one-time choice per project — do not mix render pipelines.",
+      ],
+    },
   },
   "game-dev-unreal": {
     name: "game-dev-unreal",
@@ -416,6 +590,18 @@ export const BUILTIN_PROFILES: Record<ProfileName, ProfileSpec> = {
     required_missability_checks: ["save-data-atomicity", "language-switch-ux"],
     runtime_smoke_test: { enabled: false },
     notes: "Engineer + technical-artist + netcode-programmer + game-ai-programmer agents read .claude/gotchas/unreal-5.md. World-partition open-world projects also require a world_partition_plan artifact (driver enforces when open-world tag present).",
+    agents_md_template: {
+      build_commands: [
+        "Engine version is pinned in `.uproject`. Use UnrealBuildTool: `Engine\\Build\\BatchFiles\\Build.bat <Target> Win64 Development`.",
+        "Cooked builds: `RunUAT BuildCookRun -project=… -platform=Win64 -clientconfig=Development -build -cook -stage -package`.",
+      ],
+      conventions: [
+        "Replicated abilities use GAS (Gameplay Ability System); no ad-hoc replication.",
+        "DataAssets / PrimaryDataAssets for config; no magic numbers in C++ headers.",
+        "Lumen + Nanite + World Partition is a per-project decision; once chosen, do not partially opt out without an ADR.",
+        "Blueprints for designers, C++ for systems; mixed-mode classes (BP-extends-C++) document why.",
+      ],
+    },
   },
   "game-dev-godot": {
     name: "game-dev-godot",
@@ -425,6 +611,17 @@ export const BUILTIN_PROFILES: Record<ProfileName, ProfileSpec> = {
     required_missability_checks: ["save-data-atomicity", "language-switch-ux"],
     runtime_smoke_test: { enabled: false },
     notes: "Engineer + game-ai-programmer agents read .claude/gotchas/godot-4.md. Scene+resource colocation is mandatory; refuses to emit scenes without their exclusive resources in the same folder.",
+    agents_md_template: {
+      build_commands: [
+        "Export presets live in `export_presets.cfg`. Use `godot --headless --export-release \"<Preset>\" <output>` for CI.",
+      ],
+      conventions: [
+        "Scenes-first: behavior composes from `.tscn` + `.gd` + colocated `.tres` resources, all in the same folder.",
+        "Autoloads for cross-scene singletons; custom Resource classes for shared data.",
+        "GDScript for gameplay; C# for perf-critical paths. Note: C# web export not supported in Godot 4 — choose deliberately.",
+        "Signals over polling; do not store node references across scene reloads.",
+      ],
+    },
   },
   "game-dev-web": {
     name: "game-dev-web",
@@ -433,6 +630,14 @@ export const BUILTIN_PROFILES: Record<ProfileName, ProfileSpec> = {
     required_missability_checks: ["save-data-atomicity"],
     runtime_smoke_test: { enabled: true, port: 0, routes: ["/"], timeout_ms: 60000 },
     notes: "Engineer + technical-artist read .claude/gotchas/web-engines.md (covers Babylon.js NodeMaterials, three.js renderer/scene-graph/postprocessing, shared web-engine perf). Browser-validator and visual-regression-runner stages inherited from web-ui apply unchanged.",
+    agents_md_template: {
+      conventions: [
+        "Frame budget on browsers is ~16.6ms — GC pauses are the silent killer; pool aggressively.",
+        "Asset streaming via fetch + IndexedDB; never block first paint on the entire asset bundle.",
+        "WebGL/WebGPU choice is per-project; do not feature-detect and silently downgrade renderer behavior.",
+        "Postprocessing stacks have a measured cost — every pass justifies itself in the perf capture.",
+      ],
+    },
   },
   "game-dev-custom": {
     name: "game-dev-custom",
@@ -441,6 +646,12 @@ export const BUILTIN_PROFILES: Record<ProfileName, ProfileSpec> = {
     required_missability_checks: ["save-data-atomicity"],
     runtime_smoke_test: { enabled: false },
     notes: "If .harness/engine-conventions.md is missing, the engineer agent surfaces a clear error rather than guessing engine idioms. Bevy projects typically use ECS-first patterns; GameMaker uses GML + room/object model. The harness ships .claude/gotchas/{bevy,gamemaker,custom}.md as starter packs.",
+    agents_md_template: {
+      conventions: [
+        "Engine conventions live in `.harness/engine-conventions.md` — that file is the source of truth, not Claude's priors.",
+        "If you don't have a documented engine convention for a question, ask the user rather than guessing.",
+      ],
+    },
   },
 };
 

@@ -31,6 +31,7 @@ Paths interact differently with the tier system:
 When `attempted_tier` is present, pass it through to `mcp__pp_harness__record_attempt` so cost-by-tier analytics and `/pp:replay` work correctly. Omit on Path B/C.
 - `seed` — optional diversification hint for best-of-N (e.g. `"primary"`, `"devils-advocate"`, `"failing-test-first"`, `"terse-diff"`). Steer your prompt phrasing accordingly when set.
 - `attempt_slot_id` — pre-allocated id from `start_best_of_stage`. Pass to `record_attempt` so the daemon links the attempt to its candidate slot.
+- `agents_md_path` — optional absolute path to `<project>/AGENTS.md`. The harness ensures this file exists in step 5c of `/pp:run`. If provided, READ IT FIRST (before any other Read/Glob) — it is the project's cross-tool behavioral contract: build commands, conventions, what-not-to-do. Conventions in AGENTS.md beat your priors; the request_text beats AGENTS.md only when they conflict and the user is explicit. If absent on disk, continue without it.
 
 ## Procedure
 
@@ -38,6 +39,7 @@ When `attempted_tier` is present, pass it through to `mcp__pp_harness__record_at
 
 You ARE Claude. No external CLI call is needed; you author code directly using your native tools.
 
+0. **Load project conventions.** If `agents_md_path` is set and the file exists, Read it. Internalize its "Build and test commands", "Coding conventions", and "Do not" sections before writing code.
 1. **Read what you need.** Read/Glob/Grep against `cwd` (and the project root if helpful) to ground the change.
 2. **Author files.** Use Write and Edit to create or modify files inside `cwd`. Use Bash for `mkdir`, `npm init`, etc., scoped to `cwd`.
 3. **Apply the seed.** If `seed="devils-advocate"`, deliberately choose a different framing or stack from what the obvious answer would suggest. If `seed="failing-test-first"`, write the failing test before the implementation. If `seed="terse-diff"`, prefer minimal change over greenfield.
