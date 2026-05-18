@@ -53,6 +53,9 @@ export type RubricSelection = string | null;
 const ARTIFACT_KIND_RUBRICS: Record<string, RubricSelection> = {
   openapi: "openapi-3.1-stability@1",
   asyncapi: "asyncapi-3.1-stability@1",
+  supabase: "supabase-contract-stability@1",
+  supabase_contract: "supabase-contract-stability@1",
+  postgrest: "supabase-contract-stability@1",
   screen_state_matrix: "wcag-2.2-aa@1",
   browser_validation_report: "web-runtime-validation@2",
   test_strategy: null,
@@ -224,16 +227,19 @@ export function evaluateGate(opts: {
     base_tier: base,
     upgraded,
     reason,
-    rubric_id: pickDefaultRubric(opts.gate_type, opts.profile, opts.artifact_kind, opts.rubric_hint),
+    rubric_id: pickDefaultRubric(opts.gate_type, opts.profile, opts.artifact_kind, opts.rubric_hint, opts.prompt_keywords),
   };
 }
 
 /** Phase 6 expands this with the full 13-rubric registry. Phase 2 ships defaults. */
+const SUPABASE_HINT_RE = /\b(supabase|postgrest|row[\s_-]?level[\s_-]?security|\brls\b|auth\.uid\(\))/i;
+
 function pickDefaultRubric(
   gate_type: GateType,
   profile?: Profile | null,
   artifact_kind?: string | null,
   rubric_hint?: string | null,
+  prompt_keywords?: string,
 ): RubricSelection {
   const hinted = normalizeRubricHint(rubric_hint);
   if (hinted) return hinted;
@@ -244,6 +250,10 @@ function pickDefaultRubric(
     Object.prototype.hasOwnProperty.call(ARTIFACT_KIND_RUBRICS, normalizedKind)
   ) {
     return ARTIFACT_KIND_RUBRICS[normalizedKind] ?? null;
+  }
+
+  if (gate_type === "contract" && prompt_keywords && SUPABASE_HINT_RE.test(prompt_keywords)) {
+    return "supabase-contract-stability@1";
   }
 
   if (gate_type === "security")                  return profile === "enterprise" ? "owasp-asvs-l2@1" : "owasp-asvs-l1@1";

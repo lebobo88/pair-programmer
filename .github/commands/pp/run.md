@@ -72,6 +72,8 @@ mcp__pp_harness__archive_artifact({
 
 The `trace` array records which layer set the final tier ("frontmatter", "team_yaml", "scope_adjust", "profile_per_stage", "profile_cap", "cli_cap", "cli_floor"). The retry path appends a `retry` entry per stage that escalates (see step 6).
 
+5c. **Ensure AGENTS.md / CLAUDE.md.** Call `mcp__pp_harness__ensure_agents_md({ project_path: <cwd>, profile: profile?.name, also_claude_md: true, conventions: profile?.agents_md_template?.conventions, build_commands: profile?.agents_md_template?.build_commands, extra_sections: profile?.agents_md_template?.extra_sections })`. This is idempotent: existing files are not touched. The resulting AGENTS.md is the cross-tool behavioral contract every sub-agent (engineer, spec-author, architect, security-reviewer, docs-author) MUST read before producing artifacts. CLAUDE.md is its Claude-specific shim (one-line `@AGENTS.md` import plus Claude-Code-only add-ons). Both files are snapshotted into `<run>/agents_md_snapshot.md` and `<run>/claude_md_snapshot.md` automatically by `start_run`. Pass `agents_md_path: <cwd>/AGENTS.md` into every downstream Task() invocation so sub-agents know where to read it from.
+
 6. **Stage loop.** Pick the stage set by triage class:
    - `trivial` → just `code` (or `docs` if the request is doc-shaped).
    - `standard` → `spec` → `code` → `tests` → `docs`.
@@ -138,6 +140,8 @@ The `trace` array records which layer set the final tier ("frontmatter", "team_y
 7. **Missability.** Use the Task tool to invoke `missability-inspector`. It calls `mcp__pp_harness__run_missability_checks(run_id, required_check_ids=<from step 5>)`. If any check returns `fail`, set `final_status="surfaced"` and skip to step 9.
 
 8. **Master-plan patch.** Use the Task tool to invoke `master-plan-patcher`. It calls `ensure_master_plan` then patches per touched section. Set `final_status="complete"`.
+
+8b. **AGENTS.md sync.** If the master-plan-patcher touched any of sections 11 (architecture), 12 (interfaces), 13 (engineering standards), or 14 (security), use the Task tool to invoke `agents-md-author`. It reads the patched PROJECT_MASTER.md sections, distills them into AGENTS.md's "Coding conventions" / "Workflow rules" / "Do not" sections via `mcp__pp_harness__apply_agents_md_patch`, and appends a one-line entry to "Notes from the harness" with the run id. If no relevant sections were patched, skip this step. The agents-md-author is idempotent — re-runs on the same run id no-op.
 
 9. **Finalize.** Use the Task tool to invoke `run-finalizer` with `run_id`, `project_path`, `final_status`, `mode="single"`. The finalizer writes `run.summary.md`, calls `finalize_run`, and returns `{ ok, run_id, status, summary_path, master_plan_path, patches_applied }`.
 

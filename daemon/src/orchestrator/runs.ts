@@ -357,6 +357,7 @@ export type StageFinalizeNextAction =
   | "run_tdd_pre_check"
   | "run_tdd_post_check"
   | "run_artifact_validate"
+  | "retry_with_critique"
   | "retry_or_surface"
   | "surface_stage";
 
@@ -382,7 +383,19 @@ export type StageFinalizeArtifactBlocker = {
   check: ArtifactValidationRow | null;
 };
 
-export type StageFinalizeBlocker = StageFinalizeTddBlocker | StageFinalizeArtifactBlocker;
+export type StageFinalizeVerdictBlocker = {
+  gate: "verdict";
+  next_action: "retry_with_critique" | "surface_stage";
+  message: string;
+  attempt_id: string;
+  verdict_id: string;
+  outcome: VerdictOutcome;
+};
+
+export type StageFinalizeBlocker =
+  | StageFinalizeTddBlocker
+  | StageFinalizeArtifactBlocker
+  | StageFinalizeVerdictBlocker;
 
 export type StageFinalizeReadiness = {
   stage_id: string;
@@ -403,6 +416,19 @@ export class TddGateViolation extends Error {
   ) {
     super(message);
     this.name = "TddGateViolation";
+  }
+}
+
+export class VerdictGateViolation extends Error {
+  constructor(
+    message: string,
+    public readonly stage_id: string,
+    public readonly attempt_id: string,
+    public readonly verdict_id: string,
+    public readonly outcome: VerdictOutcome,
+  ) {
+    super(message);
+    this.name = "VerdictGateViolation";
   }
 }
 
@@ -457,6 +483,33 @@ export function getStageFinalizeReadiness(stage_id: string): StageFinalizeReadin
     }
   }
 
+  // Verdict gate. Prior to this check, getStageFinalizeReadiness could
+  // greenlight finalize_passed on a stage whose judge had returned
+  // outcome='fail' as long as no required validator blocked. That allowed
+  // failed judgments to be silently buried under "passed". Refuse to mark a
+  // stage 'passed' when the most recent verdict on the stage is a fail,
+  // unless a subsequent Reflexion retry attempt produced a pass.
+  const latestVerdict = db()
+    .prepare(
+      `SELECT v.id AS verdict_id, v.outcome AS outcome, a.id AS attempt_id, v.created_at AS created_at
+         FROM verdicts v
+         JOIN attempts a ON a.id = v.attempt_id
+        WHERE a.stage_id = ?
+        ORDER BY v.created_at DESC LIMIT 1`,
+    )
+    .get(stage_id) as
+      | { verdict_id: string; outcome: VerdictOutcome; attempt_id: string; created_at: number }
+      | undefined;
+
+  if (latestVerdict && latestVerdict.outcome === "fail") {
+    blockers.push(buildVerdictFinalizeBlocker({
+      stage_id,
+      verdict_id: latestVerdict.verdict_id,
+      attempt_id: latestVerdict.attempt_id,
+      outcome: latestVerdict.outcome,
+    }));
+  }
+
   const can_pass = blockers.length === 0;
   return {
     stage_id,
@@ -488,6 +541,15 @@ export function finalizeStage(input: FinalizeStageInput): void {
           input.stage_id,
           blocker.phase,
           blocker.check,
+        );
+      }
+      if (blocker.gate === "verdict") {
+        throw new VerdictGateViolation(
+          blocker.message,
+          input.stage_id,
+          blocker.attempt_id,
+          blocker.verdict_id,
+          blocker.outcome,
         );
       }
       throw new ValidatorGateViolation(
@@ -549,6 +611,27 @@ function buildTddFinalizeBlocker(opts: {
     message,
     check: opts.check,
     prior_stage_id: opts.prior_stage_id,
+  };
+}
+
+function buildVerdictFinalizeBlocker(opts: {
+  stage_id: string;
+  verdict_id: string;
+  attempt_id: string;
+  outcome: VerdictOutcome;
+}): StageFinalizeVerdictBlocker {
+  return {
+    gate: "verdict",
+    next_action: "retry_with_critique",
+    attempt_id: opts.attempt_id,
+    verdict_id: opts.verdict_id,
+    outcome: opts.outcome,
+    message:
+      `finalize_stage refused: stage ${opts.stage_id} cannot be marked 'passed' ` +
+      `because the most recent verdict on the stage is outcome='${opts.outcome}' ` +
+      `(verdict_id=${opts.verdict_id}, attempt_id=${opts.attempt_id}). ` +
+      `Call mcp__pp_harness__retry_with_critique to run the Reflexion ×1 retry, ` +
+      `or finalize the stage with status='surfaced' to ship the failure intact.`,
   };
 }
 
@@ -726,7 +809,8 @@ export type ArchiveArtifactInput = {
   taxonomy_section?: string;
   kind?: string;
   relative_path: string;       // relative to <project>/.harness/<run_id>/
-  bytes: string;               // utf-8 text content
+  bytes: string;               // utf-8 text content (default), or base64 when encoding='base64'
+  encoding?: "utf8" | "base64"; // declare base64 explicitly; omitting triggers smell-reject heuristic
   force_overwrite?: boolean;   // allow clobber when manual edits would otherwise block
 };
 export type ArchiveArtifactOk = {
@@ -749,6 +833,45 @@ export class ArchiveArtifactPathError extends Error {
     super(message);
     this.name = "ArchiveArtifactPathError";
   }
+}
+
+export class ArchiveArtifactEncodingError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ArchiveArtifactEncodingError";
+  }
+}
+
+const BASE64_STRICT_RE = /^[A-Za-z0-9+/]+={0,2}$/;
+
+/** Heuristic: returns true if `s` looks like base64-encoded text that the
+ * caller forgot to flag with encoding='base64'. We deliberately err toward
+ * false positives only when the evidence is strong — long, strictly base64
+ * alphabet, length divisible by 4, AND a high share of the decoded bytes
+ * are non-printable. False negatives are fine (they archive intact); false
+ * positives that wrongly reject legitimate UTF-8 text are not. */
+function smellsLikeBase64(s: string): boolean {
+  const stripped = s.replace(/\s+/g, "");
+  if (stripped.length < 200) return false;
+  if (stripped.length % 4 !== 0) return false;
+  if (!BASE64_STRICT_RE.test(stripped)) return false;
+  // Decode the first chunk and look at byte printability.
+  let decoded: Buffer;
+  try {
+    decoded = Buffer.from(stripped.slice(0, 1024), "base64");
+  } catch {
+    return false;
+  }
+  if (decoded.length === 0) return false;
+  let nonPrintable = 0;
+  for (const b of decoded) {
+    // Tab, LF, CR are fine; otherwise printable ASCII range 0x20..0x7e.
+    if (b === 0x09 || b === 0x0a || b === 0x0d) continue;
+    if (b < 0x20 || b > 0x7e) nonPrintable++;
+  }
+  // If >15% of decoded bytes are non-printable, it's probably not innocent
+  // UTF-8 text that happened to look base64-shaped.
+  return nonPrintable / decoded.length > 0.15;
 }
 
 /** Returns absolute paths of all candidate worktrees referenced by any
@@ -782,7 +905,35 @@ function isInside(child: string, parent: string): boolean {
 }
 
 export function archiveArtifact(input: ArchiveArtifactInput): ArchiveArtifactOutput {
-  const matches = scanForSecrets(input.bytes);
+  // Encoding handling. Default is utf8 — write `input.bytes` verbatim. When
+  // encoding='base64' is set, decode first. When encoding is omitted, run a
+  // smell heuristic and refuse rather than silently corrupting the artifact:
+  // historical bug — Claude sub-agents would base64-encode payloads without
+  // declaring it, and the daemon wrote the literal base64 string to disk.
+  let payload: string | Buffer = input.bytes;
+  if (input.encoding === "base64") {
+    const stripped = input.bytes.replace(/\s+/g, "");
+    if (!BASE64_STRICT_RE.test(stripped) || stripped.length % 4 !== 0) {
+      throw new ArchiveArtifactEncodingError(
+        `archive_artifact: encoding='base64' but bytes is not valid base64 ` +
+        `(non-base64 characters or length not a multiple of 4).`,
+      );
+    }
+    payload = Buffer.from(stripped, "base64");
+  } else if (smellsLikeBase64(input.bytes)) {
+    throw new ArchiveArtifactEncodingError(
+      `archive_artifact: bytes appears to be base64-encoded but encoding was not declared. ` +
+      `Pass encoding='base64' explicitly to decode before writing, or send plain UTF-8 ` +
+      `as bytes. (This guard prevents the prior data-corruption bug where sub-agents ` +
+      `base64-encoded markdown payloads and the daemon wrote the literal base64 string.)`,
+    );
+  }
+
+  // Secrets scan runs against the actual payload (decoded if base64).
+  const scanInput = typeof payload === "string"
+    ? payload
+    : payload.toString("utf8");
+  const matches = scanForSecrets(scanInput);
   if (matches.length > 0) {
     throw new SecretsFoundError(matches);
   }
@@ -823,7 +974,7 @@ export function archiveArtifact(input: ArchiveArtifactInput): ArchiveArtifactOut
       .prepare(`SELECT sha256 FROM artifacts WHERE run_id = ? AND path = ? ORDER BY created_at DESC LIMIT 1`)
       .get(input.run_id, relPath) as { sha256: string } | undefined;
     if (prior) {
-      const onDisk = readFileSync(absolute, "utf8");
+      const onDisk = readFileSync(absolute);
       const currentSha = createHash("sha256").update(onDisk).digest("hex");
       if (currentSha !== prior.sha256) {
         return {
@@ -841,9 +992,13 @@ export function archiveArtifact(input: ArchiveArtifactInput): ArchiveArtifactOut
   }
 
   mkdirSync(join(absolute, "..").replace(/\\$/, ""), { recursive: true });
-  writeFileSync(absolute, input.bytes, "utf8");
+  if (typeof payload === "string") {
+    writeFileSync(absolute, payload, "utf8");
+  } else {
+    writeFileSync(absolute, payload);
+  }
 
-  const sha256 = createHash("sha256").update(input.bytes).digest("hex");
+  const sha256 = createHash("sha256").update(payload).digest("hex");
   const size = statSync(absolute).size;
 
   const id = `artifact_${nanoid(10)}`;

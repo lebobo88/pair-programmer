@@ -154,6 +154,11 @@ const ArchiveArtifactSchema = z.object({
   kind:             z.string().optional(),
   relative_path:    z.string().min(1),
   bytes:            z.string(),
+  // Default "utf8" preserves prior behavior. Pass "base64" if `bytes` is
+  // base64-encoded; the daemon decodes before writing. When omitted, the
+  // daemon also runs a base64-smell heuristic and rejects suspicious input
+  // with a clear error rather than silently corrupting the artifact.
+  encoding:         z.enum(["utf8", "base64"] as const).optional(),
   // Manual-edit recovery: when archive_artifact detects that the on-disk file
   // hash differs from the stored hash, it returns `manual_edit_detected`
   // instead of clobbering. Pass `force_overwrite: true` to clobber anyway.
@@ -432,7 +437,7 @@ const TOOLS: ToolDef[] = [
   {
     name: "archive_artifact",
     description:
-      "Write artifact bytes to <project>/.harness/<run_id>/<relative_path> and register it. Bytes are pre-scanned for secrets; matches throw and the artifact is NOT written. Manual-edit detection: if a prior archive of the same path exists and the on-disk file's hash differs from the stored hash, the call returns {status: 'manual_edit_detected', stored_sha, current_sha, message} instead of clobbering. Pass force_overwrite=true to override.",
+      "Write artifact bytes to <project>/.harness/<run_id>/<relative_path> and register it. `bytes` is plain UTF-8 text by default; pass encoding='base64' if you base64-encoded the payload (the daemon decodes before writing). Do NOT pre-encode UTF-8 content as base64 without setting encoding — the daemon's smell check will reject it. Bytes are pre-scanned for secrets; matches throw and the artifact is NOT written. Manual-edit detection: if a prior archive of the same path exists and the on-disk file's hash differs from the stored hash, the call returns {status: 'manual_edit_detected', stored_sha, current_sha, message} instead of clobbering. Pass force_overwrite=true to override.",
     schema: ArchiveArtifactSchema,
     handler: (args) => archiveArtifact(ArchiveArtifactSchema.parse(args)),
   },
