@@ -116,9 +116,48 @@ async function testEightsClientDegradedMode() {
   console.log("✓ eights-client.ts: graceful degradation — no peer, no throws, all calls null");
 }
 
+async function testWritePathDegradedMode() {
+  // With no eights peer, every write-path wrapper must resolve to undefined
+  // (or return value irrelevant) WITHOUT throwing, and back-write paths
+  // must silently no-op rather than corrupting pp's DB.
+  const mod = await importDist("ecosystem/eights-writes.js");
+
+  // writeRunStartEpisode — no DB exists in this test context, but the
+  // wrapper's outer try/catch should swallow the resulting error.
+  await mod.writeRunStartEpisode({
+    run_id: "run_test_b1",
+    project_path: "C:\\tmp\\fake-b1",
+    request_text: "test request",
+    mode: "single",
+    team: null,
+    forum: null,
+    hydra_workflow_id: null,
+    hydra_origin_squad: null,
+  });
+
+  // listPriorCritiques — must return [] when peer absent, never throw.
+  const prior = await mod.listPriorCritiques({
+    stage_kind: "code",
+    project_path: "C:\\tmp\\fake-b1",
+    k: 3,
+  });
+  assert.deepEqual(prior, [], "listPriorCritiques returns [] when peer absent");
+
+  // recallProjectContext — must return null when peer absent.
+  const ctx = await mod.recallProjectContext("C:\\tmp\\fake-b1", 10);
+  assert.equal(ctx, null, "recallProjectContext returns null when peer absent");
+
+  // recallByQuery — must return null when peer absent.
+  const byQuery = await mod.recallByQuery("C:\\tmp\\fake-b1", "find a bug", 5);
+  assert.equal(byQuery, null, "recallByQuery returns null when peer absent");
+
+  console.log("✓ eights-writes.ts: write & recall paths degrade gracefully");
+}
+
 async function main() {
   await testHydraContext();
   await testEightsClientDegradedMode();
+  await testWritePathDegradedMode();
   console.log("✓ ecosystem.unit.mjs: all assertions passed");
 }
 

@@ -31,6 +31,12 @@ import {
   type ArtifactValidationRow,
 } from "./artifact-validators/index.js";
 import { parseHydraContext, hydraContextSummary } from "../ecosystem/hydra-context.js";
+import {
+  writeRunStartEpisode,
+  writeArtifactMemory,
+  writeVerdictMemory,
+  writeRunSummary,
+} from "../ecosystem/eights-writes.js";
 
 const now = () => new Date().toISOString();
 
@@ -171,6 +177,20 @@ export async function startRun(input: StartRunInput): Promise<StartRunOutput> {
     try { lock.release(); } catch { /* ignore */ }
     throw err;
   }
+
+  // Fire-and-forget: record an episode in TheEights. Graceful-degradation
+  // contract: this returns null silently when TheEights is offline, so we
+  // don't await and pp never blocks on the ecosystem peer.
+  void writeRunStartEpisode({
+    run_id: id,
+    project_path: input.project_path,
+    request_text: input.request_text,
+    mode: input.mode,
+    team: input.team ?? null,
+    forum: input.forum ?? null,
+    hydra_workflow_id: hydraCtx?.workflow_id ?? null,
+    hydra_origin_squad: hydraCtx?.origin_squad ?? null,
+  });
 
   log.info(
     {
@@ -365,6 +385,36 @@ export function recordVerdict(input: RecordVerdictInput): RecordVerdictOutput {
         now()
       );
   });
+
+  // Fire-and-forget: record the verdict as an evaluation memory. The
+  // wrapper joins back to stage_kind + project_path so cross-run reflexion
+  // searches (list_prior_critiques) can scope by stage type.
+  const stageJoin = db()
+    .prepare(
+      `SELECT stages.kind AS stage_kind, runs.project_path AS project_path, runs.id AS run_id
+         FROM attempts
+         JOIN stages ON stages.id = attempts.stage_id
+         JOIN runs   ON runs.id   = stages.run_id
+        WHERE attempts.id = ?`
+    )
+    .get(input.attempt_id) as
+    | { stage_kind: string; project_path: string; run_id: string }
+    | undefined;
+  if (stageJoin) {
+    void writeVerdictMemory({
+      run_id: stageJoin.run_id,
+      verdict_id: id,
+      attempt_id: input.attempt_id,
+      stage_kind: stageJoin.stage_kind,
+      project_path: stageJoin.project_path,
+      judge_producer: input.judge_producer,
+      judge_model_id: input.judge_model_id,
+      rubric_id: input.rubric_id ?? null,
+      outcome: input.outcome,
+      critique_md: input.critique_md ?? null,
+      cross_vendor: crossVendor,
+    });
+  }
 
   return { verdict_id: id, cross_vendor: crossVendor };
 }
@@ -749,6 +799,15 @@ export function finalizeRun(input: FinalizeRunInput): void {
     } catch { /* ignore */ }
   }
 
+  // Fire-and-forget: record the final summary in TheEights. Supersedes
+  // the pp:run:<id> partial episodes written during the run.
+  void writeRunSummary({
+    run_id: input.run_id,
+    project_path: run.project_path,
+    status: input.status,
+    summary_md: input.summary_md ?? null,
+  });
+
   log.info({ run_id: input.run_id, status: input.status }, "run finalized");
 }
 
@@ -1042,6 +1101,20 @@ export function archiveArtifact(input: ArchiveArtifactInput): ArchiveArtifactOut
         size,
         now()
       );
+  });
+
+  // Fire-and-forget: classify the artifact's cell and record it as a memory.
+  // The wrapper does its own DB back-write to set artifacts.cell /
+  // .eights_memory_id / .eights_handle once classification returns.
+  void writeArtifactMemory({
+    run_id: input.run_id,
+    artifact_id: id,
+    project_path: run.project_path,
+    relative_path: relPath,
+    taxonomy_section: input.taxonomy_section ?? null,
+    kind: input.kind ?? null,
+    sha256,
+    content_for_classification: scanInput,
   });
 
   return { status: "ok", artifact_id: id, absolute_path: absolute, sha256 };

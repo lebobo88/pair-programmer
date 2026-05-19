@@ -25,6 +25,7 @@ import { masterPlanStatus, applyMasterPlanPatch, ensureMasterPlan } from "../orc
 import { loadProjectProfile } from "../orchestrator/profiles.js";
 import { evaluateGate, type GateType, type Profile } from "../orchestrator/gates.js";
 import { evaluateShellSafety } from "./bash-safety.js";
+import { recallProjectContext, recallByQuery, listPriorCritiques } from "../ecosystem/eights-writes.js";
 
 type HookInput = {
   hook_event_name?: string;
@@ -212,6 +213,26 @@ const HANDLERS: Record<string, Record<string, (input: HookInput) => Promise<void
           console.log(`[pp] ${rows.length} surfaced run(s) waiting:`);
           for (const r of rows) console.log(`  - ${r.id}: ${r.request_text.slice(0, 60)}`);
           console.log("Use /pp:retry <run_id> to resume.");
+        }
+      } catch { /* ignore */ }
+      reply(true);
+    },
+    // Phase B / T1.2 — recall recent context from TheEights episodic memory.
+    // Silent no-op when TheEights is offline (graceful degradation). The
+    // summary line surfaces in Claude's startup context so subsequent turns
+    // know whether prior work exists.
+    "eights-recall-project": async (input) => {
+      if (!input.cwd) return reply(true);
+      try {
+        const summary = await recallProjectContext(input.cwd, 10);
+        if (!summary || summary.total_hits === 0) return reply(true);
+        console.log(
+          `[pp] eights recall: ${summary.prior_runs} prior run(s), ` +
+          `${summary.incidents} incident(s), ${summary.evaluations} verdict(s) ` +
+          `in episodic memory for this project.`
+        );
+        for (const entry of summary.top) {
+          console.log(`  - [${entry.type}] ${entry.handle ?? "(no-handle)"}: ${entry.summary}`);
         }
       } catch { /* ignore */ }
       reply(true);
@@ -442,6 +463,34 @@ const HANDLERS: Record<string, Record<string, (input: HookInput) => Promise<void
       console.log(`[pp] RFC 2119 advisory: spec-shaped artifact at ${path || "(unknown)"} contains no normative keywords (MUST/SHOULD/MAY).`);
       reply(true);
     },
+    // Phase B / T1.2 — when a stage opens, pull prior verdicts on the same
+    // stage_kind in this project so the generator agent has cross-run
+    // critique context. Matcher in hooks.json restricts this to start_stage.
+    "eights-recall-stage": async (input) => {
+      if (!input.cwd) return reply(true);
+      const tool = input.tool_name ?? "";
+      if (!tool.endsWith("__start_stage")) return reply(true);
+      const stageKind =
+        typeof input.tool_input?.kind === "string" ? (input.tool_input.kind as string) : null;
+      if (!stageKind) return reply(true);
+      try {
+        const critiques = await listPriorCritiques({
+          stage_kind: stageKind,
+          project_path: input.cwd,
+          k: 3,
+        });
+        if (critiques.length === 0) return reply(true);
+        const failed = critiques.filter(c => c.outcome === "fail" || c.outcome === "revise").length;
+        console.log(
+          `[pp] eights recall (stage=${stageKind}): ${critiques.length} prior verdict(s), ${failed} fail/revise. ` +
+          `Reflexion∞: the reflexion-coach should pull these via list_prior_critiques on retry.`
+        );
+        for (const c of critiques.slice(0, 2)) {
+          console.log(`  - [${c.outcome}] ${c.summary || c.content.slice(0, 120)}`);
+        }
+      } catch { /* ignore */ }
+      reply(true);
+    },
   },
 
   PostToolUse: {
@@ -659,6 +708,26 @@ const HANDLERS: Record<string, Record<string, (input: HookInput) => Promise<void
       if (!profile) return reply(true);
       if (profile.name === "enterprise") console.log(`[pp] profile=enterprise: SBOM and audit obligations active. Cross-vendor on every gate.`);
       if (profile.name === "ai-agentic") console.log(`[pp] profile=ai-agentic: eval suite + HITL workflow are required artifacts.`);
+      reply(true);
+    },
+    // Phase B / T1.2 — semantic recall on the user's prompt text. Surfaces
+    // memories most relevant to what the user is asking about so the
+    // triage classifier (which reads stdout) sees prior context.
+    "eights-recall-request": async (input) => {
+      if (!input.cwd || !input.prompt || input.prompt.length < 12) return reply(true);
+      try {
+        const summary = await recallByQuery(input.cwd, input.prompt, 5);
+        if (!summary || summary.total_hits === 0) return reply(true);
+        console.log(
+          `[pp] eights recall (request-relevant): ${summary.total_hits} matching memor` +
+          `${summary.total_hits === 1 ? "y" : "ies"} ` +
+          `(${summary.prior_runs} run, ${summary.incidents} incident, ${summary.evaluations} verdict). ` +
+          `Top hits:`
+        );
+        for (const entry of summary.top.slice(0, 3)) {
+          console.log(`  - [${entry.type}] ${entry.summary}`);
+        }
+      } catch { /* ignore */ }
       reply(true);
     },
   },

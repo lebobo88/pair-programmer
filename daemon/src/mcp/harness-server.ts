@@ -52,6 +52,7 @@ import {
   TIER_ORDER,
 } from "../config.js";
 import { log } from "../util/logger.js";
+import { listPriorCritiques } from "../ecosystem/eights-writes.js";
 
 // ─── Input schemas ───────────────────────────────────────────────────────
 
@@ -180,6 +181,16 @@ const ListRunsSchema = z.object({
 
 const GetRunSchema = z.object({ run_id: z.string().min(1) });
 const BudgetStatusSchema = z.object({ scope: z.string().optional() });
+
+// v7 / Phase B (T1.4): cross-run reflexion lookup. Surfaces prior verdicts
+// on the same stage_kind in the same project. Used by the reflexion-coach
+// agent to detect recurring critique patterns across runs. Returns [] when
+// TheEights is unreachable or no matches exist.
+const ListPriorCritiquesSchema = z.object({
+  stage_kind:   z.string().min(1),
+  project_path: z.string().min(1),
+  k:            z.number().int().min(1).max(20).optional(),
+});
 
 const GATE_TYPES = ["spec", "design", "security", "contract", "code_style", "docs_polish", "lint_class"] as const;
 
@@ -461,6 +472,16 @@ const TOOLS: ToolDef[] = [
       "Return the full tree for a run: run row, all stages, all attempts, all verdicts, all artifacts.",
     schema: GetRunSchema,
     handler: (args) => getRun(GetRunSchema.parse(args).run_id),
+  },
+  {
+    name: "list_prior_critiques",
+    description:
+      "Cross-run reflexion lookup. Returns up to `k` prior verdict critiques recorded against the same stage_kind in the same project, drawn from TheEights episodic memory. Use this from the reflexion-coach agent before composing a retry prompt: if 2+ prior runs failed this stage with similar critique structure, surface the recurring pattern explicitly. Returns [] when TheEights is unavailable or no matches exist — pp continues without recall in either case.",
+    schema: ListPriorCritiquesSchema,
+    handler: async (args) => {
+      const p = ListPriorCritiquesSchema.parse(args);
+      return await listPriorCritiques({ stage_kind: p.stage_kind, project_path: p.project_path, k: p.k });
+    },
   },
   {
     name: "budget_status",
