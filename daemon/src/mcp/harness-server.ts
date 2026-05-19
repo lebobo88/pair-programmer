@@ -52,7 +52,8 @@ import {
   TIER_ORDER,
 } from "../config.js";
 import { log } from "../util/logger.js";
-import { listPriorCritiques } from "../ecosystem/eights-writes.js";
+import { listPriorCritiques, verifyAuditChain } from "../ecosystem/eights-writes.js";
+import { db } from "../db/database.js";
 import {
   ensureConstitution,
   readConstitution,
@@ -196,6 +197,10 @@ const ListPriorCritiquesSchema = z.object({
   project_path: z.string().min(1),
   k:            z.number().int().min(1).max(20).optional(),
 });
+
+// T6: query the audit chain status for a past run. Returns the BOM handle
+// recorded at finalize plus TheEights' verify result if reachable.
+const AuditStatusSchema = z.object({ run_id: z.string().min(1) });
 
 const GATE_TYPES = ["spec", "design", "security", "contract", "code_style", "docs_polish", "lint_class"] as const;
 
@@ -488,6 +493,35 @@ const TOOLS: ToolDef[] = [
     handler: async (args) => {
       const p = ListPriorCritiquesSchema.parse(args);
       return await listPriorCritiques({ stage_kind: p.stage_kind, project_path: p.project_path, k: p.k });
+    },
+  },
+  {
+    name: "audit_status",
+    description:
+      "Query the audit chain state for a past run. Returns {audit_bom_handle, verified, broken_links?, peer_reachable}. Use BEFORE /pp:replay to confirm the artifact chain hasn't been tampered with since the original run; broken_links is non-empty when external edits broke the chain. peer_reachable=false means we couldn't reach TheEights — treat as 'cannot verify', not 'verified'. Sync local fields (audit_bom_handle) come back regardless.",
+    schema: AuditStatusSchema,
+    handler: async (args) => {
+      const run_id = AuditStatusSchema.parse(args).run_id;
+      const row = db().prepare(`SELECT audit_bom_handle FROM runs WHERE id = ?`).get(run_id) as
+        | { audit_bom_handle: string | null }
+        | undefined;
+      if (!row) return { run_id, audit_bom_handle: null, verified: null, peer_reachable: false, error: "run not found" };
+      const result = await verifyAuditChain(run_id);
+      if (result === null) {
+        return {
+          run_id,
+          audit_bom_handle: row.audit_bom_handle,
+          verified: null,
+          peer_reachable: false,
+        };
+      }
+      return {
+        run_id,
+        audit_bom_handle: row.audit_bom_handle,
+        verified: result.verified,
+        broken_links: result.broken_links ?? [],
+        peer_reachable: true,
+      };
     },
   },
   {

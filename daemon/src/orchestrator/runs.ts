@@ -37,6 +37,7 @@ import {
   writeVerdictMemory,
   writeRunSummary,
   attestConstitution,
+  materializeAuditBom,
 } from "../ecosystem/eights-writes.js";
 import { constitutionSha } from "./constitution.js";
 
@@ -817,6 +818,22 @@ export function finalizeRun(input: FinalizeRunInput): void {
     summary_md: input.summary_md ?? null,
   });
 
+  // T6: materialize the audit BOM for this run and back-write the handle
+  // onto the runs row. Used by /pp:replay to verify the audit chain
+  // hasn't been broken by external tampering since the original run.
+  if (input.status === "complete") {
+    void materializeAuditBom(input.run_id).then(bom => {
+      if (bom?.bom_handle) {
+        try {
+          db().prepare(`UPDATE runs SET audit_bom_handle = ? WHERE id = ?`)
+            .run(bom.bom_handle, input.run_id);
+        } catch (err) {
+          log.debug({ err, run_id: input.run_id }, "back-write audit_bom_handle failed");
+        }
+      }
+    });
+  }
+
   // T2: when the run touched a release (4.11) or retirement (4.16) section
   // AND had a constitution active at start, submit an attestation to
   // TheEights' audit graph. The local missability check enforces SHA
@@ -1153,9 +1170,40 @@ export function archiveArtifact(input: ArchiveArtifactInput): ArchiveArtifactOut
       );
   });
 
-  // Fire-and-forget: classify the artifact's cell and record it as a memory.
-  // The wrapper does its own DB back-write to set artifacts.cell /
-  // .eights_memory_id / .eights_handle once classification returns.
+  // T6: derive parent artifact ids and the generator agent/model for the
+  // audit trace. Parents are the immediately preceding artifacts of this
+  // stage (or the most recent artifacts of this run if no stage is set).
+  // Best-effort — empty arrays are fine; this is provenance enrichment.
+  let parentArtifactIds: string[] = [];
+  let generatorAgent: string | null = null;
+  let generatorModelId: string | null = null;
+  try {
+    if (input.stage_id) {
+      parentArtifactIds = (db()
+        .prepare(
+          `SELECT id FROM artifacts
+            WHERE run_id = ? AND stage_id = ? AND id != ?
+            ORDER BY created_at DESC LIMIT 5`
+        )
+        .all(input.run_id, input.stage_id, id) as Array<{ id: string }>).map(r => r.id);
+      const latestAttempt = db()
+        .prepare(
+          `SELECT producer, model_id FROM attempts
+            WHERE stage_id = ?
+            ORDER BY created_at DESC LIMIT 1`
+        )
+        .get(input.stage_id) as { producer: string; model_id: string } | undefined;
+      if (latestAttempt) {
+        generatorAgent = latestAttempt.producer;
+        generatorModelId = latestAttempt.model_id;
+      }
+    }
+  } catch { /* best-effort enrichment */ }
+
+  // Fire-and-forget: classify the artifact's cell, record it as a memory,
+  // and submit an audit-trace edge. The wrapper does its own DB back-write
+  // to set artifacts.cell / .eights_memory_id / .eights_handle once
+  // classification returns.
   void writeArtifactMemory({
     run_id: input.run_id,
     artifact_id: id,
@@ -1165,6 +1213,9 @@ export function archiveArtifact(input: ArchiveArtifactInput): ArchiveArtifactOut
     kind: input.kind ?? null,
     sha256,
     content_for_classification: scanInput,
+    parent_artifact_ids: parentArtifactIds,
+    generator_agent: generatorAgent,
+    model_id: generatorModelId,
   });
 
   return { status: "ok", artifact_id: id, absolute_path: absolute, sha256 };

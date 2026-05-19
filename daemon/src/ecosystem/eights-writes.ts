@@ -35,6 +35,7 @@ import {
   memory,
   cells,
   constitution,
+  audit,
   envelopeFor,
   type EightsEnvelope,
 } from "./eights-client.js";
@@ -121,6 +122,13 @@ export type ArtifactWriteContext = {
   kind: string | null;
   sha256: string;
   content_for_classification: string;
+  // T6 — audit chain context. Parent artifact ids are derived by the
+  // caller from prior artifacts of the same run (spec→architecture→
+  // contract→code→test). Optional generator metadata from the most
+  // recent attempt on the stage. Null when unknown.
+  parent_artifact_ids?: string[];
+  generator_agent?: string | null;
+  model_id?: string | null;
 };
 
 /**
@@ -186,6 +194,20 @@ export async function writeArtifactMemory(ctx: ArtifactWriteContext): Promise<vo
     } catch (err) {
       log.debug({ err, artifact_id: ctx.artifact_id }, "back-write artifact cell/eights failed");
     }
+
+    // Step 4 (T6): submit an audit-trace link so TheEights' audit graph
+    // grows (:Run)-[:PRODUCED]->(:Artifact) edges with parent chain
+    // (spec → architecture → contract → code → test → release). Null
+    // when TheEights is offline; pp's local sha256 + artifact row remain
+    // the standalone source of truth.
+    void audit.trace({
+      run_id: ctx.run_id,
+      artifact_id: ctx.artifact_id,
+      sha256: ctx.sha256,
+      parent_artifact_ids: ctx.parent_artifact_ids ?? [],
+      generator_agent: ctx.generator_agent ?? undefined,
+      model_id: ctx.model_id ?? undefined,
+    });
   } catch (err) {
     log.debug({ err, artifact_id: ctx.artifact_id }, "writeArtifactMemory swallowed");
   }
@@ -280,6 +302,32 @@ export async function attestConstitution(params: {
       constitution_sha: params.constitution_sha,
     });
     return result;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Materialize a SLSA-style Bill of Attestations rooted at the run.
+ * Returns the bom handle when TheEights ack'd, null otherwise. Caller
+ * back-writes runs.audit_bom_handle on success.
+ */
+export async function materializeAuditBom(run_id: string): Promise<{ bom_handle: string } | null> {
+  try {
+    return await audit.bom(run_id);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Verify the audit chain for a past run. Returns null when TheEights is
+ * unavailable (callers MUST treat null as "could not verify", not "verified").
+ * Returns `{ verified: true }` or `{ verified: false, broken_links }`.
+ */
+export async function verifyAuditChain(run_id: string): Promise<{ verified: boolean; broken_links?: string[] } | null> {
+  try {
+    return await audit.verify(run_id);
   } catch {
     return null;
   }

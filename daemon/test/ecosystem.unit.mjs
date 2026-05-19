@@ -189,11 +189,28 @@ async function testConstitution() {
   console.log("✓ constitution.ts: scaffold + sha + idempotency + forbidden-extract");
 }
 
+async function testAuditDegradedMode() {
+  // T6 audit chain — when TheEights is offline, materializeAuditBom and
+  // verifyAuditChain must return null without throwing. Callers MUST
+  // treat null as "could not verify" (or "no BOM materialized"), not
+  // "verified" / "BOM exists".
+  const mod = await importDist("ecosystem/eights-writes.js");
+
+  const bom = await mod.materializeAuditBom("run_phase_d_test");
+  assert.equal(bom, null, "materializeAuditBom returns null with no peer");
+
+  const verify = await mod.verifyAuditChain("run_phase_d_test");
+  assert.equal(verify, null, "verifyAuditChain returns null with no peer");
+
+  console.log("✓ audit chain (T6): degrades gracefully when peer absent");
+}
+
 async function main() {
   await testHydraContext();
   await testEightsClientDegradedMode();
   await testWritePathDegradedMode();
   await testConstitution();
+  await testAuditDegradedMode();
   console.log("✓ ecosystem.unit.mjs: all assertions passed");
 }
 
