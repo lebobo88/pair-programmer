@@ -205,12 +205,56 @@ async function testAuditDegradedMode() {
   console.log("✓ audit chain (T6): degrades gracefully when peer absent");
 }
 
+async function testHydraEnvelopeEmitters() {
+  // T3 — Phase E. With no TheEights peer, every emitter must allocate
+  // an envelope_id locally and return recorded=false without throwing.
+  const mod = await importDist("ecosystem/hydra-envelopes.js");
+
+  const dr = await mod.emitDecisionRecord({
+    run_id: "run_phase_e_1",
+    project_path: "C:\\tmp\\fake-e",
+    workflow_id: "wf_e_1",
+    origin_squad: "executive",
+    request_text: "test request",
+    status: "complete",
+    summary_md: "# done",
+    artifact_count: 0,
+  });
+  assert.ok(dr.envelope_id?.startsWith("env_pp_dr_"), "DR envelope_id allocated");
+  assert.equal(dr.recorded, false, "DR not recorded (no peer)");
+
+  const csp = await mod.emitStrategicFramingRequest({
+    run_id: "run_phase_e_2",
+    project_path: "C:\\tmp\\fake-e",
+    request_text: "redesign auth across all tiers",
+    profile: "enterprise",
+    hydra_workflow_id: null,
+  });
+  assert.ok(csp.envelope_id?.startsWith("env_pp_csp_"), "CSP envelope_id allocated");
+  assert.equal(csp.recorded, false);
+
+  const cb = await mod.emitCreativeBrief({
+    run_id: "run_phase_e_3",
+    project_path: "C:\\tmp\\fake-e",
+    workflow_id: null,
+    target: "creative",
+    brief_kind: "visual-direction-advisory",
+    surface_description: "new onboarding hero",
+    payload_excerpt: "Welcome — get started in 60 seconds.",
+  });
+  assert.ok(cb.envelope_id?.startsWith("env_pp_cb_"), "CB envelope_id allocated");
+  assert.equal(cb.recorded, false);
+
+  console.log("✓ hydra-envelopes.ts: 3 emitters allocate ids, degrade gracefully");
+}
+
 async function main() {
   await testHydraContext();
   await testEightsClientDegradedMode();
   await testWritePathDegradedMode();
   await testConstitution();
   await testAuditDegradedMode();
+  await testHydraEnvelopeEmitters();
   console.log("✓ ecosystem.unit.mjs: all assertions passed");
 }
 

@@ -53,6 +53,12 @@ import {
 } from "../config.js";
 import { log } from "../util/logger.js";
 import { listPriorCritiques, verifyAuditChain } from "../ecosystem/eights-writes.js";
+import {
+  emitStrategicFramingRequest,
+  emitCreativeBrief,
+  emitDecisionRecord,
+} from "../ecosystem/hydra-envelopes.js";
+import { hydra as hydraClient } from "../ecosystem/eights-client.js";
 import { db } from "../db/database.js";
 import {
   ensureConstitution,
@@ -201,6 +207,28 @@ const ListPriorCritiquesSchema = z.object({
 // T6: query the audit chain status for a past run. Returns the BOM handle
 // recorded at finalize plus TheEights' verify result if reachable.
 const AuditStatusSchema = z.object({ run_id: z.string().min(1) });
+
+// T3 — Phase E: outbound Hydra envelope tools.
+const RequestStrategicFramingSchema = z.object({
+  run_id:       z.string().min(1),
+  project_path: z.string().min(1),
+  request_text: z.string().min(1),
+  profile:      z.string().optional(),
+});
+const RequestBrandReviewSchema = z.object({
+  run_id:              z.string().min(1),
+  project_path:        z.string().min(1),
+  surface_description: z.string().min(1),
+  copy_excerpt:        z.string().min(1),
+});
+const RequestVisualAdvisorySchema = z.object({
+  run_id:              z.string().min(1),
+  project_path:        z.string().min(1),
+  surface_description: z.string().min(1),
+  layout_excerpt:      z.string().min(1),
+});
+const ReportHydraCompletionSchema = z.object({ run_id: z.string().min(1) });
+const HydraEnvelopeQuerySchema = z.object({ workflow_id: z.string().min(1) });
 
 const GATE_TYPES = ["spec", "design", "security", "contract", "code_style", "docs_polish", "lint_class"] as const;
 
@@ -493,6 +521,113 @@ const TOOLS: ToolDef[] = [
     handler: async (args) => {
       const p = ListPriorCritiquesSchema.parse(args);
       return await listPriorCritiques({ stage_kind: p.stage_kind, project_path: p.project_path, k: p.k });
+    },
+  },
+  {
+    name: "request_strategic_framing",
+    description:
+      "T3 — Phase E. Emit a CSuiteDecisionPacket envelope to the executive squad asking for strategic framing on a major-tier request. When Hydra+TheEights are running, ExecutiveSuite's boardroom picks this up and the reply (a PRD envelope) lands in TheEights' envelope store keyed by workflow_id; poll via hydra_envelope_query. When TheEights is offline, recorded=false but envelope_id is still allocated — the driver may fall back to spawning the local `boardroom` agent directly via Task. Call this BEFORE spec-author on profiles enterprise|ai-agentic|data-product when triage returns scope=major.",
+    schema: RequestStrategicFramingSchema,
+    handler: async (args) => {
+      const p = RequestStrategicFramingSchema.parse(args);
+      const runRow = db().prepare(`SELECT hydra_workflow_id FROM runs WHERE id = ?`).get(p.run_id) as
+        | { hydra_workflow_id: string | null }
+        | undefined;
+      return await emitStrategicFramingRequest({
+        run_id: p.run_id,
+        project_path: p.project_path,
+        request_text: p.request_text,
+        profile: p.profile ?? null,
+        hydra_workflow_id: runRow?.hydra_workflow_id ?? null,
+      });
+    },
+  },
+  {
+    name: "request_brand_review",
+    description:
+      "T3 — Phase E. Emit a CreativeBrief envelope (brief_kind=brand-voice-check) to the marketing-strategy squad (MarketBliss) reviewing customer-facing copy on a UX surface. Advisory, not gating — the ux-team continues regardless of whether a reply arrives. The reply (a DecisionRecord with brand-narrative notes) lands in TheEights' envelope store keyed by workflow_id. Returns {envelope_id, recorded}.",
+    schema: RequestBrandReviewSchema,
+    handler: async (args) => {
+      const p = RequestBrandReviewSchema.parse(args);
+      const runRow = db().prepare(`SELECT hydra_workflow_id FROM runs WHERE id = ?`).get(p.run_id) as
+        | { hydra_workflow_id: string | null }
+        | undefined;
+      return await emitCreativeBrief({
+        run_id: p.run_id,
+        project_path: p.project_path,
+        workflow_id: runRow?.hydra_workflow_id ?? null,
+        target: "marketing-strategy",
+        brief_kind: "brand-voice-check",
+        surface_description: p.surface_description,
+        payload_excerpt: p.copy_excerpt,
+      });
+    },
+  },
+  {
+    name: "request_visual_advisory",
+    description:
+      "T3 — Phase E. Emit a CreativeBrief envelope (brief_kind=visual-direction-advisory) to the creative squad (RLM-Creative — Calliope) asking for visual tone notes on a new screen family or significant UI change. Strictly advisory: the ux-team does NOT block on a reply. Returns {envelope_id, recorded}.",
+    schema: RequestVisualAdvisorySchema,
+    handler: async (args) => {
+      const p = RequestVisualAdvisorySchema.parse(args);
+      const runRow = db().prepare(`SELECT hydra_workflow_id FROM runs WHERE id = ?`).get(p.run_id) as
+        | { hydra_workflow_id: string | null }
+        | undefined;
+      return await emitCreativeBrief({
+        run_id: p.run_id,
+        project_path: p.project_path,
+        workflow_id: runRow?.hydra_workflow_id ?? null,
+        target: "creative",
+        brief_kind: "visual-direction-advisory",
+        surface_description: p.surface_description,
+        payload_excerpt: p.layout_excerpt,
+      });
+    },
+  },
+  {
+    name: "report_hydra_completion",
+    description:
+      "T3 — Phase E. Manually emit a DECISION_RECORD envelope for a finalized run. finalize_run already auto-fires this when hydra_workflow_id is set; the manual tool exists for retry / driver-orchestrated emit. Returns {envelope_id, recorded}.",
+    schema: ReportHydraCompletionSchema,
+    handler: async (args) => {
+      const run_id = ReportHydraCompletionSchema.parse(args).run_id;
+      const row = db().prepare(`SELECT * FROM runs WHERE id = ?`).get(run_id) as
+        | {
+            project_path: string;
+            hydra_workflow_id: string | null;
+            hydra_envelope_id: string | null;
+            hydra_origin_squad: string | null;
+            request_text: string;
+            status: string;
+          }
+        | undefined;
+      if (!row) return { envelope_id: null, recorded: false, reason: "run not found" };
+      if (!row.hydra_workflow_id) {
+        return { envelope_id: null, recorded: false, reason: "run was not Hydra-invoked (no workflow_id)" };
+      }
+      const artifactCount = (db().prepare(`SELECT COUNT(*) AS n FROM artifacts WHERE run_id = ?`).get(run_id) as { n: number }).n;
+      return await emitDecisionRecord({
+        run_id,
+        project_path: row.project_path,
+        workflow_id: row.hydra_workflow_id,
+        origin_squad: row.hydra_origin_squad,
+        request_text: row.request_text,
+        status: row.status,
+        summary_md: null,
+        artifact_count: artifactCount,
+        hydra_envelope_id_in: row.hydra_envelope_id,
+      });
+    },
+  },
+  {
+    name: "hydra_envelope_query",
+    description:
+      "T3 — Phase E. Read envelopes Hydra (or other squads) wrote into TheEights' envelope store for a given workflow_id. Use this to poll for replies after request_strategic_framing / request_brand_review / request_visual_advisory. Returns {envelopes: []} when TheEights is offline.",
+    schema: HydraEnvelopeQuerySchema,
+    handler: async (args) => {
+      const p = HydraEnvelopeQuerySchema.parse(args);
+      const result = await hydraClient.envelopeQuery(p.workflow_id);
+      return result ?? { envelopes: [], peer_reachable: false };
     },
   },
   {

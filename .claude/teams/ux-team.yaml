@@ -31,5 +31,36 @@ stages:
     gate_type: contract
     generator: { agent: browser-validator, primary: claude }
     judge:     { tier: same_vendor, rubric: web-runtime-validation@2 }
+  # T3 — Garland handshake. These two stages are advisory; the driver
+  # invokes them on customer-facing surfaces (profile in {web-ui, mobile})
+  # and continues whether or not Hydra+MarketBliss+RLM are reachable.
+  # When unreachable, the emitter records envelope_id locally and the
+  # stage logs an "advisory dispatched, no reply window" note as evidence.
+  - kind: brand_voice_check
+    optional: true
+    profiles_only: [web-ui, mobile]
+    gate_type: docs_polish
+    generator: { agent: docs-author, primary: claude }
+    judge:     { tier: same_vendor }
+    notes: |
+      Driver should call mcp__pp_harness__request_brand_review with the
+      surface description and the user-facing copy excerpt BEFORE this
+      stage's generator runs. If a reply lands in TheEights within a
+      short window (poll via hydra_envelope_query), feed the brand-
+      narrative notes into the generator's prompt. Otherwise proceed
+      with local docs-author judgment; record "brand-review advisory
+      dispatched, no reply within window" in the artifact.
+  - kind: visual_direction_advisory
+    optional: true
+    profiles_only: [web-ui, mobile]
+    gate_type: design
+    generator: { agent: designer, primary: claude }
+    judge:     { tier: same_vendor, rubric: wcag-2.2-aa@1 }
+    notes: |
+      Driver should call mcp__pp_harness__request_visual_advisory when
+      this is the first design pass on a new screen family. Reply (if
+      any) carries visual-tone notes from RLM-Creative/Calliope. Purely
+      informational — the designer agent's output is canonical for the
+      stage gate.
 taxonomy_required: ["4.4", "4.10"]
 missability_required: ["ui-error-empty-loading", "accessibility-localization", "browser-validation-evidence"]

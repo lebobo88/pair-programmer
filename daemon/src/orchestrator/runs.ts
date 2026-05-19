@@ -39,6 +39,7 @@ import {
   attestConstitution,
   materializeAuditBom,
 } from "../ecosystem/eights-writes.js";
+import { emitDecisionRecord } from "../ecosystem/hydra-envelopes.js";
 import { constitutionSha } from "./constitution.js";
 
 const now = () => new Date().toISOString();
@@ -832,6 +833,44 @@ export function finalizeRun(input: FinalizeRunInput): void {
         }
       }
     });
+  }
+
+  // T3: when the run was invoked by Hydra (hydra_workflow_id set on the
+  // runs row), emit a DECISION_RECORD envelope back upstream. Hydra's
+  // supervisor reads from TheEights' envelope store keyed by workflow_id;
+  // this closes the previously-one-way Hydra→pp dispatch.
+  try {
+    const ctxRow = db()
+      .prepare(
+        `SELECT hydra_workflow_id, hydra_envelope_id, hydra_origin_squad, request_text
+           FROM runs WHERE id = ?`
+      )
+      .get(input.run_id) as
+      | {
+          hydra_workflow_id: string | null;
+          hydra_envelope_id: string | null;
+          hydra_origin_squad: string | null;
+          request_text: string;
+        }
+      | undefined;
+    if (ctxRow?.hydra_workflow_id) {
+      const artifactCount = (db()
+        .prepare(`SELECT COUNT(*) AS n FROM artifacts WHERE run_id = ?`)
+        .get(input.run_id) as { n: number }).n;
+      void emitDecisionRecord({
+        run_id: input.run_id,
+        project_path: run.project_path,
+        workflow_id: ctxRow.hydra_workflow_id,
+        origin_squad: ctxRow.hydra_origin_squad,
+        request_text: ctxRow.request_text,
+        status: input.status,
+        summary_md: input.summary_md ?? null,
+        artifact_count: artifactCount,
+        hydra_envelope_id_in: ctxRow.hydra_envelope_id,
+      });
+    }
+  } catch (err) {
+    log.debug({ err, run_id: input.run_id }, "emitDecisionRecord dispatch skipped");
   }
 
   // T2: when the run touched a release (4.11) or retirement (4.16) section
