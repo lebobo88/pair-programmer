@@ -10,6 +10,7 @@
 import { readFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { db } from "../db/database.js";
+import { constitutionSha } from "./constitution.js";
 
 export type CheckId =
   | "nfrs-declared"
@@ -72,10 +73,15 @@ export type CheckId =
   | "middleware-licensing-threshold"
   | "ai-provenance-record"
   // Game-dev — perf
-  | "perf-budget-evidence";
+  | "perf-budget-evidence"
+  // T2 — Constitution attestation (release/retirement runs).
+  | "constitution-attestation";
 
 export type MissabilityCtx = {
   project_path: string;
+  /** T2: SHA of CONSTITUTION.md recorded at run-start; null when no
+   *  constitution file existed at that time. */
+  constitution_sha_at_start: string | null;
 };
 
 export const CHECK_DEFINITIONS: Array<{
@@ -535,6 +541,43 @@ export const CHECK_DEFINITIONS: Array<{
     triggers: (k) => k.has("performance_profile"),
     evaluate: ts => textPatternCheck(ts, /\b(unity[ -]?profiler|unreal[ -]?insights|renderdoc|\bpix\b|razor[ -]?capture|gpuopen|profile[ -]?capture|frame[ -]?capture|\.upi\b|\.uprofile\b|\.rdc\b)/i),
   },
+
+  // ─── T2 — Constitution attestation ────────────────────────────────
+  // Triggered when the run's taxonomy includes Section 4.11 (release) or
+  // 4.16 (retirement). Local verification (no TheEights round-trip here):
+  // we verify a CONSTITUTION.md exists AND the SHA recorded at run-start
+  // still matches the current on-disk SHA. Drift means someone (or
+  // something) amended the constitution mid-run; the run is downgraded
+  // to `surfaced` so the operator can decide whether to replay against
+  // the new SHA. eights.constitution.attest happens separately as a
+  // fire-and-forget audit step inside finalize_run.
+  {
+    id: "constitution-attestation",
+    name: "Constitution exists and SHA hasn't drifted since run-start (release/retirement)",
+    triggers: (_k, s) => s.has("4.11") || s.has("4.16"),
+    evaluate: (_ts, ctx) => {
+      if (!ctx.constitution_sha_at_start) {
+        return {
+          status: "fail",
+          evidence: "no CONSTITUTION.md existed at run-start; release/retirement requires one. Run `/pp:constitution` to scaffold.",
+        };
+      }
+      const currentSha = constitutionSha(ctx.project_path);
+      if (!currentSha) {
+        return {
+          status: "fail",
+          evidence: "CONSTITUTION.md was present at run-start but is missing now (amendment in-flight?)",
+        };
+      }
+      if (currentSha !== ctx.constitution_sha_at_start) {
+        return {
+          status: "fail",
+          evidence: `constitution_sha drift: start=${ctx.constitution_sha_at_start.slice(0, 12)}… now=${currentSha.slice(0, 12)}…. Replay the run against the new SHA after review.`,
+        };
+      }
+      return { status: "pass", evidence: `constitution_sha pinned at ${currentSha.slice(0, 12)}…` };
+    },
+  },
 ];
 
 type ArtifactBundle = { path: string; kind: string | null; text: string };
@@ -555,8 +598,8 @@ export function runMissabilityChecks(opts: {
   fail_count: number;
   na_count: number;
 } {
-  const run = db().prepare(`SELECT project_path, taxonomy_mapping_json FROM runs WHERE id = ?`).get(opts.run_id) as
-    | { project_path: string; taxonomy_mapping_json: string | null }
+  const run = db().prepare(`SELECT project_path, taxonomy_mapping_json, constitution_sha FROM runs WHERE id = ?`).get(opts.run_id) as
+    | { project_path: string; taxonomy_mapping_json: string | null; constitution_sha: string | null }
     | undefined;
   if (!run) throw new Error(`run ${opts.run_id} not found`);
 
@@ -589,7 +632,10 @@ export function runMissabilityChecks(opts: {
       results.push({ check_id: def.id, status: "n/a" });
       continue;
     }
-    const r = def.evaluate(texts, { project_path: run.project_path });
+    const r = def.evaluate(texts, {
+      project_path: run.project_path,
+      constitution_sha_at_start: run.constitution_sha,
+    });
     results.push({ check_id: def.id, status: r.status, evidence: r.evidence });
   }
 

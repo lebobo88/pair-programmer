@@ -331,7 +331,7 @@ async function main() {
 
     // 15. Phase 4: missability library is the right size.
     const checks = await callTool(client, "list_missability_checks");
-    if (checks.length !== 55) throw new Error(`expected 55 missability checks, got ${checks.length}`);
+    if (checks.length !== 56) throw new Error(`expected 56 missability checks, got ${checks.length}`);
     console.log(`✓ list_missability_checks: ${checks.length} checks`);
 
     // 16. Phase 4: run_missability_checks runs and returns results.
@@ -348,7 +348,7 @@ async function main() {
       run_id: missRun.run_id,
       required_check_ids: ["decision-logging", "doc-ownership", "nfrs-declared"],
     });
-    if (missResult.results.length !== 55) throw new Error(`expected 55 results, got ${missResult.results.length}`);
+    if (missResult.results.length !== 56) throw new Error(`expected 56 results, got ${missResult.results.length}`);
     const dl = missResult.results.find(r => r.check_id === "decision-logging");
     if (dl?.status !== "pass") throw new Error(`decision-logging should pass on artifact mentioning "Decision log"`);
     console.log(`✓ run_missability_checks: ${missResult.pass_count} pass, ${missResult.fail_count} fail, ${missResult.na_count} n/a`);

@@ -36,7 +36,9 @@ import {
   writeArtifactMemory,
   writeVerdictMemory,
   writeRunSummary,
+  attestConstitution,
 } from "../ecosystem/eights-writes.js";
+import { constitutionSha } from "./constitution.js";
 
 const now = () => new Date().toISOString();
 
@@ -139,6 +141,11 @@ export async function startRun(input: StartRunInput): Promise<StartRunOutput> {
   // hydra_* columns persist as NULL and downstream behavior is unchanged.
   const hydraCtx = parseHydraContext(input);
 
+  // T2: record the constitution SHA active at run-start, if any. Replays
+  // bind to this SHA — they refuse to re-run a run if the constitution has
+  // been amended since. Absence (no CONSTITUTION.md) is fine.
+  const constitutionShaAtStart = constitutionSha(input.project_path);
+
   try {
     txImmediate(() => {
       db()
@@ -147,8 +154,9 @@ export async function startRun(input: StartRunInput): Promise<StartRunOutput> {
             id, session_id, project_path, request_text, team, mode, forum, n,
             status, profile_snapshot_json, taxonomy_mapping_json,
             head_sha, tree_dirty_hash, cli_versions_json, started_at,
-            hydra_workflow_id, hydra_envelope_id, hydra_origin_squad, hydra_envelope_type
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+            hydra_workflow_id, hydra_envelope_id, hydra_origin_squad, hydra_envelope_type,
+            constitution_sha
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
         )
         .run(
           id,
@@ -170,6 +178,7 @@ export async function startRun(input: StartRunInput): Promise<StartRunOutput> {
           hydraCtx?.envelope_id ?? null,
           hydraCtx?.origin_squad ?? null,
           hydraCtx?.envelope_type ?? null,
+          constitutionShaAtStart,
         );
     });
   } catch (err) {
@@ -807,6 +816,47 @@ export function finalizeRun(input: FinalizeRunInput): void {
     status: input.status,
     summary_md: input.summary_md ?? null,
   });
+
+  // T2: when the run touched a release (4.11) or retirement (4.16) section
+  // AND had a constitution active at start, submit an attestation to
+  // TheEights' audit graph. The local missability check enforces SHA
+  // pinning sync; this is the audit-trail submission.
+  if (input.status === "complete") {
+    const runRow = db()
+      .prepare(`SELECT taxonomy_mapping_json, constitution_sha FROM runs WHERE id = ?`)
+      .get(input.run_id) as
+      | { taxonomy_mapping_json: string | null; constitution_sha: string | null }
+      | undefined;
+    if (runRow?.constitution_sha && runRow.taxonomy_mapping_json) {
+      try {
+        const mapping = JSON.parse(runRow.taxonomy_mapping_json) as { sections?: Array<{ id: string }> };
+        const sections = (mapping.sections ?? []).map(s => s.id);
+        if (sections.includes("4.11") || sections.includes("4.16")) {
+          const artifactShas = (db()
+            .prepare(`SELECT sha256 FROM artifacts WHERE run_id = ?`)
+            .all(input.run_id) as Array<{ sha256: string }>).map(r => r.sha256);
+          const sha = runRow.constitution_sha;
+          void attestConstitution({
+            run_id: input.run_id,
+            project_path: run.project_path,
+            constitution_sha: sha,
+            artifact_shas: artifactShas,
+          }).then(result => {
+            if (result?.attestation_id) {
+              try {
+                db().prepare(`UPDATE runs SET constitution_attestation_id = ? WHERE id = ?`)
+                  .run(result.attestation_id, input.run_id);
+              } catch (err) {
+                log.debug({ err, run_id: input.run_id }, "back-write constitution_attestation_id failed");
+              }
+            }
+          });
+        }
+      } catch (err) {
+        log.debug({ err, run_id: input.run_id }, "attestConstitution dispatch skipped");
+      }
+    }
+  }
 
   log.info({ run_id: input.run_id, status: input.status }, "run finalized");
 }

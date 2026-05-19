@@ -53,6 +53,11 @@ import {
 } from "../config.js";
 import { log } from "../util/logger.js";
 import { listPriorCritiques } from "../ecosystem/eights-writes.js";
+import {
+  ensureConstitution,
+  readConstitution,
+  forbiddenPatterns,
+} from "../orchestrator/constitution.js";
 
 // ─── Input schemas ───────────────────────────────────────────────────────
 
@@ -237,6 +242,8 @@ const MasterPlanPatchSchema = z.object({
 
 const MasterPlanStatusSchema = z.object({ project_path: z.string().min(1) });
 const EnsureMasterPlanSchema  = z.object({ project_path: z.string().min(1) });
+const EnsureConstitutionSchema = z.object({ project_path: z.string().min(1) });
+const ConstitutionStatusSchema = z.object({ project_path: z.string().min(1) });
 
 const AgentsMdPatchSchema = z.object({
   run_id:       z.string().min(1),
@@ -531,6 +538,30 @@ const TOOLS: ToolDef[] = [
       "Creates <project>/PROJECT_MASTER.md from the Section 9 20-section template if absent. Idempotent. Returns {path, created: boolean}.",
     schema: EnsureMasterPlanSchema,
     handler: (args) => ensureMasterPlan(EnsureMasterPlanSchema.parse(args).project_path),
+  },
+  {
+    name: "ensure_constitution",
+    description:
+      "Scaffolds <project>/CONSTITUTION.md from the T2 template if absent. Idempotent. Returns {path, created, sha}. The Constitution is the Immortal Head — no agent rewrites it; the harness records its SHA on every run for replay determinism and refuses to finalize a release-stage run that fails constitution.attest against TheEights.",
+    schema: EnsureConstitutionSchema,
+    handler: (args) => ensureConstitution(EnsureConstitutionSchema.parse(args).project_path),
+  },
+  {
+    name: "constitution_status",
+    description:
+      "Returns {exists, path, sha, forbidden_patterns?} for <project>/CONSTITUTION.md without modifying it. Use this when an operator asks about the project's constitutional state, or before a destructive operation to surface Article III bullets.",
+    schema: ConstitutionStatusSchema,
+    handler: (args) => {
+      const p = ConstitutionStatusSchema.parse(args).project_path;
+      const c = readConstitution(p);
+      if (!c) return { exists: false, path: null, sha: null, forbidden_patterns: [] };
+      return {
+        exists: true,
+        path: c.path,
+        sha: c.sha,
+        forbidden_patterns: forbiddenPatterns(p),
+      };
+    },
   },
   {
     name: "apply_master_plan_patch",

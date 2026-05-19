@@ -154,10 +154,46 @@ async function testWritePathDegradedMode() {
   console.log("✓ eights-writes.ts: write & recall paths degrade gracefully");
 }
 
+async function testConstitution() {
+  const mod = await importDist("orchestrator/constitution.js");
+  const { mkdtempSync, readFileSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+
+  const proj = mkdtempSync(join(tmpdir(), "pp-constitution-"));
+
+  // 1. ensureConstitution scaffolds when absent.
+  const first = mod.ensureConstitution(proj);
+  assert.equal(first.created, true, "first ensure scaffolds");
+  assert.ok(first.sha, "first ensure returns sha");
+  assert.ok(readFileSync(first.path, "utf8").includes("Constitution"));
+
+  // 2. ensureConstitution is idempotent.
+  const second = mod.ensureConstitution(proj);
+  assert.equal(second.created, false, "second ensure is no-op");
+  assert.equal(second.sha, first.sha, "sha unchanged on idempotent ensure");
+
+  // 3. constitutionSha agrees with ensure.
+  assert.equal(mod.constitutionSha(proj), first.sha);
+
+  // 4. forbiddenPatterns extracts Article III bullets from the template.
+  const forbidden = mod.forbiddenPatterns(proj);
+  assert.ok(Array.isArray(forbidden), "forbiddenPatterns returns array");
+  assert.ok(forbidden.length >= 2, "template ships >=2 forbidden-op examples");
+
+  // 5. readConstitution returns null for projects without one.
+  const empty = mkdtempSync(join(tmpdir(), "pp-no-constitution-"));
+  assert.equal(mod.readConstitution(empty), null);
+  assert.equal(mod.constitutionSha(empty), null);
+
+  console.log("✓ constitution.ts: scaffold + sha + idempotency + forbidden-extract");
+}
+
 async function main() {
   await testHydraContext();
   await testEightsClientDegradedMode();
   await testWritePathDegradedMode();
+  await testConstitution();
   console.log("✓ ecosystem.unit.mjs: all assertions passed");
 }
 

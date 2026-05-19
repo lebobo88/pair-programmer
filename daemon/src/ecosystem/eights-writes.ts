@@ -34,6 +34,7 @@ import { DEFAULT_CELL, type EightCell } from "../config.js";
 import {
   memory,
   cells,
+  constitution,
   envelopeFor,
   type EightsEnvelope,
 } from "./eights-client.js";
@@ -255,6 +256,34 @@ export type RunSummaryContext = {
   status: string;
   summary_md: string | null;
 };
+
+/**
+ * Submit a constitution attestation for a release/retirement run. Returns
+ * the attestation id when TheEights ack'd, null otherwise. Caller is
+ * expected to back-write the id onto runs.constitution_attestation_id.
+ *
+ * Local SHA drift is enforced by the missability check, NOT here — this
+ * is the audit trail submission only. A null return is non-fatal.
+ */
+export async function attestConstitution(params: {
+  run_id: string;
+  project_path: string;
+  constitution_sha: string;
+  artifact_shas: string[];
+}): Promise<{ attestation_id: string; verdict: "pass" | "fail" } | null> {
+  try {
+    const env = envelopeFor({ run_id: params.run_id, project_path: params.project_path });
+    const result = await constitution.attest({
+      project_id: env.project_id,
+      run_id: params.run_id,
+      artifact_shas: params.artifact_shas,
+      constitution_sha: params.constitution_sha,
+    });
+    return result;
+  } catch {
+    return null;
+  }
+}
 
 export async function writeRunSummary(ctx: RunSummaryContext): Promise<void> {
   try {
