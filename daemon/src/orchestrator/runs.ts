@@ -30,6 +30,7 @@ import {
   getLatestArtifactValidation,
   type ArtifactValidationRow,
 } from "./artifact-validators/index.js";
+import { parseHydraContext, hydraContextSummary } from "../ecosystem/hydra-context.js";
 
 const now = () => new Date().toISOString();
 
@@ -41,6 +42,12 @@ export type StartRunInput = {
   forum?: string;
   n?: number;
   session_id?: string;
+  // v7 ecosystem fields (optional). When present, persisted on the runs row
+  // and surfaced to sub-agent prompts via ${HYDRA_CONTEXT}.
+  hydra_workflow_id?: string;
+  hydra_envelope_id?: string;
+  hydra_origin_squad?: string;
+  hydra_envelope_type?: string;
 };
 
 export type StartRunOutput = {
@@ -121,6 +128,11 @@ export async function startRun(input: StartRunInput): Promise<StartRunOutput> {
 
   const cliVersions = await captureCliVersions();
 
+  // v7: lift Hydra context fields off the input. parseHydraContext returns
+  // null when no workflow_id is set (standalone runs), in which case all
+  // hydra_* columns persist as NULL and downstream behavior is unchanged.
+  const hydraCtx = parseHydraContext(input);
+
   try {
     txImmediate(() => {
       db()
@@ -128,8 +140,9 @@ export async function startRun(input: StartRunInput): Promise<StartRunOutput> {
           `INSERT INTO runs(
             id, session_id, project_path, request_text, team, mode, forum, n,
             status, profile_snapshot_json, taxonomy_mapping_json,
-            head_sha, tree_dirty_hash, cli_versions_json, started_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+            head_sha, tree_dirty_hash, cli_versions_json, started_at,
+            hydra_workflow_id, hydra_envelope_id, hydra_origin_squad, hydra_envelope_type
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
         )
         .run(
           id,
@@ -146,7 +159,11 @@ export async function startRun(input: StartRunInput): Promise<StartRunOutput> {
           headSha,
           treeDirtyHash,
           JSON.stringify(cliVersions),
-          startedAt
+          startedAt,
+          hydraCtx?.workflow_id ?? null,
+          hydraCtx?.envelope_id ?? null,
+          hydraCtx?.origin_squad ?? null,
+          hydraCtx?.envelope_type ?? null,
         );
     });
   } catch (err) {
@@ -156,7 +173,13 @@ export async function startRun(input: StartRunInput): Promise<StartRunOutput> {
   }
 
   log.info(
-    { run_id: id, project_path: input.project_path, mode: input.mode, profile: !!profileSnapshotJson },
+    {
+      run_id: id,
+      project_path: input.project_path,
+      mode: input.mode,
+      profile: !!profileSnapshotJson,
+      hydra: hydraContextSummary(hydraCtx),
+    },
     "run started"
   );
   return { run_id: id, artifact_dir: dir, started_at: startedAt };

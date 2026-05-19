@@ -63,6 +63,13 @@ const StartRunSchema = z.object({
   forum:        z.string().optional(),
   n:            z.number().int().min(1).max(8).optional(),
   session_id:   z.string().optional(),
+  // v7 ecosystem fields. All optional — absence is the standalone case.
+  // Populated when Hydra's MCPStdioDispatcher invokes pp.harness.start_run
+  // for an engineering-squad task. See ecosystem/hydra-context.ts.
+  hydra_workflow_id:   z.string().optional(),
+  hydra_envelope_id:   z.string().optional(),
+  hydra_origin_squad:  z.string().optional(),
+  hydra_envelope_type: z.string().optional(),
 });
 
 const StartStageSchema = z.object({

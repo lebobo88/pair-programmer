@@ -3,7 +3,7 @@
  * doesn't need a separate copy of the SQL file. Mirror this with
  * `daemon/src/db/schema.sql` for human-readable reference.
  */
-export const SCHEMA_VERSION = 6;
+export const SCHEMA_VERSION = 7;
 
 export const SCHEMA_SQL = `
 PRAGMA journal_mode = WAL;
@@ -29,11 +29,25 @@ CREATE TABLE IF NOT EXISTS runs (
   -- (--tier-cap, --tier-floor, --no-tier-policy, …) so /pp:replay
   -- can re-issue with the same overrides. JSON object; null on legacy rows.
   cli_flags_json           TEXT,
+  -- v7: ecosystem integration (Hydra / TheEights / Constitution).
+  -- All optional. Present iff this run was invoked by Hydra OR participates in
+  -- the cross-ecosystem evolution loop. Standalone pp runs leave these NULL
+  -- and behave identically to v6. See docs/ecosystem.md (Phase A) for shape.
+  hydra_workflow_id        TEXT,
+  hydra_envelope_id        TEXT,
+  hydra_origin_squad       TEXT,
+  hydra_envelope_type      TEXT,
+  constitution_sha         TEXT,
+  constitution_attestation_id TEXT,
+  eights_episodic_handle   TEXT,
+  audit_bom_handle         TEXT,
   started_at               TEXT NOT NULL,
   finished_at              TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_runs_project_started ON runs(project_path, started_at DESC);
 CREATE INDEX IF NOT EXISTS idx_runs_status          ON runs(status);
+-- idx_runs_hydra_workflow (v7) is created in applyMigrations after the
+-- ALTER TABLE adds the column on pre-v7 databases.
 
 CREATE TABLE IF NOT EXISTS stages (
   id                  TEXT PRIMARY KEY,
@@ -81,6 +95,8 @@ CREATE TABLE IF NOT EXISTS verdicts (
   critique_md         TEXT,
   score_json          TEXT,
   cross_vendor        INTEGER NOT NULL DEFAULT 0,
+  -- v7: TheEights memory linkage for this verdict.
+  eights_memory_id    TEXT,
   created_at          TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_verdicts_attempt ON verdicts(attempt_id);
@@ -94,9 +110,16 @@ CREATE TABLE IF NOT EXISTS artifacts (
   path                TEXT NOT NULL,
   sha256              TEXT NOT NULL,
   bytes               INTEGER NOT NULL,
+  -- v7: Eight-Cell classification (vision|context|triggers|influence|risk|focus|constraints|delight)
+  -- and TheEights memory linkage. NULL when TheEights is unavailable.
+  cell                TEXT,
+  eights_memory_id    TEXT,
+  eights_handle       TEXT,
   created_at          TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_artifacts_run ON artifacts(run_id);
+-- idx_artifacts_cell (v7) is created in applyMigrations after the ALTER
+-- TABLE adds the column on pre-v7 databases.
 
 CREATE TABLE IF NOT EXISTS missability_checks (
   id                  TEXT PRIMARY KEY,
@@ -224,4 +247,25 @@ CREATE TABLE IF NOT EXISTS artifact_validations (
 );
 CREATE INDEX IF NOT EXISTS idx_av_stage ON artifact_validations(stage_id, validator_kind);
 CREATE INDEX IF NOT EXISTS idx_av_run   ON artifact_validations(run_id);
+
+-- v7: Autogenesis evolution proposals (T4 / Phase F). Created by the
+-- autogenesis-analyzer when a recurring drift pattern is detected across runs
+-- (e.g., same rubric flagged same false-positive >=3 times). Mirrored to
+-- TheEights' evolution.propose API; eights_proposal_id holds the echoed id.
+-- status transitions: pending -> approved | rejected | committed | rolled_back.
+-- Rows persist after closure for audit / replay.
+CREATE TABLE IF NOT EXISTS evolution_proposals (
+  id                  TEXT PRIMARY KEY,
+  run_id              TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+  resource_rid        TEXT NOT NULL,
+  proposed_change     TEXT NOT NULL,
+  justification       TEXT NOT NULL,
+  signal_count        INTEGER NOT NULL,
+  risk_class          TEXT NOT NULL,
+  eights_proposal_id  TEXT,
+  status              TEXT NOT NULL,
+  created_at          TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_evolution_proposals_run    ON evolution_proposals(run_id);
+CREATE INDEX IF NOT EXISTS idx_evolution_proposals_status ON evolution_proposals(status);
 `;

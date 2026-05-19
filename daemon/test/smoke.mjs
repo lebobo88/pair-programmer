@@ -49,11 +49,17 @@ async function main() {
     console.log(`✓ doctor judge_capabilities: codex=${health.judge_capabilities.codex.same_vendor_mode}, gemini=${health.judge_capabilities.gemini.same_vendor_mode}`);
 
     // 2. Start a run inside a temp dir (so we don't litter the project).
+    //    Pass the v7 Hydra context fields too, so we can assert at step 9
+    //    that they round-trip through start_run → DB → get_run.
     const projectPath = mkdtempSync(join(tmpdir(), "pp-smoke-"));
     const run = await callTool(client, "start_run", {
       request_text: "smoke test request: do nothing",
       project_path: projectPath,
       mode: "single",
+      hydra_workflow_id:   "wf_smoke_001",
+      hydra_envelope_id:   "env_smoke_001",
+      hydra_origin_squad:  "executive",
+      hydra_envelope_type: "DevTask",
     });
     console.log(`✓ start_run -> ${run.run_id}`);
 
@@ -133,6 +139,17 @@ async function main() {
     if (tree.verdicts.length !== 1) throw new Error(`expected 1 verdict, got ${tree.verdicts.length}`);
     if (tree.artifacts.length !== 1) throw new Error(`expected 1 artifact, got ${tree.artifacts.length}`);
     console.log(`✓ get_run roundtrip: 1 stage, 1 attempt, 1 verdict, 1 artifact`);
+
+    // 9a. v7 Hydra context columns round-trip through start_run.
+    if (tree.run.hydra_workflow_id !== "wf_smoke_001")
+      throw new Error(`expected hydra_workflow_id=wf_smoke_001, got ${tree.run.hydra_workflow_id}`);
+    if (tree.run.hydra_envelope_id !== "env_smoke_001")
+      throw new Error(`expected hydra_envelope_id=env_smoke_001, got ${tree.run.hydra_envelope_id}`);
+    if (tree.run.hydra_origin_squad !== "executive")
+      throw new Error(`expected hydra_origin_squad=executive, got ${tree.run.hydra_origin_squad}`);
+    if (tree.run.hydra_envelope_type !== "DevTask")
+      throw new Error(`expected hydra_envelope_type=DevTask, got ${tree.run.hydra_envelope_type}`);
+    console.log(`✓ hydra context round-trip: workflow=${tree.run.hydra_workflow_id}, squad=${tree.run.hydra_origin_squad}`);
 
     // 10. Budgets should reflect the attempt cost.
     const budget = await callTool(client, "budget_status", { scope: `run:${run.run_id}` });

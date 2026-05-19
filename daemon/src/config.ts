@@ -103,3 +103,41 @@ export function vendorFor(producer: string): Vendor | null {
   if (producer === "claude") return "anthropic";
   return null;
 }
+
+// ─── Ecosystem integration (Hydra / TheEights / Constitution) ───────────
+// Phase A spine. Every ecosystem call is best-effort: if the eights-daemon
+// MCP peer is unreachable, all wrappers short-circuit to null and pp
+// behavior is observationally identical to a standalone install.
+
+/** Wall-clock cap on the initial eights-daemon capability probe. */
+export const ECOSYSTEM_PROBE_TIMEOUT_MS = 3000;
+
+/** Consecutive failures before a namespace breaker trips. */
+export const ECOSYSTEM_BREAKER_THRESHOLD = 3;
+
+/** How long a tripped namespace breaker stays open before retrying. */
+export const ECOSYSTEM_BREAKER_COOLDOWN_MS = 60_000;
+
+/** Per-call wall-clock cap for any eights MCP tool invocation. */
+export const ECOSYSTEM_CALL_TIMEOUT_MS = 8000;
+
+/**
+ * The eight I-Ching trigram cells TheEights uses to tag every memory.
+ * Mirrors `daemon/src/schemas/memory.ts:Cell` in TheEights. pp's local
+ * cache of this enum lets us validate before sending and assign a
+ * default cell when classify is unavailable.
+ */
+export const EIGHT_CELLS = [
+  "vision", "context", "triggers", "influence",
+  "risk", "focus", "constraints", "delight",
+] as const;
+export type EightCell = typeof EIGHT_CELLS[number];
+
+/** Default cell when classification is unavailable. */
+export const DEFAULT_CELL: EightCell = "context";
+
+/** Hydra envelope types pp may receive on start_run. */
+export const HYDRA_ENVELOPE_TYPES = [
+  "CSuiteDecisionPacket", "PRD", "ArchRFC", "DevTask", "HANDOFF",
+] as const;
+export type HydraEnvelopeType = typeof HYDRA_ENVELOPE_TYPES[number];
