@@ -40,6 +40,7 @@ import {
   materializeAuditBom,
 } from "../ecosystem/eights-writes.js";
 import { emitDecisionRecord } from "../ecosystem/hydra-envelopes.js";
+import { analyzeAndPropose } from "./autogenesis-analyzer.js";
 import { constitutionSha } from "./constitution.js";
 
 const now = () => new Date().toISOString();
@@ -911,6 +912,27 @@ export function finalizeRun(input: FinalizeRunInput): void {
       } catch (err) {
         log.debug({ err, run_id: input.run_id }, "attestConstitution dispatch skipped");
       }
+    }
+  }
+
+  // T4: sweep for recurring drift patterns and propose evolutions. Cheap
+  // (DB queries only); proposals land in evolution_proposals table even
+  // when TheEights is offline so /pp:evolution list still surfaces them.
+  if (input.status === "complete" || input.status === "surfaced") {
+    try {
+      void analyzeAndPropose({
+        run_id: input.run_id,
+        project_path: run.project_path,
+      }).then(proposals => {
+        if (proposals.length > 0) {
+          log.info(
+            { run_id: input.run_id, proposals: proposals.length },
+            "autogenesis-analyzer surfaced drift proposals"
+          );
+        }
+      });
+    } catch (err) {
+      log.debug({ err, run_id: input.run_id }, "autogenesis-analyzer dispatch skipped");
     }
   }
 

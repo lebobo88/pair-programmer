@@ -248,6 +248,34 @@ async function testHydraEnvelopeEmitters() {
   console.log("✓ hydra-envelopes.ts: 3 emitters allocate ids, degrade gracefully");
 }
 
+async function testAutogenesisAnalyzer() {
+  // T4 — Phase F. Pure-function tests against the analyzer's DB queries.
+  // We can't easily seed the analyzer's project_path query without
+  // touching the real DB at ~/.pair-programmer/state.db, so this is
+  // an integration smoke test: the analyzer must return [] when no
+  // matching project history exists, and never throw.
+  const mod = await importDist("orchestrator/autogenesis-analyzer.js");
+
+  // Empty/unknown project — analyzer must return [] without throwing.
+  const proposals = await mod.analyzeAndPropose({
+    run_id: "run_phase_f_synthetic",
+    project_path: "C:\\tmp\\fake-phase-f-no-history",
+  });
+  assert.ok(Array.isArray(proposals), "analyzeAndPropose returns array");
+  assert.equal(proposals.length, 0, "empty history → 0 proposals");
+
+  // listProposals on the same unknown project — must return [].
+  const list = mod.listProposals({ project_path: "C:\\tmp\\fake-phase-f-no-history" });
+  assert.ok(Array.isArray(list));
+  assert.equal(list.length, 0);
+
+  // setProposalStatus on a non-existent id — must return false (no rows updated).
+  const updated = mod.setProposalStatus("prop_nonexistent", "approved");
+  assert.equal(updated, false, "setProposalStatus on missing id → false");
+
+  console.log("✓ autogenesis-analyzer.ts: empty-history + missing-id paths");
+}
+
 async function main() {
   await testHydraContext();
   await testEightsClientDegradedMode();
@@ -255,6 +283,7 @@ async function main() {
   await testConstitution();
   await testAuditDegradedMode();
   await testHydraEnvelopeEmitters();
+  await testAutogenesisAnalyzer();
   console.log("✓ ecosystem.unit.mjs: all assertions passed");
 }
 
