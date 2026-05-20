@@ -149,8 +149,35 @@ async function codexGenerate(
   }
   let outputSchemaPath: string | undefined;
   if (args.output_schema) {
+    // Defensive normalization. Some Claude Code drivers pass output_schema
+    // as a JSON-encoded string instead of a plain object — that survives
+    // the permissive z.unknown() boundary, then JSON.stringify wraps the
+    // string in quotes, producing `"\"...\""` on disk. The codex CLI hands
+    // that to the OpenAI API, which rejects it with a structured-output
+    // schema error. Persistent 5x5 failure with transient classification
+    // (no recovery) was observed against ADR critique calls.
+    //
+    // Normalize: if it's a string, re-parse; if it's neither object nor
+    // parseable JSON, fail loudly with a non-transient error.
+    let schemaObj: unknown = args.output_schema;
+    if (typeof schemaObj === "string") {
+      try { schemaObj = JSON.parse(schemaObj); }
+      catch (parseErr) {
+        throw new Error(
+          `pp_codex.generate: output_schema was passed as a string but is not valid JSON ` +
+          `(${(parseErr as Error).message}). Pass the JSON Schema as an object, not a stringified one.`,
+        );
+      }
+    }
+    if (!schemaObj || typeof schemaObj !== "object" || Array.isArray(schemaObj)) {
+      throw new Error(
+        `pp_codex.generate: output_schema must be a JSON Schema object (got ${
+          schemaObj === null ? "null" : Array.isArray(schemaObj) ? "array" : typeof schemaObj
+        }).`,
+      );
+    }
     const schemaPath = join(tmpDir, "schema.json");
-    writeFileSync(schemaPath, JSON.stringify(args.output_schema, null, 2), "utf8");
+    writeFileSync(schemaPath, JSON.stringify(schemaObj, null, 2), "utf8");
     outputSchemaPath = schemaPath;
   }
   const cliArgs = buildCodexExecArgs({

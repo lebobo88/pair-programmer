@@ -30,13 +30,62 @@ export type PatchInput = {
 };
 
 export type ApplyMasterPlanPatchResult =
-  | { patch_id: string; new_sha: string; prev_sha: string; status: "applied" }
-  | { patch_id: string; new_sha: string; prev_sha: string; status: "noop_already_applied"; reason: string };
+  | { patch_id: string; new_sha: string; prev_sha: string; status: "applied"; resolved_section: string }
+  | { patch_id: string; new_sha: string; prev_sha: string; status: "noop_already_applied"; reason: string; resolved_section: string }
+  | { patch_id: null; new_sha: string; prev_sha: string; status: "rejected_unknown_section"; reason: string; requested_section: string; available_sections: string[] };
+
+/**
+ * Resolve a caller-supplied section key to the canonical
+ * MASTER_PLAN_SECTIONS entry, allowing short forms like "11" or
+ * "architecture" to match "11. Architecture and technical strategy".
+ * Returns null when nothing matches confidently.
+ */
+function resolveSectionName(input: string): string | null {
+  const wanted = input.trim();
+  if (!wanted) return null;
+  // 1. Exact match wins.
+  if (MASTER_PLAN_SECTIONS.includes(wanted)) return wanted;
+  // 2. Leading-number match: "11" → "11. Architecture and technical strategy".
+  const numMatch = /^(\d+)(?:\.|$)/.exec(wanted);
+  if (numMatch) {
+    const prefix = `${numMatch[1]}.`;
+    const hit = MASTER_PLAN_SECTIONS.find(s => s.startsWith(prefix));
+    if (hit) return hit;
+  }
+  // 3. Case-insensitive title-substring match (after stripping leading "N. ").
+  const wantedNorm = wanted.toLowerCase().replace(/^\d+\.\s*/, "");
+  if (wantedNorm.length >= 4) {
+    const hits = MASTER_PLAN_SECTIONS.filter(s => s.toLowerCase().includes(wantedNorm));
+    if (hits.length === 1) return hits[0]!;
+  }
+  return null;
+}
 
 export function applyMasterPlanPatch(input: PatchInput): ApplyMasterPlanPatchResult {
   const { path } = ensureMasterPlan(input.project_path);
   const prev = readFileSync(path, "utf8");
   const prevSha = createHash("sha256").update(prev).digest("hex");
+
+  // Resolve to a canonical section header before doing any work. Without
+  // this, callers passing "11" / "12" silently produce a brand-new
+  // duplicate `## 11` block instead of patching the intended section, and
+  // the harness ledger records a misleading "applied" status. Fail loudly
+  // with an enumerated list of valid sections.
+  const resolved = resolveSectionName(input.section);
+  if (!resolved) {
+    return {
+      patch_id: null,
+      new_sha: prevSha,
+      prev_sha: prevSha,
+      status: "rejected_unknown_section",
+      requested_section: input.section,
+      reason:
+        `section '${input.section}' did not match any canonical PROJECT_MASTER.md section. ` +
+        `Pass the full header (e.g. "11. Architecture and technical strategy") or a leading number.`,
+      available_sections: [...MASTER_PLAN_SECTIONS],
+    };
+  }
+  input = { ...input, section: resolved };
 
   // Idempotency: when kind=append, if the prior section body already
   // contains the run-id block we'd be writing, no-op. This prevents the
@@ -64,6 +113,7 @@ export function applyMasterPlanPatch(input: PatchInput): ApplyMasterPlanPatchRes
           prev_sha: prevSha,
           status: "noop_already_applied",
           reason: `run ${input.run_id} block already present in ${input.section}`,
+          resolved_section: input.section,
         };
       }
     }
@@ -83,7 +133,7 @@ export function applyMasterPlanPatch(input: PatchInput): ApplyMasterPlanPatchRes
       .run(id, input.run_id, input.section, input.kind, prevSha, newSha, new Date().toISOString());
   });
 
-  return { patch_id: id, new_sha: newSha, prev_sha: prevSha, status: "applied" };
+  return { patch_id: id, new_sha: newSha, prev_sha: prevSha, status: "applied", resolved_section: input.section };
 }
 
 /** Extract just the body of a `## <section>` block; returns "" if absent. */

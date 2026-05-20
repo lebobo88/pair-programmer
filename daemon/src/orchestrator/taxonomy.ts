@@ -62,6 +62,23 @@ export function heuristicTriage(opts: {
   if (/\b(deprecate|retire|sunset|eol|end-of-life)\b/.test(text)) { signals.push("retirement-keyword"); score += 2; }
   if (/\b(release|rollout|rollback|migrate)\b/.test(text)) { signals.push("release-keyword"); score += 1; }
 
+  // Doc-only requests: the surface keywords above ("architecture", "api
+  // change") trigger on requests that only describe or document a thing
+  // rather than implement it. If the request is shaped like "write/draft/
+  // document/produce an ADR/spec/PRD/RFC/changelog/readme" AND there's no
+  // verb that implies code/change emission, walk back the major-keyword
+  // push. A single MADR document is a `standard` (or `trivial`) task, not
+  // `major`. Without this, /pp:run aborts and forces operators into
+  // /pp:team for a one-file write.
+  const docOnly =
+    /\b(write|draft|document|produce|generate|create|author|publish|update)\b/.test(text) &&
+    /\b(adr|madr|spec|prd|rfc|design[ -]doc|readme|changelog|runbook|playbook|policy|rubric|memo|note|whitepaper|brief)\b/.test(text) &&
+    !/\b(implement|build|ship|deploy|merge|wire|integrate|refactor|rewrite|migrate|port)\b/.test(text);
+  if (docOnly) {
+    signals.push("doc-only");
+    score -= 3;
+  }
+
   let scope: Scope = "standard";
   if (score <= -2) scope = "trivial";
   if (score >= 3)  scope = "major";

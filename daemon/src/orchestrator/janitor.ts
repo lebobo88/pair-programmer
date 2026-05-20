@@ -9,6 +9,7 @@ import { execFileSync } from "node:child_process";
 import { rmSync, existsSync, statSync } from "node:fs";
 import { db, txImmediate } from "../db/database.js";
 import { projectLockPath } from "../util/paths.js";
+import { readLockMetadata, isPidAlive } from "../util/lock.js";
 import { log } from "../util/logger.js";
 
 const STALE_RUN_HOURS = 6;
@@ -96,11 +97,17 @@ export function runJanitor(): {
       if (existsSync(lockPath)) {
         const stat = statSync(lockPath);
         const ageMs = Date.now() - stat.mtime.getTime();
-        if (ageMs > STALE_LOCK_HOURS * 60 * 60 * 1000) {
+        const meta = readLockMetadata(lockPath);
+        const deadPid = meta && !isPidAlive(meta.pid);
+        const ageExceeded = ageMs > STALE_LOCK_HOURS * 60 * 60 * 1000;
+        if (deadPid || ageExceeded) {
           try {
             rmSync(lockPath, { force: true });
             swept_locks.push(lockPath);
-            log.info({ lockPath }, "janitor removed stale project lock");
+            log.info(
+              { lockPath, reason: deadPid ? `dead_pid=${meta!.pid}` : `age=${Math.round(ageMs / 1000)}s` },
+              "janitor removed stale project lock",
+            );
           } catch (err) {
             log.warn({ err, lockPath }, "stale lock removal failed");
           }

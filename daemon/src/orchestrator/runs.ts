@@ -15,7 +15,7 @@ import { scanForSecrets, SecretsFoundError } from "../security/secret-scan.js";
 import { loadProjectProfile } from "./profiles.js";
 import { applyMasterPlanPatch, ensureMasterPlan } from "./master-plan.js";
 import { TAXONOMY_BY_ID, MASTER_PLAN_SECTIONS } from "./taxonomy.js";
-import { ProjectLock } from "../util/lock.js";
+import { ProjectLock, ProjectLockBusyError } from "../util/lock.js";
 import { tmpdir } from "node:os";
 import { DEFAULT_MODELS } from "../config.js";
 import { codexCritique } from "../mcp/codex-server.js";
@@ -28,6 +28,7 @@ import {
 } from "./artifact-validators/validator-policy.js";
 import {
   getLatestArtifactValidation,
+  runArtifactValidator,
   type ArtifactValidationRow,
 } from "./artifact-validators/index.js";
 import { parseHydraContext, hydraContextSummary } from "../ecosystem/hydra-context.js";
@@ -78,13 +79,20 @@ export async function startRun(input: StartRunInput): Promise<StartRunOutput> {
   // a clear error rather than silently letting two runs race the worktree.
   const lock = new ProjectLock(input.project_path);
   try {
-    lock.acquire();
+    const ack = lock.acquireOrReapStale();
+    if (ack.reaped) {
+      log.info(
+        { project_path: input.project_path, reaped_pid: ack.reaped.pid, reaped_started_at: ack.reaped.started_at },
+        "reaped stale project lock at acquire",
+      );
+    }
   } catch (err) {
-    const e = err as { code?: string; message?: string };
-    if (e.code === "EEXIST") {
+    if (err instanceof ProjectLockBusyError) {
+      const h = err.holder;
       throw new Error(
-        `another pp-daemon run already holds the project lock at ` +
-        `${input.project_path}/.harness/.lock — wait for it to finish, or remove the file if no run is active.`
+        `another pp-daemon run holds the project lock at ${input.project_path}/.harness/.lock ` +
+        (h ? `(pid=${h.pid}, started_at=${h.started_at}). ` : `(unparseable metadata). `) +
+        `Wait for it to finish, or — if no run is active — remove the file.`
       );
     }
     throw err;
@@ -609,7 +617,7 @@ export function getStageFinalizeReadiness(stage_id: string): StageFinalizeReadin
   };
 }
 
-export function finalizeStage(input: FinalizeStageInput): void {
+export async function finalizeStage(input: FinalizeStageInput): Promise<void> {
   // TDD execution gate. The harness has TDD-shaped team pipelines (refactor,
   // bug-fix, feature-tdd) where a `tests_pre` stage runs before the `code`
   // stage. To make the red/green property uncircumventable we refuse to mark
@@ -617,6 +625,36 @@ export function finalizeStage(input: FinalizeStageInput): void {
   // row. Surfacing/skipping is always allowed — that's how a TDD violation
   // gets reported up rather than swept under the rug.
   if (input.status === "passed") {
+    // Auto-run any required validators that haven't been recorded yet, so
+    // the operator doesn't have to call mcp__pp_harness__artifact_validate
+    // manually before finalize. This makes adr_structure_lint, contracts_lint,
+    // tokens_build, mermaid_render and c4_render apply automatically on the
+    // most recently archived artifact of the bound kind. Validators that
+    // error out still surface as blockers below — the auto-run does NOT
+    // mask failures, it only removes the "missing row" speed bump.
+    const reqs = requiredValidatorsForStage(input.stage_id);
+    for (const req of reqs) {
+      for (const vk of req.validators) {
+        const existing = getLatestArtifactValidation(input.stage_id, vk, req.artifact_id);
+        if (existing) continue;
+        try {
+          await runArtifactValidator({
+            stage_id: input.stage_id,
+            kind: vk,
+            artifact_path: req.artifact_path,
+          });
+        } catch (err) {
+          // Swallow — the readiness check below will surface a precise
+          // ValidatorGateViolation with a next_action the operator can
+          // act on. Logging the dispatch failure here makes the chain
+          // debuggable without crashing the finalize call.
+          log.warn(
+            { err: (err as Error).message, stage_id: input.stage_id, validator: vk, artifact_path: req.artifact_path },
+            "finalizeStage auto-run validator failed",
+          );
+        }
+      }
+    }
     const readiness = getStageFinalizeReadiness(input.stage_id);
     if (!readiness.can_pass) {
       const blocker = readiness.blockers[0]!;

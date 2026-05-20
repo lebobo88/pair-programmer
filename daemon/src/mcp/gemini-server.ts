@@ -104,10 +104,17 @@ async function geminiGenerate(args: z.infer<typeof GenerateSchema>): Promise<Gem
   });
 
   const parsed = parseGeminiOutput(run.stdout);
-  const tokens_in  = parsed.tokens_in  ?? 0;
-  const tokens_out = parsed.tokens_out ?? 0;
-  const cost_usd   = computeCost(args.model, tokens_in, tokens_out);
   const text       = parsed.text ?? run.stdout;
+  // Cost-telemetry fallback. The gemini CLI does not always surface
+  // usageMetadata (varies by transport + model). Without a non-zero token
+  // count the harness ledger stays empty and /pp:budget's 80%/100%
+  // tripwire never fires. Fall back to a coarse char-based estimate
+  // (~4 chars/token, OpenAI-style heuristic) so the budget gate has
+  // something to clamp on. Real usage, when available, always wins.
+  const estimateTokens = (s: string): number => Math.max(1, Math.ceil((s ?? "").length / 4));
+  const tokens_in  = parsed.tokens_in  ?? estimateTokens(prompt);
+  const tokens_out = parsed.tokens_out ?? estimateTokens(text);
+  const cost_usd   = computeCost(args.model, tokens_in, tokens_out);
 
   if (parsed.session_id) {
     setSession(args.cwd, "gemini", parsed.session_id);

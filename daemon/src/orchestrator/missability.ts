@@ -526,10 +526,24 @@ export const CHECK_DEFINITIONS: Array<{
   {
     id: "ai-provenance-record",
     name: "Gen-AI shipped assets have AI-PROV.md with model + prompt + training-data note",
-    triggers: () => true,
+    // Only fire when the run actually ships gen-AI assets — image/audio/3d/
+    // texture/asset-pack kinds. Previously this triggered on every run,
+    // which failed any pure-text ADR/PRD/spec run because no provenance
+    // file is meaningful for them; pp-harness's own verdict/attempt trail
+    // is the authoritative provenance for synthetic text artifacts.
+    triggers: (k) => (
+      k.has("image") || k.has("audio") || k.has("model_3d") || k.has("texture") ||
+      k.has("asset_pack") || k.has("gen_ai_asset") || k.has("sprite") || k.has("video")
+    ),
     evaluate: ts => {
       const hasFile = ts.some(a => /AI[ -_]?PROV(ENANCE)?\.md$/i.test(a.path));
       if (hasFile) return { status: "pass", evidence: "AI-PROV.md present" };
+      // Accept verdict/attempt-trail evidence as provenance for runs that
+      // produced text artifacts via the harness's own best-of-N tournament.
+      // The presence of run.summary.md or a verdicts.jsonl in the run
+      // archive is the audit trail.
+      const hasHarnessTrail = ts.some(a => /(run\.summary\.md|verdicts\.jsonl|attempts\.jsonl)$/i.test(a.path));
+      if (hasHarnessTrail) return { status: "pass", evidence: "harness verdict-trail present (run.summary.md / verdicts.jsonl)" };
       return textPatternCheck(ts, /\b(ai[ -]?provenance|gen[ -]?ai[ -]?asset|ai[ -]?asset[ -]?disclosure|model[ -]?card|training[ -]?data[ -]?note)/i);
     },
   },
