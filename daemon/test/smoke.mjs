@@ -151,6 +151,35 @@ async function main() {
       throw new Error(`expected hydra_envelope_type=DevTask, got ${tree.run.hydra_envelope_type}`);
     console.log(`✓ hydra context round-trip: workflow=${tree.run.hydra_workflow_id}, squad=${tree.run.hydra_origin_squad}`);
 
+    // 9b. P2: ensure_run idempotent contract for Hydra dispatchers.
+    //     Use a NEW project_path so we don't collide with the closed run
+    //     above. First call creates a run + acquires the project lock;
+    //     second call with the same kind must reuse run_id + return
+    //     created=false. After finalize_run releases the lock, a third
+    //     call with the same kind allocates a fresh run.
+    const dispatcherPath = mkdtempSync(join(tmpdir(), "pp-smoke-ensure-"));
+    const ensured1 = await callTool(client, "ensure_run", {
+      project_path: dispatcherPath,
+      request_text: "dispatched sub-agent fan-out",
+    });
+    if (!ensured1.created) throw new Error(`expected ensure_run #1 created=true, got ${pretty(ensured1)}`);
+    const ensured2 = await callTool(client, "ensure_run", {
+      project_path: dispatcherPath,
+      request_text: "dispatched sub-agent fan-out (re-entry)",
+    });
+    if (ensured2.created) throw new Error(`expected ensure_run #2 created=false, got ${pretty(ensured2)}`);
+    if (ensured2.run_id !== ensured1.run_id)
+      throw new Error(`expected ensure_run #2 to reuse run_id ${ensured1.run_id}, got ${ensured2.run_id}`);
+    await callTool(client, "finalize_run", { run_id: ensured1.run_id, status: "complete" });
+    const ensured3 = await callTool(client, "ensure_run", {
+      project_path: dispatcherPath,
+      request_text: "after finalize, fresh run",
+    });
+    if (!ensured3.created) throw new Error(`expected ensure_run #3 created=true after finalize, got ${pretty(ensured3)}`);
+    if (ensured3.run_id === ensured1.run_id) throw new Error(`expected a NEW run_id after finalize, got the same`);
+    await callTool(client, "finalize_run", { run_id: ensured3.run_id, status: "complete" });
+    console.log(`✓ ensure_run idempotent (reuse open, fresh after finalize)`);
+
     // 10. Budgets should reflect the attempt cost.
     const budget = await callTool(client, "budget_status", { scope: `run:${run.run_id}` });
     if (!budget || budget.cost_usd !== 0.012) throw new Error(`budget mismatch: ${pretty(budget)}`);

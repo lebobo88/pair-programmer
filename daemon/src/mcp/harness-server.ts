@@ -7,7 +7,7 @@ import {
 import { z } from "zod";
 import { errorContent, jsonContent, zodToJsonSchema } from "./helpers.js";
 import {
-  startRun, startStage, recordAttempt, recordVerdict, finalizeStage,
+  startRun, ensureRun, startStage, recordAttempt, recordVerdict, finalizeStage,
   finalizeRun, archiveArtifact, listRuns, getRun, budgetStatus, doctor,
   recordTaxonomyMapping, getStageFinalizeReadiness,
 } from "../orchestrator/runs.js";
@@ -84,6 +84,15 @@ const StartRunSchema = z.object({
   hydra_envelope_id:   z.string().optional(),
   hydra_origin_squad:  z.string().optional(),
   hydra_envelope_type: z.string().optional(),
+});
+
+const EnsureRunSchema = z.object({
+  project_path: z.string().min(1),
+  request_text: z.string().min(1),
+  // Logical bucket for the dispatcher's sub-agent fan-out — stored as the
+  // run row's `team` column so existing finalize_run / list_runs work.
+  // Default "ad-hoc" matches Hydra dispatcher convention.
+  kind: z.string().min(1).optional(),
 });
 
 const StartStageSchema = z.object({
@@ -465,6 +474,21 @@ const TOOLS: ToolDef[] = [
       "Allocate a run row in the harness DB and create the per-run artifact directory. Returns run_id and absolute artifact_dir path.",
     schema: StartRunSchema,
     handler: (args) => startRun(StartRunSchema.parse(args)),
+  },
+  {
+    name: "ensure_run",
+    description:
+      "Idempotent run-context bootstrap for Hydra-style dispatchers that fan out generator sub-agents. " +
+      "Pass project_path + request_text + optional kind (default: 'ad-hoc', stored as the run's `team`); " +
+      "if a run is already open on this project_path with that kind, returns its run_id and created=false; " +
+      "otherwise allocates a minimal 'single'-mode run, acquires the project lock, and returns the new " +
+      "run_id with created=true. CONTRACT: Hydra dispatchers MUST call ensure_run before spawning any " +
+      "generator sub-agent (architect, data-modeler, security-reviewer, release-planner, …) and pass " +
+      "the returned run_id into the sub-agent's prompt. The sub-agent then calls archive_artifact " +
+      "and record_attempt with run_id=<that value> as it normally would. Lifecycle: finalize_run closes " +
+      "the run just like /pp:run.",
+    schema: EnsureRunSchema,
+    handler: async (args) => ensureRun(EnsureRunSchema.parse(args)),
   },
   {
     name: "start_stage",

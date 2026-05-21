@@ -225,6 +225,78 @@ export async function startRun(input: StartRunInput): Promise<StartRunOutput> {
   return { run_id: id, artifact_dir: dir, started_at: startedAt };
 }
 
+// ─── ensure_run ──────────────────────────────────────────────────────────
+//
+// P2: sub-agent run-context contract.
+//
+// Hydra dispatches generator sub-agents (architect, data-modeler,
+// security-reviewer, release-planner, …) directly via Task. Those agents
+// can call generate / archive_artifact / record_attempt against this MCP
+// server but have no `run_id` of their own — `ensureRunOpen` rejects every
+// persistence call.
+//
+// `ensureRun` gives the dispatcher a single idempotent entrypoint: pass
+// project_path + request_text + optional kind, get back a run_id the
+// dispatcher then forwards to its sub-agents in their prompt. If a run is
+// already open on this project_path with the same kind (treated as the
+// `team` column for storage), reuse it. Otherwise allocate a minimal
+// "single"-mode run via startRun() so the lock + lifecycle bookkeeping is
+// identical to /pp:run.
+
+export type EnsureRunInput = {
+  project_path: string;
+  request_text: string;
+  /** Logical bucket for the dispatcher's sub-agent fan-out. Stored on the
+   *  `team` column so existing finalize/list machinery keeps working. */
+  kind?: string;
+};
+
+export type EnsureRunOutput = {
+  run_id: string;
+  created: boolean;
+  artifact_dir: string;
+};
+
+export async function ensureRun(input: EnsureRunInput): Promise<EnsureRunOutput> {
+  const kind = input.kind ?? "ad-hoc";
+
+  // Look for a still-open run on this project_path with matching team/kind.
+  // Order by started_at DESC so we pick the most recent open run if there
+  // happen to be multiple (which would itself be a lifecycle bug, but we
+  // don't compound it by spawning more).
+  const existing = db()
+    .prepare(
+      `SELECT id, project_path FROM runs
+       WHERE project_path = ? AND team = ? AND status IN ('running','pending')
+       ORDER BY started_at DESC LIMIT 1`
+    )
+    .get(input.project_path, kind) as { id: string; project_path: string } | undefined;
+
+  if (existing) {
+    const dir = projectArtifactDir(existing.project_path, existing.id);
+    log.info(
+      { run_id: existing.id, project_path: input.project_path, kind },
+      "ensure_run: reusing open run"
+    );
+    return { run_id: existing.id, created: false, artifact_dir: dir };
+  }
+
+  // No open run for this (project_path, kind) — spin one up. We route through
+  // startRun() so the project lock is acquired, the artifact dir is created,
+  // and lifecycle hooks (eights episode write, etc.) fire just like /pp:run.
+  const out = await startRun({
+    request_text: input.request_text,
+    project_path: input.project_path,
+    mode: "single",
+    team: kind,
+  });
+  log.info(
+    { run_id: out.run_id, project_path: input.project_path, kind },
+    "ensure_run: created minimal single-mode run for dispatched sub-agents"
+  );
+  return { run_id: out.run_id, created: true, artifact_dir: out.artifact_dir };
+}
+
 export type StartStageInput = {
   run_id: string;
   kind: string;
