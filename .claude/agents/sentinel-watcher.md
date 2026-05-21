@@ -1,0 +1,1 @@
+C:/AiAppDeployments/AgentSmith/.claude/agents/sentinel-watcher.md

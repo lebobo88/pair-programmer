@@ -1,0 +1,1 @@
+C:/AiAppDeployments/AgentSmith/.claude/agents/smith-inspector.md

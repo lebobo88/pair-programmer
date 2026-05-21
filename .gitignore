@@ -28,5 +28,8 @@ verification-report*.md
 # Harness per-run artifacts (written locally by /pp:run)
 .harness/runs/
 
+# Ephemeral best-of-N candidate worktrees
+.claude/worktrees/
+
 # Lock file written by scheduled-task subsystem
 .claude/scheduled_tasks.lock
