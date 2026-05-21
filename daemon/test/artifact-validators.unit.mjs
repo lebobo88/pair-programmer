@@ -139,6 +139,31 @@ it("ADR linter is case-insensitive on section names", () => {
   assert.equal(r.status, "verified");
 });
 
+it("ADR linter accepts MADR alias 'Considered alternatives' (P6)", () => {
+  const text = VALID.replace("## Alternatives considered", "## Considered alternatives");
+  const r = validateAdrStructure({ content: text });
+  assert.equal(r.status, "verified", `unexpected violation: ${r.reason}`);
+  assert.deepEqual(r.missing_sections, []);
+});
+
+it("ADR linter accepts bare 'Alternatives' alias (P6)", () => {
+  const text = VALID.replace("## Alternatives considered", "## Alternatives");
+  const r = validateAdrStructure({ content: text });
+  assert.equal(r.status, "verified", `unexpected violation: ${r.reason}`);
+});
+
+it("ADR linter tolerates parenthetical note after heading (P6)", () => {
+  const text = VALID.replace("## Status", "## Status (accepted 2026-05-20)");
+  const r = validateAdrStructure({ content: text });
+  assert.equal(r.status, "verified", `unexpected violation: ${r.reason}`);
+});
+
+it("ADR linter accepts 'Context and problem statement' alias (P6)", () => {
+  const text = VALID.replace("## Context", "## Context and problem statement");
+  const r = validateAdrStructure({ content: text });
+  assert.equal(r.status, "verified", `unexpected violation: ${r.reason}`);
+});
+
 it("ADR linter flags thin sections", () => {
   const skeleton = `# ADR-0042: Empty bones
 
