@@ -161,11 +161,15 @@ async function codexGenerate(
     // parseable JSON, fail loudly with a non-transient error.
     let schemaObj: unknown = args.output_schema;
     if (typeof schemaObj === "string") {
-      try { schemaObj = JSON.parse(schemaObj); }
+      const raw = schemaObj;
+      const snippet = raw.slice(0, 200);
+      try { schemaObj = JSON.parse(raw); }
       catch (parseErr) {
         throw new Error(
           `pp_codex.generate: output_schema was passed as a string but is not valid JSON ` +
-          `(${(parseErr as Error).message}). Pass the JSON Schema as an object, not a stringified one.`,
+          `(${(parseErr as Error).message}). Target path was ${join(tmpDir, "schema.json")}. ` +
+          `First 200 chars of payload: ${snippet}. ` +
+          `Pass the JSON Schema as an object, not a stringified one.`,
         );
       }
     }
@@ -177,7 +181,14 @@ async function codexGenerate(
       );
     }
     const schemaPath = join(tmpDir, "schema.json");
-    writeFileSync(schemaPath, JSON.stringify(schemaObj, null, 2), "utf8");
+    const schemaJson = JSON.stringify(schemaObj, null, 2);
+    writeFileSync(schemaPath, schemaJson, "utf8");
+    // Driver-debug aid: this exact line lets the operator confirm we wrote a
+    // canonical JSON object (not a double-encoded string) to the schema path
+    // that the codex CLI will hand to the OpenAI API.
+    process.stderr.write(
+      `[pp_codex.generate] wrote output_schema to ${schemaPath} (first 200 chars): ${schemaJson.slice(0, 200)}\n`,
+    );
     outputSchemaPath = schemaPath;
   }
   const cliArgs = buildCodexExecArgs({
