@@ -544,6 +544,13 @@ export const CHECK_DEFINITIONS: Array<{
       // archive is the audit trail.
       const hasHarnessTrail = ts.some(a => /(run\.summary\.md|verdicts\.jsonl|attempts\.jsonl)$/i.test(a.path));
       if (hasHarnessTrail) return { status: "pass", evidence: "harness verdict-trail present (run.summary.md / verdicts.jsonl)" };
+      // P5: frontmatter mode — a single artifact (e.g. an ADR) can self-attest
+      // by carrying an `ai_provenance:` YAML block in its frontmatter with at
+      // least `generator` and `judge` keys. This lets one promoted document
+      // file count as provenance on its own, alongside the AI-PROV.md and
+      // harness-trail modes.
+      const fmHit = ts.find(a => hasAiProvenanceFrontmatter(a.text));
+      if (fmHit) return { status: "pass", evidence: `ai_provenance frontmatter in ${fmHit.path}` };
       return textPatternCheck(ts, /\b(ai[ -]?provenance|gen[ -]?ai[ -]?asset|ai[ -]?asset[ -]?disclosure|model[ -]?card|training[ -]?data[ -]?note)/i);
     },
   },
@@ -601,6 +608,59 @@ function textPatternCheck(texts: ArtifactBundle[], re: RegExp): { status: "pass"
     if (re.test(a.text)) return { status: "pass", evidence: a.path };
   }
   return { status: "fail" };
+}
+
+/**
+ * P5: detects a YAML frontmatter block with an `ai_provenance:` map that
+ * carries at least `generator` and `judge` keys. Returns true on a hit.
+ *
+ * Accepted shape (between the leading `---` fences):
+ *   ai_provenance:
+ *     generator: claude-opus-4-7
+ *     judge: gemini-3.1-pro-preview
+ *     borda_rank: 1                # optional
+ *
+ * Inline mapping is also accepted (`ai_provenance: {generator: ..., judge: ...}`).
+ */
+export function hasAiProvenanceFrontmatter(text: string): boolean {
+  if (!text || !text.startsWith("---")) return false;
+  // Pull the frontmatter block: from the first `---` line to the next one.
+  const lines = text.split(/\r?\n/);
+  if (lines[0] !== "---") return false;
+  let endIdx = -1;
+  for (let i = 1; i < lines.length; i++) {
+    if (lines[i] === "---") { endIdx = i; break; }
+  }
+  if (endIdx === -1) return false;
+  const fm = lines.slice(1, endIdx).join("\n");
+
+  // Inline mapping form: ai_provenance: {generator: ..., judge: ...}
+  const inlineMatch = fm.match(/^ai_provenance:\s*\{([^}]*)\}\s*$/m);
+  if (inlineMatch) {
+    const inner = inlineMatch[1] ?? "";
+    return /\bgenerator\s*:/.test(inner) && /\bjudge\s*:/.test(inner);
+  }
+
+  // Block-mapping form: ai_provenance: header followed by indented
+  // generator/judge keys. Walk the lines to extract the indented block,
+  // stopping at the first dedented (column-0 non-empty) line.
+  const fmLines = fm.split(/\r?\n/);
+  let i = 0;
+  for (; i < fmLines.length; i++) {
+    if (/^ai_provenance:\s*$/.test(fmLines[i]!)) break;
+  }
+  if (i < fmLines.length) {
+    let hasGen = false;
+    let hasJudge = false;
+    for (let j = i + 1; j < fmLines.length; j++) {
+      const ln = fmLines[j]!;
+      if (ln.length > 0 && !/^\s/.test(ln)) break; // dedent — end of block
+      if (/^\s+generator\s*:/.test(ln)) hasGen = true;
+      if (/^\s+judge\s*:/.test(ln)) hasJudge = true;
+    }
+    return hasGen && hasJudge;
+  }
+  return false;
 }
 
 export function runMissabilityChecks(opts: {
