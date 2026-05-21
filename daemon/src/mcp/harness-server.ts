@@ -66,6 +66,7 @@ import {
   readConstitution,
   forbiddenPatterns,
 } from "../orchestrator/constitution.js";
+import { forceUnlock } from "../util/lock.js";
 
 // ─── Input schemas ───────────────────────────────────────────────────────
 
@@ -93,6 +94,10 @@ const EnsureRunSchema = z.object({
   // run row's `team` column so existing finalize_run / list_runs work.
   // Default "ad-hoc" matches Hydra dispatcher convention.
   kind: z.string().min(1).optional(),
+});
+
+const ForceUnlockSchema = z.object({
+  project_path: z.string().min(1),
 });
 
 const StartStageSchema = z.object({
@@ -474,6 +479,19 @@ const TOOLS: ToolDef[] = [
       "Allocate a run row in the harness DB and create the per-run artifact directory. Returns run_id and absolute artifact_dir path.",
     schema: StartRunSchema,
     handler: (args) => startRun(StartRunSchema.parse(args)),
+  },
+  {
+    name: "force_unlock",
+    description:
+      "Operator-only: force-release a stranded per-project advisory lock at <project>/.harness/.lock. " +
+      "Validates the recorded holder PID is dead via process.kill(pid, 0) before removing the sentinel — " +
+      "if the holder is alive, returns released:false with the holder metadata so the operator knows " +
+      "another live daemon owns it. Use this when a /pp:run reports 'another pp-daemon run holds the " +
+      "project lock' but no daemon is actually running (typical after a Claude Code session ended " +
+      "mid-run before SIGTERM cleanup could complete). Returns " +
+      "{released: boolean, was_stale: boolean, holder?: {pid, started_at, host?}}.",
+    schema: ForceUnlockSchema,
+    handler: (args) => forceUnlock(ForceUnlockSchema.parse(args).project_path),
   },
   {
     name: "ensure_run",

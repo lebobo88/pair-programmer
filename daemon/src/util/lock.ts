@@ -47,6 +47,18 @@ export class ProjectLockBusyError extends Error {
   }
 }
 
+/**
+ * Process-wide registry of every ProjectLock instance currently holding a
+ * lock file. The SIGTERM/SIGINT handler in src/index.ts iterates this set
+ * and calls release() on each so a killed daemon doesn't strand its locks
+ * for the janitor's 30-min TTL sweep. Instances register on acquire and
+ * deregister on release.
+ */
+const ACTIVE_LOCKS = new Set<ProjectLock>();
+export function listActiveLocks(): ProjectLock[] {
+  return Array.from(ACTIVE_LOCKS);
+}
+
 export class ProjectLock {
   private fd: number | null = null;
   constructor(public readonly projectPath: string) {}
@@ -57,6 +69,7 @@ export class ProjectLock {
     mkdirSync(dirname(path), { recursive: true });
     this.fd = openSync(path, "wx");
     this.writeMetadata(path);
+    ACTIVE_LOCKS.add(this);
   }
 
   /**
@@ -71,6 +84,7 @@ export class ProjectLock {
     try {
       this.fd = openSync(path, "wx");
       this.writeMetadata(path);
+      ACTIVE_LOCKS.add(this);
       return { acquired: true };
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
@@ -84,6 +98,7 @@ export class ProjectLock {
     try { rmSync(path, { force: true }); } catch { /* ignore */ }
     this.fd = openSync(path, "wx");
     this.writeMetadata(path);
+    ACTIVE_LOCKS.add(this);
     return { acquired: true, reaped: holder ?? undefined };
   }
 
@@ -96,6 +111,7 @@ export class ProjectLock {
     if (existsSync(path)) {
       try { rmSync(path); } catch { /* ignore */ }
     }
+    ACTIVE_LOCKS.delete(this);
   }
 
   private writeMetadata(path: string): void {
@@ -106,6 +122,33 @@ export class ProjectLock {
     };
     try { writeFileSync(path, JSON.stringify(meta, null, 2), "utf8"); } catch { /* best-effort */ }
   }
+}
+
+export type ForceUnlockResult =
+  | { released: true; was_stale: boolean; holder: LockMetadata | null }
+  | { released: false; was_stale: false; holder: LockMetadata | null };
+
+/**
+ * Force-unlock a project lock. Validates the holder PID is dead via the
+ * standard `process.kill(pid, 0)` probe before removing the sentinel —
+ * refusing to break a live daemon's lock. If no lock file exists, returns
+ * released:true with holder:null (idempotent). If the holder is alive,
+ * returns released:false so the operator knows another live daemon owns
+ * it. P3: paired with the SIGTERM/SIGINT handler in src/index.ts which
+ * proactively releases everything held by this process on shutdown.
+ */
+export function forceUnlock(projectPath: string): ForceUnlockResult {
+  const path = projectLockPath(projectPath);
+  if (!existsSync(path)) {
+    return { released: true, was_stale: false, holder: null };
+  }
+  const holder = readLockMetadata(path);
+  if (holder && isPidAlive(holder.pid)) {
+    return { released: false, was_stale: false, holder };
+  }
+  // Either no parseable metadata or PID is dead — safe to remove.
+  try { rmSync(path, { force: true }); } catch { /* ignore */ }
+  return { released: true, was_stale: true, holder };
 }
 
 export function readLockMetadata(path: string): LockMetadata | null {

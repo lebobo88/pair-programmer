@@ -8,7 +8,29 @@ import { runHttpServer } from "./http/server.js";
 import { buildReplayBundle } from "./orchestrator/replay.js";
 import { doctor } from "./orchestrator/runs.js";
 import { dumpRubrics } from "./rubrics/dump.js";
+import { listActiveLocks } from "./util/lock.js";
 import { log } from "./util/logger.js";
+
+// P3: proactively release every project lock this daemon process is
+// holding when it receives SIGTERM/SIGINT. Without this, a killed daemon
+// (Claude Code session ending mid-run is the canonical case) leaves
+// <project>/.harness/.lock stranded until the janitor's TTL reaps it,
+// blocking the next /pp:run for up to 30 minutes. Best-effort — if the
+// release itself throws we still exit, because at this point we're done.
+let shuttingDown = false;
+function releaseAllLocksAndExit(signal: NodeJS.Signals): void {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  const locks = listActiveLocks();
+  log.info({ signal, lock_count: locks.length }, "shutdown: releasing project locks");
+  for (const lock of locks) {
+    try { lock.release(); }
+    catch (err) { log.warn({ err, project_path: lock.projectPath }, "shutdown: lock.release failed"); }
+  }
+  process.exit(0);
+}
+process.on("SIGTERM", () => releaseAllLocksAndExit("SIGTERM"));
+process.on("SIGINT",  () => releaseAllLocksAndExit("SIGINT"));
 
 const USAGE = `pp-daemon — Pair Programmer harness daemon
 
