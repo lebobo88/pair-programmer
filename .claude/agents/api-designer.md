@@ -2,7 +2,7 @@
 name: api-designer
 model: claude-sonnet-4-6
 description: Writes / updates OpenAPI 3.1, AsyncAPI 3, or Supabase / PostgREST contracts (taxonomy 4.7). Used by feature-team (contracts stage), security-review-team. Judge applies openapi-3.1-stability, asyncapi-3.1-stability, or supabase-contract-stability rubric depending on the contract flavor.
-tools: Read, Glob, Grep, mcp__pp_codex__generate, mcp__pp_harness__archive_artifact, mcp__pp_harness__record_attempt
+tools: Read, Write, Edit, Glob, Grep, mcp__pp_harness__archive_artifact, mcp__pp_harness__record_attempt
 ---
 
 You are the API designer. Your output is a complete (or delta) OpenAPI 3.1 / AsyncAPI 3 document.
@@ -11,7 +11,8 @@ You are the API designer. Your output is a complete (or delta) OpenAPI 3.1 / Asy
 
 - `run_id`, `stage_id`, `request_text`, `cwd`, `artifact_dir`
 - `existing_spec_path` (optional)
-- `primary_producer` — usually `codex` for schema-shaped outputs
+
+You author the spec file natively via `Write`/`Edit`. External CLIs are reserved for judge/critique only.
 
 ## Procedure
 

@@ -318,6 +318,37 @@ export function startStage(input: StartStageInput): StartStageOutput {
   return { stage_id: id };
 }
 
+/**
+ * Engineer self-verification surface (R3-tail post-mortem, 2026-05-21).
+ * The engineer agent's step-4.5 block produces these on Path A so the
+ * cross-vendor judge in Fix 1.4 can reconcile self-claims against the
+ * on-disk diff. All fields optional; legacy / non-engineer producers
+ * omit the whole `notes` field.
+ */
+export type AttemptNotes = {
+  /** Findings the engineer claims to have closed in this attempt. The
+   * cross-vendor judge reads each entry's `lines` and confirms the cited
+   * file:lines actually closes the named finding. Hallucinated entries
+   * are caught by Fix 1.4's findings-provenance block. */
+  findings_closed?: Array<{
+    id: string;
+    file: string;
+    lines: string;
+    claim: string;
+  }>;
+  /** Findings from the dispatch prompt the engineer did NOT close,
+   * with the reason. Honest empty-handed report is better than a
+   * fabricated `findings_closed` entry. */
+  findings_unaddressed?: Array<{ id: string; reason: string }>;
+  /** Anti-pattern matches the engineer self-grep caught in step 4.5(a).
+   * If non-empty AND status !== "needs_review", the engineer lied —
+   * the cross-vendor judge will catch it. */
+  anti_pattern_hits?: Array<{ file: string; line: number; pattern: string }>;
+  /** Path to a sha256 file produced in step 4.5(c), relative to project
+   * root. The judge re-hashes the same files on read and flags drift. */
+  touched_hashes_path?: string;
+};
+
 export type RecordAttemptInput = {
   stage_id: string;
   producer: string;
@@ -338,6 +369,16 @@ export type RecordAttemptInput = {
    * for Codex/Gemini attempts as `null` so the column is uniform).
    */
   attempted_tier?: ClaudeTier;
+  /** Engineer self-verification surface; see AttemptNotes. */
+  notes?: AttemptNotes;
+  /**
+   * Claude Code subagent_type the parent driver used to spawn the agent that
+   * authored this attempt (e.g. "engineer", "spec-author", "designer"). Free
+   * form so new typed agents don't require a schema change. The strict-mode
+   * guard below rejects "general-purpose" unless PP_STRICT_AGENT_TYPE=0,
+   * closing eights prop_885cc22f (2026-05-23 Hydra dispatch fix).
+   */
+  agent_type?: string;
 };
 export type RecordAttemptOutput = { attempt_id: string };
 
@@ -373,14 +414,42 @@ export function recordAttempt(input: RecordAttemptInput): RecordAttemptOutput {
     );
   }
 
+  // 2026-05-23 Hydra dispatch fix (eights prop_885cc22f). Reject
+  // agent_type="general-purpose" by default. Production stages MUST be
+  // authored by a typed agent — the "general-purpose" subagent has no
+  // archival/record contract with the harness, so accepting it here would
+  // silently erase replay provenance and disable evolution proposals
+  // tied to agent-type behavior. Set PP_STRICT_AGENT_TYPE=0 in the
+  // environment to opt out (e.g. for exploratory non-stage runs).
+  if (
+    input.agent_type === "general-purpose" &&
+    process.env.PP_STRICT_AGENT_TYPE !== "0"
+  ) {
+    throw new Error(
+      `record_attempt: agent_type="general-purpose" is rejected by strict mode. ` +
+      `Production stages MUST be authored by a typed Claude Code subagent ` +
+      `(engineer, spec-author, architect, designer, api-designer, ` +
+      `security-reviewer, data-modeler, ops-author, governance-author, ` +
+      `release-planner, retirement-planner, ai-controls-author, ` +
+      `design-system-curator, strategy-author, discovery-researcher, ` +
+      `docs-author, test-strategist, …). The "general-purpose" subagent ` +
+      `has no harness contract — recording it erases replay provenance ` +
+      `and disables agent-type-tied evolution proposals. ` +
+      `If the typed agent appears to lack a required tool, surface an ` +
+      `HITL with reason="agent_tool_surface_mismatch" instead of ` +
+      `downgrading. To opt out (exploratory only), set ` +
+      `PP_STRICT_AGENT_TYPE=0. Closes eights prop_885cc22f.`
+    );
+  }
+
   txImmediate(() => {
     db()
       .prepare(
         `INSERT INTO attempts(
           id, stage_id, producer, model_id, prompt_hash, artifact_path,
           tokens_in, tokens_out, cost_usd, wall_ms,
-          retry_index, parent_attempt_id, status, attempted_tier, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+          retry_index, parent_attempt_id, status, attempted_tier, notes_json, agent_type, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
       .run(
         id,
@@ -397,6 +466,8 @@ export function recordAttempt(input: RecordAttemptInput): RecordAttemptOutput {
         input.parent_attempt_id ?? null,
         (input.status ?? "ok") satisfies AttemptStatus,
         tier ?? null,
+        input.notes ? JSON.stringify(input.notes) : null,
+        input.agent_type ?? null,
         now()
       );
 
@@ -413,6 +484,113 @@ export function recordAttempt(input: RecordAttemptInput): RecordAttemptOutput {
   });
 
   return { attempt_id: id };
+}
+
+/**
+ * R3-tail post-mortem Fix 1.4 (2026-05-21): validate that every finding the
+ * judge cited in `score_json.findings_provenance` quotes text that ACTUALLY
+ * appears in the cited file. Drift = the judge fabricated the citation.
+ *
+ * The check is best-effort and read-only — it doesn't block the verdict
+ * insert (the operator can still see the critique and decide), but it
+ * sets `hallucination_suspected = 1` on the verdict row so downstream
+ * gates can surface the smell.
+ */
+function validateFindingsProvenance(args: {
+  score_json: unknown;
+  attempt_id: string;
+}): { hallucination_suspected: boolean; details_json: string | null } {
+  const score = args.score_json;
+  if (!score || typeof score !== "object") {
+    return { hallucination_suspected: false, details_json: null };
+  }
+  const provenance = (score as { findings_provenance?: unknown }).findings_provenance;
+  if (!Array.isArray(provenance) || provenance.length === 0) {
+    return { hallucination_suspected: false, details_json: null };
+  }
+
+  // Resolve project_path via the attempt → stage → run join. Best-effort:
+  // if the lookup misses, we skip validation (don't fail the verdict).
+  const projectRow = db()
+    .prepare(
+      `SELECT runs.project_path AS project_path
+         FROM attempts
+         JOIN stages ON stages.id = attempts.stage_id
+         JOIN runs   ON runs.id   = stages.run_id
+        WHERE attempts.id = ?`,
+    )
+    .get(args.attempt_id) as { project_path: string } | undefined;
+  if (!projectRow) {
+    return { hallucination_suspected: false, details_json: null };
+  }
+
+  const misses: Array<{
+    id: string;
+    file: string;
+    line?: number;
+    quoted_text: string;
+    reason: string;
+  }> = [];
+
+  for (const entry of provenance) {
+    if (!entry || typeof entry !== "object") continue;
+    const e = entry as {
+      id?: unknown; file?: unknown; line?: unknown;
+      quoted_text?: unknown; claim?: unknown;
+    };
+    const id = typeof e.id === "string" ? e.id : "<unknown-id>";
+    const file = typeof e.file === "string" ? e.file : null;
+    const line = typeof e.line === "number" ? e.line : undefined;
+    const quoted = typeof e.quoted_text === "string" ? e.quoted_text : null;
+
+    if (!file || !quoted) {
+      misses.push({
+        id, file: file ?? "<missing>", line, quoted_text: quoted ?? "",
+        reason: "entry missing file or quoted_text",
+      });
+      continue;
+    }
+    if (quoted.trim().length < 8) {
+      // Too-short quotes match too much by chance; reject as smell.
+      misses.push({ id, file, line, quoted_text: quoted, reason: "quoted_text shorter than 8 chars" });
+      continue;
+    }
+    // Reject obvious path-traversal in `file` — judge agents must cite
+    // project-relative paths.
+    if (file.includes("..") || file.startsWith("/") || /^[A-Za-z]:[\\\/]/.test(file)) {
+      misses.push({ id, file, line, quoted_text: quoted, reason: "file is not project-relative" });
+      continue;
+    }
+    let text = "";
+    try {
+      const abs = join(projectRow.project_path, file);
+      if (existsSync(abs)) text = readFileSync(abs, "utf8");
+    } catch {
+      misses.push({ id, file, line, quoted_text: quoted, reason: "file read failed" });
+      continue;
+    }
+    if (!text) {
+      misses.push({ id, file, line, quoted_text: quoted, reason: "file empty or unreadable" });
+      continue;
+    }
+    if (!text.includes(quoted)) {
+      misses.push({
+        id, file, line, quoted_text: quoted,
+        reason: "quoted_text not found in file (substring miss)",
+      });
+    }
+  }
+
+  if (misses.length === 0) {
+    return { hallucination_suspected: false, details_json: null };
+  }
+  return {
+    hallucination_suspected: true,
+    details_json: JSON.stringify({
+      total_provenance_entries: provenance.length,
+      misses,
+    }),
+  };
 }
 
 export type RecordVerdictInput = {
@@ -456,13 +634,27 @@ export function recordVerdict(input: RecordVerdictInput): RecordVerdictOutput {
   const judgeVendor = vendorFor(input.judge_producer);
   const crossVendor = !!(genVendor && judgeVendor && genVendor !== judgeVendor);
 
+  // R3-tail post-mortem Fix 1.4 (2026-05-21): validate findings_provenance.
+  // The judge agent emits `findings_provenance: [{id, file, line, quoted_text, claim}]`
+  // inside score_json. For each entry, we re-load the cited file from the
+  // attempt's project root and confirm `quoted_text` appears verbatim. Any
+  // miss = the judge fabricated a citation. We don't auto-retract — the
+  // operator can choose via Fix 1.3 — but we flag the verdict so downstream
+  // gates can surface it.
+  const provenanceCheck = validateFindingsProvenance({
+    score_json: input.score_json,
+    attempt_id: input.attempt_id,
+  });
+
   txImmediate(() => {
     db()
       .prepare(
         `INSERT INTO verdicts(
           id, attempt_id, judge_producer, judge_model_id, rubric_id,
-          outcome, critique_md, score_json, cross_vendor, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+          outcome, critique_md, score_json, cross_vendor,
+          hallucination_suspected, hallucination_details,
+          created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
       .run(
         id,
@@ -474,6 +666,8 @@ export function recordVerdict(input: RecordVerdictInput): RecordVerdictOutput {
         input.critique_md ?? null,
         input.score_json ? JSON.stringify(input.score_json) : null,
         crossVendor ? 1 : 0,
+        provenanceCheck.hallucination_suspected ? 1 : 0,
+        provenanceCheck.details_json,
         now()
       );
   });
@@ -511,6 +705,86 @@ export function recordVerdict(input: RecordVerdictInput): RecordVerdictOutput {
   return { verdict_id: id, cross_vendor: crossVendor };
 }
 
+/**
+ * R3-tail post-mortem Fix 1.3 (2026-05-21). Mark a prior verdict as
+ * retracted because subsequent evidence (typically another cross-vendor
+ * judge or operator review) showed it was wrong. The verdict row stays
+ * in the DB for audit, but its outcome is no longer considered by:
+ *   - finalize_stage's latest-verdict-fail check
+ *   - replay queries that walk verdicts in time order
+ *   - the cross-vendor re-judge gate (Fix 0.2) when looking up
+ *     "is there already a cross-vendor verdict on this attempt"
+ *
+ * Typical R3-tail cases this addresses:
+ *   - Codex flagged optional Idempotency-Key as wrong (HTTP-standard-
+ *     reading bias; Stripe / GitHub / Square treat it as optional too).
+ *   - Gemini hallucinated 5 missing baseline fixes that were never
+ *     scoped in the dispatch prompt.
+ * Both verdicts were permanently recorded with no path to mark them
+ * wrong. This function provides that path.
+ */
+export type RetractVerdictInput = {
+  verdict_id: string;
+  reason: string;                                      // operator-readable rationale
+  superseded_by?: string;                              // verdict_id of the replacement
+};
+export type RetractVerdictOutput = { verdict_id: string; retracted_at: string };
+
+export class VerdictNotFound extends Error {
+  constructor(message: string, public readonly verdict_id: string) {
+    super(message);
+    this.name = "VerdictNotFound";
+  }
+}
+
+export class VerdictAlreadyRetracted extends Error {
+  constructor(message: string, public readonly verdict_id: string, public readonly prior_reason: string) {
+    super(message);
+    this.name = "VerdictAlreadyRetracted";
+  }
+}
+
+export function retractVerdict(input: RetractVerdictInput): RetractVerdictOutput {
+  const existing = db()
+    .prepare(`SELECT id, retracted_at, retracted_reason FROM verdicts WHERE id = ?`)
+    .get(input.verdict_id) as
+      | { id: string; retracted_at: string | null; retracted_reason: string | null }
+      | undefined;
+  if (!existing) {
+    throw new VerdictNotFound(`verdict ${input.verdict_id} not found`, input.verdict_id);
+  }
+  if (existing.retracted_at) {
+    // Idempotent: re-retracting with the same reason is a no-op. Different
+    // reason is an error so the audit trail stays clean.
+    if (existing.retracted_reason === input.reason) {
+      return { verdict_id: existing.id, retracted_at: existing.retracted_at };
+    }
+    throw new VerdictAlreadyRetracted(
+      `verdict ${input.verdict_id} was already retracted with reason "${existing.retracted_reason}". ` +
+      `Refusing to overwrite with a different reason. Add a follow-up record instead.`,
+      input.verdict_id,
+      existing.retracted_reason ?? "",
+    );
+  }
+  if (!input.reason || input.reason.trim().length < 8) {
+    throw new Error(
+      `retract_verdict requires a non-empty reason (>= 8 chars). ` +
+      `R3-tail post-mortem: retractions without rationale are how the audit trail rots.`,
+    );
+  }
+  const ts = now();
+  txImmediate(() => {
+    db()
+      .prepare(
+        `UPDATE verdicts
+            SET retracted_at = ?, retracted_reason = ?, superseded_by = ?
+          WHERE id = ?`,
+      )
+      .run(ts, input.reason, input.superseded_by ?? null, input.verdict_id);
+  });
+  return { verdict_id: input.verdict_id, retracted_at: ts };
+}
+
 export type FinalizeStageInput = {
   stage_id: string;
   winner_attempt_id?: string;
@@ -524,7 +798,8 @@ export type StageFinalizeNextAction =
   | "run_artifact_validate"
   | "retry_with_critique"
   | "retry_or_surface"
-  | "surface_stage";
+  | "surface_stage"
+  | "dispatch_cross_vendor_rejudge";
 
 export type StageFinalizeTddBlocker = {
   gate: "tdd";
@@ -557,10 +832,28 @@ export type StageFinalizeVerdictBlocker = {
   outcome: VerdictOutcome;
 };
 
+/**
+ * Mandatory cross-vendor re-judge gate (R3-tail post-mortem, Fix 0.2).
+ * Surfaced when an engineer self-reports closure of named findings
+ * (`notes.findings_closed` non-empty in record_attempt) AND no
+ * cross-vendor verdict exists on that attempt yet. Forces an independent
+ * re-judge before finalize_passed is allowed — the R3-tail incident
+ * shipped `void idempotencyKey; // explicit no-op` because the engineer's
+ * self-report was never independently verified.
+ */
+export type StageFinalizeRejudgeBlocker = {
+  gate: "findings_closure_rejudge";
+  next_action: "dispatch_cross_vendor_rejudge" | "surface_stage";
+  message: string;
+  attempt_id: string;
+  finding_ids: string[];
+};
+
 export type StageFinalizeBlocker =
   | StageFinalizeTddBlocker
   | StageFinalizeArtifactBlocker
-  | StageFinalizeVerdictBlocker;
+  | StageFinalizeVerdictBlocker
+  | StageFinalizeRejudgeBlocker;
 
 export type StageFinalizeReadiness = {
   stage_id: string;
@@ -607,6 +900,27 @@ export class ValidatorGateViolation extends Error {
   ) {
     super(message);
     this.name = "ValidatorGateViolation";
+  }
+}
+
+/**
+ * R3-tail post-mortem Fix 0.2: mandatory cross-vendor re-judge after
+ * any engineer attempt that self-reports findings_closed. Without an
+ * independent verdict from a different vendor, finalize_passed is
+ * refused. The R3-tail δ envelope shipped a literal
+ * `void idempotencyKey; // explicit no-op` claimed as "Idempotency-Key
+ * support implemented" because no judge cross-checked the engineer's
+ * self-report. This gate makes that escape mode unreachable.
+ */
+export class FindingsClosureRejudgeRequired extends Error {
+  constructor(
+    message: string,
+    public readonly stage_id: string,
+    public readonly attempt_id: string,
+    public readonly finding_ids: string[],
+  ) {
+    super(message);
+    this.name = "FindingsClosureRejudgeRequired";
   }
 }
 
@@ -660,6 +974,7 @@ export function getStageFinalizeReadiness(stage_id: string): StageFinalizeReadin
          FROM verdicts v
          JOIN attempts a ON a.id = v.attempt_id
         WHERE a.stage_id = ?
+          AND v.retracted_at IS NULL
         ORDER BY v.created_at DESC LIMIT 1`,
     )
     .get(stage_id) as
@@ -673,6 +988,76 @@ export function getStageFinalizeReadiness(stage_id: string): StageFinalizeReadin
       attempt_id: latestVerdict.attempt_id,
       outcome: latestVerdict.outcome,
     }));
+  }
+
+  // R3-tail post-mortem Fix 0.2: mandatory cross-vendor re-judge gate.
+  // Any engineer attempt whose self-report claims to close named findings
+  // (notes_json.findings_closed non-empty) requires an independent
+  // cross-vendor verdict before finalize_passed is allowed. Same-vendor
+  // verdicts don't count — that's the exact path the R3-tail δ envelope
+  // took to ship `void idempotencyKey; // explicit no-op` as "Idempotency-
+  // Key implemented". Status="needs_review" (engineer caught its own
+  // anti-pattern) also forces the gate so the judge can verify the
+  // operator-acceptable resolution.
+  const claimedAttempts = db()
+    .prepare(
+      `SELECT id, notes_json, status
+         FROM attempts
+        WHERE stage_id = ?
+          AND notes_json IS NOT NULL
+        ORDER BY created_at DESC`,
+    )
+    .all(stage_id) as Array<{ id: string; notes_json: string; status: AttemptStatus }>;
+
+  for (const att of claimedAttempts) {
+    let parsed: AttemptNotes | null = null;
+    try {
+      parsed = JSON.parse(att.notes_json) as AttemptNotes;
+    } catch {
+      // Malformed notes_json — treat as no claim; downstream judge will
+      // catch via the raw column read. Don't block finalize on a parser
+      // bug, but log so the operator can investigate.
+      log.warn({ attempt_id: att.id }, "attempt notes_json failed to parse — skipping rejudge gate check");
+      continue;
+    }
+    const findings = parsed?.findings_closed ?? [];
+    const antiPatternHits = parsed?.anti_pattern_hits ?? [];
+    const needsReview = att.status === "needs_review";
+    // Trigger the gate when EITHER the engineer claimed closures OR
+    // self-flagged anti-patterns OR was downgraded to needs_review.
+    const gateRequired = findings.length > 0 || antiPatternHits.length > 0 || needsReview;
+    if (!gateRequired) continue;
+
+    const crossVendorVerdict = db()
+      .prepare(
+        `SELECT id FROM verdicts
+          WHERE attempt_id = ?
+            AND cross_vendor = 1
+            AND retracted_at IS NULL
+          ORDER BY created_at DESC LIMIT 1`,
+      )
+      .get(att.id) as { id: string } | undefined;
+
+    if (crossVendorVerdict) continue;  // already re-judged independently (non-retracted)
+
+    const findingIds = findings.map(f => f.id);
+    const summary = needsReview
+      ? `attempt ${att.id} was self-flagged needs_review (engineer caught anti-pattern)`
+      : antiPatternHits.length > 0
+        ? `attempt ${att.id} self-reported ${antiPatternHits.length} anti-pattern hit(s)`
+        : `attempt ${att.id} self-reported closure of ${findingIds.length} finding(s): ${findingIds.slice(0, 6).join(", ")}${findingIds.length > 6 ? ` +${findingIds.length - 6} more` : ""}`;
+
+    blockers.push({
+      gate: "findings_closure_rejudge",
+      next_action: "dispatch_cross_vendor_rejudge",
+      message:
+        `finalize_stage refused: ${summary} but no independent cross-vendor verdict exists on attempt ${att.id}. ` +
+        `R3-tail post-mortem Fix 0.2 requires an independent cross-vendor judge pass after any engineer "all closed" self-report. ` +
+        `Dispatch the judge-cross-vendor agent against this attempt before retrying finalize_passed, or finalize with status='surfaced' to accept the unreviewed self-report.`,
+      attempt_id: att.id,
+      finding_ids: findingIds.length > 0 ? findingIds : ["<anti-pattern-only>"],
+    });
+    break;  // surface the most recent claiming attempt only; one is enough to block
   }
 
   const can_pass = blockers.length === 0;
@@ -745,6 +1130,14 @@ export async function finalizeStage(input: FinalizeStageInput): Promise<void> {
           blocker.attempt_id,
           blocker.verdict_id,
           blocker.outcome,
+        );
+      }
+      if (blocker.gate === "findings_closure_rejudge") {
+        throw new FindingsClosureRejudgeRequired(
+          blocker.message,
+          input.stage_id,
+          blocker.attempt_id,
+          blocker.finding_ids,
         );
       }
       throw new ValidatorGateViolation(
@@ -1132,6 +1525,19 @@ export type ArchiveArtifactInput = {
   bytes: string;               // utf-8 text content (default), or base64 when encoding='base64'
   encoding?: "utf8" | "base64"; // declare base64 explicitly; omitting triggers smell-reject heuristic
   force_overwrite?: boolean;   // allow clobber when manual edits would otherwise block
+  /**
+   * R3-tail post-mortem Fix 1.2 (2026-05-21): when the substantive intent
+   * of this artifact lives at a DIFFERENT path in the project tree (e.g.,
+   * a DR document, a section of AGENTS.md, an existing OpenAPI file the
+   * patch was merged into), set evidence_ref to that project-relative
+   * path. The missability check library will load THAT file's content
+   * and run its regex against it, instead of the patch under .harness/
+   * — which would otherwise silently fail the check despite the intent
+   * being met. R3-tail finalize surfaced as 5 false-fail because of this
+   * exact mismatch (patches archived under .harness, intent lived in
+   * docs/decisions/DR-2026-018.md).
+   */
+  evidence_ref?: string;
 };
 export type ArchiveArtifactOk = {
   status: "ok";
@@ -1325,8 +1731,8 @@ export function archiveArtifact(input: ArchiveArtifactInput): ArchiveArtifactOut
   txImmediate(() => {
     db()
       .prepare(
-        `INSERT INTO artifacts(id, run_id, stage_id, taxonomy_section, kind, path, sha256, bytes, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        `INSERT INTO artifacts(id, run_id, stage_id, taxonomy_section, kind, path, sha256, bytes, evidence_ref, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
       .run(
         id,
@@ -1337,6 +1743,7 @@ export function archiveArtifact(input: ArchiveArtifactInput): ArchiveArtifactOut
         relPath,
         sha256,
         size,
+        input.evidence_ref ?? null,
         now()
       );
   });

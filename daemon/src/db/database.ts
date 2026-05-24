@@ -37,6 +37,27 @@ function applyMigrations(conn: Database.Database): void {
   if (!attemptCols.some(c => c.name === "attempted_tier")) {
     conn.exec("ALTER TABLE attempts ADD COLUMN attempted_tier TEXT");
   }
+  // v8: engineer self-verification surface (R3-tail post-mortem, 2026-05-21).
+  // Stores findings_closed[], findings_unaddressed[], anti_pattern_hits[],
+  // and touched_hashes_path so the cross-vendor judge in Fix 1.4 can
+  // reconcile engineer self-claims against the on-disk diff. The harness
+  // uses presence of findings_closed to gate finalize_stage on a
+  // cross-vendor re-judge (Fix 0.2). NULL = legacy attempt or non-engineer
+  // producer (no self-claim surface to reconcile against).
+  if (!attemptCols.some(c => c.name === "notes_json")) {
+    conn.exec("ALTER TABLE attempts ADD COLUMN notes_json TEXT");
+  }
+  // v9: agent_type provenance (2026-05-23 Hydra dispatch fix). Stores the
+  // Claude Code subagent_type the parent driver used (e.g. "engineer",
+  // "spec-author", "designer"). NULL = legacy attempt with no subagent
+  // recorded. The strict-mode guard in recordAttempt rejects
+  // agent_type="general-purpose" unless PP_STRICT_AGENT_TYPE=0 so the
+  // Hydra supervisor can't silently downgrade typed dispatch to the
+  // generic catch-all subagent — that defect was tracked as eights
+  // prop_885cc22f for R6 and is closed by this migration.
+  if (!attemptCols.some(c => c.name === "agent_type")) {
+    conn.exec("ALTER TABLE attempts ADD COLUMN agent_type TEXT");
+  }
   const runCols = conn.prepare("PRAGMA table_info(runs)").all() as Array<{ name: string }>;
   if (!runCols.some(c => c.name === "cli_flags_json")) {
     conn.exec("ALTER TABLE runs ADD COLUMN cli_flags_json TEXT");
@@ -72,6 +93,18 @@ function applyMigrations(conn: Database.Database): void {
       conn.exec(`ALTER TABLE artifacts ADD COLUMN ${col} TEXT`);
     }
   }
+  // v8: evidence_ref column on artifacts (R3-tail post-mortem Fix 1.2,
+  // 2026-05-21). When an artifact lives at the project tree (normal
+  // path), missability loads it from project_path. When it's archived as
+  // a patch under `.harness/<run_id>/<path>` instead, the project-tree
+  // load returns empty and missability checks silently fail. evidence_ref
+  // lets the producer point at the document that DOES carry the intent
+  // (e.g., `docs/decisions/DR-2026-018.md`); missability loads THAT file
+  // and runs its regex against THAT content. R3-tail finalize surfaced
+  // as 5 false-fail because of this gap.
+  if (!artifactCols.some(c => c.name === "evidence_ref")) {
+    conn.exec("ALTER TABLE artifacts ADD COLUMN evidence_ref TEXT");
+  }
   const artifactColsAfter = conn.prepare("PRAGMA table_info(artifacts)").all() as Array<{ name: string }>;
   if (artifactColsAfter.some(c => c.name === "cell")) {
     conn.exec("CREATE INDEX IF NOT EXISTS idx_artifacts_cell ON artifacts(cell) WHERE cell IS NOT NULL");
@@ -80,6 +113,33 @@ function applyMigrations(conn: Database.Database): void {
   const verdictCols = conn.prepare("PRAGMA table_info(verdicts)").all() as Array<{ name: string }>;
   if (!verdictCols.some(c => c.name === "eights_memory_id")) {
     conn.exec("ALTER TABLE verdicts ADD COLUMN eights_memory_id TEXT");
+  }
+  // v8: verdict retraction columns (R3-tail post-mortem Fix 1.3,
+  // 2026-05-21). A verdict can be retracted when later evidence shows it
+  // was wrong — typical R3-tail case: a cross-vendor judge in a late
+  // round flagged a finding that turned out to be a HTTP-standard-reading
+  // bias (Codex on optional Idempotency-Key) or a baseline hallucination
+  // (Gemini citing fixes that were never scoped). Verdicts persist for
+  // audit, but retracted ones are skipped by replay queries.
+  if (!verdictCols.some(c => c.name === "superseded_by")) {
+    conn.exec("ALTER TABLE verdicts ADD COLUMN superseded_by TEXT");
+  }
+  if (!verdictCols.some(c => c.name === "retracted_reason")) {
+    conn.exec("ALTER TABLE verdicts ADD COLUMN retracted_reason TEXT");
+  }
+  if (!verdictCols.some(c => c.name === "retracted_at")) {
+    conn.exec("ALTER TABLE verdicts ADD COLUMN retracted_at TEXT");
+  }
+  // v8: judge hallucination suspicion flag (R3-tail post-mortem Fix 1.4).
+  // Set when a verdict's findings_provenance claims a quoted_text that
+  // doesn't appear in the cited file. Doesn't auto-retract — the operator
+  // can choose to retract via Fix 1.3 — but flags for HITL review so the
+  // hallucination doesn't silently drive downstream gates.
+  if (!verdictCols.some(c => c.name === "hallucination_suspected")) {
+    conn.exec("ALTER TABLE verdicts ADD COLUMN hallucination_suspected INTEGER NOT NULL DEFAULT 0");
+  }
+  if (!verdictCols.some(c => c.name === "hallucination_details")) {
+    conn.exec("ALTER TABLE verdicts ADD COLUMN hallucination_details TEXT");
   }
 
   // CREATE TABLE IF NOT EXISTS already covered by SCHEMA_SQL exec at boot,

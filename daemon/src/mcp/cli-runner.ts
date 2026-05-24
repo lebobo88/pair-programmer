@@ -70,7 +70,7 @@ export interface CliRunOptions {
   /** Working directory to spawn the subprocess in (also used for the failure archive). */
   cwd: string;
   /** Vendor tag used in the archive filename and log breadcrumb. */
-  vendor: "codex" | "gemini";
+  vendor: "codex" | "gemini" | "copilot";
   /**
    * If provided, written to the subprocess's stdin (and stdin closed). Use this
    * for codex `exec -` to bypass the Windows 8191-char command-line limit on
@@ -83,7 +83,7 @@ export interface CliRunOptions {
 
 export interface CliFailureArchiveOptions {
   cwd: string;
-  vendor: "codex" | "gemini";
+  vendor: "codex" | "gemini" | "copilot";
   attempts: CliAttempt[];
   stdout: string;
   stderr?: string;

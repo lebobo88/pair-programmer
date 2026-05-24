@@ -301,3 +301,153 @@ function vendorFor(producer: string): string {
   if (producer === "claude") return "anthropic";
   return "unknown";
 }
+
+// ─── Tail-fix producer selection (R3-tail post-mortem Fix 1.1, 2026-05-21) ───
+//
+// When a code stage enters Reflexion retry territory AND the remaining work
+// is surgical (small diff, few files), the R3-tail post-mortem found that
+// switching from `engineer` to `test-strategist` stabilized convergence.
+// `test-strategist` is daemon-verified via tdd_pre_check / tdd_post_check so
+// its claims are executable, not assertional — that's the property that
+// stopped the engineer's regression-trading pattern in tail-fix-1..5.
+//
+// This helper exposes the recommendation to the slash-command driver. The
+// driver remains authoritative — it can override on operator request — but
+// without an explicit override, the driver should honor the recommendation.
+
+export type TailFixProducerInput = {
+  /** Most recent attempt on the stage, including its post-step-4.5 notes. */
+  prior_attempt: {
+    producer: string;
+    status: string;                                    // AttemptStatus
+    notes_json: string | null;
+  };
+  /** Latest critique on that attempt (any verdict). Empty when none yet. */
+  latest_critique_md: string;
+  /** When the stage's team yaml specifies it; used as the default. */
+  team_default_agent: string;
+};
+
+export type TailFixProducerDecision = {
+  /** Agent the driver should dispatch on retry. */
+  recommended_agent: "engineer" | "test-strategist";
+  /** Human-readable reason for the recommendation. */
+  reason: string;
+  /** Stable signals used by the heuristic, exposed for trace / logging. */
+  signals: {
+    diff_loc_estimate: number | null;
+    files_mentioned: number;
+    has_findings_closed: boolean;
+    has_anti_pattern_hits: boolean;
+    status_needs_review: boolean;
+  };
+};
+
+/**
+ * Pure function — no DB access — so it's trivially unit-testable. The
+ * driver computes the inputs (prior_attempt row + latest critique text) and
+ * passes them in. Returns the producer recommendation + reasoning trace.
+ */
+export function selectTailFixProducer(input: TailFixProducerInput): TailFixProducerDecision {
+  let notes: {
+    findings_closed?: Array<{ id: string; file: string; lines: string; claim: string }>;
+    anti_pattern_hits?: Array<{ file: string; line: number; pattern: string }>;
+  } = {};
+  if (input.prior_attempt.notes_json) {
+    try { notes = JSON.parse(input.prior_attempt.notes_json); } catch { /* malformed; treat as empty */ }
+  }
+  const findingsClosed = notes.findings_closed ?? [];
+  const antiPatternHits = notes.anti_pattern_hits ?? [];
+  const statusNeedsReview = input.prior_attempt.status === "needs_review";
+
+  // Count distinct files cited in either notes or the critique. The critique
+  // often calls out specific paths; the notes always do (lines: "10-20"
+  // implies one file per entry). We don't try to be exhaustive — a small
+  // sample is enough to drive the heuristic.
+  const filesFromFindings = new Set(findingsClosed.map(f => f.file));
+  const filesFromAntiPatterns = new Set(antiPatternHits.map(h => h.file));
+  // The critique often cites file paths via inline backticks or
+  // `path/to/file.ts:line`. We grep them with a forgiving regex.
+  const filesFromCritique = new Set<string>();
+  const filePathRe = /(?:^|[\s`(])([a-zA-Z0-9_./-]+\.[a-zA-Z]{1,5})(?::\d+)?/g;
+  for (const match of input.latest_critique_md.matchAll(filePathRe)) {
+    filesFromCritique.add(match[1]!);
+  }
+  const allFiles = new Set([
+    ...filesFromFindings,
+    ...filesFromAntiPatterns,
+    ...filesFromCritique,
+  ]);
+  const filesMentioned = allFiles.size;
+
+  // Estimate diff_loc from findings_closed line ranges (e.g., "10-20" → 11).
+  // Best-effort — no diff_loc in notes means we fall back to file count alone.
+  let diffLocEstimate: number | null = null;
+  for (const f of findingsClosed) {
+    const m = f.lines.match(/^(\d+)-(\d+)$/);
+    if (!m) continue;
+    const span = Math.max(0, parseInt(m[2]!, 10) - parseInt(m[1]!, 10) + 1);
+    diffLocEstimate = (diffLocEstimate ?? 0) + span;
+  }
+
+  const signals = {
+    diff_loc_estimate: diffLocEstimate,
+    files_mentioned: filesMentioned,
+    has_findings_closed: findingsClosed.length > 0,
+    has_anti_pattern_hits: antiPatternHits.length > 0,
+    status_needs_review: statusNeedsReview,
+  };
+
+  // The heuristic: prefer test-strategist for surgical tail-fixes.
+  //
+  //   surgical_diff  =  diff_loc < 50 (when known)
+  //   surgical_files =  <= 2 files cited
+  //
+  // We require BOTH signals to be present (small AND focused) before
+  // switching producers. Anti-pattern hits alone (no findings_closed)
+  // are usually trivial fixes (renames, ts-ignore removal) — still
+  // engineer-shaped. The R3-tail pattern that worked was: small diff,
+  // 1-2 files, explicit per-line patches from the critique.
+  const surgicalDiff = diffLocEstimate === null || diffLocEstimate < 50;
+  const surgicalFiles = filesMentioned > 0 && filesMentioned <= 2;
+  // status=needs_review also pushes toward test-strategist — the engineer
+  // already self-flagged it can't ship, so a daemon-verified producer is
+  // more likely to converge than another engineer attempt.
+
+  if (statusNeedsReview && surgicalFiles) {
+    return {
+      recommended_agent: "test-strategist",
+      reason:
+        `prior attempt self-flagged needs_review and the critique scope is surgical ` +
+        `(${filesMentioned} file(s) mentioned${diffLocEstimate !== null ? `, ~${diffLocEstimate} LoC` : ""}). ` +
+        `Switching to test-strategist whose tdd_pre/post_check gate is daemon-verified ` +
+        `(executable, not assertional) — R3-tail tail-fix-1..5 pattern.`,
+      signals,
+    };
+  }
+
+  if (surgicalDiff && surgicalFiles && findingsClosed.length > 0) {
+    return {
+      recommended_agent: "test-strategist",
+      reason:
+        `surgical tail-fix detected (${filesMentioned} file(s)` +
+        `${diffLocEstimate !== null ? `, ~${diffLocEstimate} LoC` : ""}, ` +
+        `${findingsClosed.length} prior findings claimed closed). ` +
+        `Switching to test-strategist for the retry — R3-tail Fix 1.1.`,
+      signals,
+    };
+  }
+
+  // Default: keep the original generator. Engineer is appropriate when the
+  // diff is wide or the work isn't yet bounded.
+  return {
+    recommended_agent: input.team_default_agent === "test-strategist"
+      ? "test-strategist"
+      : "engineer",
+    reason:
+      `scope is not surgical (${filesMentioned} file(s) mentioned` +
+      `${diffLocEstimate !== null ? `, ~${diffLocEstimate} LoC` : ""}). ` +
+      `Retaining team yaml's primary agent (${input.team_default_agent}).`,
+    signals,
+  };
+}

@@ -17,6 +17,7 @@ import { SANDBOX_DIR, ensureDirs } from "../util/paths.js";
 import { log } from "../util/logger.js";
 import { DEFAULT_MODELS } from "../config.js";
 import { runCliWithRetry, type CliAttempt } from "./cli-runner.js";
+import { attemptCopilotFallback, parseCopilotJsonl } from "./copilot-runner.js";
 import { getSession, setSession, synthesizeRecap } from "../orchestrator/sub-cli-sessions.js";
 
 // ─── Sandbox policy ──────────────────────────────────────────────────────
@@ -230,7 +231,7 @@ async function codexGenerate(
     }
   }
 
-  return {
+  const result: CodexResult = {
     text,
     parsed: parsedJson,
     tokens_in,
@@ -244,6 +245,41 @@ async function codexGenerate(
     attempts: run.attempts,
     failure_archive_path: run.failure_archive_path,
   };
+
+  if (result.exit_code !== 0) {
+    return attemptCopilotFallback(result, {
+      prompt,
+      cwd: args.cwd,
+      model: args.model,
+      mode: "generate",
+      reasoning_effort: reasoningEffort,
+      output_schema: args.output_schema,
+      timeout_ms: args.timeout_ms,
+    }, (fallbackRun) => {
+      const fp = parseCopilotJsonl(fallbackRun.stdout);
+      const fText = fp.text ?? fallbackRun.stdout;
+      const fTokensIn = fp.tokens_in ?? 0;
+      const fTokensOut = fp.tokens_out ?? 0;
+      let fParsedJson: unknown;
+      if (args.output_schema) {
+        const trimmed = fText.trim();
+        if (trimmed) { try { fParsedJson = JSON.parse(trimmed); } catch { /* leave undefined */ } }
+      }
+      return {
+        text: fText,
+        parsed: fParsedJson,
+        tokens_in: fTokensIn,
+        tokens_out: fTokensOut,
+        cost_usd: computeCost(args.model, fTokensIn, fTokensOut),
+        model: fp.model ?? args.model,
+        wall_ms: fallbackRun.wall_ms,
+        exit_code: fallbackRun.exit_code,
+        session_id: fp.session_id,
+      };
+    });
+  }
+
+  return result;
 }
 
 export async function codexCritique(

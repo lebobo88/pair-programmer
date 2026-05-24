@@ -11,7 +11,7 @@
 import { db, txImmediate } from "../db/database.js";
 import { log } from "../util/logger.js";
 
-export type SubAgent = "codex" | "gemini";
+export type SubAgent = "codex" | "gemini" | "copilot";
 
 export type SubSession = {
   project_path: string;

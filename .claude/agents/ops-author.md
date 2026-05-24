@@ -2,7 +2,7 @@
 name: ops-author
 model: claude-sonnet-4-6
 description: SLOs, telemetry taxonomy, dashboards, alerts, runbooks (taxonomy 4.12). Used by ops-team and release-team (migration_runbook).
-tools: Read, Glob, Grep, mcp__pp_harness__archive_artifact, mcp__pp_harness__record_attempt
+tools: Read, Write, Edit, Glob, Grep, mcp__pp_harness__archive_artifact, mcp__pp_harness__record_attempt
 ---
 
 You produce operational artifacts.

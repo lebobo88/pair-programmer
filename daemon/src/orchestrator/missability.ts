@@ -601,7 +601,15 @@ export const CHECK_DEFINITIONS: Array<{
   },
 ];
 
-type ArtifactBundle = { path: string; kind: string | null; text: string };
+type ArtifactBundle = {
+  path: string;
+  kind: string | null;
+  text: string;
+  // R3-tail Fix 1.2: absolute path of the file we actually loaded text from
+  // (after the project_path → .harness/<run_id> → evidence_ref cascade).
+  // null when no candidate yielded content.
+  resolved_from?: string | null;
+};
 
 function textPatternCheck(texts: ArtifactBundle[], re: RegExp): { status: "pass" | "fail"; evidence?: string } {
   for (const a of texts) {
@@ -678,14 +686,43 @@ export function runMissabilityChecks(opts: {
   if (!run) throw new Error(`run ${opts.run_id} not found`);
 
   const artifactRows = db()
-    .prepare(`SELECT path, kind FROM artifacts WHERE run_id = ?`)
-    .all(opts.run_id) as Array<{ path: string; kind: string | null }>;
+    .prepare(`SELECT path, kind, evidence_ref FROM artifacts WHERE run_id = ?`)
+    .all(opts.run_id) as Array<{ path: string; kind: string | null; evidence_ref: string | null }>;
 
+  // R3-tail Fix 1.2 (2026-05-21): resolve artifact text through a 3-step
+  // cascade so checks don't silently fail when the artifact was archived
+  // as a patch under `.harness/<run_id>/` instead of the project tree.
+  //
+  //   1. If `evidence_ref` is set on the row, load `<project>/<evidence_ref>`
+  //      FIRST — the producer explicitly told us where the substantive
+  //      intent lives (typically a DR file). evidence_ref wins over the
+  //      patch path because the patch is a record of what changed, not
+  //      what the intent says.
+  //   2. Try `<project>/<path>` — the canonical artifact location.
+  //   3. Try `<project>/.harness/<run_id>/<path>` — patches archived
+  //      during the run.
+  //
+  // Each candidate path tried gets its result hashed into `text`. The
+  // first non-empty load wins. Empty after all three = check evaluates
+  // against empty text, same as the pre-fix behavior.
+  const runArchiveRoot = join(run.project_path, ".harness", opts.run_id);
   const texts: ArtifactBundle[] = artifactRows.map(r => {
-    const abs = join(run.project_path, r.path);
     let text = "";
-    try { if (existsSync(abs)) text = readFileSync(abs, "utf8"); } catch { /* ignore */ }
-    return { path: r.path, kind: r.kind, text };
+    let resolvedFrom: string | null = null;
+    const candidates = [
+      r.evidence_ref ? join(run.project_path, r.evidence_ref) : null,
+      join(run.project_path, r.path),
+      join(runArchiveRoot, r.path),
+    ].filter((p): p is string => p !== null);
+    for (const abs of candidates) {
+      try {
+        if (existsSync(abs)) {
+          text = readFileSync(abs, "utf8");
+          if (text.length > 0) { resolvedFrom = abs; break; }
+        }
+      } catch { /* ignore */ }
+    }
+    return { path: r.path, kind: r.kind, text, resolved_from: resolvedFrom };
   });
 
   const artifactKinds = new Set(artifactRows.map(r => r.kind ?? "").filter(Boolean));

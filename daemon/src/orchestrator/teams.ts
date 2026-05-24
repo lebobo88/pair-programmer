@@ -29,6 +29,19 @@ export type TeamStage = {
     model_tier?: ClaudeTier;
   };
   judge:     { tier: "cross_vendor" | "same_vendor"; rubric?: string; model_pref?: string };
+  /**
+   * R3-tail post-mortem Fix 0.4 (2026-05-21): when triage classifies the
+   * request as `scope: "major"` (high surface area, ≥3 in major-keyword
+   * signal heuristics, or operator-flagged), the driver upgrades this
+   * stage to a best-of-N candidate race with the configured fan-out.
+   * Borda picks a winner from N parallel candidates — avoids the R3-tail
+   * trap of reflexion-ing one engineer to death across 10 retry rounds
+   * when the surface area is too large for a single attempt to converge.
+   * Recommended values: 3 (default) for feature/bug-fix; 5 for marketing
+   * page generation where seed diversity matters most.
+   * Ignored when triage.scope ∈ {trivial, standard}.
+   */
+  best_of_n_on_major_scope?: number;
 };
 
 export type TeamSpec = {
@@ -90,6 +103,17 @@ function validateTeamSpec(spec: TeamSpec, path: string): void {
         `team yaml ${path}: stage "${stage.kind}" has generator.model_tier="${tier}". ` +
         `Valid values: "opus" | "sonnet" | "haiku" (or omit the field).`
       );
+    }
+    // R3-tail Fix 0.4: best_of_n_on_major_scope must be a sane integer.
+    // Typos like "3.5" or strings would silently disable the policy.
+    const bon = stage.best_of_n_on_major_scope;
+    if (bon !== undefined) {
+      if (!Number.isInteger(bon) || bon < 2 || bon > 7) {
+        throw new Error(
+          `team yaml ${path}: stage "${stage.kind}" has best_of_n_on_major_scope=${JSON.stringify(bon)}. ` +
+          `Must be an integer in [2, 7] — best-of-N below 2 is meaningless and above 7 burns budget.`,
+        );
+      }
     }
   }
 }

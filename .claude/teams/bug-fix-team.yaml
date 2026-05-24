@@ -15,6 +15,10 @@ stages:
     gate_type: code_style
     generator: { agent: engineer, primary: codex }
     judge:     { tier: same_vendor, model_pref: codex_alt_model }
+    # R3-tail Fix 0.4: best-of-3 on major-scope bug fixes — these are the
+    # bugs that touch many files (auth, schema, idempotency) where one
+    # engineer's first attempt often misses an edge case.
+    best_of_n_on_major_scope: 3
   - kind: tests
     artifact_kind: test_plan
     gate_type: contract

@@ -18,6 +18,12 @@ stages:
     gate_type: code_style
     generator: { agent: engineer, primary: codex }
     judge:     { tier: same_vendor, model_pref: codex_alt_model }
+    # R3-tail Fix 0.4 (2026-05-21): when triage scope=major, fan out to 3
+    # parallel candidates and Borda-pick a winner instead of reflexion-ing
+    # one engineer to death. R3-tail δ took 10 retry rounds + 4 operator
+    # overrides on what should have been a 3-candidate race. Trivial /
+    # standard scope still uses the single-engineer + Reflexion ×1 path.
+    best_of_n_on_major_scope: 3
   - kind: tests
     artifact_kind: test_plan
     gate_type: contract

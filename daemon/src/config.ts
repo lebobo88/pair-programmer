@@ -82,7 +82,13 @@ export type RunStatus = typeof RUN_STATUS[number];
 export const STAGE_STATUS = ["open", "passed", "surfaced", "skipped"] as const;
 export type StageStatus = typeof STAGE_STATUS[number];
 
-export const ATTEMPT_STATUS = ["ok", "error", "timeout"] as const;
+export const ATTEMPT_STATUS = ["ok", "error", "timeout", "needs_review"] as const;
+// "needs_review" (R3-tail post-mortem, 2026-05-21): the engineer self-verify
+// block (engineer.md step 4.5) caught an unsanctioned anti-pattern in the
+// committed diff. The attempt is recorded so the judge sees the diff, but
+// finalize_stage refuses to mark the stage 'passed' until a cross-vendor
+// re-judge clears the attempt. See `getStageFinalizeReadiness` blocker
+// `findings_closure_rejudge`.
 export type AttemptStatus = typeof ATTEMPT_STATUS[number];
 
 export const VERDICT_OUTCOME = ["pass", "fail", "revise"] as const;
@@ -94,15 +100,20 @@ export type RunMode = typeof RUN_MODE[number];
 export const VENDORS = ["openai", "google", "anthropic"] as const;
 export type Vendor = typeof VENDORS[number];
 
-export const PRODUCERS = ["codex", "gemini", "claude"] as const;
+export const PRODUCERS = ["codex", "gemini", "claude", "copilot"] as const;
 export type Producer = typeof PRODUCERS[number];
 
 export function vendorFor(producer: string): Vendor | null {
   if (producer === "codex") return "openai";
   if (producer === "gemini") return "google";
   if (producer === "claude") return "anthropic";
+  if (producer === "copilot") return "openai";
   return null;
 }
+
+/** Set PP_COPILOT_FALLBACK=0 to disable the copilot CLI fallback for codex/gemini. */
+export const COPILOT_FALLBACK_ENABLED =
+  (process.env.PP_COPILOT_FALLBACK ?? "1") !== "0";
 
 // ─── Ecosystem integration (Hydra / TheEights / Constitution) ───────────
 // Phase A spine. Every ecosystem call is best-effort: if the eights-daemon

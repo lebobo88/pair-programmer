@@ -1,0 +1,39 @@
+name: marketing-team
+description: Marketing surface (landing pages, blog posts, ad copy). High-surface-area code where seed diversity matters — Borda-pick a winner from 5 parallel candidates with different framings (primary, devils-advocate, terse-diff, failing-test-first, fresh-stack). R3-tail Fix 0.4 (2026-05-21).
+profiles_compatible: [web-ui, internal-tool, ai-agentic]
+stages:
+  - kind: spec
+    gate_type: spec
+    generator: { agent: spec-author, primary: claude }
+    judge:     { tier: cross_vendor, rubric: rfc-2119-normative@1, model_pref: gemini }
+  - kind: design
+    gate_type: design
+    generator: { agent: designer, primary: claude }
+    judge:     { tier: cross_vendor, model_pref: codex }
+  - kind: code
+    gate_type: code_style
+    generator: { agent: engineer, primary: claude }
+    judge:     { tier: cross_vendor, model_pref: gemini }
+    # Marketing-page work is the canonical high-surface-area scenario: the
+    # "right" output is more about taste + diversity than convergence to a
+    # single correct answer. Fan out to 5 candidates so the seed dimension
+    # (primary, devils-advocate, terse, failing-test-first, fresh-stack)
+    # actually buys us comparison-shopping value. R3-tail post-mortem
+    # called this out specifically as the R5 marketing-surface pattern.
+    best_of_n_on_major_scope: 5
+  - kind: tests
+    artifact_kind: test_plan
+    gate_type: contract
+    generator: { agent: test-strategist, primary: codex }
+    judge:     { tier: cross_vendor, model_pref: gemini }
+  - kind: browser_validation
+    artifact_kind: browser_validation_report
+    gate_type: contract
+    generator: { agent: browser-validator, primary: claude }
+    judge:     { tier: same_vendor, rubric: web-runtime-validation@2 }
+  - kind: docs
+    gate_type: docs_polish
+    generator: { agent: docs-author, primary: claude }
+    judge:     { tier: same_vendor, model_pref: claude_alt_model }
+taxonomy_required: ["4.3", "4.4", "4.10", "4.13"]
+missability_required: ["nfrs-declared", "browser-validation-evidence"]

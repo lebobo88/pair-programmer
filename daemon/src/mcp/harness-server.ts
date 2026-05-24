@@ -7,7 +7,7 @@ import {
 import { z } from "zod";
 import { errorContent, jsonContent, zodToJsonSchema } from "./helpers.js";
 import {
-  startRun, ensureRun, startStage, recordAttempt, recordVerdict, finalizeStage,
+  startRun, ensureRun, startStage, recordAttempt, recordVerdict, retractVerdict, finalizeStage,
   finalizeRun, archiveArtifact, listRuns, getRun, budgetStatus, doctor,
   recordTaxonomyMapping, getStageFinalizeReadiness,
 } from "../orchestrator/runs.js";
@@ -106,6 +106,28 @@ const StartStageSchema = z.object({
   gate_type: z.string().min(1),
 });
 
+// Engineer self-verification surface (R3-tail post-mortem, 2026-05-21).
+// See AttemptNotes in runs.ts. Validated as a closed object so the
+// engineer can't smuggle extra keys past the cross-vendor judge.
+const AttemptNotesSchema = z.object({
+  findings_closed: z.array(z.object({
+    id: z.string().min(1),
+    file: z.string().min(1),
+    lines: z.string().min(1),
+    claim: z.string().min(1),
+  })).optional(),
+  findings_unaddressed: z.array(z.object({
+    id: z.string().min(1),
+    reason: z.string().min(1),
+  })).optional(),
+  anti_pattern_hits: z.array(z.object({
+    file: z.string().min(1),
+    line: z.number().int().nonnegative(),
+    pattern: z.string().min(1),
+  })).optional(),
+  touched_hashes_path: z.string().optional(),
+}).strict();
+
 const RecordAttemptSchema = z.object({
   stage_id:           z.string().min(1),
   producer:           z.string().min(1),
@@ -127,6 +149,27 @@ const RecordAttemptSchema = z.object({
   // producer === "claude"; the daemon does not enforce — it just records
   // for cost-by-tier analytics and replay determinism.
   attempted_tier:     z.enum(["opus", "sonnet", "haiku"]).optional(),
+  // Engineer self-verification surface (Fix 0.1 / R3-tail post-mortem).
+  // Presence of `findings_closed` triggers the Fix 0.2 mandatory
+  // cross-vendor re-judge gate in `getStageFinalizeReadiness`.
+  notes:              AttemptNotesSchema.optional(),
+  // 2026-05-23 Hydra dispatch fix: the Claude Code subagent_type the
+  // parent driver used (e.g. "engineer", "spec-author"). Strict mode
+  // (PP_STRICT_AGENT_TYPE != "0") rejects "general-purpose" so the
+  // supervisor can't silently downgrade typed dispatch. Closes
+  // eights prop_885cc22f. Free-form string; NULL = no subagent
+  // information passed (legacy callers; allowed).
+  agent_type:         z.string().min(1).optional(),
+});
+
+// R3-tail post-mortem Fix 1.3: retract_verdict tool. Marks a prior verdict
+// as wrong with a stable audit-trail reason. Used when a cross-vendor judge
+// returns a false positive (R3-tail final-round Codex bias + Gemini
+// hallucination) and the verdict shouldn't drive downstream decisions.
+const RetractVerdictSchema = z.object({
+  verdict_id:    z.string().min(1),
+  reason:        z.string().min(8),
+  superseded_by: z.string().optional(),
 });
 
 const RecordVerdictSchema = z.object({
@@ -198,6 +241,13 @@ const ArchiveArtifactSchema = z.object({
   // hash differs from the stored hash, it returns `manual_edit_detected`
   // instead of clobbering. Pass `force_overwrite: true` to clobber anyway.
   force_overwrite:  z.boolean().optional(),
+  // R3-tail post-mortem Fix 1.2 (2026-05-21): producer-supplied pointer to
+  // the project-tree file that carries the substantive intent when the
+  // archived bytes are a patch under .harness/<run_id>/. Missability
+  // checks load this file's content when the archived path can't be
+  // resolved in the project tree. Project-relative path; e.g.
+  // "docs/decisions/DR-2026-018.md".
+  evidence_ref:     z.string().optional(),
 });
 
 const ListRunsSchema = z.object({
@@ -518,7 +568,7 @@ const TOOLS: ToolDef[] = [
   {
     name: "record_attempt",
     description:
-      "Log a generation attempt against an open stage. Pass tokens_in/out and cost_usd for budget tallying. retry_index>=1 indicates a Reflexion retry; pass parent_attempt_id to link.",
+      "Log a generation attempt against an open stage. Pass tokens_in/out and cost_usd for budget tallying. retry_index>=1 indicates a Reflexion retry; pass parent_attempt_id to link. Pass agent_type with the typed Claude Code subagent name used (engineer, spec-author, architect, …) — strict mode rejects agent_type='general-purpose' (set PP_STRICT_AGENT_TYPE=0 to opt out).",
     schema: RecordAttemptSchema,
     handler: (args) => recordAttempt(RecordAttemptSchema.parse(args)),
   },
@@ -528,6 +578,13 @@ const TOOLS: ToolDef[] = [
       "Log a judge verdict against an attempt. cross_vendor is computed by the daemon based on judge_producer vs attempt's producer. outcome is pass | fail | revise.",
     schema: RecordVerdictSchema,
     handler: (args) => recordVerdict(RecordVerdictSchema.parse(args)),
+  },
+  {
+    name: "retract_verdict",
+    description:
+      "R3-tail post-mortem Fix 1.3: mark a prior verdict as retracted because subsequent evidence shows it was wrong (cross-vendor false positive, judge hallucination, operator override). The verdict row stays for audit; subsequent queries (latest-verdict gate, cross-vendor re-judge gate, replay) skip retracted rows. Requires reason >= 8 chars. Idempotent on same-reason re-retract; throws VerdictAlreadyRetracted on different-reason overwrite. Typical use: a cross-vendor judge in a late round flagged a finding that's industry-standard practice (e.g., optional HTTP idempotency key per RFC), or hallucinated baseline fixes that were never scoped.",
+    schema: RetractVerdictSchema,
+    handler: (args) => retractVerdict(RetractVerdictSchema.parse(args)),
   },
   {
     name: "get_stage_finalize_readiness",
