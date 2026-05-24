@@ -78,7 +78,8 @@ pair-programmer operates as the **engineering squad** within a larger multi-agen
 | [**TheEights**](https://github.com/lebobo88/TheEights) | Memory fabric + evolution daemon | Stores episodic memory (runs, verdicts, artifacts), serves prior critiques for cross-run Reflexion, manages evolution proposals, and provides the audit chain. |
 | [**AgentSmith**](https://github.com/lebobo88/AgentSmith) | Meta-governance + invariant enforcement | Validates pair-programmer's `.claude/` artifacts against 10 immutable invariants. Schema inspection, quarantine on drift, constitutional attestation. |
 | [**ExecutiveSuite**](https://github.com/lebobo88/ExecutiveSuite) | C-Suite decision support | Receives `CSuiteDecisionPacket` envelopes for strategic framing on major-tier enterprise/AI requests. Advisory, not blocking. |
-| **RLM-Creative** | Brand & visual workflows | Receives `CreativeBrief` envelopes for brand-voice-check and visual-direction-advisory on UX surfaces. Advisory. |
+| [**RLM-Creative**](https://github.com/lebobo88/RLM-Creative) | Brand & visual workflows | Receives `CreativeBrief` envelopes for visual-direction-advisory on UX surfaces. Advisory. |
+| [**MarketBliss**](https://github.com/lebobo88/MarketBliss) | Marketing strategy & brand voice | Receives `CreativeBrief` envelopes for brand-voice-check on customer-facing copy. Advisory. |
 
 **Graceful degradation**: pair-programmer operates fully standalone when ecosystem services are offline — cross-run memory, advisory envelopes, and evolution proposals degrade to no-ops, but the core generation/judging/missability lifecycle is unaffected. All external calls are null-tolerant with circuit breakers; the daemon never blocks on a peer that isn't responding.
 
@@ -272,6 +273,8 @@ node test/smoke.mjs        # end-to-end MCP roundtrip checks
 | **TheEights** | Memory fabric + evolution daemon — episodic store, governance plane, artifact evolution | [github.com/lebobo88/TheEights](https://github.com/lebobo88/TheEights) |
 | **AgentSmith** | Meta-governance — 10 immutable invariants, factory/inspector/sentinel/archivist | [github.com/lebobo88/AgentSmith](https://github.com/lebobo88/AgentSmith) |
 | **ExecutiveSuite** | C-Suite decision support — boardroom orchestrator, 20 executive personas | [github.com/lebobo88/ExecutiveSuite](https://github.com/lebobo88/ExecutiveSuite) |
+| **RLM-Creative** | Brand & visual creative workflows — visual-direction-advisory for UX surfaces | [github.com/lebobo88/RLM-Creative](https://github.com/lebobo88/RLM-Creative) |
+| **MarketBliss** | Marketing strategy & brand voice — brand-voice-check for customer-facing copy | [github.com/lebobo88/MarketBliss](https://github.com/lebobo88/MarketBliss) |
 
 ---
 
