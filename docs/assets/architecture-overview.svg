@@ -1,0 +1,90 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 720 520" fill="none">
+  <title>pair-programmer Architecture Overview</title>
+  <desc>High-level system architecture showing Claude Code and Copilot CLI entrypoints, the pp-daemon with 3 MCP servers, SQLite state, and external CLI sub-agents.</desc>
+  <style>
+    text { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif; }
+    .title { font-size: 14px; font-weight: 600; fill: #24292f; }
+    .label { font-size: 11px; fill: #24292f; }
+    .sublabel { font-size: 10px; fill: #57606a; }
+    .box { stroke-width: 1.5; rx: 6; }
+    .arrow { stroke-width: 1.5; fill: none; marker-end: url(#arrowhead); }
+    .dashed { stroke-dasharray: 5,3; }
+    @media (prefers-color-scheme: dark) {
+      .title { fill: #e6edf3; }
+      .label { fill: #e6edf3; }
+      .sublabel { fill: #8b949e; }
+    }
+  </style>
+  <defs>
+    <marker id="arrowhead" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+      <polygon points="0 0, 8 3, 0 6" fill="#57606a"/>
+    </marker>
+  </defs>
+
+  <!-- Entrypoints -->
+  <rect x="160" y="20" width="160" height="50" class="box" fill="#ddf4ff" stroke="#54aeff"/>
+  <text x="240" y="42" text-anchor="middle" class="label">Claude Code</text>
+  <text x="240" y="57" text-anchor="middle" class="sublabel">native .claude/ assets</text>
+
+  <rect x="400" y="20" width="160" height="50" class="box" fill="#ddf4ff" stroke="#54aeff"/>
+  <text x="480" y="42" text-anchor="middle" class="label">GitHub Copilot CLI</text>
+  <text x="480" y="57" text-anchor="middle" class="sublabel">plugin.json + .github/</text>
+
+  <!-- Arrows from entrypoints -->
+  <path d="M240,70 L240,110 L360,110 L360,140" class="arrow" stroke="#54aeff"/>
+  <path d="M480,70 L480,110 L360,110 L360,140" class="arrow" stroke="#54aeff"/>
+
+  <!-- pp-daemon container -->
+  <rect x="80" y="140" width="560" height="200" rx="10" fill="#f6f8fa" stroke="#d0d7de" stroke-width="2"/>
+  <text x="360" y="165" text-anchor="middle" class="title">pp-daemon (TypeScript / Node 20+)</text>
+
+  <!-- MCP Servers inside daemon -->
+  <rect x="110" y="185" width="180" height="70" class="box" fill="#fff" stroke="#8250df"/>
+  <text x="200" y="210" text-anchor="middle" class="label">pp_harness</text>
+  <text x="200" y="227" text-anchor="middle" class="sublabel">75 orchestration tools</text>
+  <text x="200" y="242" text-anchor="middle" class="sublabel">runs, gates, taxonomy, best-of-N</text>
+
+  <rect x="310" y="185" width="140" height="70" class="box" fill="#fff" stroke="#cf222e"/>
+  <text x="380" y="210" text-anchor="middle" class="label">pp_codex</text>
+  <text x="380" y="227" text-anchor="middle" class="sublabel">generate + critique</text>
+  <text x="380" y="242" text-anchor="middle" class="sublabel">wraps Codex CLI</text>
+
+  <rect x="470" y="185" width="140" height="70" class="box" fill="#fff" stroke="#1a7f37"/>
+  <text x="540" y="210" text-anchor="middle" class="label">pp_gemini</text>
+  <text x="540" y="227" text-anchor="middle" class="sublabel">generate + critique</text>
+  <text x="540" y="242" text-anchor="middle" class="sublabel">wraps Gemini CLI</text>
+
+  <!-- SQLite -->
+  <ellipse cx="200" cy="295" rx="50" ry="12" fill="#fff" stroke="#bf8700"/>
+  <rect x="150" y="295" width="100" height="30" fill="#fff" stroke="#bf8700" stroke-width="1.5"/>
+  <ellipse cx="200" cy="325" rx="50" ry="12" fill="#fff" stroke="#bf8700"/>
+  <text x="200" y="315" text-anchor="middle" class="sublabel">SQLite WAL</text>
+
+  <!-- Cross-vendor arrow -->
+  <path d="M380,255 C380,275 540,275 540,255" class="arrow dashed" stroke="#8250df"/>
+  <text x="460" y="280" text-anchor="middle" class="sublabel">cross-vendor judging</text>
+
+  <!-- External CLIs -->
+  <rect x="80" y="400" width="180" height="55" class="box" fill="#ffebe9" stroke="#cf222e"/>
+  <text x="170" y="422" text-anchor="middle" class="label">Codex CLI (GPT-4o / GPT-5.4)</text>
+  <text x="170" y="440" text-anchor="middle" class="sublabel">code generation + critique</text>
+
+  <rect x="460" y="400" width="180" height="55" class="box" fill="#dcffe4" stroke="#1a7f37"/>
+  <text x="550" y="422" text-anchor="middle" class="label">Gemini CLI (2.5 Pro/Flash)</text>
+  <text x="550" y="440" text-anchor="middle" class="sublabel">code generation + critique</text>
+
+  <!-- Arrows to external CLIs -->
+  <path d="M380,255 L380,370 L170,370 L170,400" class="arrow" stroke="#cf222e"/>
+  <path d="M540,255 L540,370 L550,370 L550,400" class="arrow" stroke="#1a7f37"/>
+
+  <!-- Per-run artifacts -->
+  <rect x="310" y="400" width="130" height="55" class="box" fill="#fff8c5" stroke="#bf8700"/>
+  <text x="375" y="422" text-anchor="middle" class="label">.harness/&lt;run_id&gt;/</text>
+  <text x="375" y="440" text-anchor="middle" class="sublabel">per-run artifacts</text>
+
+  <!-- Arrow from harness to artifacts -->
+  <path d="M200,255 L200,370 L375,370 L375,400" class="arrow" stroke="#bf8700"/>
+
+  <!-- Legend -->
+  <text x="360" y="500" text-anchor="middle" class="sublabel">stdio MCP protocol (JSON-RPC) between entrypoints and daemon</text>
+</svg>

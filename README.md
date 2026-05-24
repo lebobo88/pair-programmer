@@ -1,132 +1,289 @@
 # pair-programmer
 
-Multi-agent coding harness. **Claude Code and GitHub Copilot CLI** are supported entrypoints; Codex CLI (GPT) and Gemini CLI act as sub-agents; every artifact is validated by a different model. On-demand best-of-N and specialized teams. Taxonomy adherence on every task referencing `taxonomy_blueprint.md` (16 sections).
+**Multi-agent coding harness with tiered model validation, taxonomy enforcement, and best-of-N generation.**
 
-**Current state**: **All 11 phases shipped.** Single-agent → cross-vendor judging → taxonomy mapping + master plan → Reflexion ×1 + missability gates → best-of-N with worktrees → project profiles + 13 standard rubrics → 15 specialized teams → design-system + visual regression → 10 governance forums → 25 alignment hooks → ops polish (janitor, replay, HTTP plane).
+A TypeScript daemon that orchestrates code generation across Claude, OpenAI Codex (GPT), and Google Gemini with tiered validation:
 
-## What ships
+- **Critical gates** (spec, design, security, contracts) → judged by a *different vendor* from the generator
+- **Lower-stakes gates** (code style, docs, lint) → judged by a different model from the *same* vendor (Codex same-vendor upgrades to cross-vendor when the generator used GPT-5.4; Gemini may fall back to same-model when no alternative exists)
 
-- **42 MCP tools** on `pp_harness` (orchestration, taxonomy, master plan, missability, loop ceiling, gates, rubrics, profiles, teams, forums, best-of-N, replay, janitor) plus `pp_codex` and `pp_gemini` (generate, critique).
-- **Dual entrypoints** — Claude assets stay in `.claude/`; generated Copilot assets live in `.github/`, generated Copilot hooks live in `hooks.json`, and the full Copilot entrypoint is packaged by `plugin.json`.
-- **39 sub-agents** for every taxonomy domain: engineer, spec-author, architect, api-designer, test-strategist, security-reviewer, designer, design-system-curator, visual-regression-runner, browser-validator, data-modeler, release-planner, ops-author, governance-author, ai-controls-author, retirement-planner, strategy-author, discovery-researcher, docs-author, triage, profile-loader, taxonomy-mapper, master-plan-patcher, missability-inspector, reflexion-coach, judge-router, judge-cross-vendor, judge-same-vendor, run-finalizer, **+11 game-dev specialists**: narrative-designer, level-designer, encounter-designer, economy-designer, netcode-programmer, game-ai-programmer, tech-animator, technical-artist, game-security, live-ops-manager, game-accessibility-specialist.
-- **16 slash commands**: `/pp:run`, `/pp:best-of`, `/pp:team`, `/pp:teams`, `/pp:review`, `/pp:retry`, `/pp:gate`, `/pp:status`, `/pp:budget`, `/pp:doctor`, `/pp:taxonomy`, `/pp:master`, `/pp:checklist`, `/pp:profile`, `/pp:rubrics`, `/pp:replay`.
-- **22 specialized teams**: feature, bug-fix, refactor, security-review, ai-controls, docs, strategy, discovery, ux, design-system, data, release, ops, governance, retirement, **game-feature, game-bug-fix, game-refactor, game-cert, game-live-ops, game-accessibility, game-netcode**.
-- **16 project profiles**: web-ui, api-platform, internal-tool, enterprise, ai-agentic, mobile, sdk, data-product, embedded, non-ui-cli, **game-dev, game-dev-unity, game-dev-unreal, game-dev-godot, game-dev-web, game-dev-custom**. Game-dev sub-modes auto-detected from engine manifests (Unity ProjectSettings, *.uproject, project.godot, Cargo.toml [bevy], package.json [babylonjs/three.js/playcanvas/phaser], *.yyp); console-cert / mobile-target / web-target / live-service / online / voice posture flags inferred from build configs + spec keywords + middleware presence.
-- **23 standard-aligned rubrics**: WCAG 2.2 AA, OWASP ASVS L1/L2, C4, OpenAPI/AsyncAPI, SLSA L2/L3, SBOM CycloneDX, NIST AI RMF Govern/Measure, RFC 2119, metric dictionary, web-runtime-validation, **Game Accessibility Guidelines, Xbox Accessibility Guidelines, console cert checklist (TRC/XR/Lotcheck — non-authoritative), IARC age-rating questionnaire, COPPA 2.0 + GDPR-K, loot-box jurisdiction matrix, Steam AI disclosure, SAG-AFTRA AI rider, game perf-budget, IGDA-GASIG**.
-- **26 hooks** across 5 events: SessionStart (5), PreToolUse (7 — including `block-destructive-shell` which prevents `rm -rf` / `Remove-Item -Recurse -Force` / `find . -delete` / `git clean -fdx` / `git push --force` to protected refs / `dd` / `mkfs` / `shutdown` / `reboot` / fork bombs from running outside an anchored project root), PostToolUse (7), UserPromptSubmit (5), Stop (2).
-- **50-item missability check library** (Section 6 of taxonomy_blueprint.md): 20 generic + 30 game-dev (console TRC, online netcode, live-service legal, accessibility GAG/XAG, IP / asset / AI provenance).
-- **`PROJECT_MASTER.md`** auto-scaffolded from Section 9's 20-section template; patched on every `finalize_run`.
+Supports Claude Code and GitHub Copilot CLI as entrypoints. Enforces a 16-section software development taxonomy on every task.
 
-## Layout
+<p align="center">
+  <img src="docs/assets/architecture-overview.svg" alt="pair-programmer architecture overview" width="700"/>
+</p>
 
+---
+
+## How It Works
+
+pair-programmer wraps a structured lifecycle around every coding task — from a one-line bug fix to a multi-stage feature build. The daemon manages state, routes generation to sub-agents, and gates artifacts through tiered judging (cross-vendor for critical gates, same-vendor-different-model for code/docs) before they ship.
+
+<p align="center">
+  <img src="docs/assets/run-lifecycle.svg" alt="Run lifecycle diagram" width="640"/>
+</p>
+
+### Key Concepts
+
+| Concept | What it does |
+|---------|-------------|
+| **16-Section Taxonomy** | Every task maps to sections of [`taxonomy_blueprint.md`](taxonomy_blueprint.md) — discovery, spec, architecture, contracts, code, security, tests, docs, and more. The harness ensures no section is skipped when the profile requires it. |
+| **Tiered Judging** | Spec/design/security/contract gates require a *different vendor* from the generator (Claude generates → Codex or Gemini judges). Code/docs/lint gates use a different model from the same vendor (Codex same-vendor is conditional — upgrades to cross-vendor when the generator used GPT-5.4). A degenerate same-model fallback exists for Gemini when no alternative is available. |
+| **Reflexion ×1** | On judge failure, the critique is fed back to the generator for exactly one retry. If it fails again, the stage surfaces for human review. Maximum 6 validator calls per run. |
+| **Best-of-N + Borda Count** | For major-scope requests, fan out to N parallel candidates (different model/seed mix in isolated git worktrees). A tournament judge picks the winner via Borda count + diff-entropy analysis. |
+| **Missability Gates** | Before finalization, 56 checks verify non-functional requirements: authorization models, data retention, rollout reversibility, accessibility, console cert compliance, and more. |
+| **PROJECT_MASTER.md** | A 20-section living document auto-scaffolded per project and patched by every finalized run — accumulates architecture decisions, API contracts, threat models, and operational runbooks over time. |
+
+<details>
+<summary>Run lifecycle (Mermaid)</summary>
+
+```mermaid
+sequenceDiagram
+    participant U as User
+    participant H as Harness
+    participant G as Generator (Claude/Codex/Gemini)
+    participant J as Cross-Vendor Judge
+    U->>H: /pp:run "request"
+    H->>H: Triage → Profile Detect → Taxonomy Map
+    loop Stage Loop (spec → arch → code → tests → docs)
+        H->>G: Generate artifact
+        H->>J: Validate (tiered: cross-vendor or same-vendor)
+        alt Pass
+            H->>H: Archive artifact
+        else Fail
+            H->>G: Reflexion retry (critique fed back)
+            H->>J: Re-judge (1 retry max)
+        end
+    end
+    H->>H: Missability gates (56 checks)
+    H->>H: Patch PROJECT_MASTER.md
+    H->>U: Finalize (complete | surfaced)
 ```
-pair-programmer/
-  taxonomy_blueprint.md           # 16-section blueprint
-  PLAN.md                         # full implementation plan (mirrored at ~/.claude/plans/...)
-  PROJECT_MASTER.md               # auto-scaffolded on first finalize_run
-  daemon/                         # pp-daemon (TypeScript, MCP + SQLite + sandboxes + HTTP plane)
-    src/
-      mcp/                        # harness-server.ts, codex-server.ts, gemini-server.ts, helpers.ts
-      orchestrator/               # runs, gates, taxonomy, master-plan, missability, loop-ceiling, best-of-n, profiles, teams, forums, design-templates, replay, worktree, janitor
-      rubrics/registry.ts         # 13 standard rubrics
-      hooks/dispatcher.ts         # 25 hook handlers
-      security/                   # untrusted-envelope, secret-scan
-      http/server.ts              # read-only control plane on 127.0.0.1:7878
-      db/                         # schema.ts (inlined), database.ts (better-sqlite3 + WAL)
-      util/                       # paths, logger, lock, prices
-    test/smoke.mjs                # end-to-end MCP roundtrip smoke test (33 checks)
-    package.json
-    prices.json                   # per-1M-token USD prices (user-editable, copied to ~/.pair-programmer)
-  .mcp.json                       # registers pp_harness + pp_codex + pp_gemini stdio servers
-  .claude/
-    skills/pair-programmer.md     # master skill loaded by every /pp:* command
-    agents/                       # 26 sub-agent definitions (.md with frontmatter)
-    commands/pp/                  # 16 slash command definitions
-    rubrics/                      # mirror of the 13 rubrics + index
-    teams/                        # 15 team yamls
-    profiles/                     # 10 profile yamls
-    settings.json                 # permissions allowlist + 25 hook commands
-  .harness/<run_id>/              # per-run artifacts (request, taxonomy_mapping, code/, ux/, security/, …)
-```
 
-State at `~/.pair-programmer/state.db` (SQLite, WAL). Logs at `~/.pair-programmer/logs/`. Sub-CLI sandboxes at `~/.pair-programmer/sandboxes/`.
+</details>
 
-## Setup
+---
 
-```powershell
+## Ecosystem Integration
+
+pair-programmer operates as the **engineering squad** within a larger multi-agent ecosystem. It works fully standalone, but gains cross-squad coordination, persistent memory, and governance enforcement when connected to sibling services.
+
+<p align="center">
+  <img src="docs/assets/ecosystem-integration.svg" alt="Ecosystem integration diagram" width="700"/>
+</p>
+
+| System | Role | Integration |
+|--------|------|-------------|
+| [**Hydra**](https://github.com/lebobo88/Hydra) | Multi-squad LangGraph supervisor | Dispatches `DevTask` envelopes to pair-programmer; receives `DECISION_RECORD` replies. Bidirectional via TheEights envelope store. |
+| [**TheEights**](https://github.com/lebobo88/TheEights) | Memory fabric + evolution daemon | Stores episodic memory (runs, verdicts, artifacts), serves prior critiques for cross-run Reflexion, manages evolution proposals, and provides the audit chain. |
+| [**AgentSmith**](https://github.com/lebobo88/AgentSmith) | Meta-governance + invariant enforcement | Validates pair-programmer's `.claude/` artifacts against 10 immutable invariants. Schema inspection, quarantine on drift, constitutional attestation. |
+| [**ExecutiveSuite**](https://github.com/lebobo88/ExecutiveSuite) | C-Suite decision support | Receives `CSuiteDecisionPacket` envelopes for strategic framing on major-tier enterprise/AI requests. Advisory, not blocking. |
+| **RLM-Creative** | Brand & visual workflows | Receives `CreativeBrief` envelopes for brand-voice-check and visual-direction-advisory on UX surfaces. Advisory. |
+
+**Graceful degradation**: pair-programmer operates fully standalone when ecosystem services are offline — cross-run memory, advisory envelopes, and evolution proposals degrade to no-ops, but the core generation/judging/missability lifecycle is unaffected. All external calls are null-tolerant with circuit breakers; the daemon never blocks on a peer that isn't responding.
+
+---
+
+## Quick Start
+
+### Prerequisites
+
+- **Node.js 20+** and npm
+- **Git** (worktrees used for best-of-N isolation)
+- At least one external CLI for cross-vendor judging:
+  - Codex CLI: `npm i -g @openai/codex` + `OPENAI_API_KEY`
+  - Gemini CLI: `npm i -g @google/gemini-cli` + `GEMINI_API_KEY`
+
+### Build
+
+```bash
 cd daemon
 npm install
 npm run build
-node dist/index.js doctor      # confirms CLIs, DB, vendor matrix
 ```
 
-Optional Copilot CLI packaging:
+### First Run (Claude Code)
+
+```bash
+# Health check — confirms CLIs, DB, vendor matrix
+/pp:doctor
+
+# Single-agent run with cross-vendor judge
+/pp:run "add input validation to the signup handler"
+
+# Best-of-3 with Borda count winner selection
+/pp:best-of 3 "refactor the payment module for testability"
+
+# Specialized team pipeline
+/pp:team feature-team "implement dark mode toggle"
+```
+
+The MCP servers register automatically via `.mcp.json`. Restart Claude Code after cloning so the new servers load.
+
+### Environment Variables
+
+| Variable | Purpose |
+|----------|---------|
+| `OPENAI_API_KEY` | Codex CLI authentication (or use `codex login`) |
+| `GEMINI_API_KEY` | Gemini CLI authentication (or use `gemini auth`) |
+
+Cross-vendor gates require **two** configured vendors. The `SessionStart.vendor-matrix` hook warns if only one is available.
+
+---
+
+## Capabilities
+
+| Category | Count | Highlights |
+|----------|-------|------------|
+| **MCP Tools** | 79 | 75 on `pp_harness` (orchestration, taxonomy, gates, best-of-N, replay, janitor) + 2 on `pp_codex` + 2 on `pp_gemini` |
+| **Sub-Agents** | 75 | engineer, architect, judge-cross-vendor, security-reviewer, designer, game-ai-programmer, live-ops-manager, and 68 more |
+| **Slash Commands** | 19 | `/pp:run`, `/pp:best-of`, `/pp:team`, `/pp:review`, `/pp:constitution`, `/pp:evolution`, and 13 more |
+| **Teams** | 24 | feature, bug-fix, refactor, security-review, ux, design-system, game-cert, game-live-ops, and 16 more |
+| **Profiles** | 16 | web-ui, api-platform, enterprise, ai-agentic, mobile, game-dev-unity, game-dev-unreal, and 9 more |
+| **Rubrics** | 25 | WCAG 2.2 AA, OWASP ASVS L1/L2, C4, OpenAPI 3.1, SLSA L2/L3, NIST AI RMF, Game Accessibility Guidelines, and 17 more |
+| **Hooks** | 26 | `block-destructive-shell`, cost tallying, vendor-matrix check, constitution attestation, and 22 more |
+| **Missability Checks** | 56 | 26 generic (NFRs, authz, data retention) + 30 game-dev (console TRC, netcode, live-service, accessibility) |
+| **Skills** | 8 | pair-programmer master skill, taxonomy-adherence, master-plan-patching, game-design, frontend-design, and 3 more |
+
+---
+
+## Commands
+
+| Command | Description |
+|---------|-------------|
+| `/pp:run "<request>"` | Single-agent generation + tiered cross-vendor judge |
+| `/pp:best-of N "<request>"` | N-way parallel fan-out with Borda count winner |
+| `/pp:team <name> "<request>"` | Run through a specialized team pipeline |
+| `/pp:review <forum>` | Run one of 10 governance review forums |
+| `/pp:retry <run_id>` | Reflexion ×1 retry on a surfaced stage |
+| `/pp:gate <stage_id>` | Re-run only the judge step (no regeneration) |
+| `/pp:status [run_id]` | List runs or show full run tree |
+| `/pp:budget [scope]` | Token + dollar totals by run / day / model |
+| `/pp:doctor` | Full health-check (daemon, CLIs, vendors, DB) |
+| `/pp:taxonomy [run_id]` | Show 16-section coverage for a run |
+| `/pp:master` | View or scaffold PROJECT_MASTER.md |
+| `/pp:checklist` | 15-item completion check (Section 10) |
+| `/pp:profile [show\|list\|template]` | View active profile or render a built-in template |
+| `/pp:rubrics [list\|show <id>]` | List rubrics or show rubric body |
+| `/pp:teams` | List available specialized teams |
+| `/pp:replay <run_id>` | Reproduce-bundle for a past run |
+| `/pp:claudemd` | Show/scaffold AGENTS.md + CLAUDE.md |
+| `/pp:constitution` | View or amend CONSTITUTION.md |
+| `/pp:evolution` | List/review autogenesis evolution proposals |
+
+> **Full reference**: [`docs/USER_GUIDE.md`](docs/USER_GUIDE.md) covers every command, agent, team, profile, rubric, forum, hook, MCP tool, and the security/trust model.
+
+---
+
+## Installation Options
+
+### Option A: System-wide (recommended)
+
+Register once at user scope so `/pp:*` commands, MCP servers, hooks, agents, and skills are available in every Claude Code session:
 
 ```powershell
-node scripts/sync-copilot-assets.mjs
+.\scripts\install-user.ps1
+```
+
+Updates with `git pull` — no reinstall needed (uses NTFS junctions).
+
+### Option B: Per-project
+
+Copy or symlink `.claude/` into your project, or run Claude Code from this repo directly.
+
+### Option C: GitHub Copilot CLI
+
+```powershell
 .\scripts\install-user-copilot.ps1
+copilot --agent pair-programmer-orchestrator
 ```
 
-This is the supported **no-copy** deployment path for GitHub Copilot CLI: install once from this repo and the pair-programmer entrypoint is available in every Copilot CLI session for the current Windows user. Consumer repos do **not** need their own `.github\` copy of the harness assets.
+Installs as a Copilot CLI plugin for the current user. Re-run after `git pull` (Copilot caches plugin contents). See [`docs/INSTALL.md`](docs/INSTALL.md) for details.
 
-Required external CLIs (already installed via npm if you got `codex --version` and `gemini --version` to work):
-- `npm install -g @openai/codex`
-- `npm install -g @google/gemini-cli`
+---
 
-Required env (set whichever vendor you'll use):
-- `OPENAI_API_KEY` (or `codex login` / ChatGPT subscription session)
-- `GEMINI_API_KEY` (or `gemini auth` / Google login session)
+## Project Layout
 
-Cross-vendor gates require **two** vendors. The Phase 10 hook `SessionStart.vendor-matrix` warns at session start if only one is configured.
-
-## Use
-
-> **Full reference:** [`docs/USER_GUIDE.md`](docs/USER_GUIDE.md) — single canonical guide covering every command, agent, team, profile, rubric, forum, hook, MCP tool, and the security/trust model.
-
-In Claude Code (after restart so the new `.mcp.json` loads):
-
-- `/pp:doctor` — full health check.
-- `/pp:run "<request>"` — single-agent + tiered judge.
-- `/pp:best-of 3 "<request>"` — N-way fan-out with Borda count + diff-entropy.
-- `/pp:team feature-team "<request>"` — runs one of the 15 teams.
-- `/pp:review threat` — runs one of the 10 governance forums.
-- `/pp:status [run_id]` — list runs or show one full tree.
-- `/pp:retry <run_id>` — Reflexion ×1 retry on a surfaced stage.
-- `/pp:taxonomy [run_id]` — show 16-section coverage for one run.
-- `/pp:master` — view or scaffold `PROJECT_MASTER.md`.
-- `/pp:checklist` — Section 10's 15-item completion check.
-- `/pp:profile [show|list|template <name>]` — view active profile or render a template.
-- `/pp:rubrics [list|show <id>]` — list rubrics or show body.
-- `/pp:replay <run_id>` — reproduce-bundle for a past run.
-- `/pp:budget [scope]` — token + dollar totals by run / day / model.
-- `/pp:doctor` — full preflight.
-- `/pp:teams` — list teams.
-
-In GitHub Copilot CLI:
-
-1. Install the plugin once at user scope from this repo with `.\scripts\install-user-copilot.ps1` — this covers every repo for the current Windows user and avoids per-project `.github\` copies.
-2. Start Copilot with the orchestrator agent in a consumer repo: `copilot --agent pair-programmer-orchestrator`
-3. Use ordinary chat requests and let the orchestrator route them into the correct pair-programmer workflow automatically, or call `/pp:*` directly when you want an explicit command.
-4. Re-run the installer after `git pull` or prompt/hook changes so Copilot refreshes its cached plugin copy. If Copilot is currently holding the direct-install cache open, the installer now falls back to an in-place refresh of that cached copy instead of failing on uninstall.
-
-The Copilot-facing agents, skills, commands, and hooks are generated from `.claude/` by `node scripts/sync-copilot-assets.mjs`. The recommended Copilot entrypoint agent is `pair-programmer-orchestrator`.
-
-On first `/pp:*` run, the harness detects your project type and writes `<project>/.harness/profile.yaml` after a one-line confirmation (or auto-writes if detection confidence is high). Hand-edit or replace it any time; detection won't re-run once the file exists. CI / non-interactive runs fail loudly when confidence is below high — bootstrap the file once interactively, then commit it.
-
-## Tests
-
-```powershell
-cd daemon
-npm run typecheck
-npm run build
-node test/smoke.mjs              # 33 end-to-end MCP roundtrip checks
+```
+pair-programmer/
+  daemon/                         # TypeScript daemon (MCP + SQLite + orchestration)
+    src/
+      mcp/                        # 3 MCP servers: harness, codex, gemini
+      orchestrator/               # runs, gates, taxonomy, missability, best-of-n, profiles, teams, forums
+      ecosystem/                  # TheEights client, Hydra envelopes
+      rubrics/                    # 25 standard-aligned rubric definitions
+      hooks/                      # 26 hook handlers (bash-safety, cost-tally, etc.)
+      security/                   # untrusted-envelope wrapping, secret-scan
+      http/                       # read-only control plane (127.0.0.1:7878)
+      db/                         # SQLite schema + WAL connection pool
+    test/                         # smoke tests (MCP roundtrip)
+    package.json
+  .claude/
+    agents/                       # 75 sub-agent definitions
+    commands/pp/                  # 19 slash commands
+    teams/                        # 24 specialized team pipelines
+    profiles/                     # 16 project profile templates
+    rubrics/                      # rubric markdown mirrors
+    skills/                       # 8 domain skills
+    settings.json                 # permissions + 26 hook commands
+  .github/                        # generated Copilot CLI assets
+  docs/
+    USER_GUIDE.md                 # full reference guide
+    INSTALL.md                    # installation details
+    assets/                       # SVG diagrams
+  taxonomy_blueprint.md           # 16-section taxonomy (the blueprint)
+  .mcp.json                       # MCP server registration (stdio)
+  plugin.json                     # Copilot CLI plugin manifest
+  hooks.json                      # Copilot CLI hook file
 ```
 
-## Hardening flags
+**State**: `~/.pair-programmer/state.db` (SQLite WAL) | **Logs**: `~/.pair-programmer/logs/` | **Artifacts**: `<project>/.harness/<run_id>/`
+
+---
+
+## Hardening & Configuration
 
 | Env var | Effect |
 |---------|--------|
-| `PP_ENFORCE_ACTIVE_RUN=1` | PreToolUse hook hard-blocks Edit/Write outside an active `/pp:run`. |
-| `PP_ALLOW_DANGER=1`       | Allows `--sandbox=danger-full-access` on Codex calls (off by default). |
-| `PP_LOG_LEVEL=debug`      | Verbose pino logs at `~/.pair-programmer/logs/pp-daemon-YYYY-MM-DD.log`. |
-| `PP_DEBUG=1`              | Include stack traces in MCP error responses. |
+| `PP_ENFORCE_ACTIVE_RUN=1` | PreToolUse hook hard-blocks Edit/Write outside an active run |
+| `PP_ALLOW_DANGER=1` | Allows `--sandbox=danger-full-access` on Codex calls (off by default) |
+| `PP_LOG_LEVEL=debug` | Verbose pino logs |
+| `PP_DEBUG=1` | Include stack traces in MCP error responses |
+| `PP_STRICT_AGENT_TYPE=1` | Reject `record_attempt` calls with `agent_type='general-purpose'` |
+
+---
+
+## Testing
+
+```bash
+cd daemon
+npm run typecheck          # TypeScript strict mode
+npm run build
+node test/smoke.mjs        # end-to-end MCP roundtrip checks
+```
+
+---
+
+## Related Projects
+
+| Project | Description | Link |
+|---------|-------------|------|
+| **Hydra** | Multi-squad LangGraph supervisor — routes work across engineering, executive, creative squads | [github.com/lebobo88/Hydra](https://github.com/lebobo88/Hydra) |
+| **TheEights** | Memory fabric + evolution daemon — episodic store, governance plane, artifact evolution | [github.com/lebobo88/TheEights](https://github.com/lebobo88/TheEights) |
+| **AgentSmith** | Meta-governance — 10 immutable invariants, factory/inspector/sentinel/archivist | [github.com/lebobo88/AgentSmith](https://github.com/lebobo88/AgentSmith) |
+| **ExecutiveSuite** | C-Suite decision support — boardroom orchestrator, 20 executive personas | [github.com/lebobo88/ExecutiveSuite](https://github.com/lebobo88/ExecutiveSuite) |
+
+---
+
+## Documentation
+
+- [`docs/USER_GUIDE.md`](docs/USER_GUIDE.md) — Canonical reference (commands, agents, teams, profiles, rubrics, forums, hooks, MCP tools, security model)
+- [`docs/INSTALL.md`](docs/INSTALL.md) — Installation options and prerequisites
+- [`docs/troubleshooting.md`](docs/troubleshooting.md) — Common issues and solutions
+- [`taxonomy_blueprint.md`](taxonomy_blueprint.md) — The 16-section software development taxonomy
+
+---
+
+## License
+
+MIT

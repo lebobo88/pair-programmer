@@ -1,0 +1,98 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 720 480" fill="none">
+  <title>pair-programmer Ecosystem Integration</title>
+  <desc>Shows how pair-programmer connects to Hydra, TheEights, AgentSmith, ExecutiveSuite, and RLM-Creative via envelope protocol and memory fabric.</desc>
+  <style>
+    text { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif; }
+    .title { font-size: 13px; font-weight: 600; fill: #24292f; }
+    .label { font-size: 11px; fill: #24292f; }
+    .sublabel { font-size: 9.5px; fill: #57606a; }
+    .edge-label { font-size: 9px; fill: #57606a; font-style: italic; }
+    .node { rx: 8; stroke-width: 2; }
+    .arrow { stroke-width: 1.5; fill: none; marker-end: url(#eco-arr); }
+    .bidir { stroke-width: 1.5; fill: none; marker-end: url(#eco-arr); marker-start: url(#eco-arr-rev); }
+    .dashed { stroke-dasharray: 5,3; }
+    @media (prefers-color-scheme: dark) {
+      .title { fill: #e6edf3; }
+      .label { fill: #e6edf3; }
+      .sublabel { fill: #8b949e; }
+      .edge-label { fill: #8b949e; }
+    }
+  </style>
+  <defs>
+    <marker id="eco-arr" markerWidth="7" markerHeight="5" refX="7" refY="2.5" orient="auto">
+      <polygon points="0 0, 7 2.5, 0 5" fill="#57606a"/>
+    </marker>
+    <marker id="eco-arr-rev" markerWidth="7" markerHeight="5" refX="0" refY="2.5" orient="auto">
+      <polygon points="7 0, 0 2.5, 7 5" fill="#57606a"/>
+    </marker>
+  </defs>
+
+  <!-- Hydra (top center) -->
+  <rect x="260" y="20" width="200" height="70" class="node" fill="#ddf4ff" stroke="#54aeff"/>
+  <text x="360" y="48" text-anchor="middle" class="title">Hydra</text>
+  <text x="360" y="64" text-anchor="middle" class="sublabel">Multi-squad LangGraph supervisor</text>
+  <text x="360" y="78" text-anchor="middle" class="sublabel">routes work across squads</text>
+
+  <!-- pair-programmer (center) -->
+  <rect x="220" y="190" width="280" height="80" class="node" fill="#f6f8fa" stroke="#8250df" stroke-width="3"/>
+  <text x="360" y="220" text-anchor="middle" class="title">pair-programmer</text>
+  <text x="360" y="238" text-anchor="middle" class="label">Engineering squad</text>
+  <text x="360" y="255" text-anchor="middle" class="sublabel">79 MCP tools | 75 agents | cross-vendor judging</text>
+
+  <!-- TheEights (bottom center) -->
+  <rect x="260" y="380" width="200" height="70" class="node" fill="#fff8c5" stroke="#bf8700"/>
+  <text x="360" y="408" text-anchor="middle" class="title">TheEights</text>
+  <text x="360" y="424" text-anchor="middle" class="sublabel">Memory fabric + Evolution daemon</text>
+  <text x="360" y="438" text-anchor="middle" class="sublabel">episodic store, audit, governance</text>
+
+  <!-- AgentSmith (left) -->
+  <rect x="20" y="200" width="160" height="65" class="node" fill="#ffebe9" stroke="#cf222e"/>
+  <text x="100" y="225" text-anchor="middle" class="title">AgentSmith</text>
+  <text x="100" y="241" text-anchor="middle" class="sublabel">Meta-governance</text>
+  <text x="100" y="254" text-anchor="middle" class="sublabel">10 immutable invariants</text>
+
+  <!-- ExecutiveSuite (top right) -->
+  <rect x="530" y="60" width="170" height="60" class="node" fill="#dcffe4" stroke="#1a7f37"/>
+  <text x="615" y="85" text-anchor="middle" class="title">ExecutiveSuite</text>
+  <text x="615" y="101" text-anchor="middle" class="sublabel">C-Suite decision support</text>
+  <text x="615" y="114" text-anchor="middle" class="sublabel">boardroom, M&amp;A, war-room</text>
+
+  <!-- RLM-Creative (bottom right) -->
+  <rect x="540" y="310" width="160" height="55" class="node" fill="#f5f0ff" stroke="#8250df"/>
+  <text x="620" y="333" text-anchor="middle" class="title">RLM-Creative</text>
+  <text x="620" y="349" text-anchor="middle" class="sublabel">Brand &amp; visual workflows</text>
+
+  <!-- Arrows -->
+
+  <!-- Hydra <-> pp (bidirectional) -->
+  <line x1="360" y1="90" x2="360" y2="190" class="bidir" stroke="#54aeff"/>
+  <text x="375" y="125" class="edge-label">DevTask envelopes</text>
+  <text x="375" y="140" class="edge-label">DECISION_RECORD replies</text>
+
+  <!-- pp <-> TheEights (bidirectional) -->
+  <line x1="360" y1="270" x2="360" y2="380" class="bidir" stroke="#bf8700"/>
+  <text x="375" y="310" class="edge-label">episodic memory</text>
+  <text x="375" y="325" class="edge-label">prior critiques, audit chain</text>
+  <text x="375" y="340" class="edge-label">evolution proposals</text>
+
+  <!-- AgentSmith -> pp -->
+  <line x1="180" y1="230" x2="220" y2="230" class="arrow" stroke="#cf222e"/>
+  <text x="140" y="175" class="edge-label">invariant</text>
+  <text x="140" y="188" class="edge-label">enforcement</text>
+
+  <!-- pp -> ExecutiveSuite (dashed = advisory) -->
+  <path d="M500,210 L615,120" class="arrow dashed" stroke="#1a7f37"/>
+  <text x="545" y="155" class="edge-label">CSuiteDecisionPacket</text>
+  <text x="558" y="168" class="edge-label">(strategic framing)</text>
+
+  <!-- pp -> RLM-Creative (dashed = advisory) -->
+  <path d="M500,250 L570,310" class="arrow dashed" stroke="#8250df"/>
+  <text x="540" y="278" class="edge-label">CreativeBrief</text>
+  <text x="540" y="291" class="edge-label">(brand review)</text>
+
+  <!-- Graceful degradation note -->
+  <rect x="20" y="400" width="220" height="50" rx="6" fill="#fff" stroke="#d0d7de" stroke-width="1"/>
+  <text x="130" y="420" text-anchor="middle" class="sublabel">Graceful degradation:</text>
+  <text x="130" y="435" text-anchor="middle" class="sublabel">pp works standalone when ecosystem</text>
+  <text x="130" y="448" text-anchor="middle" class="sublabel">services are offline (null-tolerant)</text>
+</svg>
