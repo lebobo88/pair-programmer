@@ -9,8 +9,8 @@
  * patched, so its API is just ensure + status.
  */
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync, statSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, mkdirSync, readFileSync, writeFileSync, statSync, appendFileSync } from "node:fs";
+import { join, dirname } from "node:path";
 import { createHash } from "node:crypto";
 import { nanoid } from "nanoid";
 import { db, txImmediate } from "../db/database.js";
@@ -25,6 +25,43 @@ import {
 } from "./agents-md-template.js";
 
 export { AGENTS_MD_SECTIONS };
+
+const AGENTS_MD_MAX_LINES = 200;
+
+const HISTORY_SECTIONS = new Set(["Notes from the harness"]);
+
+const HISTORY_CONTENT_RE = /^###\s+R\d+[\s(]|sealed\s+`dec_|DR-2026-\d{3}/m;
+
+function historyFilePath(projectPath: string): string {
+  return join(projectPath, "docs", "agents-md-history.md");
+}
+
+function ensureHistoryFile(projectPath: string): string {
+  const p = historyFilePath(projectPath);
+  if (!existsSync(p)) {
+    mkdirSync(dirname(p), { recursive: true });
+    writeFileSync(p, `# AGENTS.md — Development History\n\nAppend-only archive of run history, cross-vendor judge notes, and sealed decision records.\n\n`, "utf8");
+  }
+  return p;
+}
+
+function appendToHistory(projectPath: string, section: string, content: string): void {
+  const p = ensureHistoryFile(projectPath);
+  const header = `\n## ${section}\n\n${content.trim()}\n`;
+  appendFileSync(p, header, "utf8");
+}
+
+function shouldRedirectToHistory(section: string, content: string): boolean {
+  if (HISTORY_SECTIONS.has(section)) return true;
+  if (HISTORY_CONTENT_RE.test(content)) return true;
+  return false;
+}
+
+function wouldExceedCap(currentDoc: string, newContent: string): boolean {
+  const currentLines = currentDoc.split(/\r?\n/).length;
+  const newLines = newContent.split(/\r?\n/).length;
+  return (currentLines + newLines) > AGENTS_MD_MAX_LINES;
+}
 
 export function agentsMdPath(projectPath: string): string {
   return join(projectPath, AGENTS_MD_NAME);
@@ -83,9 +120,7 @@ export function applyAgentsMdPatch(input: AgentsMdPatchInput): ApplyAgentsMdPatc
   const prev = readFileSync(path, "utf8");
   const prevSha = createHash("sha256").update(prev).digest("hex");
 
-  // Idempotency: append-with-run-id-block already present → no-op. Same
-  // detection key as master-plan.ts so multiple call sites in one finalize
-  // don't double-write. The literal "Run `<run_id>`" header is unique.
+  // Idempotency: append-with-run-id-block already present → no-op.
   if (input.kind === "append") {
     const existingBody = sectionBody(prev, input.section);
     if (existingBody) {
@@ -109,6 +144,36 @@ export function applyAgentsMdPatch(input: AgentsMdPatchInput): ApplyAgentsMdPatc
         };
       }
     }
+  }
+
+  // Anti-bloat: redirect history-class content to docs/agents-md-history.md
+  if (input.kind === "append" && shouldRedirectToHistory(input.section, input.content_md)) {
+    appendToHistory(input.project_path, input.section, input.content_md);
+    const id = `amp_${nanoid(10)}`;
+    txImmediate(() => {
+      db()
+        .prepare(
+          `INSERT INTO agents_md_patches(id, run_id, section, kind, prev_sha, new_sha, applied_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?)`
+        )
+        .run(id, input.run_id, input.section, "redirected_to_history", prevSha, prevSha, new Date().toISOString());
+    });
+    return { patch_id: id, new_sha: prevSha, prev_sha: prevSha, status: "applied" };
+  }
+
+  // Anti-bloat: if append would exceed the 200-line cap, redirect to history
+  if (input.kind === "append" && wouldExceedCap(prev, input.content_md)) {
+    appendToHistory(input.project_path, input.section, input.content_md);
+    const id = `amp_${nanoid(10)}`;
+    txImmediate(() => {
+      db()
+        .prepare(
+          `INSERT INTO agents_md_patches(id, run_id, section, kind, prev_sha, new_sha, applied_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?)`
+        )
+        .run(id, input.run_id, input.section, "redirected_over_cap", prevSha, prevSha, new Date().toISOString());
+    });
+    return { patch_id: id, new_sha: prevSha, prev_sha: prevSha, status: "applied" };
   }
 
   const next = patchSection(prev, input.section, input.content_md, input.kind);

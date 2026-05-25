@@ -85,7 +85,7 @@ ${conventions || "_To be populated. Indentation, naming, error-handling, comment
 
 ## Notes from the harness
 
-_Each \`/pp:run\` may append a one-line entry here when its taxonomy mapping touches sections 11–14. Older entries are pruned to the most recent five._
+_Run history is redirected to \`docs/agents-md-history.md\` to keep this file under 200 lines. The harness appends there automatically._
 
 ${MANAGED_CLOSE}
 ${extra ? `\n${extra}` : ""}`;
