@@ -1,1 +1,1 @@
-C:/AiAppDeployments/AgentSmith/.claude/agents/smith-quarantine.md
+H:/AgentSmith/.claude/agents/smith-quarantine.md

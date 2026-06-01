@@ -1,1 +1,1 @@
-C:/AiAppDeployments/AgentSmith/.claude/agents/smith-replicator.md
+H:/AgentSmith/.claude/agents/smith-replicator.md

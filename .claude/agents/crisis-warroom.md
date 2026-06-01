@@ -1,1 +1,1 @@
-C:/AiAppDeployments/ExecutiveSuite/.claude/agents/crisis-warroom.md
+H:/ExecutiveSuite/.claude/agents/crisis-warroom.md

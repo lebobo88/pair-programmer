@@ -1,1 +1,1 @@
-C:/AiAppDeployments/AgentSmith/.claude/agents/sentinel-watcher.md
+H:/AgentSmith/.claude/agents/sentinel-watcher.md

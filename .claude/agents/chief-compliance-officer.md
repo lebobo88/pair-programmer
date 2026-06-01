@@ -1,1 +1,1 @@
-C:/AiAppDeployments/ExecutiveSuite/.claude/agents/chief-compliance-officer.md
+H:/ExecutiveSuite/.claude/agents/chief-compliance-officer.md

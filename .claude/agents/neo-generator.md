@@ -1,1 +1,1 @@
-C:/AiAppDeployments/AgentSmith/.claude/agents/neo-generator.md
+H:/AgentSmith/.claude/agents/neo-generator.md

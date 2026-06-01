@@ -1,1 +1,1 @@
-C:/AiAppDeployments/ExecutiveSuite/.claude/agents/chief-sustainability-officer.md
+H:/ExecutiveSuite/.claude/agents/chief-sustainability-officer.md

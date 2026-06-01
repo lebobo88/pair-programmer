@@ -1,1 +1,1 @@
-C:/AiAppDeployments/ExecutiveSuite/.claude/agents/capital-allocation.md
+H:/ExecutiveSuite/.claude/agents/capital-allocation.md

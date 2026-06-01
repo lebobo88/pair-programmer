@@ -1,1 +1,1 @@
-C:/AiAppDeployments/ExecutiveSuite/.claude/agents/caio.md
+H:/ExecutiveSuite/.claude/agents/caio.md

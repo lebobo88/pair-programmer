@@ -1,1 +1,1 @@
-C:/AiAppDeployments/AgentSmith/.claude/agents/smith-archivist.md
+H:/AgentSmith/.claude/agents/smith-archivist.md

@@ -1,1 +1,1 @@
-C:/AiAppDeployments/ExecutiveSuite/.claude/agents/csco.md
+H:/ExecutiveSuite/.claude/agents/csco.md

@@ -1,1 +1,1 @@
-C:/AiAppDeployments/ExecutiveSuite/.claude/agents/mna-cockpit.md
+H:/ExecutiveSuite/.claude/agents/mna-cockpit.md

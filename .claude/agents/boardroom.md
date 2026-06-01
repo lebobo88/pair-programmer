@@ -1,1 +1,1 @@
-C:/AiAppDeployments/ExecutiveSuite/.claude/agents/boardroom.md
+H:/ExecutiveSuite/.claude/agents/boardroom.md

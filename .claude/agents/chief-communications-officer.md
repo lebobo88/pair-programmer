@@ -1,1 +1,1 @@
-C:/AiAppDeployments/ExecutiveSuite/.claude/agents/chief-communications-officer.md
+H:/ExecutiveSuite/.claude/agents/chief-communications-officer.md

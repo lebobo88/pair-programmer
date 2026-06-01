@@ -1,1 +1,1 @@
-C:/AiAppDeployments/AgentSmith/.claude/agents/oracle-evaluator.md
+H:/AgentSmith/.claude/agents/oracle-evaluator.md
