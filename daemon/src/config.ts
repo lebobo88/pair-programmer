@@ -39,7 +39,7 @@ export const DEFAULT_MODELS = {
  * Keep in sync with `daemon/prices.json` when model ids change.
  */
 export const CLAUDE_TIER_MODELS = {
-  opus:   "claude-opus-4-7",
+  opus:   "claude-opus-4-8",
   sonnet: "claude-sonnet-4-6",
   haiku:  "claude-haiku-4-5-20251001",
 } as const;
@@ -50,7 +50,7 @@ export const CLAUDE_TIER_MODELS = {
  * Copilot-only tier map without changing the Claude defaults above.
  */
 export const COPILOT_CLAUDE_TIER_MODELS = {
-  opus:   "claude-opus-4-6",
+  opus:   "claude-opus-4-7",
   sonnet: "claude-sonnet-4-6",
   haiku:  "claude-haiku-4-5-20251001",
 } as const;
