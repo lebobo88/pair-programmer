@@ -955,7 +955,7 @@ Best-of-N runs N candidates in parallel through different vendors/models, then j
 ### How it works (the how)
 
 1. `start_best_of_stage(run_id, kind, gate_type, n)` allocates `N` git worktrees (or copy-mode dirs for non-git projects) and shuffles judge positions (Fisher-Yates, seeded for replay).
-2. Driver fans out `N` `engineer` invocations in parallel — pinned to different model IDs (e.g. `gpt-5.4` + `gemini-3.1-pro-preview` + `claude-opus-4-7`).
+2. Driver fans out `N` `engineer` invocations in parallel — pinned to different model IDs (e.g. `gpt-5.4` + `gemini-3.1-pro-preview` + `claude-opus-4-8`).
 3. Each candidate writes its artifact to its own worktree.
 4. `diff_entropy(candidate_texts[])` computes Jaccard similarity. If > 90% similar across all candidates, the result is flagged — the model already converged, which usually means `/pp:run` would have been just as good.
 5. `judge-router` runs all N artifacts against the rubric. For N≥3, optionally a second judge runs and `borda_count(rankings[])` picks the winner from combined rankings.

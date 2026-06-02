@@ -25,7 +25,7 @@ This driver mirrors `.claude/agents/*.md` frontmatter `model:` values so the tie
 
 | agent | tier |
 |-------|------|
-| strategy-author, spec-author, architect, security-reviewer, discovery-researcher, ai-controls-author, narrative-designer, encounter-designer, level-designer, game-ai-programmer, netcode-programmer, game-security | opus (`claude-opus-4-7`) |
+| strategy-author, spec-author, architect, security-reviewer, discovery-researcher, ai-controls-author, narrative-designer, encounter-designer, level-designer, game-ai-programmer, netcode-programmer, game-security | opus (`claude-opus-4-8`) |
 | engineer, api-designer, designer, design-system-curator, test-strategist, docs-author, ops-author, data-modeler, release-planner, retirement-planner, governance-author, economy-designer, live-ops-manager, tech-animator, technical-artist, game-accessibility-specialist | sonnet (`claude-sonnet-4-6`) |
 | triage, taxonomy-mapper, profile-loader, judge-router, missability-inspector, master-plan-patcher, run-finalizer, reflexion-coach, browser-validator, visual-regression-runner | haiku (`claude-haiku-4-5-20251001`) |
 | judge-cross-vendor, judge-same-vendor | — (judges pick their own model from internal rotation; see those agents' Procedure sections) |

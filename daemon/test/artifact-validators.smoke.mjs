@@ -132,7 +132,7 @@ async function main() {
       const run = await callTool(client, "start_run", { request_text: "av-smoke happy", project_path: projectPath, mode: "single" });
       const stage = await callTool(client, "start_stage", { run_id: run.run_id, kind: "architecture", gate_type: "design" });
       const att = await callTool(client, "record_attempt", {
-        stage_id: stage.stage_id, producer: "claude", model_id: "claude-opus-4-7",
+        stage_id: stage.stage_id, producer: "claude", model_id: "claude-opus-4-8",
         tokens_in: 1, tokens_out: 1, cost_usd: 0.0001, status: "ok",
       });
       const archived = await callTool(client, "archive_artifact", {
@@ -172,7 +172,7 @@ async function main() {
       const run = await callTool(client, "start_run", { request_text: "av-smoke explicit older adr", project_path: projectPath, mode: "single" });
       const stage = await callTool(client, "start_stage", { run_id: run.run_id, kind: "architecture", gate_type: "design" });
       const att = await callTool(client, "record_attempt", {
-        stage_id: stage.stage_id, producer: "claude", model_id: "claude-opus-4-7",
+        stage_id: stage.stage_id, producer: "claude", model_id: "claude-opus-4-8",
         tokens_in: 1, tokens_out: 1, cost_usd: 0.0001, status: "ok",
       });
       const older = await callTool(client, "archive_artifact", {
@@ -225,7 +225,7 @@ async function main() {
       const run = await callTool(client, "start_run", { request_text: "av-smoke negative", project_path: projectPath, mode: "single" });
       const stage = await callTool(client, "start_stage", { run_id: run.run_id, kind: "architecture", gate_type: "design" });
       const att = await callTool(client, "record_attempt", {
-        stage_id: stage.stage_id, producer: "claude", model_id: "claude-opus-4-7",
+        stage_id: stage.stage_id, producer: "claude", model_id: "claude-opus-4-8",
         tokens_in: 1, tokens_out: 1, cost_usd: 0.0001, status: "ok",
       });
       await callTool(client, "archive_artifact", {
@@ -270,7 +270,7 @@ async function main() {
       const run = await callTool(client, "start_run", { request_text: "av-smoke missing-call", project_path: projectPath, mode: "single" });
       const stage = await callTool(client, "start_stage", { run_id: run.run_id, kind: "architecture", gate_type: "design" });
       const att = await callTool(client, "record_attempt", {
-        stage_id: stage.stage_id, producer: "claude", model_id: "claude-opus-4-7",
+        stage_id: stage.stage_id, producer: "claude", model_id: "claude-opus-4-8",
         tokens_in: 1, tokens_out: 1, cost_usd: 0.0001, status: "ok",
       });
       await callTool(client, "archive_artifact", {
@@ -306,7 +306,7 @@ async function main() {
       const run = await callTool(client, "start_run", { request_text: "av-smoke unrelated", project_path: projectPath, mode: "single" });
       const stage = await callTool(client, "start_stage", { run_id: run.run_id, kind: "code", gate_type: "code_style" });
       const att = await callTool(client, "record_attempt", {
-        stage_id: stage.stage_id, producer: "claude", model_id: "claude-opus-4-7",
+        stage_id: stage.stage_id, producer: "claude", model_id: "claude-opus-4-8",
         tokens_in: 1, tokens_out: 1, cost_usd: 0.0001, status: "ok",
       });
       await callTool(client, "archive_artifact", {
@@ -355,7 +355,7 @@ paths:
         const run = await callTool(client, "start_run", { request_text: "av-smoke contracts ok", project_path: projectPath, mode: "single" });
         const stage = await callTool(client, "start_stage", { run_id: run.run_id, kind: "contracts", gate_type: "contract" });
         const att = await callTool(client, "record_attempt", {
-          stage_id: stage.stage_id, producer: "claude", model_id: "claude-opus-4-7",
+          stage_id: stage.stage_id, producer: "claude", model_id: "claude-opus-4-8",
           tokens_in: 1, tokens_out: 1, cost_usd: 0.0001, status: "ok",
         });
         await callTool(client, "archive_artifact", {
@@ -398,7 +398,7 @@ paths:
         const run = await callTool(client, "start_run", { request_text: "av-smoke contracts bad", project_path: projectPath, mode: "single" });
         const stage = await callTool(client, "start_stage", { run_id: run.run_id, kind: "contracts", gate_type: "contract" });
         const att = await callTool(client, "record_attempt", {
-          stage_id: stage.stage_id, producer: "claude", model_id: "claude-opus-4-7",
+          stage_id: stage.stage_id, producer: "claude", model_id: "claude-opus-4-8",
           tokens_in: 1, tokens_out: 1, cost_usd: 0.0001, status: "ok",
         });
         await callTool(client, "archive_artifact", {
@@ -451,7 +451,7 @@ operations:
         const run = await callTool(client, "start_run", { request_text: "av-smoke asyncapi", project_path: projectPath, mode: "single" });
         const stage = await callTool(client, "start_stage", { run_id: run.run_id, kind: "contracts", gate_type: "contract" });
         const att = await callTool(client, "record_attempt", {
-          stage_id: stage.stage_id, producer: "claude", model_id: "claude-opus-4-7",
+          stage_id: stage.stage_id, producer: "claude", model_id: "claude-opus-4-8",
           tokens_in: 1, tokens_out: 1, cost_usd: 0.0001, status: "ok",
         });
         await callTool(client, "archive_artifact", {
@@ -496,7 +496,7 @@ operations:
         const run = await callTool(client, "start_run", { request_text: "av-smoke tokens ok", project_path: projectPath, mode: "single" });
         const stage = await callTool(client, "start_stage", { run_id: run.run_id, kind: "design_system", gate_type: "design" });
         const att = await callTool(client, "record_attempt", {
-          stage_id: stage.stage_id, producer: "claude", model_id: "claude-opus-4-7",
+          stage_id: stage.stage_id, producer: "claude", model_id: "claude-opus-4-8",
           tokens_in: 1, tokens_out: 1, cost_usd: 0.0001, status: "ok",
         });
         await callTool(client, "archive_artifact", {
@@ -532,7 +532,7 @@ operations:
         const run = await callTool(client, "start_run", { request_text: "av-smoke tokens bad", project_path: projectPath, mode: "single" });
         const stage = await callTool(client, "start_stage", { run_id: run.run_id, kind: "design_system", gate_type: "design" });
         const att = await callTool(client, "record_attempt", {
-          stage_id: stage.stage_id, producer: "claude", model_id: "claude-opus-4-7",
+          stage_id: stage.stage_id, producer: "claude", model_id: "claude-opus-4-8",
           tokens_in: 1, tokens_out: 1, cost_usd: 0.0001, status: "ok",
         });
         await callTool(client, "archive_artifact", {
@@ -574,7 +574,7 @@ operations:
         const run = await callTool(client, "start_run", { request_text: "av-smoke tokens ref", project_path: projectPath, mode: "single" });
         const stage = await callTool(client, "start_stage", { run_id: run.run_id, kind: "design_system", gate_type: "design" });
         const att = await callTool(client, "record_attempt", {
-          stage_id: stage.stage_id, producer: "claude", model_id: "claude-opus-4-7",
+          stage_id: stage.stage_id, producer: "claude", model_id: "claude-opus-4-8",
           tokens_in: 1, tokens_out: 1, cost_usd: 0.0001, status: "ok",
         });
         await callTool(client, "archive_artifact", {
@@ -607,7 +607,7 @@ operations:
         const run = await callTool(client, "start_run", { request_text: "av-smoke mermaid empty", project_path: projectPath, mode: "single" });
         const stage = await callTool(client, "start_stage", { run_id: run.run_id, kind: "architecture", gate_type: "design" });
         const att = await callTool(client, "record_attempt", {
-          stage_id: stage.stage_id, producer: "claude", model_id: "claude-opus-4-7",
+          stage_id: stage.stage_id, producer: "claude", model_id: "claude-opus-4-8",
           tokens_in: 1, tokens_out: 1, cost_usd: 0.0001, status: "ok",
         });
         await callTool(client, "archive_artifact", {
@@ -640,7 +640,7 @@ operations:
         const run = await callTool(client, "start_run", { request_text: "av-smoke mermaid empty fence", project_path: projectPath, mode: "single" });
         const stage = await callTool(client, "start_stage", { run_id: run.run_id, kind: "architecture", gate_type: "design" });
         const att = await callTool(client, "record_attempt", {
-          stage_id: stage.stage_id, producer: "claude", model_id: "claude-opus-4-7",
+          stage_id: stage.stage_id, producer: "claude", model_id: "claude-opus-4-8",
           tokens_in: 1, tokens_out: 1, cost_usd: 0.0001, status: "ok",
         });
         await callTool(client, "archive_artifact", {
@@ -673,7 +673,7 @@ operations:
         const run = await callTool(client, "start_run", { request_text: "av-smoke mermaid valid", project_path: projectPath, mode: "single" });
         const stage = await callTool(client, "start_stage", { run_id: run.run_id, kind: "architecture", gate_type: "design" });
         const att = await callTool(client, "record_attempt", {
-          stage_id: stage.stage_id, producer: "claude", model_id: "claude-opus-4-7",
+          stage_id: stage.stage_id, producer: "claude", model_id: "claude-opus-4-8",
           tokens_in: 1, tokens_out: 1, cost_usd: 0.0001, status: "ok",
         });
         await callTool(client, "archive_artifact", {
@@ -703,7 +703,7 @@ operations:
       const run = await callTool(client, "start_run", { request_text: "av-smoke c4 deferred", project_path: projectPath, mode: "single" });
       const stage = await callTool(client, "start_stage", { run_id: run.run_id, kind: "architecture", gate_type: "design" });
       const att = await callTool(client, "record_attempt", {
-        stage_id: stage.stage_id, producer: "claude", model_id: "claude-opus-4-7",
+        stage_id: stage.stage_id, producer: "claude", model_id: "claude-opus-4-8",
         tokens_in: 1, tokens_out: 1, cost_usd: 0.0001, status: "ok",
       });
       await callTool(client, "archive_artifact", {
@@ -732,7 +732,7 @@ operations:
       const run = await callTool(client, "start_run", { request_text: "av-smoke c4 puml skip", project_path: projectPath, mode: "single" });
       const stage = await callTool(client, "start_stage", { run_id: run.run_id, kind: "architecture", gate_type: "design" });
       const att = await callTool(client, "record_attempt", {
-        stage_id: stage.stage_id, producer: "claude", model_id: "claude-opus-4-7",
+        stage_id: stage.stage_id, producer: "claude", model_id: "claude-opus-4-8",
         tokens_in: 1, tokens_out: 1, cost_usd: 0.0001, status: "ok",
       });
       await callTool(client, "archive_artifact", {
@@ -782,7 +782,7 @@ operations:
       const run = await callTool(client, "start_run", { request_text: "av-smoke c4 strict", project_path: strictProj, mode: "single" });
       const stage = await callTool(client, "start_stage", { run_id: run.run_id, kind: "architecture", gate_type: "design" });
       const att = await callTool(client, "record_attempt", {
-        stage_id: stage.stage_id, producer: "claude", model_id: "claude-opus-4-7",
+        stage_id: stage.stage_id, producer: "claude", model_id: "claude-opus-4-8",
         tokens_in: 1, tokens_out: 1, cost_usd: 0.0001, status: "ok",
       });
       await callTool(client, "archive_artifact", {

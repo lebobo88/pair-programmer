@@ -624,7 +624,7 @@ function textPatternCheck(texts: ArtifactBundle[], re: RegExp): { status: "pass"
  *
  * Accepted shape (between the leading `---` fences):
  *   ai_provenance:
- *     generator: claude-opus-4-7
+ *     generator: claude-opus-4-8
  *     judge: gemini-3.1-pro-preview
  *     borda_rank: 1                # optional
  *

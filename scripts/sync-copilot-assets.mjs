@@ -14,7 +14,7 @@ const GENERATED_PLUGIN_HOOKS_PATH = join(ROOT, "hooks.json");
 const GENERATED_REPO_HOOKS_PATH = join(GENERATED_HOOKS_DIR, "pair-programmer.json");
 const GENERATED_SKILLS_DIR = join(GITHUB_DIR, "skills");
 const COPILOT_MIRROR_REWRITES = [
-  [/claude-opus-4-7/g, "claude-opus-4-6"],
+  [/claude-opus-4-8/g, "claude-opus-4-7"],
   [/mcp__pp_harness__get_claude_tier_models/g, "mcp__pp_harness__get_copilot_claude_tier_models"],
   [/\.claude\/skills\/pair-programmer\.md/g, ".github/skills/pair-programmer/SKILL.md"],
   [/\.claude\/commands\/pp\//g, ".github/commands/pp/"],
