@@ -1,0 +1,3 @@
+# Shell scripts must stay LF even on Windows checkouts, or the shebang + bash
+# parsing break on POSIX clones.
+*.sh text eol=lf
