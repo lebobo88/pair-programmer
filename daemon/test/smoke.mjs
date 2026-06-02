@@ -573,9 +573,9 @@ async function main() {
     }
     console.log(`✓ detect_profile (bin only): ${detectCli.recommendation}/${detectCli.confidence}`);
 
-    // 24. Phase 7: 15 built-in teams resolve.
+    // 24. Phase 7: built-in teams resolve.
     const teams = await callTool(client, "team_list", { project_path: projectPath });
-    if (teams.length !== 20) throw new Error(`expected 20 builtin teams, got ${teams.length}: ${teams.map(t => t.name).join(",")}`);
+    if (teams.length !== 21) throw new Error(`expected 21 builtin teams, got ${teams.length}: ${teams.map(t => t.name).join(",")}`);
     console.log(`✓ team_list: ${teams.length} teams`);
     const featureTeam = await callTool(client, "team_get", { name: "feature-team", project_path: projectPath });
     if (!featureTeam?.team || featureTeam.origin !== "builtin") throw new Error(`feature-team should resolve to builtin`);
