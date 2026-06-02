@@ -2,6 +2,10 @@
  * Centralized constants. Avoid spreading magic numbers across the codebase.
  */
 
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import { repoRootDefault } from "./util/paths.js";
+
 /** Default ceiling on validator (judge) calls per single run. Phase 4 enforces. */
 export const DEFAULT_LOOP_CEILING = 6;
 
@@ -131,6 +135,26 @@ export const ECOSYSTEM_BREAKER_COOLDOWN_MS = 60_000;
 
 /** Per-call wall-clock cap for any eights MCP tool invocation. */
 export const ECOSYSTEM_CALL_TIMEOUT_MS = 8000;
+
+/**
+ * Sibling projects whose .claude/agents, .claude/skills, and squads/ are
+ * aggregated into pp's per-machine overlay by scripts/link-ecosystem.*.
+ *
+ * The list is the single neutral source of truth in `.harness/ecosystem.json`
+ * (language-agnostic so the PowerShell/POSIX generators and sync-copilot
+ * read the SAME file — never parse this .ts module from a script). Best-effort:
+ * a missing/malformed manifest yields an empty list, never throws.
+ */
+export function ecosystemSiblings(): string[] {
+  try {
+    const manifestPath = join(repoRootDefault(), ".harness", "ecosystem.json");
+    const parsed = JSON.parse(readFileSync(manifestPath, "utf8")) as { siblings?: unknown };
+    if (!Array.isArray(parsed.siblings)) return [];
+    return parsed.siblings.filter((s): s is string => typeof s === "string");
+  } catch {
+    return [];
+  }
+}
 
 /**
  * The eight I-Ching trigram cells TheEights uses to tag every memory.

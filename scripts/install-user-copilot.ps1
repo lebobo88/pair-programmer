@@ -64,6 +64,17 @@ Write-Host "  user:   $UserCopilot"
 Write-Host "  plugin: $PluginName"
 Write-Host ""
 
+# Materialize the ecosystem overlay (sibling agents/skills/squads) BEFORE the sync so
+# the Copilot mirror generated from .claude includes them.
+$LinkScript = Join-Path $RepoRoot 'scripts\link-ecosystem.ps1'
+if (Test-Path $LinkScript) {
+    Write-Host "Materializing ecosystem overlay..." -ForegroundColor Cyan
+    & $LinkScript 2>&1 | Out-Host
+    if ($LASTEXITCODE -ne 0) {
+        throw "Ecosystem overlay materialization failed with exit code $LASTEXITCODE."
+    }
+}
+
 Write-Host "Syncing generated Copilot assets..." -ForegroundColor Cyan
 & node $SyncScript 2>&1 | Out-Host
 if ($LASTEXITCODE -ne 0) {

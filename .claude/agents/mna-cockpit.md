@@ -1,1 +1,0 @@
-H:/ExecutiveSuite/.claude/agents/mna-cockpit.md

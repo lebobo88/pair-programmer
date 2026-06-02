@@ -30,6 +30,7 @@ import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { log } from "../util/logger.js";
+import { siblingPath } from "../util/paths.js";
 import {
   ECOSYSTEM_PROBE_TIMEOUT_MS,
   ECOSYSTEM_BREAKER_THRESHOLD,
@@ -200,11 +201,14 @@ function resolveDaemonEntry(): { command: string; args: string[] } | null {
   if (existsSync(dotEights)) {
     return { command: process.execPath, args: [dotEights, "mcp"] };
   }
-  // 4) Well-known sibling at C:\AiAppDeployments\TheEights (windows-only;
-  //    used during co-development before the user has installed a release).
-  const siblingWin = "C:\\AiAppDeployments\\TheEights\\daemon\\dist\\index.js";
-  if (existsSync(siblingWin)) {
-    return { command: process.execPath, args: [siblingWin, "mcp"] };
+  // 4) Clone-relative sibling: <consumer-base>/TheEights/daemon/dist/index.js.
+  //    consumer-base honors PP_CONSUMER_BASE / PP_ECOSYSTEM_ROOT, else the
+  //    parent of this clone (the ecosystem layout where siblings sit adjacent).
+  //    Replaces the former hard-coded Windows sibling literal so any clone
+  //    location resolves TheEights with no machine-specific path.
+  const sibling = join(siblingPath("TheEights"), "daemon", "dist", "index.js");
+  if (existsSync(sibling)) {
+    return { command: process.execPath, args: [sibling, "mcp"] };
   }
   // 5) Fall back to a `eights-daemon` binary on PATH. Spawning will fail
   //    fast if the shim isn't installed; treated as unavailable.

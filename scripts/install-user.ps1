@@ -33,6 +33,15 @@ Write-Host "  repo:  $RepoRoot"
 Write-Host "  user:  $UserClaude"
 Write-Host ""
 
+# 0. Materialize ecosystem overlay (sibling agents/skills/squads) BEFORE the
+#    junctions so the whole-dir junctions carry sibling artifacts into ~/.claude.
+$linkScript = Join-Path $PSScriptRoot 'link-ecosystem.ps1'
+if (Test-Path $linkScript) {
+    Write-Host "Materializing ecosystem overlay..." -ForegroundColor Cyan
+    & $linkScript
+    Write-Host ""
+}
+
 # 1. Junctions ----------------------------------------------------------------
 
 $junctions = @(

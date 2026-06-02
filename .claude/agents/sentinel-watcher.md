@@ -1,1 +1,0 @@
-H:/AgentSmith/.claude/agents/sentinel-watcher.md

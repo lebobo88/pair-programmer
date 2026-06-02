@@ -26,6 +26,14 @@ Present the result as a checklist:
   - codex: ✓ / ✗ / skipped — show `model`, and on fail show `reason` + last `stderr_tail`
   - gemini: ✓ / ✗ / skipped — same
 - Cross-vendor ready: ✓ / ✗  (need ≥ 2 vendors)
+- Ecosystem (from the `ecosystem` field):
+  - Consumer base: `<consumer_base>` (source: `<consumer_base_source>`)
+  - Per sibling (`siblings[]`): `<name>` present ✓/✗ at `<path>`; if present, scanned agents/skills/squads counts
+  - Links materialized: `<links_materialized.total>` (`symlinks` vs `copies` — copies mean no Developer Mode; edits won't propagate until re-run)
+  - Stale stubs: if `stale_stubs` is non-null, list them and surface `stale_stub_hint` (run `scripts/link-ecosystem.ps1`)
+  - TheEights daemon resolved via: `<eights_daemon.resolved_via>`
+
+If a sibling shows ✗ (absent), that is non-fatal — its agents/skills/squads are simply skipped. To point at siblings in a non-adjacent location, set `PP_CONSUMER_BASE` (or `PP_ECOSYSTEM_ROOT`). If `links_materialized` is null or stale stubs are present, tell the user to run `pwsh scripts/link-ecosystem.ps1` (or `scripts/link-ecosystem.sh`).
 
 The harness prefers already-authenticated CLI sessions over manually-set API keys. For each ✗, suggest the CLI login first, with the env-var fallback only as a secondary option.
 

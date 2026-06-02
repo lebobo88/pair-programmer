@@ -1,1 +1,0 @@
-H:/AgentSmith/.claude/agents/smith-inspector.md

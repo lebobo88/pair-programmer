@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -303,11 +303,34 @@ function main() {
     );
   }
 
-  for (const file of readdirSync(join(CLAUDE_DIR, "skills"))) {
-    if (!file.endsWith(".md")) continue;
-    const skillDir = join(GENERATED_SKILLS_DIR, basename(file, ".md"));
-    ensureDir(skillDir);
-    normalizeSkill(join(CLAUDE_DIR, "skills", file), skillDir);
+  for (const entry of readdirSync(join(CLAUDE_DIR, "skills"), { withFileTypes: true })) {
+    const srcPath = join(CLAUDE_DIR, "skills", entry.name);
+    // A skill can be either a single `.md` file (pp-native convention) OR a directory
+    // containing SKILL.md (the sibling/ecosystem convention — these are materialized into
+    // .claude/skills as symlinked dirs by scripts/link-ecosystem.*). Mirror BOTH so the
+    // Copilot plugin includes sibling skills (previously directory skills were dropped).
+    // Note: a symlinked directory is reported as a symlink by Dirent, so resolve via statSync.
+    let isDir = entry.isDirectory();
+    if (entry.isSymbolicLink()) {
+      try { isDir = statSync(srcPath).isDirectory(); } catch { continue; }
+    }
+    if (isDir) {
+      const skillFile = join(srcPath, "SKILL.md");
+      if (!existsSync(skillFile)) continue; // not a skill package
+      const skillDir = join(GENERATED_SKILLS_DIR, entry.name);
+      ensureDir(skillDir);
+      // Copy any supporting files (references, scripts) verbatim, then overwrite SKILL.md
+      // with the normalized + Copilot-rewritten version.
+      for (const inner of readdirSync(srcPath, { withFileTypes: true })) {
+        if (inner.name === "SKILL.md") continue;
+        cpSync(join(srcPath, inner.name), join(skillDir, inner.name), { recursive: true });
+      }
+      normalizeSkill(skillFile, skillDir);
+    } else if (entry.name.endsWith(".md")) {
+      const skillDir = join(GENERATED_SKILLS_DIR, basename(entry.name, ".md"));
+      ensureDir(skillDir);
+      normalizeSkill(srcPath, skillDir);
+    }
   }
 
   normalizeHooks(join(CLAUDE_DIR, "settings.template.json"), [

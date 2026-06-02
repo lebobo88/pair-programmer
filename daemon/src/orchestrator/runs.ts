@@ -1,14 +1,14 @@
 import { nanoid } from "nanoid";
 import { createHash } from "node:crypto";
-import { mkdirSync, writeFileSync, statSync, existsSync, readFileSync } from "node:fs";
+import { mkdirSync, writeFileSync, statSync, existsSync, readFileSync, readdirSync } from "node:fs";
 import { join, relative } from "node:path";
 import { execa } from "execa";
 import YAML from "yaml";
 import { db, txImmediate } from "../db/database.js";
-import { projectArtifactDir } from "../util/paths.js";
+import { projectArtifactDir, consumerBase, repoRootDefault, siblingPath } from "../util/paths.js";
 import {
   RunMode, RunStatus, StageStatus, AttemptStatus, VerdictOutcome, vendorFor,
-  ClaudeTier, isClaudeTier,
+  ClaudeTier, isClaudeTier, ecosystemSiblings,
 } from "../config.js";
 import { log } from "../util/logger.js";
 import { scanForSecrets, SecretsFoundError } from "../security/secret-scan.js";
@@ -16,7 +16,7 @@ import { loadProjectProfile } from "./profiles.js";
 import { applyMasterPlanPatch, ensureMasterPlan } from "./master-plan.js";
 import { TAXONOMY_BY_ID, MASTER_PLAN_SECTIONS } from "./taxonomy.js";
 import { ProjectLock, ProjectLockBusyError } from "../util/lock.js";
-import { tmpdir } from "node:os";
+import { tmpdir, homedir } from "node:os";
 import { DEFAULT_MODELS } from "../config.js";
 import { codexCritique } from "../mcp/codex-server.js";
 import { geminiCritique } from "../mcp/gemini-server.js";
@@ -2009,7 +2009,104 @@ export async function doctor(opts: DoctorOptions = {}): Promise<unknown> {
     cross_vendor_ready: vendorCount >= 2,
     critique_smoke,
     browser_engines,
+    ecosystem: describeEcosystem(),
     db_path: (await import("../util/paths.js")).DB_PATH,
+  };
+}
+
+/**
+ * Ecosystem health for /pp:doctor: how sibling agents/skills/squads resolve on
+ * THIS machine. All dynamic — no absolute path is read from git; everything is
+ * derived from the consumer base (PP_CONSUMER_BASE / PP_ECOSYSTEM_ROOT /
+ * parent-of-clone) and the neutral .harness/ecosystem.json manifest. Best-effort.
+ */
+function describeEcosystem(): unknown {
+  const base = consumerBase();
+  const repoRoot = repoRootDefault();
+  const siblings = ecosystemSiblings();
+
+  // Did the eights-daemon resolve via the clone-relative sibling tier?
+  const eightsSibling = join(siblingPath("TheEights"), "daemon", "dist", "index.js");
+  const eights_daemon = {
+    resolved_via:
+      process.env.PP_EIGHTS_DAEMON && existsSync(process.env.PP_EIGHTS_DAEMON) ? "PP_EIGHTS_DAEMON"
+      : process.env.EIGHTS_HOME && existsSync(join(process.env.EIGHTS_HOME, "daemon", "dist", "index.js")) ? "EIGHTS_HOME"
+      : existsSync(eightsSibling) ? "sibling (consumer base)"
+      : existsSync(join(homedir(), ".eights", "daemon", "dist", "index.js")) ? "~/.eights"
+      : "PATH (eights-daemon) or unavailable",
+    sibling_path: eightsSibling,
+  };
+
+  // Count materialized links from the per-machine run manifest.
+  let materialized: { total: number; symlinks: number; copies: number } | null = null;
+  try {
+    const runManifest = JSON.parse(readFileSync(join(repoRoot, ".harness", ".ecosystem-links.local.json"), "utf8")) as {
+      links?: { strategy?: string }[];
+    };
+    const links = runManifest.links ?? [];
+    materialized = {
+      total: links.length,
+      symlinks: links.filter((l) => l.strategy === "symlink").length,
+      copies: links.filter((l) => l.strategy === "copy").length,
+    };
+  } catch { /* no run manifest yet */ }
+
+  const countMd = (dir: string): number => {
+    try { return readdirSync(dir).filter((f) => f.endsWith(".md")).length; } catch { return 0; }
+  };
+  const countEntries = (dir: string): number => {
+    try { return readdirSync(dir).length; } catch { return 0; }
+  };
+
+  const sibling_status = siblings.map((name) => {
+    const root = siblingPath(name);
+    const present = existsSync(root);
+    return {
+      name,
+      present,
+      path: root,
+      scanned: present
+        ? {
+            agents: countMd(join(root, ".claude", "agents")),
+            skills: countEntries(join(root, ".claude", "skills")),
+            squads: countEntries(join(root, "squads")),
+          }
+        : null,
+    };
+  });
+
+  // Stale core.symlinks=false stub detection in pp's own overlay dirs.
+  const stale_stubs: string[] = [];
+  const stubScan = (dir: string, rel: string) => {
+    try {
+      for (const f of readdirSync(dir)) {
+        const p = join(dir, f);
+        try {
+          const st = statSync(p);
+          if (st.isFile() && st.size <= 512) {
+            const txt = readFileSync(p, "utf8").trim();
+            if (txt && !txt.includes("\n") && /[\\/]/.test(txt)) stale_stubs.push(`${rel}/${f}`);
+          }
+        } catch { /* skip */ }
+      }
+    } catch { /* dir absent */ }
+  };
+  stubScan(join(repoRoot, ".claude", "agents"), ".claude/agents");
+  stubScan(join(repoRoot, ".claude", "skills"), ".claude/skills");
+
+  return {
+    consumer_base: base,
+    consumer_base_source:
+      process.env.PP_CONSUMER_BASE ? "PP_CONSUMER_BASE"
+      : process.env.PP_ECOSYSTEM_ROOT ? "PP_ECOSYSTEM_ROOT"
+      : "parent-of-clone (default)",
+    siblings: sibling_status,
+    links_materialized: materialized,
+    stale_stubs: stale_stubs.length ? stale_stubs : null,
+    stale_stub_hint: stale_stubs.length
+      ? "Run scripts/link-ecosystem.ps1 to replace core.symlinks=false stub files with real links."
+      : null,
+    eights_daemon,
   };
 }
 
