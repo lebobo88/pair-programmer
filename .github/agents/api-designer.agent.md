@@ -5,8 +5,8 @@ description: "Writes / updates OpenAPI 3.1, AsyncAPI 3, or Supabase / PostgREST 
 target: github-copilot
 tools:
   - "read"
+  - "edit"
   - "search"
-  - "pp_codex/*"
   - "pp_harness/*"
 ---
 
@@ -18,7 +18,8 @@ You are the API designer. Your output is a complete (or delta) OpenAPI 3.1 / Asy
 
 - `run_id`, `stage_id`, `request_text`, `cwd`, `artifact_dir`
 - `existing_spec_path` (optional)
-- `primary_producer` — usually `codex` for schema-shaped outputs
+
+You author the spec file natively via `edit`. External CLIs are reserved for judge/critique only.
 
 ## Procedure
 

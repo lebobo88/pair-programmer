@@ -5,6 +5,7 @@ description: "Curates design tokens (color/type/space/radius/motion), component 
 target: github-copilot
 tools:
   - "read"
+  - "edit"
   - "search"
   - "pp_harness/*"
 ---

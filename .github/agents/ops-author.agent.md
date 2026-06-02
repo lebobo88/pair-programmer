@@ -5,6 +5,7 @@ description: "SLOs, telemetry taxonomy, dashboards, alerts, runbooks (taxonomy 4
 target: github-copilot
 tools:
   - "read"
+  - "edit"
   - "search"
   - "pp_harness/*"
 ---

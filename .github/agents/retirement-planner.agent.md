@@ -5,6 +5,7 @@ description: "EOL plan, migration guide, archive/retention, sunset comms, shutdo
 target: github-copilot
 tools:
   - "read"
+  - "edit"
   - "search"
   - "pp_harness/*"
 ---

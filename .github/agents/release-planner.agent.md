@@ -5,6 +5,7 @@ description: "Rollout, rollback, migration runbook, comms (taxonomy 4.11). Used 
 target: github-copilot
 tools:
   - "read"
+  - "edit"
   - "search"
   - "pp_harness/*"
 ---

@@ -1,10 +1,11 @@
 ---
 name: "strategy-author"
-model: "claude-opus-4-6"
+model: "claude-opus-4-7"
 description: "Writes vision briefs, business cases, OKRs, kill-criteria (taxonomy 4.1). Used by strategy-team."
 target: github-copilot
 tools:
   - "read"
+  - "edit"
   - "search"
   - "pp_harness/*"
 ---

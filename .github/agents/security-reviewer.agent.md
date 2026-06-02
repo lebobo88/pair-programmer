@@ -1,13 +1,12 @@
 ---
 name: "security-reviewer"
-model: "claude-opus-4-6"
+model: "claude-opus-4-7"
 description: "Threat model + control mapping + privacy review (taxonomy 4.9). Used by security-review-team, ai-controls-team (tool_permissions stage), data-team (retention_deletion), retirement-team."
 target: github-copilot
 tools:
   - "read"
+  - "edit"
   - "search"
-  - "pp_codex/*"
-  - "pp_gemini/*"
   - "pp_harness/*"
 ---
 

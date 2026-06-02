@@ -28,7 +28,7 @@ This driver mirrors `.github/agents/*.agent.md` frontmatter `model:` values so t
 
 | agent | tier |
 |-------|------|
-| strategy-author, spec-author, architect, security-reviewer, discovery-researcher, ai-controls-author, narrative-designer, encounter-designer, level-designer, game-ai-programmer, netcode-programmer, game-security | opus (`claude-opus-4-6`) |
+| strategy-author, spec-author, architect, security-reviewer, discovery-researcher, ai-controls-author, narrative-designer, encounter-designer, level-designer, game-ai-programmer, netcode-programmer, game-security | opus (`claude-opus-4-7`) |
 | engineer, api-designer, designer, design-system-curator, test-strategist, docs-author, ops-author, data-modeler, release-planner, retirement-planner, governance-author, economy-designer, live-ops-manager, tech-animator, technical-artist, game-accessibility-specialist | sonnet (`claude-sonnet-4-6`) |
 | triage, taxonomy-mapper, profile-loader, judge-router, missability-inspector, master-plan-patcher, run-finalizer, reflexion-coach, browser-validator, visual-regression-runner | haiku (`claude-haiku-4-5-20251001`) |
 | judge-cross-vendor, judge-same-vendor | — (judges pick their own model from internal rotation; see those agents' Procedure sections) |
@@ -77,7 +77,9 @@ The `trace` array records which layer set the final tier ("frontmatter", "team_y
 6. **Stage loop.** Pick the stage set by triage class:
    - `trivial` → just `code` (or `docs` if the request is doc-shaped).
    - `standard` → `spec` → `code` → `tests` → `docs`.
-   - `major` → STOP and tell the user to invoke `/pp:team feature-team` or another team-shaped flow instead. Finalize the run with `status="aborted"` and explain.
+   - `major` →
+     - **If `signals` includes `"doc-only"`** (taxonomy.ts walks `doc-only` back from `major-keyword`/`security-keyword` by −3, but a high-signal stack can still resolve to `major`), continue into a **single doc stage** instead of aborting. Pick the stage kind from the doc-only payload — `docs` is the default; if the request explicitly names an ADR/spec/PRD/RFC, use `spec` (the spec-author agent handles ADR/MADR/spec/PRD/RFC shapes; spec gate_type still applies). Run exactly one stage through the standard `start_stage → generate → judge → finalize` flow with best-of-N=1 (single-stage best-of). Skip Reflexion-escalation past the cap if `cli_flags.tier_cap` is set, but otherwise follow the normal verdict/readiness branches. Then continue to step 7 (Missability).
+     - **Otherwise** (true major scope without `doc-only`), STOP and tell the user to invoke `/pp:team feature-team` or another team-shaped flow instead. Finalize the run with `status="aborted"` and explain.
 
    For each stage:
    - `mcp__pp_harness__start_stage(run_id, kind, gate_type)`. Default `gate_type` per `kind`: `spec→spec`, `code→code_style`, `tests→lint_class`, `tests_pre→contract`, `docs→docs_polish`. Override per profile rubric bindings if the profile names a different gate type for the kind.

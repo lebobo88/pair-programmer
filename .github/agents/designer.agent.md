@@ -5,8 +5,8 @@ description: "UX designer sub-agent. Produces IA maps, user flows, screen-state 
 target: github-copilot
 tools:
   - "read"
+  - "edit"
   - "search"
-  - "pp_codex/*"
   - "pp_harness/*"
 ---
 

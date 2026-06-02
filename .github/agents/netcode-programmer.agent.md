@@ -1,6 +1,6 @@
 ---
 name: "netcode-programmer"
-model: "claude-opus-4-6"
+model: "claude-opus-4-7"
 description: "Game netcode programmer sub-agent. Produces replication topology, server-auth boundaries, rollback / lockstep design, host migration plans (taxonomy 4.6, 4.7). Used by game-netcode-team and game-feature-team for online: true projects."
 target: github-copilot
 tools:

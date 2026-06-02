@@ -5,8 +5,8 @@ description: "Entities/ERD, lineage, retention, migration plan, analytics events
 target: github-copilot
 tools:
   - "read"
+  - "edit"
   - "search"
-  - "pp_codex/*"
   - "pp_harness/*"
 ---
 
