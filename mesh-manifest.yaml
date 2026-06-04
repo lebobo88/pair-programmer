@@ -1,0 +1,145 @@
+apiVersion: agentmesh/v1
+kind: SiblingManifest
+
+metadata:
+  id: pair-programmer
+  displayName: "Pair Programmer Engineering Harness"
+  version: "1.0.0"
+  description: "Best-of-N engineering harness with reflexion, cross-vendor judging, and TDD gates."
+  # backendsKey: the gateway flat-dict key for the primary harness endpoint.
+  # ~/.hydra/backends.json uses "pp_harness" while metadata.id is "pair-programmer".
+  # Amendment 2026-06-04: added to reconcile manifest id with gateway registry key.
+  backendsKey: "pp_harness"
+
+runtime:
+  type: node20-ts
+  # entrypoint: absolute path from backends.json "pp_harness" entry.
+  # Source: ~/.hydra/backends.json — "command": "node", "args": ["C:/AiAppDeployments/pair-programmer/daemon/dist/index.js","mcp"]
+  # The runtime.entrypoint carries the script path; the "mcp" sub-command arg is below.
+  # Note: mcp-mode arg "mcp" is passed via backends.json args[1]; the harness supervisor
+  # must replicate this when spawning. See GOVERNANCE-ROUTING.md §Spawn-Spec.
+  entrypoint: "C:/AiAppDeployments/pair-programmer/daemon/dist/index.js"
+  cwd: "C:/AiAppDeployments/pair-programmer"
+  # No runtime.env: backends.json "env": {} — no extra env needed.
+  healthProbe:
+    type: mcp-tool-call
+    # "doctor" is a cheap no-args health-check returning harness DB status.
+    # Source: pair-programmer/daemon/src/mcp/harness-server.ts line 822 — name: "doctor"
+    tool: "doctor"
+    intervalMs: 20000
+    timeoutMs: 8000
+    failureThreshold: 3
+
+mcp:
+  endpoint:
+    type: stdio
+  # REAL tool names from pair-programmer/daemon/src/mcp/harness-server.ts
+  # const TOOLS: ToolDef[] at line 525; each { name: "..." } entry listed below.
+  # Gateway prefixes these as "pp_harness__<name>" but native names (below) are what
+  # the MCP server advertises via ListTools and what mcp.tools must match.
+  # Source evidence: harness-server.ts lines 527–1246.
+  tools:
+    - "start_run"
+    - "force_unlock"
+    - "ensure_run"
+    - "start_stage"
+    - "record_attempt"
+    - "record_verdict"
+    - "retract_verdict"
+    - "get_stage_finalize_readiness"
+    - "finalize_stage"
+    - "finalize_run"
+    - "archive_artifact"
+    - "list_runs"
+    - "get_run"
+    - "list_prior_critiques"
+    - "request_strategic_framing"
+    - "request_brand_review"
+    - "request_visual_advisory"
+    - "report_hydra_completion"
+    - "hydra_envelope_query"
+    - "audit_status"
+    - "list_evolution_proposals"
+    - "review_evolution_proposal"
+    - "analyze_autogenesis"
+    - "budget_status"
+    - "doctor"
+    - "triage_request"
+    - "map_taxonomy"
+    - "record_taxonomy_mapping"
+    - "list_taxonomy_sections"
+    - "ensure_master_plan"
+    - "ensure_constitution"
+    - "constitution_status"
+    - "apply_master_plan_patch"
+    - "master_plan_status"
+    - "ensure_agents_md"
+    - "apply_agents_md_patch"
+    - "agents_md_status"
+    - "completion_checklist"
+    - "list_missability_checks"
+    - "run_missability_checks"
+    - "loop_ceiling_status"
+    - "start_best_of_stage"
+    - "diff_entropy"
+    - "borda_count"
+    - "record_smoke_status"
+    - "tdd_pre_check"
+    - "tdd_post_check"
+    - "get_tdd_check"
+    - "artifact_validate"
+    - "get_artifact_validation"
+    - "archive_winner_and_losers"
+    - "teardown_candidates"
+    - "get_profile"
+    - "get_builtin_profile"
+    - "list_profiles"
+    - "get_claude_tier_models"
+    - "get_copilot_claude_tier_models"
+    - "detect_profile"
+    - "write_profile"
+    - "get_rubric"
+    - "list_rubrics"
+    - "team_get"
+    - "team_list"
+    - "get_design_template"
+    - "list_design_templates"
+    - "list_forums"
+    - "get_forum"
+    - "janitor"
+    - "replay"
+    - "visual_regression_capture"
+    - "visual_regression_diff"
+    - "browser_validation_start"
+    - "browser_validation_finalize"
+    - "retry_with_critique"
+    - "gate_eligible_judges"
+
+lifecycle:
+  startTimeoutMs: 30000
+  gracefulShutdownMs: 10000
+  crashLoopBreaker:
+    threshold: 5
+    windowMs: 60000
+
+audit:
+  # "audit_status" returns harness DB audit information including run + attempt records.
+  # Source: harness-server.ts line 749 — name: "audit_status"
+  # Formal audit federation routes through TheEights (eights.audit.trace) per governance
+  # precedence. See manifests/GOVERNANCE-ROUTING.md §pair-programmer for details.
+  exportTool: "audit_status"
+  dedupeKeyField: "run_id"
+
+governance:
+  # Constitution path relative to runtime.cwd (C:/AiAppDeployments/pair-programmer).
+  # Destination after merge pass: C:/AiAppDeployments/pair-programmer/CONSTITUTION.md
+  # (authored at manifests/constitutions/pair-programmer.CONSTITUTION.md — see README).
+  constitutionPath: "CONSTITUTION.md"
+  # pair-programmer has no dedicated constitution attestation tool.
+  # "constitution_status" is a read tool that returns constitution hash + status.
+  # Source: harness-server.ts line 871 — name: "constitution_status"
+  # It proves MCP connectivity and returns the stored constitution_sha — used as the
+  # governance-connectivity probe by meshd. Formal hash attestation for pair-programmer
+  # routes through TheEights (eights.constitution.attest with consumer="pair-programmer")
+  # per governance precedence. See manifests/GOVERNANCE-ROUTING.md §pair-programmer.
+  attestTool: "constitution_status"
