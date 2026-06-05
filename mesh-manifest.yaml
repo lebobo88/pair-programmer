@@ -15,10 +15,13 @@ runtime:
   type: node20-ts
   # entrypoint: absolute path from backends.json "pp_harness" entry.
   # Source: ~/.hydra/backends.json — "command": "node", "args": ["C:/AiAppDeployments/pair-programmer/daemon/dist/index.js","mcp"]
-  # The runtime.entrypoint carries the script path; the "mcp" sub-command arg is below.
-  # Note: mcp-mode arg "mcp" is passed via backends.json args[1]; the harness supervisor
-  # must replicate this when spawning. See GOVERNANCE-ROUTING.md §Spawn-Spec.
+  # The runtime.entrypoint carries the script path; the "mcp" sub-command arg is in runtime.args.
+  # Amendment 2026-06-05 (campaign mesh-console-unification, C1): runtime.args added to the
+  # manifest schema — BackendsJsonWriter previously dropped the "mcp" subcommand when
+  # regenerating the pp_harness spawn spec, which broke the gateway connection
+  # (node index.js with no args prints help and exits).
   entrypoint: "C:/AiAppDeployments/pair-programmer/daemon/dist/index.js"
+  args: ["mcp"]
   cwd: "C:/AiAppDeployments/pair-programmer"
   # No runtime.env: backends.json "env": {} — no extra env needed.
   healthProbe:
