@@ -111,6 +111,22 @@ export type EvolutionProposeInput = {
   justification: string;
 };
 
+// ─── TheEights tool-name contract ────────────────────────────────────────
+
+/**
+ * TheEights namespaces every MCP tool under `eights.*` (e.g. `eights.memory.add`,
+ * `eights.hydra.envelope.record`) and has since v0.2.0. pp's Phase-A spine was
+ * written against bare names (`memory.add`) which never matched the real surface,
+ * so the connect probe always failed and the client lived permanently in
+ * degraded mode. We prefix the canonical bare names at the single call boundary
+ * (`safeCall`) so the rest of the module reads against the logical tool names.
+ */
+const EIGHTS_TOOL_PREFIX = "eights.";
+
+function eightsTool(bareName: string): string {
+  return `${EIGHTS_TOOL_PREFIX}${bareName}`;
+}
+
 // ─── Namespace breaker state ─────────────────────────────────────────────
 
 type NamespaceKey =
@@ -183,9 +199,16 @@ function currentState(): ClientState {
 
 function resolveDaemonEntry(): { command: string; args: string[] } | null {
   // 1) Explicit override: PP_EIGHTS_DAEMON points at the dist/index.js file.
+  //    When set, it is AUTHORITATIVE: if the path is missing we fail closed
+  //    (return null → unavailable) rather than silently falling through to a
+  //    well-known sibling. An operator who pins a specific daemon must not get
+  //    a different one behind their back; this also keeps test isolation honest
+  //    (tests point this at a bogus path to force degraded mode).
   const explicit = process.env.PP_EIGHTS_DAEMON;
-  if (explicit && existsSync(explicit)) {
-    return { command: process.execPath, args: [explicit, "mcp"] };
+  if (explicit) {
+    return existsSync(explicit)
+      ? { command: process.execPath, args: [explicit, "mcp"] }
+      : null;
   }
   // 2) EIGHTS_HOME root with conventional layout.
   const homeRoot = process.env.EIGHTS_HOME;
@@ -232,12 +255,14 @@ async function probe(): Promise<boolean> {
       setTimeout(() => reject(new Error("probe timeout")), ECOSYSTEM_PROBE_TIMEOUT_MS)
     );
     await Promise.race([connectPromise, timeout]);
-    // Sanity-check: listTools must include at least one eights.* namespace.
+    // Sanity-check: listTools must include at least one eights.memory.* tool.
+    // TheEights namespaces every tool under `eights.*` (canonical since v0.2.0),
+    // so the memory surface presents as `eights.memory.add` etc.
     const tools = await withTimeout(client.listTools(), ECOSYSTEM_PROBE_TIMEOUT_MS);
     const names = (tools.tools ?? []).map(t => t.name);
-    const hasMemory = names.some(n => n.startsWith("memory.") || n === "memory.add");
+    const hasMemory = names.some(n => n.startsWith(`${EIGHTS_TOOL_PREFIX}memory.`));
     if (!hasMemory) {
-      state = { kind: "unavailable", reason: "no memory.* tool surface" };
+      state = { kind: "unavailable", reason: "no eights.memory.* tool surface" };
       try { await client.close(); } catch { /* ignore */ }
       return false;
     }
@@ -289,7 +314,7 @@ async function safeCall<T = unknown>(
   if (!client) return null;
   try {
     const result = await withTimeout(
-      client.callTool({ name: toolName, arguments: args }),
+      client.callTool({ name: eightsTool(toolName), arguments: args }),
       ECOSYSTEM_CALL_TIMEOUT_MS
     );
     if (result.isError) {
