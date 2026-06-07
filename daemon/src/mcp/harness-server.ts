@@ -741,8 +741,11 @@ const TOOLS: ToolDef[] = [
     schema: HydraEnvelopeQuerySchema,
     handler: async (args) => {
       const p = HydraEnvelopeQuerySchema.parse(args);
+      // envelopeQuery returns the daemon's raw envelope array (or null when
+      // TheEights is offline). Normalize to the documented {envelopes, peer_reachable}.
       const result = await hydraClient.envelopeQuery(p.workflow_id);
-      return result ?? { envelopes: [], peer_reachable: false };
+      if (result === null) return { envelopes: [], peer_reachable: false };
+      return { envelopes: result, peer_reachable: true };
     },
   },
   {

@@ -90,21 +90,25 @@ async function testEightsClientDegradedMode() {
     await mod.memory.add({
       envelope,
       content: "test",
-      type: "episode",
+      type: "episodic",
       provenance: { actor: "pp-daemon" },
     }),
     null,
     "memory.add → null"
   );
   assert.equal(await mod.memory.search({ envelope, query: "hello" }), null, "memory.search → null");
-  assert.equal(await mod.audit.bom("run_test_001"), null, "audit.bom → null");
-  assert.equal(await mod.constitution.get("fake-project"), null, "constitution.get → null");
-  assert.equal(await mod.cells.classify("some content"), null, "cells.classify → null");
+  assert.equal(await mod.audit.bom(envelope, "run_test_001"), null, "audit.bom → null");
+  assert.equal(await mod.constitution.get(envelope, "pp"), null, "constitution.get → null");
+  assert.equal(
+    await mod.cells.classify({ envelope, text: "some content" }),
+    null,
+    "cells.classify → null"
+  );
   assert.equal(
     await mod.hydra.envelopeRecord({
       envelope_id: "e1",
       workflow_id: "wf",
-      type: "DECISION_RECORD",
+      type: "DecisionRecord",
       origin_squad: "engineering",
       payload: {},
     }),

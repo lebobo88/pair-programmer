@@ -250,8 +250,9 @@ async function upsertProposal(input: UpsertInput): Promise<DetectedProposal> {
     void evolution
       .propose({
         envelope: env,
-        resource_rid: input.resource_rid,
-        candidate_version: `pp-autogenesis-${Date.now()}`,
+        // TheEights ProposeArgs: { rid, candidate_content, justification, ... }.
+        rid: input.resource_rid,
+        candidate_content: `pp-autogenesis-${Date.now()}`,
         justification: input.justification,
       })
       .then(result => {

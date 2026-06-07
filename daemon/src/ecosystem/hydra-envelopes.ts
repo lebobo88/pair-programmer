@@ -83,9 +83,10 @@ export async function emitDecisionRecord(ctx: DecisionRecordContext): Promise<En
     const result = await hydra.envelopeRecord({
       envelope_id,
       workflow_id: ctx.workflow_id,
-      type: "DECISION_RECORD",
+      type: "DecisionRecord",
       origin_squad: "engineering",
       target_squad: ctx.origin_squad ?? "executive",
+      parent_id: ctx.hydra_envelope_id_in ?? undefined,
       payload,
     });
     if (result?.recorded) {
@@ -142,7 +143,7 @@ export async function emitStrategicFramingRequest(ctx: CSuitePacketContext): Pro
     const result = await hydra.envelopeRecord({
       envelope_id,
       workflow_id,
-      type: "CSuiteDecisionPacket",
+      type: "C_SUITE_DECISION_PACKET",
       origin_squad: "engineering",
       target_squad: "executive",
       payload,

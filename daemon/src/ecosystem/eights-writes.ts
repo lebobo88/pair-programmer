@@ -94,8 +94,10 @@ export async function writeRunStartEpisode(ctx: RunStartContext): Promise<void> 
     const result = await memory.add({
       envelope: env,
       content,
-      type: "episode",
+      // TheEights MemoryType: a run lifecycle event is an "episodic" memory.
+      type: "episodic",
       summary: truncate(ctx.request_text.split("\n")[0] ?? "", 200),
+      scopes: ["pp:kind:episode"],
       provenance: { run_id: ctx.run_id, actor: "pp-daemon" },
       cell: "context",
       handle: `pp:run:${ctx.run_id}`,
@@ -142,9 +144,11 @@ export async function writeArtifactMemory(ctx: ArtifactWriteContext): Promise<vo
     // Step 1: classify cell (cached by sha256 to avoid redundant LLM calls).
     let cell: EightCell = cellCacheBySha.get(ctx.sha256) ?? DEFAULT_CELL;
     if (!cellCacheBySha.has(ctx.sha256)) {
-      const classified = await cells.classify(
-        truncate(ctx.content_for_classification, CLASSIFY_MAX_CHARS)
-      );
+      const classified = await cells.classify({
+        envelope: env,
+        text: truncate(ctx.content_for_classification, CLASSIFY_MAX_CHARS),
+        summary: `${ctx.kind ?? "artifact"} @ ${ctx.relative_path}`,
+      });
       if (classified?.cell) {
         cell = classified.cell;
         cellCacheBySha.set(ctx.sha256, cell);
@@ -169,7 +173,10 @@ export async function writeArtifactMemory(ctx: ArtifactWriteContext): Promise<vo
     const result = await memory.add({
       envelope: env,
       content: memContent,
-      type: "artifact",
+      // TheEights MemoryType has no "artifact" member; a code/spec artifact is
+      // durable knowledge → "semantic". (enum: working|episodic|semantic|
+      // procedural|meta)
+      type: "semantic",
       summary: `${ctx.kind ?? "artifact"} @ ${ctx.relative_path}`,
       provenance: { run_id: ctx.run_id, actor: "pp-daemon", source_uri: ctx.relative_path },
       cell,
@@ -195,19 +202,13 @@ export async function writeArtifactMemory(ctx: ArtifactWriteContext): Promise<vo
       log.debug({ err, artifact_id: ctx.artifact_id }, "back-write artifact cell/eights failed");
     }
 
-    // Step 4 (T6): submit an audit-trace link so TheEights' audit graph
-    // grows (:Run)-[:PRODUCED]->(:Artifact) edges with parent chain
-    // (spec → architecture → contract → code → test → release). Null
-    // when TheEights is offline; pp's local sha256 + artifact row remain
-    // the standalone source of truth.
-    void audit.trace({
-      run_id: ctx.run_id,
-      artifact_id: ctx.artifact_id,
-      sha256: ctx.sha256,
-      parent_artifact_ids: ctx.parent_artifact_ids ?? [],
-      generator_agent: ctx.generator_agent ?? undefined,
-      model_id: ctx.model_id ?? undefined,
-    });
+    // Step 4 (T6): artifact provenance lives in the memory write above
+    // (provenance.run_id + source_uri + the pp:artifact:<sha> handle). TheEights'
+    // `eights.audit.trace` is a READ/query tool over the event ledger
+    // (TraceArgs: {trace_id?, run_id?, kind?, limit}) — it does NOT ingest
+    // (:Run)-[:PRODUCED]->(:Artifact) edges, so we no longer call it here.
+    // The audit chain itself is materialized on demand via `audit.bom(run_id)`.
+    void ctx.parent_artifact_ids; // retained on the context for bom materialization
   } catch (err) {
     log.debug({ err, artifact_id: ctx.artifact_id }, "writeArtifactMemory swallowed");
   }
@@ -250,13 +251,15 @@ export async function writeVerdictMemory(ctx: VerdictWriteContext): Promise<void
     const result = await memory.add({
       envelope: env,
       content,
-      type: "evaluation",
+      // A judge verdict is a meta-cognitive memory (reflection over an attempt).
+      type: "meta",
       summary,
       provenance: { run_id: ctx.run_id, actor: "pp-daemon", model: ctx.judge_model_id },
       cell,
       // The stage_kind scope is critical for cross-run reflexion lookups
-      // — list_prior_critiques will search memories scoped to it.
-      scopes: ["public", `stage:${ctx.stage_kind}`, `outcome:${ctx.outcome}`],
+      // — list_prior_critiques will search memories scoped to it. The
+      // pp:kind:evaluation scope replaces the old (invalid) type="evaluation".
+      scopes: ["public", "pp:kind:evaluation", `stage:${ctx.stage_kind}`, `outcome:${ctx.outcome}`],
       handle: `pp:verdict:${ctx.verdict_id}`,
     });
     if (result?.id) {
@@ -295,11 +298,13 @@ export async function attestConstitution(params: {
 }): Promise<{ attestation_id: string; verdict: "pass" | "fail" } | null> {
   try {
     const env = envelopeFor({ run_id: params.run_id, project_path: params.project_path });
+    // TheEights AttestArgs is { envelope, consumer } — it binds the pp consumer
+    // to the current constitution and returns a hash-chained receipt. The
+    // local artifact-sha + constitution-sha drift check is enforced by pp's
+    // missability check (authoritative); this is the audit-trail submission.
     const result = await constitution.attest({
-      project_id: env.project_id,
-      run_id: params.run_id,
-      artifact_shas: params.artifact_shas,
-      constitution_sha: params.constitution_sha,
+      envelope: env,
+      consumer: "pp",
     });
     return result;
   } catch {
@@ -312,9 +317,13 @@ export async function attestConstitution(params: {
  * Returns the bom handle when TheEights ack'd, null otherwise. Caller
  * back-writes runs.audit_bom_handle on success.
  */
-export async function materializeAuditBom(run_id: string): Promise<{ bom_handle: string } | null> {
+export async function materializeAuditBom(
+  run_id: string,
+  project_path?: string,
+): Promise<{ bom_handle: string } | null> {
   try {
-    return await audit.bom(run_id);
+    const env = envelopeFor({ run_id, project_path: project_path ?? run_id });
+    return await audit.bom(env, run_id);
   } catch {
     return null;
   }
@@ -327,7 +336,10 @@ export async function materializeAuditBom(run_id: string): Promise<{ bom_handle:
  */
 export async function verifyAuditChain(run_id: string): Promise<{ verified: boolean; broken_links?: string[] } | null> {
   try {
-    return await audit.verify(run_id);
+    // TheEights VerifyArgs is the empty object and verifies the FULL chain;
+    // run_id is retained on the signature for caller ergonomics / logging.
+    void run_id;
+    return await audit.verify();
   } catch {
     return null;
   }
@@ -350,8 +362,10 @@ export async function writeRunSummary(ctx: RunSummaryContext): Promise<void> {
     await memory.add({
       envelope: env,
       content,
-      type: "summary",
+      // Run summary supersedes the start episode → still an episodic memory.
+      type: "episodic",
       summary: `${ctx.status} — ${ctx.run_id}`,
+      scopes: ["pp:kind:summary"],
       provenance: { run_id: ctx.run_id, actor: "pp-daemon" },
       cell: "vision",
       handle,
@@ -392,8 +406,10 @@ export async function writeIncidentMemory(ctx: IncidentContext): Promise<void> {
     await memory.add({
       envelope: env,
       content,
-      type: "incident",
+      // Incidents are episodic events; the "incident" facet is carried in scopes.
+      type: "episodic",
       summary: `${ctx.kind} incident: ${ctx.check_id ?? ctx.run_id}`,
+      scopes: ["pp:kind:incident", `pp:incident:${ctx.kind}`],
       provenance: { run_id: ctx.run_id, actor: "pp-daemon" },
       cell,
       handle,
@@ -433,8 +449,9 @@ export async function listPriorCritiques(params: {
       envelope: env,
       query: `verdicts and critiques for stage_kind=${params.stage_kind}`,
       k: params.k ?? 5,
-      type: "evaluation",
-      project_id: env.project_id,
+      // Verdicts are written as type="meta" tagged pp:kind:evaluation + stage:<k>.
+      types: ["meta"],
+      scopes: ["pp:kind:evaluation", `stage:${params.stage_kind}`],
     });
     const rows = (result?.results ?? []) as Array<Record<string, unknown>>;
     return rows.map(r => ({
@@ -509,7 +526,6 @@ export async function recallProjectContext(
       envelope: env,
       query: `recent activity in project ${env.project_id}`,
       k,
-      project_id: env.project_id,
     });
     if (!result) return null;
     const rows = (result.results ?? []) as Array<Record<string, unknown>>;
@@ -536,7 +552,6 @@ export async function recallByQuery(
       envelope: env,
       query,
       k,
-      project_id: env.project_id,
     });
     if (!result) return null;
     const rows = (result.results ?? []) as Array<Record<string, unknown>>;

@@ -152,3 +152,26 @@ export const HYDRA_ENVELOPE_TYPES = [
   "CSuiteDecisionPacket", "PRD", "ArchRFC", "DevTask", "HANDOFF",
 ] as const;
 export type HydraEnvelopeType = typeof HYDRA_ENVELOPE_TYPES[number];
+
+/**
+ * The canonical HydraEnvelope `type` discriminator enum, mirroring
+ * TheEights/daemon/src/schemas/hydra-envelope.ts:HydraEnvelopeType EXACTLY.
+ * This is what pp must send on `eights.hydra.envelope.record` — note the
+ * casing: `DecisionRecord` (NOT `DECISION_RECORD`), `Handoff` (NOT `HANDOFF`),
+ * `C_SUITE_DECISION_PACKET` (screaming-snake). The inbound HYDRA_ENVELOPE_TYPES
+ * list above is a separate, narrower set pp recognizes on start_run and is
+ * intentionally NOT unified with this one.
+ */
+export const HYDRA_RECORD_ENVELOPE_TYPES = [
+  "C_SUITE_DECISION_PACKET",
+  "PRD",
+  "ArchRFC",
+  "DevTask",
+  "CreativeBrief",
+  "ShotList",
+  "AssetJob",
+  "DecisionRecord",
+  "HITLRequest",
+  "Handoff",
+] as const;
+export type HydraRecordEnvelopeType = typeof HYDRA_RECORD_ENVELOPE_TYPES[number];
