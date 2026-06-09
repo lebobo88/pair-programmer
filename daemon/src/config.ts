@@ -24,10 +24,11 @@ export const CRITIQUE_RETRY_BACKOFF_MS = 2000;
  * installed CLI version actually serves. Keep in sync with `daemon/prices.json`.
  */
 export const DEFAULT_MODELS = {
-  codex_generate:  "gpt-5.4",
-  codex_critique:  "gpt-5.4",
-  gemini_generate: "gemini-3.1-pro-preview",
-  gemini_critique: "gemini-3.1-pro-preview",
+  codex_generate:            "gpt-5.4",
+  codex_critique:            "gpt-5.4",   // constitutional default (JUDGE-1) — do NOT change
+  codex_critique_escalated:  "gpt-5.5",   // opt-in escalation for major-scope/last-resort gates
+  gemini_generate:           "gemini-3.1-pro-preview",
+  gemini_critique:           "gemini-3.1-pro-preview",
 } as const;
 
 /**

@@ -47,6 +47,7 @@ const CritiqueSchema = z.object({
   rubric_md:     z.string().min(1),
   cwd:           z.string().min(1),
   model:         z.string().default(DEFAULT_MODELS.codex_critique),
+  escalate:      z.boolean().optional(),
   output_schema: z.unknown().optional(),
   timeout_ms:    z.number().int().positive().optional(),
 });
@@ -74,6 +75,13 @@ type CodexResult = {
 
 type CodexGenerateInternalOptions = {
   skip_git_repo_check?: boolean;
+  /**
+   * Test-only DI seam. When provided, replaces the real `codexGenerate` call
+   * inside `codexCritique` so tests can capture the resolved `genArgs`
+   * (including `model: effectiveModel`) without spawning the Codex CLI.
+   * Production code never sets this; the default path is always `codexGenerate`.
+   */
+  _invoke?: (genArgs: z.infer<typeof GenerateSchema>) => Promise<CodexResult>;
 };
 
 type CodexCliArgOptions = {
@@ -282,6 +290,17 @@ async function codexGenerate(
   return result;
 }
 
+/**
+ * Select the pinned critique model based on the escalate flag.
+ * escalate selects a PINNED allow-listed model (gpt-5.5); caller-passed args.model remains ignored (invented-id guard).
+ *
+ * This is a pure exported helper so it can be unit-tested offline without
+ * spawning the Codex CLI. codexCritique delegates to it internally.
+ */
+export function selectCritiqueModel(escalate: boolean): string {
+  return escalate ? DEFAULT_MODELS.codex_critique_escalated : DEFAULT_MODELS.codex_critique;
+}
+
 export async function codexCritique(
   args: z.infer<typeof CritiqueSchema>,
   opts: CodexGenerateInternalOptions = {}
@@ -292,10 +311,12 @@ export async function codexCritique(
   // invented model ids (gpt-5.5, gpt-5-codex, o1, etc.) which the installed
   // codex CLI does not serve, failing the critique with "model not found"
   // and blowing up the run. Belt-and-suspenders: the wrapper enforces.
+  // escalate selects a PINNED allow-listed model (gpt-5.5); caller-passed args.model remains ignored (invented-id guard).
   const pinnedModel = DEFAULT_MODELS.codex_critique;
-  if (args.model && args.model !== pinnedModel) {
+  const effectiveModel = selectCritiqueModel(args.escalate ?? false);
+  if (args.model && args.model !== effectiveModel) {
     process.stderr.write(
-      `[pp_codex.critique] ignoring model="${args.model}" passed by caller; pinning to "${pinnedModel}" (high reasoning). The judge agent contract requires this model.\n`,
+      `[pp_codex.critique] ignoring model="${args.model}" passed by caller; pinning to "${effectiveModel}" (high reasoning). The judge agent contract requires this model.\n`,
     );
   }
   const wrappedArtifact = wrapUntrusted("artifact-under-review", args.artifact_text);
@@ -305,16 +326,20 @@ export async function codexCritique(
     `## Rubric\n${args.rubric_md}\n\n` +
     `## Artifact\n${wrappedArtifact}\n`;
   const useDefaultSchema = !args.output_schema;
-  const invoke = async () => await codexGenerate({
+  const genArgs: z.infer<typeof GenerateSchema> = {
     prompt: judgePrompt,
     cwd: args.cwd,
-    model: pinnedModel,
+    model: effectiveModel,
     sandbox: "read-only",
     skip_recap: true,
     reasoning_effort: "high",
     output_schema: args.output_schema ?? buildCritiqueOutputSchema(),
     timeout_ms: args.timeout_ms,
-  }, opts);
+  };
+  // Use the injected invoker when provided (test DI seam); fall back to the
+  // real codexGenerate for all production paths.
+  const invoker = opts._invoke ?? ((ga) => codexGenerate(ga, opts));
+  const invoke = async () => invoker(genArgs);
   if (!useDefaultSchema) return await invoke();
   return await stabilizeCritiqueResult(invoke, { cwd: args.cwd, vendor: "codex" });
 }

@@ -52,6 +52,15 @@ For best-of-2, the driver should ask the judge for a structured rubric score per
 - **Gemini:** `pp_gemini.critique` is hard-pinned to `gemini-3.1-pro-preview`. Same-vendor Gemini judging is a documented degenerate case (same model on both sides) until a second supported 3.x critique model ships.
 - **Claude:** same-vendor Claude judging still requires a different model id from the generator.
 
+## Escalated judging (opt-in)
+
+The judge MAY set `escalate: true` on `pp_codex.critique` for sanctioned hard gates only:
+
+- **Major-scope security or architecture gates** — e.g. OWASP/ASVS-L2, ArchRFC with PHI or cryptographic scope.
+- **Judge of last resort / final Reflexion retry** — when a stage has exhausted its Reflexion budget and is still `revise`, the driver may escalate to gpt-5.5 for the deciding verdict.
+
+When `escalate: true`, the server selects `gpt-5.5` (pinned in `DEFAULT_MODELS.codex_critique_escalated`). The default **remains `gpt-5.4` per JUDGE-1** for all ordinary gates. Arbitrary caller-passed `model` strings are still ignored — escalation is a boolean selecting between two PINNED allow-listed models, never a free-form string.
+
 ## What the driver actually does
 
 1. Call `gate_eligible_judges(gate_type, generator_producer, generator_model?, prompt_keywords, profile, artifact_kind, rubric_hint?)`.

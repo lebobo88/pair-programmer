@@ -611,10 +611,15 @@ export function recordVerdict(input: RecordVerdictInput): RecordVerdictOutput {
     .get(input.attempt_id) as { producer: string; model_id: string } | undefined;
   if (!att) throw new Error(`attempt ${input.attempt_id} not found`);
 
-  if (input.judge_producer === "codex" && input.judge_model_id !== DEFAULT_MODELS.codex_critique) {
+  const CODEX_CRITIQUE_ALLOWED = new Set<string>([
+    DEFAULT_MODELS.codex_critique,
+    DEFAULT_MODELS.codex_critique_escalated,
+  ]);
+  if (input.judge_producer === "codex" && !CODEX_CRITIQUE_ALLOWED.has(input.judge_model_id)) {
     throw new Error(
-      `judge_producer=codex must record judge_model_id="${DEFAULT_MODELS.codex_critique}" ` +
-      `because pp_codex.critique is hard-pinned to that model`
+      `judge_producer=codex must record judge_model_id in ` +
+      `{${[...CODEX_CRITIQUE_ALLOWED].join(", ")}} ` +
+      `because pp_codex.critique is pinned to those models (default or escalated)`
     );
   }
   if (input.judge_producer === "gemini" && input.judge_model_id !== DEFAULT_MODELS.gemini_critique) {

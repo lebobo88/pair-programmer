@@ -341,22 +341,24 @@ async function main() {
     }
     console.log(`✓ gate_eligible_judges artifact/rubric overrides: test_plan→null, browser_validation_report→${gate6.rubric_id}, rubric_hint→${gate7.rubric_id}`);
 
-    // 15a. record_verdict refuses a same-vendor same-model codex verdict.
+    // 15a. record_verdict refuses an arbitrary (non-pinned) codex judge_model_id.
+    // gpt-5.4 and gpt-5.5 are now both accepted (default and escalated pins).
+    // Any other id (e.g. gpt-5-bogus) must still be rejected.
     let sameModelRejected = false;
     try {
       await callTool(client, "record_verdict", {
         attempt_id: att.attempt_id,
         judge_producer: "codex",
-        judge_model_id: "gpt-5.5",
+        judge_model_id: "gpt-5-bogus",
         outcome: "pass",
-        critique_md: "This should fail because Codex critique is pinned to gpt-5.4 and same-vendor same-model metadata must never be recorded by the daemon.",
+        critique_md: "This should fail because Codex critique is pinned to gpt-5.4/gpt-5.5 and an arbitrary model id must never be recorded by the daemon.",
         score_json: { correctness: 0.9, minimality: 0.95 },
       });
     } catch (err) {
-      sameModelRejected = /hard-pinned to that model|same-vendor verdict requires different model ids/i.test(String(err));
+      sameModelRejected = /pinned to those models|same-vendor verdict requires different model ids/i.test(String(err));
     }
-    if (!sameModelRejected) throw new Error(`expected record_verdict to reject impossible codex judge metadata`);
-    console.log(`✓ record_verdict rejects impossible codex same-vendor metadata`);
+    if (!sameModelRejected) throw new Error(`expected record_verdict to reject arbitrary codex judge_model_id`);
+    console.log(`✓ record_verdict rejects arbitrary (non-pinned) codex judge_model_id`);
 
     // 15. Phase 4: missability library is the right size.
     const checks = await callTool(client, "list_missability_checks");
