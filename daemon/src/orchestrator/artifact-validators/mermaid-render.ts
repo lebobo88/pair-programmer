@@ -25,7 +25,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, extname, join } from "node:path";
 import { tmpdir } from "node:os";
-import { execa } from "execa";
+import { trackedExeca as execa } from "../../mcp/cli-runner.js";
 import { nanoid } from "nanoid";
 
 const MMDC_TIMEOUT_MS = 60_000;

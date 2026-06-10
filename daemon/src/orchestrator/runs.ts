@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { mkdirSync, writeFileSync, statSync, existsSync, readFileSync } from "node:fs";
 import { join, relative } from "node:path";
 import { execa } from "execa";
+import { trackedExeca } from "../mcp/cli-runner.js";
 import YAML from "yaml";
 import { db, txImmediate } from "../db/database.js";
 import { projectArtifactDir } from "../util/paths.js";
@@ -1921,8 +1922,10 @@ async function captureCliVersions(): Promise<Record<string, string | null>> {
 
 async function tryCmd(cmd: string, args: string[]): Promise<string | null> {
   try {
-    const { stdout } = await execa(cmd, args);
-    return stdout.trim();
+    // trackedExeca so doctor's CLI-version probes are registered in
+    // ACTIVE_CHILDREN and aborted on shutdown (PP-RS-3 issue 1).
+    const { stdout } = await trackedExeca(cmd, args);
+    return (stdout ?? "").trim();
   } catch {
     return null;
   }

@@ -20,7 +20,7 @@
 
 import { existsSync, readFileSync } from "node:fs";
 import { extname } from "node:path";
-import { execa } from "execa";
+import { trackedExeca as execa } from "../../mcp/cli-runner.js";
 
 const PLANTUML_TIMEOUT_MS = 60_000;
 

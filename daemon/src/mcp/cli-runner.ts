@@ -16,9 +16,18 @@
  * to retry at the agent layer or surface `judge_tool_failed=true` to the
  * driver. This is defense-in-depth: server retries handle transient infra
  * blips silently; agent halts on truly broken environments.
+ *
+ * PP-RS-3 (issue 1 + 2): This module maintains a process-wide registry of
+ * in-flight child processes and exports:
+ *   - trackedExeca()            — drop-in execa wrapper that auto-registers /
+ *                                 deregisters; all MCP-path spawns use this.
+ *   - abortAllInFlightChildren() — async: SIGTERM, 2s grace, SIGKILL on
+ *                                 timeout; awaits each exit so locks are only
+ *                                 released after children are confirmed dead.
+ *   - _activeChildrenSize()     — test-only size accessor.
  */
 
-import { execa, type ExecaError } from "execa";
+import { execa, type ExecaError, type Options as ExecaOptions } from "execa";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
@@ -28,6 +37,220 @@ import {
   DEFAULT_CLI_TIMEOUT_MS,
 } from "../config.js";
 import { log } from "../util/logger.js";
+
+// ─── In-flight child-process registry (PP-RS-3, issues 1, 2, post-snapshot) ──
+//
+// trackedExeca() is the single choke-point: every MCP-triggered subprocess
+// goes through it so shutdownAndExit() can SIGTERM → SIGKILL all of them
+// before releasing project locks.
+//
+// Post-snapshot spawn race (PP-RS-3 revision): once shutdown begins, no new
+// child is allowed to start.  trackedExeca checks _spawnRefused before calling
+// execa() — if true it throws synchronously.  shutdown.ts calls
+// _refuseNewSpawns() as its very first action (before the registry snapshot),
+// closing the race window entirely.
+
+/** Graceful-shutdown timeout per child: SIGTERM, then wait, then SIGKILL. */
+const ABORT_GRACEFUL_MS = 2_000;
+
+/** Overall cap so shutdown can't hang forever even if many children stall. */
+const ABORT_TOTAL_CAP_MS = 8_000;
+
+interface ChildEntry {
+  /** Kill the process with the given signal. */
+  kill(signal: NodeJS.Signals): void;
+  /** Promise that resolves when the process exits (fulfilled or rejected). */
+  exitPromise: Promise<unknown>;
+  /** OS PID for diagnostic logging; undefined if spawn failed before assignment. */
+  pid: number | undefined;
+}
+
+const ACTIVE_CHILDREN = new Set<ChildEntry>();
+
+/**
+ * Module-level flag set by shutdown.ts BEFORE taking the registry snapshot.
+ * Once true, trackedExeca refuses all new spawns, making the snapshot complete-
+ * by-construction: no child can be added between _refuseNewSpawns() and the
+ * Array.from(ACTIVE_CHILDREN) call in abortAllInFlightChildren().
+ */
+let _spawnRefused = false;
+
+/**
+ * Called by shutdown.ts as its first action.  After this returns, trackedExeca
+ * throws on every call so no new child can join the registry.
+ */
+export function _refuseNewSpawns(): void {
+  _spawnRefused = true;
+}
+
+/**
+ * Drop-in replacement for execa() that registers the child process in
+ * ACTIVE_CHILDREN for the duration of its execution.  All MCP-path spawns
+ * (tdd-gate, artifact-validators, copilot probe, cli-runner retry loop) MUST
+ * use this instead of calling execa() directly.
+ *
+ * Throws synchronously with "daemon shutting down — refusing new child spawn"
+ * once _refuseNewSpawns() has been called.  MCP tool handlers already treat a
+ * failed CLI spawn as an error result (the execa call is wrapped in try/catch
+ * or returns a non-zero exit), so this rejection surfaces gracefully to the
+ * caller without crashing the server.
+ *
+ * Returns the same ResultPromise that execa() would return; callers await it
+ * exactly as before.
+ */
+export function trackedExeca(
+  file: string,
+  args?: readonly string[],
+  options?: ExecaOptions,
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+): ReturnType<typeof execa<any>> {
+  if (_spawnRefused) {
+    throw new Error("daemon shutting down — refusing new child spawn");
+  }
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const child = execa(file, args as string[], options as any);
+  // Wrap the child promise so we can await exit without .kill() interfering.
+  const exitPromise: Promise<unknown> = child.then(
+    () => { /* resolved */ },
+    () => { /* rejected — process exited non-zero or was killed; that's fine */ },
+  );
+  const entry: ChildEntry = {
+    pid: child.pid,
+    kill: (signal) => {
+      try { child.kill(signal); } catch { /* best-effort */ }
+    },
+    exitPromise,
+  };
+  ACTIVE_CHILDREN.add(entry);
+  // Auto-deregister when the process finishes (success or failure).
+  void exitPromise.then(() => ACTIVE_CHILDREN.delete(entry));
+  return child;
+}
+
+/**
+ * Terminate all registered in-flight CLI child processes and await confirmed exit.
+ *
+ * Algorithm (PP-RS-3 issue 2 — corrected):
+ *   For each child still in ACTIVE_CHILDREN at call time:
+ *     1. Send SIGTERM.
+ *     2. Await its exitPromise with ABORT_GRACEFUL_MS timeout.
+ *     3. If not exited: send SIGKILL, then await its exitPromise AGAIN with a
+ *        short bounded wait (NOT a fixed sleep — we wait for the real exit event).
+ *     4. Remove the entry from ACTIVE_CHILDREN only after its exitPromise settles.
+ *     5. If the entry is still not confirmed after the overall ABORT_TOTAL_CAP_MS
+ *        deadline, log a warning naming the child and proceed (best-effort).
+ *
+ * The registry is NOT pre-cleared: entries are removed one-by-one as each child's
+ * exit is confirmed, so a concurrent re-entrant call that reaches the size-0 guard
+ * is only reached when the set is actually empty.  shutdownAndExit awaits this
+ * function before releasing locks, guaranteeing [child exits] → [lock release].
+ *
+ * Returns true if any children were left UNCONFIRMED at the cap deadline.
+ * shutdownAndExit uses this to conservatively retain ALL locks when any survivor
+ * exists — releasing a lock while its child may still be alive violates the
+ * invariant.  The janitor TTL reaper will clean up retained locks.
+ */
+export async function abortAllInFlightChildren(): Promise<boolean> {
+  if (ACTIVE_CHILDREN.size === 0) return false;
+  // Snapshot the live entries.  New entries added concurrently (unlikely during
+  // shutdown, but possible) are left in ACTIVE_CHILDREN for the idempotency
+  // guard to catch on a hypothetical second call.
+  const entries = Array.from(ACTIVE_CHILDREN);
+  log.info({ count: entries.length }, "shutdown: aborting in-flight CLI children");
+
+  const overallDeadline = Date.now() + ABORT_TOTAL_CAP_MS;
+
+  const perChildTasks = entries.map(async (entry) => {
+    // 1. Send SIGTERM.
+    entry.kill("SIGTERM");
+
+    // 2. Await real exit, bounded by grace period.
+    const gracePeriod = Math.min(
+      ABORT_GRACEFUL_MS,
+      Math.max(0, overallDeadline - Date.now()),
+    );
+    const exitedAfterTerm = await Promise.race([
+      entry.exitPromise.then(() => true),
+      sleep(gracePeriod).then(() => false),
+    ]);
+
+    if (!exitedAfterTerm) {
+      // 3. Grace period expired — escalate to SIGKILL.
+      log.warn("shutdown: child did not exit after SIGTERM grace; sending SIGKILL");
+      entry.kill("SIGKILL");
+
+      // 4. Await the REAL exit event after SIGKILL (not a fixed sleep).
+      //    Bound by whatever remains of the overall deadline.
+      const remainingAfterKill = Math.max(0, overallDeadline - Date.now());
+      const exitedAfterKill = await Promise.race([
+        entry.exitPromise.then(() => true),
+        sleep(remainingAfterKill).then(() => false),
+      ]);
+
+      if (!exitedAfterKill) {
+        // 5. Hard cap hit — log and proceed without confirmed exit.
+        //    Do NOT remove from set here — entry remains so the caller can
+        //    detect that this child is an unconfirmed survivor.
+        log.warn(
+          { pid: entry.pid },
+          "shutdown: child not confirmed terminated before cap; entry retained in registry",
+        );
+        return;
+      }
+    }
+
+    // Entry's exit confirmed — remove from the live set.
+    ACTIVE_CHILDREN.delete(entry);
+  });
+
+  // Apply the overall cap across the whole batch.
+  await Promise.race([
+    Promise.allSettled(perChildTasks),
+    sleep(ABORT_TOTAL_CAP_MS).then(() => {
+      log.warn("shutdown: overall ABORT_TOTAL_CAP_MS hit; proceeding");
+    }),
+  ]);
+
+  // After the sweep: any entry still in ACTIVE_CHILDREN is a genuine cap-hit
+  // survivor (not confirmed terminated).  Return true so shutdownAndExit can
+  // conservatively retain locks rather than release-under-live-child.
+  if (ACTIVE_CHILDREN.size > 0) {
+    log.warn(
+      { remaining: ACTIVE_CHILDREN.size },
+      "shutdown: registry non-empty after abort sweep — cap-hit children not confirmed terminated",
+    );
+    return true;
+  }
+  return false;
+}
+
+/**
+ * TEST-ONLY: inject a fake ChildEntry into ACTIVE_CHILDREN so tests can
+ * simulate a child whose exitPromise never settles within the abort cap.
+ * Never call this in production code.
+ */
+export function _registerFakeChildForTest(entry: ChildEntry): void {
+  ACTIVE_CHILDREN.add(entry);
+}
+
+/** Test-only: returns the current registry size without mutating it. */
+export function _activeChildrenSize(): number {
+  return ACTIVE_CHILDREN.size;
+}
+
+/** Test-only: returns whether new spawns are currently refused. */
+export function _isSpawnRefused(): boolean {
+  return _spawnRefused;
+}
+
+/**
+ * Test-only: reset the spawn-refused flag so a test that runs after a
+ * shutdownAndExit call can still exercise trackedExeca / abortAllInFlightChildren
+ * directly.  NEVER call this in production code.
+ */
+export function _resetSpawnRefusedForTest(): void {
+  _spawnRefused = false;
+}
 
 /**
  * Stderr substrings that indicate a *persistent* failure where retrying would
@@ -123,7 +346,8 @@ export async function runCliWithRetry(opts: CliRunOptions): Promise<CliRunResult
     let stderr = "";
     let exitCode = 0;
     try {
-      const result = await execa(opts.bin, opts.cliArgs, {
+      // trackedExeca registers the child in ACTIVE_CHILDREN automatically.
+      const result = await trackedExeca(opts.bin, opts.cliArgs, {
         cwd: opts.cwd,
         timeout: opts.timeout_ms ?? DEFAULT_CLI_TIMEOUT_MS,
         reject: false,

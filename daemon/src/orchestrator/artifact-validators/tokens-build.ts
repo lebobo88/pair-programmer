@@ -21,7 +21,7 @@
 import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { execa } from "execa";
+import { trackedExeca as execa } from "../../mcp/cli-runner.js";
 import YAML from "yaml";
 
 const SD_TIMEOUT_MS = 60_000;

@@ -23,7 +23,7 @@
  */
 
 import { existsSync, readFileSync } from "node:fs";
-import { execa } from "execa";
+import { trackedExeca as execa } from "../../mcp/cli-runner.js";
 import YAML from "yaml";
 import { z } from "zod";
 

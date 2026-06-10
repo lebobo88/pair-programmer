@@ -34,7 +34,7 @@
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { execa } from "execa";
+import { trackedExeca as execa } from "../mcp/cli-runner.js";
 import { nanoid } from "nanoid";
 import YAML from "yaml";
 import { z } from "zod";

@@ -8,29 +8,26 @@ import { runHttpServer } from "./http/server.js";
 import { buildReplayBundle } from "./orchestrator/replay.js";
 import { doctor } from "./orchestrator/runs.js";
 import { dumpRubrics } from "./rubrics/dump.js";
-import { listActiveLocks } from "./util/lock.js";
 import { log } from "./util/logger.js";
+import { shutdownAndExit } from "./util/shutdown.js";
 
-// P3: proactively release every project lock this daemon process is
-// holding when it receives SIGTERM/SIGINT. Without this, a killed daemon
-// (Claude Code session ending mid-run is the canonical case) leaves
-// <project>/.harness/.lock stranded until the janitor's TTL reaps it,
-// blocking the next /pp:run for up to 30 minutes. Best-effort — if the
-// release itself throws we still exit, because at this point we're done.
-let shuttingDown = false;
-function releaseAllLocksAndExit(signal: NodeJS.Signals): void {
-  if (shuttingDown) return;
-  shuttingDown = true;
-  const locks = listActiveLocks();
-  log.info({ signal, lock_count: locks.length }, "shutdown: releasing project locks");
-  for (const lock of locks) {
-    try { lock.release(); }
-    catch (err) { log.warn({ err, project_path: lock.projectPath }, "shutdown: lock.release failed"); }
-  }
-  process.exit(0);
-}
-process.on("SIGTERM", () => releaseAllLocksAndExit("SIGTERM"));
-process.on("SIGINT",  () => releaseAllLocksAndExit("SIGINT"));
+// PP-RS-3: SIGTERM/SIGINT now delegate to the shared shutdownAndExit helper
+// which also aborts in-flight CLI child processes before releasing locks.
+// PP-RS-4: unhandledRejection/uncaughtException crash handlers use the same
+// idempotent helper — the shuttingDown guard prevents double-run if multiple
+// signals or error events fire within the same tick.
+// All handlers use `void` because shutdownAndExit is async; the guard prevents
+// re-entry so concurrent calls are safe.
+process.on("SIGTERM", () => void shutdownAndExit("SIGTERM"));
+process.on("SIGINT",  () => void shutdownAndExit("SIGINT"));
+process.on("unhandledRejection", (reason) => {
+  log.error({ reason: String(reason) }, "unhandledRejection — releasing locks");
+  void shutdownAndExit("unhandledRejection", { exitCode: 1 });
+});
+process.on("uncaughtException", (err) => {
+  log.error({ err: String(err) }, "uncaughtException — releasing locks");
+  void shutdownAndExit("uncaughtException", { exitCode: 1 });
+});
 
 const USAGE = `pp-daemon — Pair Programmer harness daemon
 
@@ -108,7 +105,9 @@ async function main() {
 }
 
 main().catch(err => {
+  // PP-RS-4 issue 4: route through shutdownAndExit so locks are released and
+  // in-flight children are aborted before process.exit (previously bypassed).
   log.fatal({ err }, "daemon crashed");
   process.stderr.write(`fatal: ${err instanceof Error ? err.message : String(err)}\n`);
-  process.exit(1);
+  void shutdownAndExit("main_rejection", { exitCode: 1 });
 });

@@ -67,6 +67,7 @@ import {
   forbiddenPatterns,
 } from "../orchestrator/constitution.js";
 import { forceUnlock } from "../util/lock.js";
+import { shutdownAndExit } from "../util/shutdown.js";
 
 // ─── Input schemas ───────────────────────────────────────────────────────
 
@@ -1285,4 +1286,15 @@ export async function runHarnessMcpServer(): Promise<void> {
   const transport = new StdioServerTransport();
   await server.connect(transport);
   log.info("pp_harness MCP server running on stdio");
+
+  // PP-RS-3 (issue 3): chain onto any onclose the SDK installed during connect
+  // rather than clobbering it — the SDK may use onclose for its own teardown.
+  const _sdkOnclose = transport.onclose;
+  transport.onclose = () => {
+    try { _sdkOnclose?.(); } catch { /* best-effort */ }
+    void shutdownAndExit("transport_close");
+  };
+  // Belt-and-suspenders: stdin EOF fires when the client process exits while
+  // the server is between requests (the transport may not fire onclose then).
+  process.stdin.once("end", () => void shutdownAndExit("stdin_end"));
 }

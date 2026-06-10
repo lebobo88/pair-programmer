@@ -18,6 +18,7 @@ import { log } from "../util/logger.js";
 import { DEFAULT_MODELS } from "../config.js";
 import { runCliWithRetry, type CliAttempt } from "./cli-runner.js";
 import { attemptCopilotFallback, parseCopilotJsonl } from "./copilot-runner.js";
+import { shutdownAndExit } from "../util/shutdown.js";
 import { getSession, setSession, synthesizeRecap } from "../orchestrator/sub-cli-sessions.js";
 
 const GenerateSchema = z.object({
@@ -312,4 +313,12 @@ export async function runGeminiMcpServer(): Promise<void> {
   const transport = new StdioServerTransport();
   await server.connect(transport);
   log.info("pp_gemini MCP server running on stdio");
+
+  // PP-RS-3 (issue 3): chain onto any onclose the SDK installed during connect.
+  const _sdkOnclose = transport.onclose;
+  transport.onclose = () => {
+    try { _sdkOnclose?.(); } catch { /* best-effort */ }
+    void shutdownAndExit("transport_close");
+  };
+  process.stdin.once("end", () => void shutdownAndExit("stdin_end"));
 }

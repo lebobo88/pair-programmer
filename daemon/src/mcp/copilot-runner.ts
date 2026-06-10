@@ -12,13 +12,12 @@
  * of startup overhead.
  */
 
-import { execa } from "execa";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { nanoid } from "nanoid";
 import { COPILOT_FALLBACK_ENABLED } from "../config.js";
-import { runCliWithRetry, type CliAttempt, type CliRunResult } from "./cli-runner.js";
+import { runCliWithRetry, trackedExeca, type CliAttempt, type CliRunResult } from "./cli-runner.js";
 import { log } from "../util/logger.js";
 
 // ─── Copilot availability probe ─────────────────────────────────────────
@@ -28,7 +27,9 @@ let _copilotAvailable: boolean | null = null;
 export async function isCopilotAvailable(): Promise<boolean> {
   if (_copilotAvailable !== null) return _copilotAvailable;
   try {
-    await execa("copilot", ["--version"], {
+    // trackedExeca so the probe child is registered in ACTIVE_CHILDREN and
+    // aborted on shutdown (issue 1: all MCP-path spawns tracked).
+    await trackedExeca("copilot", ["--version"], {
       timeout: 5000,
       windowsHide: true,
       reject: true,
