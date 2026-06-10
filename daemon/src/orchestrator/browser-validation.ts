@@ -29,6 +29,14 @@ export type Finding = {
   console_errors: string[];
   network_errors: Array<{ url: string; status: number }>;
   screenshot_path?: string;
+  /**
+   * PP-VG-3: per-route/step allowlist of expected non-2xx status codes.
+   * Only the specific route/step this Finding describes inherits this list —
+   * a 401 expected on "/api/login" does NOT suppress a 500 on "/api/data".
+   * There is no run-level fallback; each finding's list is scoped to that
+   * finding only.
+   */
+  expected_statuses?: number[];
 };
 
 export type StartInput = {
@@ -83,8 +91,22 @@ export type FinalizeInput = {
 
 export type FinalizeOutput = {
   status: "ok";
-  report_path: string;     // project-relative
+  /** Project-relative path of THIS call's report file. */
+  report_path: string;
+  /** Severity of THIS call's findings (not ratcheted). */
   severity: "clean" | "warnings" | "errors";
+  /**
+   * PP-VG-3: append-only ratcheted max severity across ALL calls for this
+   * stage. Once "errors" is persisted it never downgrades. Always check
+   * effective_severity (not severity) to know the gate state.
+   */
+  effective_severity: "clean" | "warnings" | "errors";
+  /**
+   * PP-VG-3: the report path associated with the highest-severity result.
+   * The errors-report is retained even after a later clean run — only
+   * replaced when a new call also produces errors.
+   */
+  effective_report_path: string;
   summary: {
     finding_count: number;
     fail_count: number;
@@ -101,6 +123,19 @@ export function browserValidationFinalize(input: FinalizeInput): FinalizeOutput 
     .get(input.run_id) as { project_path: string } | undefined;
   if (!run) throw new Error(`run ${input.run_id} not found`);
 
+  // PP-VG-3: verify stage_id belongs to run_id BEFORE persisting anything.
+  // This prevents errors from being attached to the wrong run and leaving
+  // the intended stage passable.
+  const stageOwnerRow = db()
+    .prepare(`SELECT id FROM stages WHERE id = ? AND run_id = ?`)
+    .get(input.stage_id, input.run_id) as { id: string } | undefined;
+  if (!stageOwnerRow) {
+    throw new Error(
+      `PP-VG-3: stage ${input.stage_id} does not belong to run ${input.run_id} — ` +
+      `cannot persist browser validation. Check that stage_id and run_id are from the same run.`,
+    );
+  }
+
   const root = join(projectArtifactDir(run.project_path, input.run_id), "browser-validation");
   mkdirSync(root, { recursive: true });
 
@@ -109,16 +144,97 @@ export function browserValidationFinalize(input: FinalizeInput): FinalizeOutput 
   const pass_count = input.findings.filter(f => f.status === "pass").length;
   const console_error_total = input.findings.reduce((acc, f) => acc + f.console_errors.length, 0);
   const network_error_total = input.findings.reduce((acc, f) => acc + f.network_errors.length, 0);
-  const has5xx = input.findings.some(f => f.network_errors.some(n => n.status >= 500));
-  const has4xx = input.findings.some(f => f.network_errors.some(n => n.status >= 400 && n.status < 500));
 
+  // PP-VG-3: ONLY per-finding expected_statuses are honoured.
+  // There is no run-level fallback — a global list would mask ALL matching
+  // status codes across every finding. Both unexpected 4xx AND 5xx produce
+  // severity="errors" (fail-closed).
+  let hasUnexpectedNetworkError = false;
+  for (const f of input.findings) {
+    const effectiveExpected = new Set<number>(f.expected_statuses ?? []);
+    for (const n of f.network_errors) {
+      if (n.status >= 400 && !effectiveExpected.has(n.status)) {
+        hasUnexpectedNetworkError = true;
+        break;
+      }
+    }
+    if (hasUnexpectedNetworkError) break;
+  }
+
+  // Severity rule (fail-closed):
+  //   "errors"   — any status="fail", any console_errors, or any unexpected 4xx/5xx
+  //   "warnings" — any status="warn" (explicit; NOT triggered by expected network codes)
+  //   "clean"    — otherwise
   const severity: "clean" | "warnings" | "errors" =
-    fail_count > 0 || console_error_total > 0 || has5xx ? "errors" :
-    warn_count > 0 || has4xx                            ? "warnings" :
-                                                          "clean";
+    fail_count > 0 || console_error_total > 0 || hasUnexpectedNetworkError ? "errors" :
+    warn_count > 0                                                          ? "warnings" :
+                                                                              "clean";
 
-  // Findings JSON for replay/judge consumption.
-  const findingsPath = join(root, "findings.json");
+  // PP-VG-3 persistence: APPEND-ONLY severity ratchet in stage notes_json.
+  // A later clean finalize MUST NOT overwrite an earlier "errors" row.
+  // Any DB/JSON failure is a hard error (fail-closed — do not swallow).
+  const stageNotesRow = db()
+    .prepare(`SELECT notes_json FROM stages WHERE id = ?`)
+    .get(input.stage_id) as { notes_json: string | null } | undefined;
+  if (!stageNotesRow) {
+    throw new Error(
+      `PP-VG-3: stage ${input.stage_id} not found — cannot persist browser validation severity`,
+    );
+  }
+
+  // Parse existing notes_json. Three outcomes:
+  //   (a) null/empty  → start fresh, prevSeverity = undefined
+  //   (b) valid JSON plain object → merge into it
+  //   (c) valid JSON but wrong type (array, primitive) → FAIL CLOSED:
+  //       prevSeverity = "errors" (treat prior state as unknown/worst-case);
+  //       discard the non-object and write a fresh object so the gate is
+  //       never silently bypassed. A non-object notes_json must NEVER let
+  //       an errors severity disappear on the next stringify.
+  //   (d) JSON parse failure → same fail-closed treatment as (c).
+  let stageNotes: Record<string, unknown>;
+  let prevSeverityFromStorage: string | undefined;
+  {
+    const raw = stageNotesRow.notes_json;
+    if (!raw) {
+      stageNotes = {};
+      prevSeverityFromStorage = undefined;
+    } else {
+      let parsedRaw: unknown;
+      let parsedOk = false;
+      try {
+        parsedRaw = JSON.parse(raw);
+        parsedOk = true;
+      } catch { /* fall through to fail-closed branch */ }
+
+      if (parsedOk && typeof parsedRaw === "object" && parsedRaw !== null && !Array.isArray(parsedRaw)) {
+        // (b) Valid plain object — safe to merge.
+        stageNotes = parsedRaw as Record<string, unknown>;
+        prevSeverityFromStorage = stageNotes["browser_validation_severity"] as string | undefined;
+      } else {
+        // (c)/(d) Parse failed or wrong type — fail closed.
+        // Treat prevSeverity as "errors" so the ratchet can never downgrade
+        // from an unknown prior state.  Write a fresh object below.
+        stageNotes = {};
+        prevSeverityFromStorage = "errors";
+      }
+    }
+  }
+
+  // Append-only severity ratchet: errors > warnings > clean.
+  const prevSeverity = prevSeverityFromStorage;
+  let effectiveSeverity: "clean" | "warnings" | "errors";
+  if (prevSeverity === "errors" || severity === "errors") {
+    effectiveSeverity = "errors";
+  } else if (prevSeverity === "warnings" || severity === "warnings") {
+    effectiveSeverity = "warnings";
+  } else {
+    effectiveSeverity = "clean";
+  }
+  stageNotes["browser_validation_severity"] = effectiveSeverity;
+
+  // Use a timestamp suffix so multiple finalize calls don't clobber each other.
+  const ts = Date.now();
+  const findingsPath = join(root, `findings-${ts}.json`);
   writeFileSync(
     findingsPath,
     JSON.stringify({ engine: input.engine, base_url: input.base_url ?? null, findings: input.findings }, null, 2),
@@ -126,13 +242,44 @@ export function browserValidationFinalize(input: FinalizeInput): FinalizeOutput 
   );
 
   // Markdown report — judge-friendly, embeds GIF + screenshots.
-  const reportPath = join(root, "report.md");
+  const reportPath = join(root, `report-${ts}.md`);
   writeFileSync(reportPath, renderReport({ ...input, severity, fail_count, warn_count, pass_count, console_error_total, network_error_total }, root), "utf8");
+
+  const thisReportRelative = relative(run.project_path, reportPath).replaceAll("\\", "/");
+
+  // PP-VG-3: RETAIN the report path associated with the HIGHEST severity rank.
+  // Promote effective_report_path whenever the new severity rank >= stored rank
+  // (errors=2 > warnings=1 > clean=0). This means:
+  //   clean  → warnings : warnings report is retained  (2 >= 1 ? no: 1 >= 0 yes)
+  //   warnings → clean  : warnings report kept          (0 >= 1 ? no)
+  //   anything → errors : errors report retained        (2 >= any yes)
+  //   warnings → warnings: newer warnings report retained (1 >= 1 yes)
+  const severityRank = (s: string | undefined): number =>
+    s === "errors" ? 2 : s === "warnings" ? 1 : 0;
+
+  const prevReportPath = stageNotes["browser_validation_report_path"] as string | undefined;
+  let effectiveReportPath: string;
+  if (!prevReportPath || severityRank(severity) >= severityRank(prevSeverity)) {
+    // First call, or this call's severity is at least as high as what was stored —
+    // update to this report so the highest-severity report is always current.
+    effectiveReportPath = thisReportRelative;
+    stageNotes["browser_validation_report_path"] = effectiveReportPath;
+  } else {
+    // Previous call was more severe — keep the previously stored report path.
+    effectiveReportPath = prevReportPath;
+  }
+
+  // Commit notes update — hard error if this fails (gate depends on it).
+  db()
+    .prepare(`UPDATE stages SET notes_json = ? WHERE id = ?`)
+    .run(JSON.stringify(stageNotes), input.stage_id);
 
   return {
     status: "ok",
-    report_path: relative(run.project_path, reportPath).replaceAll("\\", "/"),
+    report_path: thisReportRelative,
     severity,
+    effective_severity: effectiveSeverity,
+    effective_report_path: effectiveReportPath,
     summary: {
       finding_count: input.findings.length,
       fail_count,

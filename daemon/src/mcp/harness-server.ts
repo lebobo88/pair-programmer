@@ -511,7 +511,15 @@ const BrowserValidationFinalizeSchema = z.object({
     console_errors: z.array(z.string()).default([]),
     network_errors: z.array(z.object({ url: z.string(), status: z.number().int() })).default([]),
     screenshot_path: z.string().optional(),
+    // PP-VG-3: per-route/step allowlist of expected non-2xx status codes.
+    // A 401 expected on /api/login does NOT suppress a 500 on /api/data.
+    // There is no run-level expected_statuses — only per-finding scope.
+    expected_statuses: z.array(z.number().int().min(400).max(599)).optional(),
   })),
+  // NOTE: top-level expected_statuses has been intentionally removed (PP-VG-3).
+  // A run-level list would globally suppress all matching status codes across
+  // every finding, defeating the fail-closed intent. Use per-finding
+  // expected_statuses for each route/step that intentionally returns non-2xx.
 });
 
 // ─── Tool registry ───────────────────────────────────────────────────────
@@ -604,7 +612,10 @@ const TOOLS: ToolDef[] = [
   {
     name: "finalize_run",
     description:
-      "Close a run with status complete | surfaced | aborted. If summary_md is provided, writes it to <project>/.harness/<run_id>/run.summary.md.",
+      "Close a run with status complete | surfaced | aborted. If summary_md is provided, writes it to <project>/.harness/<run_id>/run.summary.md. " +
+      "PP-VG-7: returns {effective_status, requested_status, downgraded, surfaced_stage_count}. " +
+      "When downgraded=true the caller's requested 'complete' was written as 'surfaced' because child stages are in the 'surfaced' state. " +
+      "Always check downgraded before treating the run as cleanly complete.",
     schema: FinalizeRunSchema,
     handler: (args) => finalizeRun(FinalizeRunSchema.parse(args)),
   },

@@ -855,11 +855,23 @@ export type StageFinalizeRejudgeBlocker = {
   finding_ids: string[];
 };
 
+/**
+ * PP-VG-3: Browser validation persisted severity="errors" on this stage —
+ * unexpected 4xx/5xx network errors or fail-status findings were recorded.
+ */
+export type StageFinalizeBrowserValidationBlocker = {
+  gate: "browser_validation";
+  next_action: "surface_stage";
+  message: string;
+  severity: "errors";
+};
+
 export type StageFinalizeBlocker =
   | StageFinalizeTddBlocker
   | StageFinalizeArtifactBlocker
   | StageFinalizeVerdictBlocker
-  | StageFinalizeRejudgeBlocker;
+  | StageFinalizeRejudgeBlocker
+  | StageFinalizeBrowserValidationBlocker;
 
 export type StageFinalizeReadiness = {
   stage_id: string;
@@ -906,6 +918,23 @@ export class ValidatorGateViolation extends Error {
   ) {
     super(message);
     this.name = "ValidatorGateViolation";
+  }
+}
+
+/**
+ * PP-VG-2: A required artifact kind had zero archived rows RUN-WIDE when
+ * finalizing as "complete". Required kinds are resolved from the run's
+ * persisted taxonomy_mapping_json and profile_snapshot_json (NOT from the
+ * live filesystem). Missing/malformed snapshots are treated as fail-closed.
+ */
+export class ArtifactAvailabilityGateViolation extends Error {
+  constructor(
+    message: string,
+    public readonly run_id: string,
+    public readonly required_kind: string,
+  ) {
+    super(message);
+    this.name = "ArtifactAvailabilityGateViolation";
   }
 }
 
@@ -1066,6 +1095,56 @@ export function getStageFinalizeReadiness(stage_id: string): StageFinalizeReadin
     break;  // surface the most recent claiming attempt only; one is enough to block
   }
 
+  // ── PP-VG-3: browser validation severity gate ─────────────────────────────
+  // Read the append-only browser_validation_severity field from stage notes.
+  // Any "errors" result persisted by browserValidationFinalize blocks
+  // finalize(passed). A JSON parse failure on notes_json is treated as
+  // "errors" (fail-closed). Missing notes_json (null) = no BV run = no block.
+  {
+    const bvNotesRow = db()
+      .prepare(`SELECT notes_json FROM stages WHERE id = ?`)
+      .get(stage_id) as { notes_json: string | null } | undefined;
+    const rawNotes = bvNotesRow?.notes_json;
+    if (rawNotes) {
+      let bvSeverity: string | undefined;
+      let bvReportPath: string | undefined;
+      let parseOk = false;
+      try {
+        const parsed = JSON.parse(rawNotes);
+        // Must be a plain object to be trustworthy. An array or primitive
+        // is a non-object notes_json — treat as unknown/fail-closed (same as
+        // a parse failure) so a corrupted notes row can never let errors pass.
+        if (typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)) {
+          const n = parsed as {
+            browser_validation_severity?: string;
+            browser_validation_report_path?: string;
+          };
+          bvSeverity = n.browser_validation_severity;
+          bvReportPath = n.browser_validation_report_path;
+          parseOk = true;
+        }
+        // else: parsed OK but wrong type — parseOk stays false → fail-closed below
+      } catch { /* intentional fail-closed below */ }
+
+      // Block when: parse failed / wrong type with existing notes (unknown state = fail-closed)
+      // OR severity explicitly "errors".
+      const isBvError = !parseOk || bvSeverity === "errors";
+      if (isBvError) {
+        blockers.push({
+          gate: "browser_validation",
+          next_action: "surface_stage",
+          severity: "errors",
+          message:
+            `finalize_stage refused: stage ${stage_id} has a browser validation report with ` +
+            `severity='errors' (fail findings, console errors, or unexpected 4xx/5xx network errors ` +
+            `outside the per-route expected_statuses allowlist). ` +
+            `Review the report at ${bvReportPath ?? "<.harness/<run_id>/browser-validation/report-*.md>"} ` +
+            `and fix the issues, or finalize with status='surfaced' to accept the errors.`,
+        } satisfies StageFinalizeBrowserValidationBlocker);
+      }
+    }
+  }
+
   const can_pass = blockers.length === 0;
   return {
     stage_id,
@@ -1145,6 +1224,10 @@ export async function finalizeStage(input: FinalizeStageInput): Promise<void> {
           blocker.attempt_id,
           blocker.finding_ids,
         );
+      }
+      // PP-VG-3: browser validation errors block finalize(passed).
+      if (blocker.gate === "browser_validation") {
+        throw new Error(blocker.message);
       }
       throw new ValidatorGateViolation(
         blocker.message,
@@ -1271,11 +1354,227 @@ export type FinalizeRunInput = {
   summary_md?: string;
 };
 
-export function finalizeRun(input: FinalizeRunInput): void {
+/**
+ * PP-VG-7: structured return from finalizeRun so callers can observe
+ * a silent downgrade from "complete" to "surfaced".
+ */
+export type FinalizeRunOutput = {
+  /** The status actually written to the DB. */
+  effective_status: Extract<RunStatus, "complete" | "surfaced" | "aborted">;
+  /** The status the caller requested. */
+  requested_status: Extract<RunStatus, "complete" | "surfaced" | "aborted">;
+  /**
+   * True when finalize_run(complete) was downgraded to "surfaced" because
+   * one or more child stages have status="surfaced". A silent downgrade
+   * is a false success and breaks operator trust — always check this field.
+   */
+  downgraded: boolean;
+  /** Number of surfaced child stages that triggered the downgrade (0 when not downgraded). */
+  surfaced_stage_count: number;
+};
+
+export function finalizeRun(input: FinalizeRunInput): FinalizeRunOutput {
   const run = db()
     .prepare(`SELECT project_path FROM runs WHERE id = ?`)
     .get(input.run_id) as { project_path: string } | undefined;
   if (!run) throw new Error(`run ${input.run_id} not found`);
+
+  // ── PP-VG-7: surfaced-stages downgrade gate ────────────────────────────────
+  // A run requested as "complete" is silently downgraded to "surfaced" when
+  // child stages are in the "surfaced" state. Rather than throwing (which
+  // would break all "complete" paths), we return a structured result so the
+  // MCP caller can observe the gate firing. ALL downstream writes use
+  // effectiveStatus, preserving the invariant.
+  let effectiveStatus: Extract<RunStatus, "complete" | "surfaced" | "aborted"> = input.status;
+  let surfacedStageCount = 0;
+  if (input.status === "complete") {
+    surfacedStageCount = (db()
+      .prepare(`SELECT COUNT(*) AS n FROM stages WHERE run_id = ? AND status = 'surfaced'`)
+      .get(input.run_id) as { n: number }).n;
+    if (surfacedStageCount > 0) {
+      effectiveStatus = "surfaced";
+      log.warn(
+        { run_id: input.run_id, surfaced_stage_count: surfacedStageCount },
+        `PP-VG-7: finalize_run downgraded from 'complete' to 'surfaced' — ${surfacedStageCount} stage(s) surfaced`,
+      );
+    }
+  }
+
+  // ── PP-VG-2: run-level artifact availability gate ─────────────────────────
+  // Only fires on finalize(complete) — surfaced/aborted are not blocked.
+  // Resolves required artifact kinds EXCLUSIVELY from the persisted run-row
+  // snapshots (taxonomy_mapping_json + profile_snapshot_json). Do NOT call
+  // loadProjectProfile or read .harness/profile.yaml — the snapshot is the
+  // source of truth for what was declared when the run started.
+  // Fail-closed policy: if the snapshot columns exist but are malformed
+  // (JSON parse failure, unexpected shape), block with a clear message rather
+  // than silently skipping. Missing columns (NULL) are treated as no-op.
+  if (input.status === "complete") {
+    const snapshotRow = db()
+      .prepare(`SELECT taxonomy_mapping_json, profile_snapshot_json FROM runs WHERE id = ?`)
+      .get(input.run_id) as
+      | { taxonomy_mapping_json: string | null; profile_snapshot_json: string | null }
+      | undefined;
+
+    const requiredKinds = new Set<string>();
+
+    // Parse taxonomy_mapping_json: sections[].required_artifacts
+    // Treat null AND empty/whitespace-only strings as ABSENT (no required kinds).
+    // A truthy-but-blank string ("" / "  ") would otherwise either silently
+    // bypass validation (falsy "") or spuriously fail with a parse error ("  ").
+    // Both are the same "no snapshot" case and must behave identically to null.
+    if (snapshotRow?.taxonomy_mapping_json?.trim()) {
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(snapshotRow.taxonomy_mapping_json);
+      } catch (e) {
+        throw new ArtifactAvailabilityGateViolation(
+          `PP-VG-2: finalize_run(complete) blocked — runs.taxonomy_mapping_json for run ${input.run_id} ` +
+          `failed JSON parse: ${(e as Error).message}. Fix or clear the snapshot before finalizing.`,
+          input.run_id,
+          "<parse_error>",
+        );
+      }
+      if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+        throw new ArtifactAvailabilityGateViolation(
+          `PP-VG-2: finalize_run(complete) blocked — runs.taxonomy_mapping_json for run ${input.run_id} ` +
+          `is not an object. Unexpected shape; fix the snapshot before finalizing.`,
+          input.run_id,
+          "<malformed>",
+        );
+      }
+      // Strict shape: sections must be present and be an array.
+      // An empty object {}, a missing sections key, or sections=null all indicate
+      // a malformed snapshot that should fail closed rather than silently yielding
+      // zero required kinds.
+      const mapping = parsed as { sections?: unknown };
+      if (!Array.isArray(mapping.sections)) {
+        throw new ArtifactAvailabilityGateViolation(
+          `PP-VG-2: finalize_run(complete) blocked — runs.taxonomy_mapping_json for run ${input.run_id} ` +
+          `has a malformed shape: 'sections' must be an array (got ${
+            mapping.sections === undefined ? "undefined" :
+            mapping.sections === null      ? "null"      :
+            Array.isArray(mapping.sections) ? "array"   :
+            typeof mapping.sections
+          }). Fix or clear the snapshot before finalizing.`,
+          input.run_id,
+          "<malformed_sections>",
+        );
+      }
+      for (const sec of mapping.sections as Array<unknown>) {
+        // Each entry in sections must be a plain object (not an array, not a primitive).
+        if (typeof sec !== "object" || sec === null || Array.isArray(sec)) {
+          throw new ArtifactAvailabilityGateViolation(
+            `PP-VG-2: finalize_run(complete) blocked — runs.taxonomy_mapping_json for run ${input.run_id} ` +
+            `contains a section entry that is not an object. Fix or clear the snapshot before finalizing.`,
+            input.run_id,
+            "<malformed_section_entry>",
+          );
+        }
+        const s = sec as { required_artifacts?: unknown };
+        if (s.required_artifacts !== undefined) {
+          // If required_artifacts is present it MUST be an array of strings.
+          if (!Array.isArray(s.required_artifacts)) {
+            throw new ArtifactAvailabilityGateViolation(
+              `PP-VG-2: finalize_run(complete) blocked — runs.taxonomy_mapping_json for run ${input.run_id} ` +
+              `has a section whose required_artifacts is not an array. Fix or clear the snapshot before finalizing.`,
+              input.run_id,
+              "<malformed_required_artifacts>",
+            );
+          }
+          for (const k of s.required_artifacts as Array<unknown>) {
+            if (typeof k !== "string") {
+              throw new ArtifactAvailabilityGateViolation(
+                `PP-VG-2: finalize_run(complete) blocked — runs.taxonomy_mapping_json for run ${input.run_id} ` +
+                `has a section whose required_artifacts contains a non-string entry. Fix or clear the snapshot before finalizing.`,
+                input.run_id,
+                "<malformed_required_artifacts_entry>",
+              );
+            }
+            requiredKinds.add(k);
+          }
+        }
+      }
+    }
+
+    // Parse profile_snapshot_json: .required_artifacts
+    // Same empty/whitespace normalization as taxonomy_mapping_json above.
+    if (snapshotRow?.profile_snapshot_json?.trim()) {
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(snapshotRow.profile_snapshot_json);
+      } catch (e) {
+        throw new ArtifactAvailabilityGateViolation(
+          `PP-VG-2: finalize_run(complete) blocked — runs.profile_snapshot_json for run ${input.run_id} ` +
+          `failed JSON parse: ${(e as Error).message}. Fix or clear the snapshot before finalizing.`,
+          input.run_id,
+          "<parse_error>",
+        );
+      }
+      // Top-level must be a plain object — not an array, not a primitive, not null.
+      if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+        throw new ArtifactAvailabilityGateViolation(
+          `PP-VG-2: finalize_run(complete) blocked — runs.profile_snapshot_json for run ${input.run_id} ` +
+          `has a malformed shape: top-level must be an object (got ${
+            parsed === null ? "null" : Array.isArray(parsed) ? "array" : typeof parsed
+          }). Fix or clear the snapshot before finalizing.`,
+          input.run_id,
+          "<malformed_profile>",
+        );
+      }
+      const profile = parsed as { required_artifacts?: unknown };
+      if (profile.required_artifacts !== undefined) {
+        // If required_artifacts is present it MUST be an array of strings.
+        if (!Array.isArray(profile.required_artifacts)) {
+          throw new ArtifactAvailabilityGateViolation(
+            `PP-VG-2: finalize_run(complete) blocked — runs.profile_snapshot_json for run ${input.run_id} ` +
+            `has required_artifacts that is not an array. Fix or clear the snapshot before finalizing.`,
+            input.run_id,
+            "<malformed_required_artifacts>",
+          );
+        }
+        for (const k of profile.required_artifacts as Array<unknown>) {
+          if (typeof k !== "string") {
+            throw new ArtifactAvailabilityGateViolation(
+              `PP-VG-2: finalize_run(complete) blocked — runs.profile_snapshot_json for run ${input.run_id} ` +
+              `has required_artifacts containing a non-string entry. Fix or clear the snapshot before finalizing.`,
+              input.run_id,
+              "<malformed_required_artifacts_entry>",
+            );
+          }
+          requiredKinds.add(k);
+        }
+      }
+    }
+
+    // For each required kind, verify at least ONE artifact exists RUN-WIDE
+    // (across any stage of this run — the kind can live in a dedicated stage).
+    if (requiredKinds.size > 0) {
+      const archivedKinds = new Set<string>(
+        (db()
+          .prepare(
+            `SELECT DISTINCT a.kind FROM artifacts a
+               JOIN stages s ON s.id = a.stage_id
+              WHERE s.run_id = ? AND a.kind IS NOT NULL`
+          )
+          .all(input.run_id) as Array<{ kind: string }>)
+          .map(r => r.kind),
+      );
+      for (const kind of requiredKinds) {
+        if (!archivedKinds.has(kind)) {
+          throw new ArtifactAvailabilityGateViolation(
+            `PP-VG-2: finalize_run(complete) blocked — required artifact kind '${kind}' has zero ` +
+            `archived rows run-wide for run ${input.run_id}. ` +
+            `The kind is declared in runs.taxonomy_mapping_json or runs.profile_snapshot_json. ` +
+            `Archive at least one '${kind}' artifact (via archive_artifact) before finalizing as complete, ` +
+            `or finalize with status='surfaced' to accept the gap.`,
+            input.run_id,
+            kind,
+          );
+        }
+      }
+    }
+  }
 
   if (input.summary_md) {
     const dir = projectArtifactDir(run.project_path, input.run_id);
@@ -1286,7 +1585,7 @@ export function finalizeRun(input: FinalizeRunInput): void {
   txImmediate(() => {
     db()
       .prepare(`UPDATE runs SET status = ?, finished_at = ? WHERE id = ?`)
-      .run(input.status, now(), input.run_id);
+      .run(effectiveStatus, now(), input.run_id);
   });
 
   // Release the per-project advisory lock. Best-effort — janitor will clean
@@ -1295,12 +1594,10 @@ export function finalizeRun(input: FinalizeRunInput): void {
     new ProjectLock(run.project_path).release();
   } catch { /* ignore */ }
 
-  // On `complete`, patch PROJECT_MASTER.md with the run's contributions as a
-  // safety net. The run-finalizer agent normally drives this in-band, but
-  // running it here too means a finalize_run that bypassed the agent (e.g. a
-  // direct daemon-tool call) still updates the master plan. The patcher is
-  // idempotent: re-applying the same content does not duplicate sections.
-  if (input.status === "complete") {
+  // On `complete` (using effectiveStatus — VG-7 may have downgraded to surfaced),
+  // patch PROJECT_MASTER.md with the run's contributions as a safety net.
+  // Idempotent: re-applying the same content does not duplicate sections.
+  if (effectiveStatus === "complete") {
     try {
       autoPatchMasterPlan(input.run_id, run.project_path);
     } catch (err) {
@@ -1325,14 +1622,14 @@ export function finalizeRun(input: FinalizeRunInput): void {
   void writeRunSummary({
     run_id: input.run_id,
     project_path: run.project_path,
-    status: input.status,
+    status: effectiveStatus,
     summary_md: input.summary_md ?? null,
   });
 
   // T6: materialize the audit BOM for this run and back-write the handle
   // onto the runs row. Used by /pp:replay to verify the audit chain
   // hasn't been broken by external tampering since the original run.
-  if (input.status === "complete") {
+  if (effectiveStatus === "complete") {
     void materializeAuditBom(input.run_id).then(bom => {
       if (bom?.bom_handle) {
         try {
@@ -1346,9 +1643,7 @@ export function finalizeRun(input: FinalizeRunInput): void {
   }
 
   // T3: when the run was invoked by Hydra (hydra_workflow_id set on the
-  // runs row), emit a DECISION_RECORD envelope back upstream. Hydra's
-  // supervisor reads from TheEights' envelope store keyed by workflow_id;
-  // this closes the previously-one-way Hydra→pp dispatch.
+  // runs row), emit a DECISION_RECORD envelope back upstream.
   try {
     const ctxRow = db()
       .prepare(
@@ -1373,7 +1668,7 @@ export function finalizeRun(input: FinalizeRunInput): void {
         workflow_id: ctxRow.hydra_workflow_id,
         origin_squad: ctxRow.hydra_origin_squad,
         request_text: ctxRow.request_text,
-        status: input.status,
+        status: effectiveStatus,
         summary_md: input.summary_md ?? null,
         artifact_count: artifactCount,
         hydra_envelope_id_in: ctxRow.hydra_envelope_id,
@@ -1385,9 +1680,8 @@ export function finalizeRun(input: FinalizeRunInput): void {
 
   // T2: when the run touched a release (4.11) or retirement (4.16) section
   // AND had a constitution active at start, submit an attestation to
-  // TheEights' audit graph. The local missability check enforces SHA
-  // pinning sync; this is the audit-trail submission.
-  if (input.status === "complete") {
+  // TheEights' audit graph.
+  if (effectiveStatus === "complete") {
     const runRow = db()
       .prepare(`SELECT taxonomy_mapping_json, constitution_sha FROM runs WHERE id = ?`)
       .get(input.run_id) as
@@ -1424,10 +1718,8 @@ export function finalizeRun(input: FinalizeRunInput): void {
     }
   }
 
-  // T4: sweep for recurring drift patterns and propose evolutions. Cheap
-  // (DB queries only); proposals land in evolution_proposals table even
-  // when TheEights is offline so /pp:evolution list still surfaces them.
-  if (input.status === "complete" || input.status === "surfaced") {
+  // T4: sweep for recurring drift patterns and propose evolutions.
+  if (effectiveStatus === "complete" || effectiveStatus === "surfaced") {
     try {
       void analyzeAndPropose({
         run_id: input.run_id,
@@ -1445,7 +1737,17 @@ export function finalizeRun(input: FinalizeRunInput): void {
     }
   }
 
-  log.info({ run_id: input.run_id, status: input.status }, "run finalized");
+  log.info(
+    { run_id: input.run_id, requested_status: input.status, effective_status: effectiveStatus, downgraded: effectiveStatus !== input.status },
+    "run finalized",
+  );
+
+  return {
+    effective_status: effectiveStatus,
+    requested_status: input.status,
+    downgraded: effectiveStatus !== input.status,
+    surfaced_stage_count: surfacedStageCount,
+  };
 }
 
 /**

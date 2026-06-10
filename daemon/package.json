@@ -11,7 +11,7 @@
     "typecheck": "tsc --noEmit",
     "start": "node dist/index.js",
     "dev": "tsx watch src/index.ts",
-    "test": "npm run build && node test/ecosystem.unit.mjs && node test/eights-integration.smoke.mjs && node test/smoke.mjs && node test/artifact-validators.smoke.mjs && node test/artifact-validators.unit.mjs && node test/tdd-parser.unit.mjs && node test/agents-md.unit.mjs && node test/missability.unit.mjs && node test/codex-escalation.unit.mjs && node test/shutdown.unit.mjs"
+    "test": "npm run build && node test/ecosystem.unit.mjs && node test/eights-integration.smoke.mjs && node test/smoke.mjs && node test/artifact-validators.smoke.mjs && node test/artifact-validators.unit.mjs && node test/tdd-parser.unit.mjs && node test/agents-md.unit.mjs && node test/missability.unit.mjs && node test/codex-escalation.unit.mjs && node test/shutdown.unit.mjs && node test/finalize-gates-a.unit.mjs"
   },
   "engines": {
     "node": ">=20.0.0"
