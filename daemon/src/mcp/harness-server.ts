@@ -127,6 +127,8 @@ const AttemptNotesSchema = z.object({
     pattern: z.string().min(1),
   })).optional(),
   touched_hashes_path: z.string().optional(),
+  /** Best-of-N candidate slot index; required by VG-5 to resolve smoke_results[N]. */
+  candidate_index: z.number().int().optional(),
 }).strict();
 
 const RecordAttemptSchema = z.object({

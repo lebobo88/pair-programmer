@@ -14,7 +14,7 @@ import {
 import { log } from "../util/logger.js";
 import { scanForSecrets, SecretsFoundError } from "../security/secret-scan.js";
 import { loadProjectProfile } from "./profiles.js";
-import { applyMasterPlanPatch, ensureMasterPlan } from "./master-plan.js";
+import { applyMasterPlanPatch, ensureMasterPlan, masterPlanStatus } from "./master-plan.js";
 import { TAXONOMY_BY_ID, MASTER_PLAN_SECTIONS } from "./taxonomy.js";
 import { ProjectLock, ProjectLockBusyError } from "../util/lock.js";
 import { tmpdir } from "node:os";
@@ -350,6 +350,13 @@ export type AttemptNotes = {
   /** Path to a sha256 file produced in step 4.5(c), relative to project
    * root. The judge re-hashes the same files on read and flags drift. */
   touched_hashes_path?: string;
+  /**
+   * Best-of-N candidate slot index (1..N) that this attempt occupied.
+   * The engineer sub-agent stores this so VG-5 can resolve which
+   * smoke_results[<candidate_index>] entry belongs to this attempt.
+   * When absent, VG-5 fails closed (no fallback "accept any" path).
+   */
+  candidate_index?: number;
 };
 
 export type RecordAttemptInput = {
@@ -807,7 +814,8 @@ export type StageFinalizeNextAction =
   | "retry_with_critique"
   | "retry_or_surface"
   | "surface_stage"
-  | "dispatch_cross_vendor_rejudge";
+  | "dispatch_cross_vendor_rejudge"
+  | "record_smoke_or_assertion";
 
 export type StageFinalizeTddBlocker = {
   gate: "tdd";
@@ -869,6 +877,18 @@ export type StageFinalizeBrowserValidationBlocker = {
 };
 
 /**
+ * PP-VG-5: A non-TDD code stage has no executed smoke/assertion pass row
+ * tied to the winning attempt. A skipped status, a missing row, or an
+ * artifact merely named "smoke" without an executed pass row all block.
+ * Only fires on code stages not already covered by a TDD post-check.
+ */
+export type StageFinalizeSmokeMissingBlocker = {
+  gate: "smoke";
+  next_action: "record_smoke_or_assertion";
+  message: string;
+};
+
+/**
  * PP-VG-6: A verdict on an attempt for this stage has hallucination_suspected=1
  * but lacks a linked cross-vendor resolution. Same-vendor clean verdicts do NOT
  * clear the suspicion — only a retraction of the suspect verdict or a subsequent
@@ -888,6 +908,7 @@ export type StageFinalizeBlocker =
   | StageFinalizeVerdictBlocker
   | StageFinalizeRejudgeBlocker
   | StageFinalizeBrowserValidationBlocker
+  | StageFinalizeSmokeMissingBlocker
   | StageFinalizeHallucinationBlocker;
 
 export type StageFinalizeReadiness = {
@@ -939,6 +960,29 @@ export class ValidatorGateViolation extends Error {
 }
 
 /**
+ * PP-VG-1: finalizeRun(complete) blocked because one or more master-plan
+ * sections that the run is RESPONSIBLE for (derived from taxonomy mapping,
+ * NOT from optional artifact.taxonomy_section) are unpopulated or have a
+ * failing completion-checklist item. The gate is READ-ONLY — it calls
+ * masterPlanStatus but never writes PROJECT_MASTER.md (autoPatchMasterPlan
+ * runs AFTER successful finalize on the success path only).
+ */
+export class CompletionChecklistGateViolation extends Error {
+  constructor(
+    message: string,
+    public readonly run_id: string,
+    public readonly unmet_sections: Array<{
+      section: string;
+      reason: "unpopulated" | "checklist_fail";
+      checklist_items?: string[];
+    }>,
+  ) {
+    super(message);
+    this.name = "CompletionChecklistGateViolation";
+  }
+}
+
+/**
  * PP-VG-2: A required artifact kind had zero archived rows RUN-WIDE when
  * finalizing as "complete". Required kinds are resolved from the run's
  * persisted taxonomy_mapping_json and profile_snapshot_json (NOT from the
@@ -976,7 +1020,7 @@ export class FindingsClosureRejudgeRequired extends Error {
   }
 }
 
-export function getStageFinalizeReadiness(stage_id: string): StageFinalizeReadiness {
+export function getStageFinalizeReadiness(stage_id: string, winner_attempt_id?: string): StageFinalizeReadiness {
   const stageRow = db()
     .prepare(`SELECT id, kind FROM stages WHERE id = ?`)
     .get(stage_id) as { id: string; kind: string } | undefined;
@@ -1227,6 +1271,118 @@ export function getStageFinalizeReadiness(stage_id: string): StageFinalizeReadin
     }
   }
 
+  // ── PP-VG-5: smoke/assertion gate for code/diff-producing stages ─────────
+  // Any stage that PRODUCED code or diff artifacts (artifacts of kind 'code'
+  // or 'diff') AND has no TDD tests_pre predecessor must have an executed
+  // smoke/assertion row with status='pass' tied to the WINNING attempt.
+  //
+  // Fix #4: classification is by produced artifacts (artifacts table is the
+  // authoritative signal), NOT by the free-text stage.kind label. A stage
+  // labeled "spec" that somehow archives a 'diff' artifact is smoke-required.
+  //
+  // Fix #1: the smoke evidence MUST be tied to the winning attempt:
+  //   - winner_attempt_id must be set (finalize_passed requires it).
+  //   - The winner attempt's notes_json.candidate_index is the key into
+  //     stages.notes_json.smoke_results[<candidate_index>].
+  //   - If candidate_index is absent from the winner's notes, there is no
+  //     resolved smoke row — FAIL CLOSED. No "accept any pass" fallback.
+  //   - A smoke pass tied to a NON-winner candidate_index does NOT satisfy VG-5.
+  //
+  // TDD bypass: if a tests_pre predecessor exists, the TDD post-check gate
+  // already enforces executed verification; VG-5 does not apply.
+  {
+    // Step 1: does this stage have any code/diff artifacts?
+    const codeDiffArtifactRow = db()
+      .prepare(
+        `SELECT id FROM artifacts
+          WHERE stage_id = ? AND kind IN ('code', 'diff')
+          LIMIT 1`,
+      )
+      .get(stage_id) as { id: string } | undefined;
+
+    const producedCodeOrDiff = !!codeDiffArtifactRow;
+    const hasTddPredecessor = producedCodeOrDiff ? !!findPriorTestsPreStage(stage_id) : false;
+
+    if (producedCodeOrDiff && !hasTddPredecessor) {
+      // Step 2: get the winner attempt (must be set for a passed finalize).
+      // Prefer the caller-supplied winner_attempt_id (passed before it is persisted
+      // on the stage row by finalize_stage) over the persisted value. This allows
+      // VG-5 to succeed on the legitimate path where readiness is checked inside
+      // finalizeStage before the winner is written to the stages table.
+      let winnerAttemptId: string | null = winner_attempt_id ?? null;
+      if (!winnerAttemptId) {
+        const winnerRow = db()
+          .prepare(`SELECT winner_attempt_id FROM stages WHERE id = ?`)
+          .get(stage_id) as { winner_attempt_id: string | null } | undefined;
+        winnerAttemptId = winnerRow?.winner_attempt_id ?? null;
+      }
+
+      let smokePass = false;
+
+      if (winnerAttemptId) {
+        // Step 3: verify the winner attempt belongs to THIS stage, then read
+        // candidate_index from its notes_json. The scope check (AND stage_id = ?)
+        // closes the cross-stage bypass: a winner_attempt_id that belongs to a
+        // different stage returns no row here → candidateIndex stays null → fail
+        // closed. Same result for a winner_attempt_id that doesn't exist at all.
+        let candidateIndex: number | null = null;
+        const attemptRow = db()
+          .prepare(`SELECT id, notes_json FROM attempts WHERE id = ? AND stage_id = ?`)
+          .get(winnerAttemptId, stage_id) as { id: string; notes_json: string | null } | undefined;
+        if (attemptRow?.notes_json) {
+          try {
+            const parsed = JSON.parse(attemptRow.notes_json) as AttemptNotes;
+            // Validate: must be a non-negative integer; missing/invalid → fail closed.
+            if (typeof parsed.candidate_index === "number" &&
+                Number.isInteger(parsed.candidate_index) &&
+                parsed.candidate_index >= 0) {
+              candidateIndex = parsed.candidate_index;
+            }
+          } catch { /* ignore parse failure — candidateIndex stays null → fail closed */ }
+        }
+
+        // Step 4: look up smoke_results[<candidate_index>] in stage notes.
+        // Only a pass for the WINNER's specific candidate_index counts.
+        // No candidate_index in the winner notes = no resolved smoke row = fail closed.
+        if (candidateIndex !== null) {
+          const notesRow = db()
+            .prepare(`SELECT notes_json FROM stages WHERE id = ?`)
+            .get(stage_id) as { notes_json: string | null } | undefined;
+          if (notesRow?.notes_json) {
+            try {
+              const notes = JSON.parse(notesRow.notes_json) as {
+                smoke_results?: Record<string, { status: string }>;
+              };
+              if (notes.smoke_results && typeof notes.smoke_results === "object") {
+                const entry = notes.smoke_results[String(candidateIndex)];
+                if (entry?.status === "pass") smokePass = true;
+              }
+            } catch { /* ignore — smokePass stays false */ }
+          }
+        }
+        // If candidateIndex === null: no smoke_results key can be resolved → smokePass stays false.
+      }
+      // If winnerAttemptId === null: stage has no winner yet → smokePass stays false → blocked.
+
+      if (!smokePass) {
+        blockers.push({
+          gate: "smoke",
+          next_action: "record_smoke_or_assertion",
+          message:
+            `finalize_stage refused: stage ${stage_id} produced code/diff artifact(s) and is not ` +
+            `covered by a TDD post-check, but has no executed smoke/assertion row with status='pass' ` +
+            `tied to the winning attempt. PP-VG-5 requires: (a) a winner_attempt_id set on the stage, ` +
+            `(b) the winner attempt's notes_json.candidate_index recorded, and ` +
+            `(c) smoke_results[<candidate_index>].status='pass' in the stage notes (via record_smoke_status). ` +
+            `status='skipped', a missing row, a pass tied to a non-winner candidate, or an artifact ` +
+            `merely named 'smoke' without an executed pass row are NOT sufficient. ` +
+            `Call mcp__pp_harness__record_smoke_status with status='pass' after a successful runtime ` +
+            `smoke test, or finalize with status='surfaced' to accept the unverified code change.`,
+        } satisfies StageFinalizeSmokeMissingBlocker);
+      }
+    }
+  }
+
   const can_pass = blockers.length === 0;
   return {
     stage_id,
@@ -1279,7 +1435,7 @@ export async function finalizeStage(input: FinalizeStageInput): Promise<void> {
         }
       }
     }
-    const readiness = getStageFinalizeReadiness(input.stage_id);
+    const readiness = getStageFinalizeReadiness(input.stage_id, input.winner_attempt_id);
     if (!readiness.can_pass) {
       const blocker = readiness.blockers[0]!;
       if (blocker.gate === "tdd") {
@@ -1309,6 +1465,10 @@ export async function finalizeStage(input: FinalizeStageInput): Promise<void> {
       }
       // PP-VG-3: browser validation errors block finalize(passed).
       if (blocker.gate === "browser_validation") {
+        throw new Error(blocker.message);
+      }
+      // PP-VG-5: no executed smoke/assertion pass for code stage.
+      if (blocker.gate === "smoke") {
         throw new Error(blocker.message);
       }
       // PP-VG-6: hallucination suspicion without cross-vendor resolution.
@@ -1676,6 +1836,194 @@ export function finalizeRun(input: FinalizeRunInput): FinalizeRunOutput {
             kind,
           );
         }
+      }
+    }
+  }
+
+  // ── PP-VG-1: completion-checklist gate ───────────────────────────────────
+  // finalizeRun(complete) blocked when a REQUIRED master-plan section is
+  // unpopulated OR has a failing completion-checklist item. Responsible
+  // sections are derived SOLELY from taxonomy mapping (taxonomy_mapping_json
+  // section ids → TAXONOMY_BY_ID[id].master_plan_section). Artifact-level
+  // taxonomy_section is NOT used. A no-artifact run with a valid taxonomy
+  // mapping is NOT exempt.
+  //
+  // CRITICAL — READ-ONLY: This gate only calls masterPlanStatus (reads
+  // PROJECT_MASTER.md) and never writes it. autoPatchMasterPlan is on the
+  // SUCCESS path only (below, after txImmediate). A failed finalize must
+  // never modify PROJECT_MASTER.md.
+  //
+  // Fail-closed on malformed taxonomy_mapping_json (reuses strict-shape
+  // check already applied by VG-2 above). NULL/empty = no sections = no block.
+  if (input.status === "complete") {
+    // Re-read taxonomy_mapping_json (VG-2 already validated its shape above,
+    // so if we reach here the json is either NULL/absent OR a valid object
+    // with an array `sections`). We need project_path for masterPlanStatus.
+    const vg1Row = db()
+      .prepare(`SELECT taxonomy_mapping_json, project_path FROM runs WHERE id = ?`)
+      .get(input.run_id) as
+      | { taxonomy_mapping_json: string | null; project_path: string }
+      | undefined;
+    if (!vg1Row) throw new Error(`run ${input.run_id} not found during VG-1 resolution`);
+
+    const responsibleMasterSections = new Set<string>();
+
+    if (vg1Row.taxonomy_mapping_json?.trim()) {
+      // Shape already validated by VG-2 — safe to parse and cast.
+      let mapping: { sections?: Array<{ id?: unknown }> };
+      try {
+        mapping = JSON.parse(vg1Row.taxonomy_mapping_json) as { sections?: Array<{ id?: unknown }> };
+      } catch (e) {
+        // Should not happen (VG-2 already blocked on parse failure), but
+        // fail-closed defensively anyway.
+        throw new CompletionChecklistGateViolation(
+          `PP-VG-1: finalize_run(complete) blocked — runs.taxonomy_mapping_json for run ${input.run_id} ` +
+          `failed JSON parse during VG-1 pass: ${(e as Error).message}. Fix the snapshot before finalizing.`,
+          input.run_id,
+          [],
+        );
+      }
+      if (!Array.isArray(mapping.sections)) {
+        throw new CompletionChecklistGateViolation(
+          `PP-VG-1: finalize_run(complete) blocked — runs.taxonomy_mapping_json for run ${input.run_id} ` +
+          `has a malformed shape: 'sections' must be an array. Fix the snapshot before finalizing.`,
+          input.run_id,
+          [],
+        );
+      }
+      // Fix #2: fail-closed on any section entry that is non-object, missing
+      // an id string, or whose id is not a known TAXONOMY_BY_ID key. Silently
+      // skipping such entries would allow a malformed mapping to report zero
+      // responsible sections and bypass the gate entirely.
+      for (const sec of mapping.sections) {
+        if (typeof sec !== "object" || sec === null || Array.isArray(sec)) {
+          throw new CompletionChecklistGateViolation(
+            `PP-VG-1: finalize_run(complete) blocked — runs.taxonomy_mapping_json for run ${input.run_id} ` +
+            `contains a section entry that is not a plain object. Fix or clear the snapshot before finalizing.`,
+            input.run_id,
+            [],
+          );
+        }
+        const secObj = sec as { id?: unknown };
+        if (typeof secObj.id !== "string" || !secObj.id.trim()) {
+          throw new CompletionChecklistGateViolation(
+            `PP-VG-1: finalize_run(complete) blocked — runs.taxonomy_mapping_json for run ${input.run_id} ` +
+            `contains a section entry with a missing or non-string id. Fix or clear the snapshot before finalizing.`,
+            input.run_id,
+            [],
+          );
+        }
+        const taxEntry = TAXONOMY_BY_ID[secObj.id];
+        if (!taxEntry) {
+          throw new CompletionChecklistGateViolation(
+            `PP-VG-1: finalize_run(complete) blocked — runs.taxonomy_mapping_json for run ${input.run_id} ` +
+            `contains an unknown taxonomy section id '${secObj.id}'. ` +
+            `Valid ids are 4.1..4.16. Fix or clear the snapshot before finalizing.`,
+            input.run_id,
+            [],
+          );
+        }
+        if (!taxEntry.master_plan_section) {
+          throw new CompletionChecklistGateViolation(
+            `PP-VG-1: finalize_run(complete) blocked — taxonomy section '${secObj.id}' has no ` +
+            `master_plan_section mapping. This is an internal taxonomy data error. Fix before finalizing.`,
+            input.run_id,
+            [],
+          );
+        }
+        // Canonical set check: reject any master_plan_section value not in the
+        // authoritative MASTER_PLAN_SECTIONS list. Fails closed — a taxonomy
+        // entry whose master_plan_section drifted (rename, typo, deleted) cannot
+        // silently add a section to the responsible set or resolve against the
+        // master plan. Surface this as a gate violation so it is caught and fixed.
+        if (!(MASTER_PLAN_SECTIONS as readonly string[]).includes(taxEntry.master_plan_section)) {
+          throw new CompletionChecklistGateViolation(
+            `PP-VG-1: finalize_run(complete) blocked — taxonomy section '${secObj.id}' resolves to ` +
+            `master_plan_section '${taxEntry.master_plan_section}' which is not a member of the ` +
+            `canonical MASTER_PLAN_SECTIONS list. This is an internal taxonomy data error. Fix before finalizing.`,
+            input.run_id,
+            [],
+          );
+        }
+        responsibleMasterSections.add(taxEntry.master_plan_section);
+      }
+    }
+
+    if (responsibleMasterSections.size > 0) {
+      // READ-ONLY: call masterPlanStatus, never write.
+      const planStatus = masterPlanStatus(vg1Row.project_path);
+
+      // Build lookup map: section header → populated flag.
+      const sectionPopulatedMap = new Map<string, boolean>(
+        planStatus.sections.map(s => [s.section, s.populated]),
+      );
+
+      // Fix #3 — explicit canonical map: master_plan_section → COMPLETION_CHECKLIST items.
+      //
+      // masterPlanStatus derives checklist[].pass from the SAME section's populated
+      // flag (pass = section is populated). Gating on checklist items AFTER confirming
+      // population is circular: if populated → checklist pass; if unpopulated → already
+      // caught by the population check below. There is no independent per-item evidence
+      // in the current harness model.
+      //
+      // Design decision (honest, not circular): the gate's real enforcement is the
+      // population check (section unpopulated → blocked). The "checklist_fail" reason
+      // is preserved in the type and message for FUTURE use when per-item evidence
+      // (e.g. linked artifacts or explicit signals) is wired in (tracked enhancement).
+      // For now we gate on POPULATION ONLY and explicitly do NOT emit a
+      // "checklist_fail" blocker — that would be vacuously true (populated = items pass)
+      // or vacuously false (unpopulated = already caught) with no additional signal.
+      //
+      // This explicit section→checklist-items map is kept here for documentation
+      // and to drive future per-item gating when independent evidence is available.
+      // It is NOT used as a gate predicate today — population is the gate.
+      const _SECTION_TO_CHECKLIST_ITEMS: Record<string, string[]> = {
+        "1. Executive summary":                          ["The problem and business outcome are explicit."],
+        "3. Stakeholders and users":                     ["Users, operators, and approvers are identified."],
+        "5. Scope and roadmap":                          ["Scope boundaries are written down."],
+        "7. Acceptance criteria":                        ["Acceptance criteria and non-functional requirements exist."],
+        "11. Architecture and technical strategy":       ["Architecture decisions are documented with tradeoffs."],
+        "12. Interfaces and contracts":                  ["API/event/UI contracts are specified and testable."],
+        "10. Domain and data model":                     ["Data semantics, lineage, retention, and migration are defined."],
+        "14. Security, privacy, and compliance":         ["Security/privacy/compliance requirements are mapped to controls."],
+        "15. Test and verification strategy":            ["Quality strategy covers functional and non-functional verification."],
+        "19. Launch, migration, and rollback plan":      ["Release, rollback, and support plans exist before launch."],
+        "16. Operations and support model":              ["Telemetry, dashboards, and incident ownership are ready before launch."],
+        "Appendices":                                    ["Documentation ownership is assigned.", "If AI is involved, evals, permissions, and human review rules exist."],
+        "17. Team operating model and governance":       ["Governance forums and decision rights are known."],
+        "20. Deprecation and retirement plan":           ["Deprecation and retirement are not left as 'future work'."],
+      };
+      // Suppressed unused-variable warning: map is kept for documentation/future use.
+      void _SECTION_TO_CHECKLIST_ITEMS;
+
+      const unmetSections: CompletionChecklistGateViolation["unmet_sections"] = [];
+
+      for (const section of responsibleMasterSections) {
+        // Gate predicate: population (the authoritative, non-circular signal).
+        // A section is "unmet" when it is still the _To be populated placeholder
+        // or has no content in PROJECT_MASTER.md.
+        const populated = sectionPopulatedMap.get(section) ?? false;
+        if (!populated) {
+          unmetSections.push({ section, reason: "unpopulated" });
+        }
+        // checklist_fail is intentionally NOT emitted here — see comment above.
+        // The population check IS the checklist check in this model.
+      }
+
+      if (unmetSections.length > 0) {
+        const desc = unmetSections
+          .map(u => `'${u.section}' is not populated`)
+          .join(". ");
+        throw new CompletionChecklistGateViolation(
+          `PP-VG-1: finalize_run(complete) blocked for run ${input.run_id} — ` +
+          `${unmetSections.length} responsible master-plan section(s) are unpopulated: ${desc}. ` +
+          `Responsible sections are derived from runs.taxonomy_mapping_json section ids (not artifact.taxonomy_section). ` +
+          `Populate the affected PROJECT_MASTER.md sections (via a master-plan-patcher agent call or ` +
+          `applyMasterPlanPatch) before retrying finalize(complete), ` +
+          `or finalize with status='surfaced' to accept the gap.`,
+          input.run_id,
+          unmetSections,
+        );
       }
     }
   }
