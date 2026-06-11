@@ -13,9 +13,13 @@
     "gemini-2.5-flash": { "input": 0.30,  "output": 0.90  }
   },
   "anthropic": {
+    "claude-fable-5":    { "input": 30.00, "output": 150.00 },
     "claude-opus-4-7":   { "input": 15.00, "output": 75.00 },
     "claude-opus-4-6":   { "input": 15.00, "output": 75.00 },
     "claude-sonnet-4-6": { "input": 3.00,  "output": 15.00 },
     "claude-haiku-4-5":  { "input": 0.80,  "output": 4.00  }
+  },
+  "_pricing_notes": {
+    "claude-fable-5": "CONSERVATIVE PLACEHOLDER — 2x opus-4-7 rates. Requires authoritative pricing confirmation from Anthropic before production use."
   }
 }

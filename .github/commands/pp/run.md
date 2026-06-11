@@ -100,27 +100,34 @@ The `trace` array records which layer set the final tier ("frontmatter", "team_y
        trace.push({ layer: "scope_adjust", scope: triage.scope, delta, tier: initial_tier })
 
      // Layer: profile policy (per_stage_override beats default_cap)
+     // Off-ladder guard: skip numeric cap/floor comparison when initial_tier is
+     // off-ladder (tierIndex < 0, e.g. fable). An explicit off-ladder selection
+     // must NOT be clamped down by an opus/sonnet/haiku cap or floor — the team
+     // yaml set it intentionally and the numeric comparison is undefined for it.
      policy = profile?.model_tier_policy  // ignored if --no-tier-policy
      if !cli_flags.no_tier_policy:
        if policy?.per_stage_override?.[stage.kind]:
          initial_tier = policy.per_stage_override[stage.kind]
          trace.push({ layer: "profile_per_stage", tier: initial_tier })
-       elif policy?.default_cap and tierIndex(initial_tier) > tierIndex(policy.default_cap):
+       elif policy?.default_cap and tierIndex(initial_tier) >= 0 and tierIndex(initial_tier) > tierIndex(policy.default_cap):
          initial_tier = policy.default_cap
          trace.push({ layer: "profile_cap", tier: initial_tier })
 
      // Layer: CLI flags (highest precedence)
-     if cli_flags.tier_cap and tierIndex(initial_tier) > tierIndex(cli_flags.tier_cap):
+     // Off-ladder guard: only apply cap/floor when initial_tier is on the ladder
+     // (tierIndex >= 0). An explicit fable tier set via team_yaml must not be
+     // silently downgraded to opus/sonnet/haiku by a --tier-cap flag.
+     if cli_flags.tier_cap and tierIndex(initial_tier) >= 0 and tierIndex(initial_tier) > tierIndex(cli_flags.tier_cap):
        initial_tier = cli_flags.tier_cap
        trace.push({ layer: "cli_cap", tier: initial_tier })
-     if cli_flags.tier_floor and tierIndex(initial_tier) < tierIndex(cli_flags.tier_floor):
+     if cli_flags.tier_floor and tierIndex(initial_tier) >= 0 and tierIndex(initial_tier) < tierIndex(cli_flags.tier_floor):
        initial_tier = cli_flags.tier_floor
        trace.push({ layer: "cli_floor", tier: initial_tier })
 
      model_id = CLAUDE_TIER_MODELS[initial_tier]
      ```
 
-     Where `CLAUDE_TIER_MODELS` and `shiftTier`/`tierIndex` come from `mcp__pp_harness__get_copilot_claude_tier_models` (canonical). The order is `["haiku","sonnet","opus"]`; `shiftTier(t, delta)` clamps at both ends.
+     Where `CLAUDE_TIER_MODELS` and `shiftTier`/`tierIndex` come from `mcp__pp_harness__get_copilot_claude_tier_models` (canonical). The order is `["haiku","sonnet","opus"]`; `shiftTier(t, delta)` clamps at both ends. Off-ladder tiers (e.g. `fable`) have `tierIndex < 0` and are never touched by the cap/floor logic above.
 
    - Generator: use the Task tool to invoke the matching agent (`spec-author` for spec, `engineer` for code, `test-strategist` for tests, `docs-author` for docs). Pass `run_id`, `stage_id`, `cwd`, `request_text`, `artifact_dir`, `attempted_tier=<initial_tier>`, and (when known) `profile`. **For Claude generators, also pass `model: <model_id>` on the Task invocation** so the Agent tool's per-call model override wins over the agent's frontmatter default. The agent calls the appropriate `pp_<vendor>__generate`, archives via `archive_artifact`, and records via `record_attempt` (passing `attempted_tier` through so cost-by-tier analytics work). Capture `attempt_id`.
    - Judge routing: use the Task tool to invoke `judge-router` with `gate_type`, `generator_producer`, `generator_model=<attempt.model_id or planned model id>`, `prompt_keywords`, `profile`, `artifact_kind`. Capture `{ judge_agent, preferred_producers, rubric_id, decision_reason }`.
@@ -132,7 +139,7 @@ The `trace` array records which layer set the final tier ("frontmatter", "team_y
      - If readiness returns `next_action="retry_or_surface"`, treat the first blocker message / evidence as the critique and enter the Reflexion path below instead of attempting `finalize_stage(status="passed")`.
      - If readiness returns `next_action="surface_stage"`, call `mcp__pp_harness__finalize_stage(stage_id, status="surfaced")` and BREAK.
    - On `outcome="fail" | "revise"` **or** readiness `next_action="retry_or_surface"`: use the Task tool to invoke `reflexion-coach`. It calls `mcp__pp_harness__retry_with_critique(attempt_id, critique_md)` (which enforces ×1 and the loop ceiling). If `ok: false`, surface the run (`finalize_stage(status="surfaced")`, BREAK). If `ok: true`:
-     - **Escalate the Claude tier by one step.** `retry_tier = shiftTier(initial_tier, +1)` (haiku→sonnet, sonnet→opus, opus stays). The cli_floor still applies on the retry; cli_cap does NOT (escalation is intentional — let it climb past the cap). Append `{ stage_id, initial: initial_tier, retry: retry_tier, reason: "verdict:<outcome>" }` to the in-memory tier-decision trace and re-archive `tier_decisions.json`.
+     - **Escalate the Claude tier by one step.** `retry_tier = shiftTier(initial_tier, +1)` (haiku→sonnet, sonnet→opus, opus stays; off-ladder tier like fable: shiftTier returns it unchanged). The cli_floor still applies on the retry for LADDER tiers only — apply it with the same off-ladder guard as step 6a: `if cli_flags.tier_floor and tierIndex(retry_tier) >= 0 and tierIndex(retry_tier) < tierIndex(cli_flags.tier_floor): retry_tier = cli_flags.tier_floor`. cli_cap does NOT apply on retry (escalation is intentional). Off-ladder tiers (e.g. fable) bypass BOTH cli_floor and cli_cap on retry, preserving the explicit selection. Append `{ stage_id, initial: initial_tier, retry: retry_tier, reason: "verdict:<outcome>" }` to the in-memory tier-decision trace and re-archive `tier_decisions.json`.
      - Pass `initial_tier` and `retry_tier` to the `reflexion-coach` invocation so it can name the escalation in the retry prompt.
      - The coach re-invokes the generator agent with the critique injected AND **`model: CLAUDE_TIER_MODELS[retry_tier]`** on the Task call, re-judges, and records a second verdict. The new attempt's `attempted_tier` is `retry_tier`.
    - On retry verdict `pass`: call `mcp__pp_harness__get_stage_finalize_readiness(stage_id)` again and branch exactly as above; only call `finalize_stage(status="passed")` when readiness returns `next_action="finalize_passed"`. If retry readiness is still blocked, `finalize_stage(status="surfaced")`, BREAK.

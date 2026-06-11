@@ -43,6 +43,14 @@ export const CLAUDE_TIER_MODELS = {
   opus:   "claude-opus-4-7",
   sonnet: "claude-sonnet-4-6",
   haiku:  "claude-haiku-4-5-20251001",
+  // Fable-5: capability-gated, NEVER reached by automatic shiftTier escalation.
+  // Selected only via explicit operator config:
+  //   (a) the deep-reasoning-team (deep-reasoning-team.yaml),
+  //   (b) an explicit per-stage generator.model_tier: fable in any team yaml, or
+  //   (c) a profile's model_tier_policy.per_stage_override[<stage.kind>]: fable.
+  // There is no --tier CLI flag for fable. fable is intentionally absent from
+  // TIER_ORDER — see comment there.
+  fable:  "claude-fable-5",
 } as const;
 
 /**
@@ -54,26 +62,50 @@ export const COPILOT_CLAUDE_TIER_MODELS = {
   opus:   "claude-opus-4-6",
   sonnet: "claude-sonnet-4-6",
   haiku:  "claude-haiku-4-5-20251001",
+  // Fable-5: capability-gated. See CLAUDE_TIER_MODELS comment above.
+  fable:  "claude-fable-5",
 } as const;
 
 export type ClaudeTier = keyof typeof CLAUDE_TIER_MODELS;
 
-/** Ladder, low → high. shiftTier walks this. */
-export const TIER_ORDER: ClaudeTier[] = ["haiku", "sonnet", "opus"];
+/**
+ * Ladder, low → high. shiftTier walks this.
+ * "fable" is intentionally ABSENT from this array — it is a capability-gated
+ * tier reached only via explicit operator config: (a) the deep-reasoning-team,
+ * (b) generator.model_tier: fable in a team yaml stage, or (c) a profile's
+ * model_tier_policy.per_stage_override[<stage>]: fable. There is no --tier CLI
+ * flag for fable and no automatic escalation path that reaches it.
+ * Keeping fable off the ladder means shiftTier("opus", +1) clamps at opus
+ * and can NEVER auto-escalate to fable. See shiftTier defensive guard below.
+ */
+export const TIER_ORDER: readonly ["haiku", "sonnet", "opus"] = ["haiku", "sonnet", "opus"];
 
 export function tierIndex(t: ClaudeTier): number {
-  return TIER_ORDER.indexOf(t);
+  return (TIER_ORDER as readonly string[]).indexOf(t);
 }
 
-/** Shift a tier by N steps; clamps at the ends of the ladder. */
+/**
+ * Shift a tier by N steps; clamps at the ends of the ladder.
+ * Defensive guard: if `t` is not in TIER_ORDER (tierIndex < 0), return `t`
+ * unchanged. This handles capability-gated tiers like "fable" that are valid
+ * ClaudeTier values but intentionally off the ladder — they should never be
+ * shifted up or down.
+ */
 export function shiftTier(t: ClaudeTier, delta: number): ClaudeTier {
-  const idx = Math.max(0, Math.min(TIER_ORDER.length - 1, tierIndex(t) + delta));
+  const i = tierIndex(t);
+  if (i < 0) return t; // off-ladder tier (e.g. fable): never shift
+  const idx = Math.max(0, Math.min(TIER_ORDER.length - 1, i + delta));
   // idx is clamped to [0, TIER_ORDER.length-1] so the access is always defined.
   return TIER_ORDER[idx]!;
 }
 
+/**
+ * Map-based so it accepts "fable" and any future tier added to CLAUDE_TIER_MODELS.
+ * Uses Object.hasOwn (not `in`) to reject prototype-chain keys like
+ * "__proto__", "constructor", "toString" that `in` would accept.
+ */
 export function isClaudeTier(s: string): s is ClaudeTier {
-  return s === "opus" || s === "sonnet" || s === "haiku";
+  return Object.hasOwn(CLAUDE_TIER_MODELS, s);
 }
 
 /** Status values for runs/stages — exported as type-safe constants. */

@@ -101,7 +101,8 @@ function validateTeamSpec(spec: TeamSpec, path: string): void {
     if (tier !== undefined && !isClaudeTier(tier)) {
       throw new Error(
         `team yaml ${path}: stage "${stage.kind}" has generator.model_tier="${tier}". ` +
-        `Valid values: "opus" | "sonnet" | "haiku" (or omit the field).`
+        `Valid values: "opus" | "sonnet" | "haiku" | "fable" (or omit the field). ` +
+        `Note: "fable" is capability-gated and expensive — prefer explicit opt-in via deep-reasoning-team.`
       );
     }
     // R3-tail Fix 0.4: best_of_n_on_major_scope must be a sane integer.

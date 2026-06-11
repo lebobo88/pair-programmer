@@ -52,6 +52,30 @@ For best-of-2, the driver should ask the judge for a structured rubric score per
 - **Gemini:** `pp_gemini.critique` is hard-pinned to `gemini-3.1-pro-preview`. Same-vendor Gemini judging is a documented degenerate case (same model on both sides) until a second supported 3.x critique model ships.
 - **Claude:** same-vendor Claude judging still requires a different model id from the generator.
 
+## Fable-5 tier (capability-gated)
+
+`fable` (`claude-fable-5`) is a dedicated tier for problems that exceed opus-class
+reasoning. It is **NOT** in the `TIER_ORDER` ladder and is **NEVER** reached by
+automatic `shiftTier` escalation (`shiftTier("opus", +1)` clamps at opus).
+
+Fable is selected only via explicit operator config (there is NO `--tier fable` CLI flag, and fable is NEVER reached by automatic shiftTier ladder escalation):
+1. **deep-reasoning-team** — `deep-reasoning-team.yaml` sets `generator.model_tier: fable` on every stage. Invoke via `/pp:team deep-reasoning-team "goal"` (the team name is the filename stem).
+2. **Team yaml per-stage override** — any team yaml (builtin, project-local, or user-global) can set `generator.model_tier: fable` on a specific stage.
+3. **Profile per-stage override** — a profile's `model_tier_policy.per_stage_override[<stage.kind>]: fable` selects fable for that stage kind. This is explicit operator-authored profile config, not auto-escalation.
+
+The `--tier-cap` and `--tier-floor` CLI flags are explicitly skipped for off-ladder tiers (see run.md step 6a off-ladder guard: `tierIndex(initial_tier) >= 0` required before applying any cap or floor comparison). An explicit fable selection set via team yaml is therefore never clamped down to opus/sonnet/haiku by a CLI flag.
+
+Because fable is off the ladder, the `shiftTier` defensive guard returns the tier
+unchanged for `shiftTier("fable", ±N)`. Ordinary haiku→sonnet→opus ladder escalation
+can never reach fable.
+
+Judge contract for Fable-generated stages: the judge MUST be cross-vendor (Codex or
+Gemini). The same-vendor same-model guard at `runs.ts:641` already blocks fable-judges-fable,
+but the team yaml must not even request it.
+
+Pricing: conservative placeholder at 2× opus rates. Confirm with Anthropic before
+production budget projections.
+
 ## Escalated judging (opt-in)
 
 The judge MAY set `escalate: true` on `pp_codex.critique` for sanctioned hard gates only:

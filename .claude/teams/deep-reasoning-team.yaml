@@ -1,0 +1,55 @@
+# deep-reasoning-team — Fable-5 capability-gated team.
+#
+# This team is for problems that require the Fable model class: formal
+# verification, complex multi-constraint architecture decisions, adversarial
+# security analysis, algorithmic proofs, or tasks where prior opus-class
+# attempts failed under Reflexion. It is EXPENSIVE and EXPLICIT-ONLY.
+#
+# How to invoke: /pp:team deep-reasoning-team "goal"
+#   (The team name is the filename stem — "deep-reasoning-team", not "deep-reasoning".)
+#   Other explicit fable selection paths (all require operator config, never auto,
+#   and there is NO `--tier` CLI flag for fable — it is never reached by automatic
+#   shiftTier ladder escalation):
+#     - generator.model_tier: fable on a stage in any team yaml
+#     - profile.model_tier_policy.per_stage_override[<stage.kind>]: fable
+#   Do NOT route here automatically. Use only when:
+#     - A prior run exhausted Reflexion and is still revise/fail at opus tier, OR
+#     - An operator explicitly requests Fable capability.
+#
+# Judge contract: JUDGE is ALWAYS cross-vendor (Codex/Gemini). The generator
+# is Fable (Claude), so the judge MUST be a different vendor to satisfy JUDGE-1.
+# Do NOT set judge model_pref to claude or fable — fable-judges-fable is
+# blocked at runs.ts:641 (same-vendor same-model guard).
+#
+# best_of_n_on_major_scope: kept at 2 (not 3) because Fable-class tokens are
+# very expensive; a 2-way race still provides meaningful diversification.
+name: deep-reasoning-team
+description: >
+  Fable-5 (claude-fable-5) capability-gated team for problems that exceed
+  opus-class reasoning: formal verification, adversarial security, complex
+  architecture proofs, or tasks where prior runs exhausted Reflexion at opus tier.
+  Expensive and explicit-opt-in only — do NOT route here automatically.
+profiles_compatible: [web-ui, api-platform, internal-tool, enterprise, ai-agentic, mobile, sdk, data-product, game-dev-web]
+stages:
+  - kind: spec
+    gate_type: spec
+    generator: { agent: spec-author, primary: claude, model_tier: fable }
+    judge:     { tier: cross_vendor, rubric: rfc-2119-normative@1, model_pref: gemini }
+  - kind: architecture
+    gate_type: design
+    generator: { agent: architect, primary: claude, model_tier: fable }
+    judge:     { tier: cross_vendor, rubric: c4-system-context@1, model_pref: codex }
+  - kind: code
+    gate_type: code_style
+    generator: { agent: engineer, primary: claude, model_tier: fable }
+    # cross_vendor judge (Codex) required: generator is Fable/Claude, judge must be
+    # a different vendor per JUDGE-1. fable-judges-fable is blocked at runs.ts:641.
+    judge:     { tier: cross_vendor, model_pref: codex }
+    # 2-way race: diversification without burning triple Fable-tier budget.
+    best_of_n_on_major_scope: 2
+  - kind: docs
+    gate_type: docs_polish
+    generator: { agent: docs-author, primary: claude, model_tier: fable }
+    judge:     { tier: cross_vendor, model_pref: gemini }
+taxonomy_required: ["4.3", "4.6", "4.9", "4.13"]
+missability_required: ["nfrs-declared", "decision-logging", "security-review-timing"]
