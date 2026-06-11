@@ -44,6 +44,8 @@ import {
 import { emitDecisionRecord } from "../ecosystem/hydra-envelopes.js";
 import { analyzeAndPropose } from "./autogenesis-analyzer.js";
 import { constitutionSha } from "./constitution.js";
+import { getTeam } from "./teams.js";
+import { getForum } from "./forums.js";
 
 const now = () => new Date().toISOString();
 
@@ -866,12 +868,27 @@ export type StageFinalizeBrowserValidationBlocker = {
   severity: "errors";
 };
 
+/**
+ * PP-VG-6: A verdict on an attempt for this stage has hallucination_suspected=1
+ * but lacks a linked cross-vendor resolution. Same-vendor clean verdicts do NOT
+ * clear the suspicion — only a retraction of the suspect verdict or a subsequent
+ * cross_vendor=1 non-fail verdict on the SAME attempt clears it.
+ */
+export type StageFinalizeHallucinationBlocker = {
+  gate: "hallucination";
+  next_action: "dispatch_cross_vendor_rejudge";
+  message: string;
+  attempt_id: string;
+  verdict_id: string;
+};
+
 export type StageFinalizeBlocker =
   | StageFinalizeTddBlocker
   | StageFinalizeArtifactBlocker
   | StageFinalizeVerdictBlocker
   | StageFinalizeRejudgeBlocker
-  | StageFinalizeBrowserValidationBlocker;
+  | StageFinalizeBrowserValidationBlocker
+  | StageFinalizeHallucinationBlocker;
 
 export type StageFinalizeReadiness = {
   stage_id: string;
@@ -1095,6 +1112,71 @@ export function getStageFinalizeReadiness(stage_id: string): StageFinalizeReadin
     break;  // surface the most recent claiming attempt only; one is enough to block
   }
 
+  // ── PP-VG-6: hallucination gate ───────────────────────────────────────────────
+  // If any attempt for this stage has a non-retracted verdict with
+  // hallucination_suspected=1, it must be cleared by a LINKED cross-vendor
+  // resolution before finalize_passed is allowed. Clearance = EITHER:
+  //   a) the suspect verdict itself was retracted, OR
+  //   b) a SUBSEQUENT verdict on the SAME attempt has cross_vendor=1 AND
+  //      outcome != 'fail' (an independent cross-vendor pass).
+  // A later same-vendor clean verdict on the same attempt does NOT clear it.
+  // (Mirrors the findings_closure_rejudge pattern at ~1028-1062 which selects
+  //  verdicts WHERE cross_vendor=1.)
+  {
+    // Find all non-retracted suspect verdicts for attempts on this stage.
+    // Select rowid alongside created_at so we can use insertion order as the
+    // tiebreak for "subsequent" (fixes same-ms resolution — issue #4).
+    const suspectVerdicts = db()
+      .prepare(
+        `SELECT v.id AS verdict_id, v.attempt_id AS attempt_id,
+                v.created_at AS created_at, v.rowid AS row_id
+           FROM verdicts v
+           JOIN attempts a ON a.id = v.attempt_id
+          WHERE a.stage_id = ?
+            AND v.hallucination_suspected = 1
+            AND v.retracted_at IS NULL
+          ORDER BY v.created_at ASC, v.rowid ASC`,
+      )
+      .all(stage_id) as Array<{ verdict_id: string; attempt_id: string; created_at: string; row_id: number }>;
+
+    for (const suspect of suspectVerdicts) {
+      // Check for a cross-vendor resolution: a verdict on the SAME attempt with
+      // cross_vendor=1 AND outcome != 'fail', inserted AFTER the suspect verdict.
+      // "After" is determined by rowid (insertion order) as the primary ordering
+      // within the same millisecond — created_at alone fails on same-ms ties.
+      // A verdict at the same rowid is the suspect itself; we want strictly later.
+      const cvResolution = db()
+        .prepare(
+          `SELECT id FROM verdicts
+            WHERE attempt_id = ?
+              AND cross_vendor = 1
+              AND outcome != 'fail'
+              AND retracted_at IS NULL
+              AND rowid > ?
+            LIMIT 1`,
+        )
+        .get(suspect.attempt_id, suspect.row_id) as { id: string } | undefined;
+
+      if (cvResolution) continue; // cleared by a cross-vendor pass
+
+      // No cross-vendor resolution exists — block finalize(passed).
+      blockers.push({
+        gate: "hallucination",
+        next_action: "dispatch_cross_vendor_rejudge",
+        attempt_id: suspect.attempt_id,
+        verdict_id: suspect.verdict_id,
+        message:
+          `finalize_stage refused: attempt ${suspect.attempt_id} has a verdict (${suspect.verdict_id}) ` +
+          `with hallucination_suspected=1 that has not been cleared by a cross-vendor resolution. ` +
+          `PP-VG-6 requires either: (a) retracting the suspect verdict via retract_verdict, or ` +
+          `(b) recording a new cross_vendor=1 non-fail verdict on the same attempt (dispatch_cross_vendor_rejudge). ` +
+          `A same-vendor clean verdict does NOT clear hallucination suspicion. ` +
+          `Alternatively, finalize with status='surfaced' to accept the unresolved suspicion.`,
+      } satisfies StageFinalizeHallucinationBlocker);
+      break; // surface the first unresolved suspect; one is enough to block
+    }
+  }
+
   // ── PP-VG-3: browser validation severity gate ─────────────────────────────
   // Read the append-only browser_validation_severity field from stage notes.
   // Any "errors" result persisted by browserValidationFinalize blocks
@@ -1229,6 +1311,10 @@ export async function finalizeStage(input: FinalizeStageInput): Promise<void> {
       if (blocker.gate === "browser_validation") {
         throw new Error(blocker.message);
       }
+      // PP-VG-6: hallucination suspicion without cross-vendor resolution.
+      if (blocker.gate === "hallucination") {
+        throw new Error(blocker.message);
+      }
       throw new ValidatorGateViolation(
         blocker.message,
         input.stage_id,
@@ -1346,6 +1432,24 @@ function buildArtifactFinalizeBlocker(opts: {
     artifact_path: opts.requirement.artifact_path,
     check: opts.check,
   };
+}
+
+/**
+ * PP-VG-4: finalizeRun(complete) blocked because one or more REQUIRED
+ * missability checks have status='fail'. Required check ids are the UNION
+ * of profile-, team-, and forum-declared required sets. Advisory (non-required)
+ * failures do NOT block. Resolves required sets from persisted run-row
+ * snapshots (profile_snapshot_json, team, forum) — does NOT re-run checks.
+ */
+export class MissabilityGateViolation extends Error {
+  constructor(
+    message: string,
+    public readonly run_id: string,
+    public readonly failed_required_check_ids: string[],
+  ) {
+    super(message);
+    this.name = "MissabilityGateViolation";
+  }
 }
 
 export type FinalizeRunInput = {
@@ -1572,6 +1676,201 @@ export function finalizeRun(input: FinalizeRunInput): FinalizeRunOutput {
             kind,
           );
         }
+      }
+    }
+  }
+
+  // ── PP-VG-4: missability gate ─────────────────────────────────────────────
+  // finalizeRun(complete) MUST query the persisted missability_checks rows and
+  // BLOCK when any REQUIRED check has status='fail'. The required check-id set
+  // is the UNION of: profile-required + team-required + forum-required.
+  //
+  // Sources:
+  //   - profile: profile_snapshot_json.required_missability_checks (from the
+  //     snapshot persisted at run-start — not the live filesystem).
+  //   - team:    getTeam(run.team) → team.missability_required
+  //   - forum:   getForum(run.forum) → forum.required_missability_checks
+  //
+  // Fail-closed on malformed required-source (parse/shape error) — do NOT
+  // silently treat as "no required checks".
+  // Advisory (non-required) failed checks do NOT block.
+  // Only fires on finalize(complete); surfaced/aborted are not blocked.
+  if (input.status === "complete") {
+    // Read all three sources for the required check set.
+    const vg4Row = db()
+      .prepare(`SELECT profile_snapshot_json, team, forum, project_path FROM runs WHERE id = ?`)
+      .get(input.run_id) as
+      | { profile_snapshot_json: string | null; team: string | null; forum: string | null; project_path: string }
+      | undefined;
+    if (!vg4Row) throw new Error(`run ${input.run_id} not found during VG-4 resolution`);
+
+    const requiredCheckIds = new Set<string>();
+
+    // Source 1: profile_snapshot_json.required_missability_checks
+    if (vg4Row.profile_snapshot_json?.trim()) {
+      let profileParsed: unknown;
+      try {
+        profileParsed = JSON.parse(vg4Row.profile_snapshot_json);
+      } catch (e) {
+        throw new MissabilityGateViolation(
+          `PP-VG-4: finalize_run(complete) blocked — runs.profile_snapshot_json for run ${input.run_id} ` +
+          `failed JSON parse while resolving required missability checks: ${(e as Error).message}. ` +
+          `Fix or clear the snapshot before finalizing.`,
+          input.run_id,
+          [],
+        );
+      }
+      if (typeof profileParsed !== "object" || profileParsed === null || Array.isArray(profileParsed)) {
+        throw new MissabilityGateViolation(
+          `PP-VG-4: finalize_run(complete) blocked — runs.profile_snapshot_json for run ${input.run_id} ` +
+          `has a malformed shape (top-level must be an object) while resolving required missability checks. ` +
+          `Fix or clear the snapshot before finalizing.`,
+          input.run_id,
+          [],
+        );
+      }
+      const profileObj = profileParsed as { required_missability_checks?: unknown };
+      if (profileObj.required_missability_checks !== undefined) {
+        if (!Array.isArray(profileObj.required_missability_checks)) {
+          throw new MissabilityGateViolation(
+            `PP-VG-4: finalize_run(complete) blocked — runs.profile_snapshot_json for run ${input.run_id} ` +
+            `has required_missability_checks that is not an array. Fix or clear the snapshot before finalizing.`,
+            input.run_id,
+            [],
+          );
+        }
+        for (const id of profileObj.required_missability_checks as Array<unknown>) {
+          if (typeof id !== "string") {
+            throw new MissabilityGateViolation(
+              `PP-VG-4: finalize_run(complete) blocked — runs.profile_snapshot_json for run ${input.run_id} ` +
+              `has required_missability_checks containing a non-string entry. Fix or clear the snapshot before finalizing.`,
+              input.run_id,
+              [],
+            );
+          }
+          requiredCheckIds.add(id);
+        }
+      }
+    }
+
+    // Source 2: team.missability_required
+    // Resolution order (resolve-first, sentinel-fallback):
+    //   1. NULL → no team source declared; skip silently.
+    //   2. present-but-blank ("" / whitespace) → malformed identifier; fail closed.
+    //   3. present non-blank → call getTeam FIRST.
+    //      a. Resolves (yaml exists, even if named "ad-hoc") → use its required checks.
+    //      b. Does NOT resolve AND name is a known ensureRun sentinel ("ad-hoc") →
+    //         treat as no-team-source (legit ensureRun with no user-provided team).
+    //      c. Does NOT resolve AND name is NOT a sentinel → malformed source; fail closed.
+    // This means a real .claude/teams/ad-hoc.yaml is fully honored; the sentinel
+    // exemption only fires when the name can't be resolved AND is the known placeholder.
+    const VG4_TEAM_SENTINELS = new Set(["ad-hoc"]);
+    const rawTeam = vg4Row.team;
+    if (rawTeam !== null) {
+      const trimmedTeam = rawTeam.trim();
+      if (trimmedTeam === "") {
+        throw new MissabilityGateViolation(
+          `PP-VG-4: finalize_run(complete) blocked — run ${input.run_id} has a blank team value. ` +
+          `A blank team identifier is malformed. Fix the runs.team column before finalizing.`,
+          input.run_id,
+          [],
+        );
+      }
+      // Resolve first — a real yaml (including "ad-hoc.yaml") takes precedence.
+      const teamResult = getTeam({ name: trimmedTeam, project_path: vg4Row.project_path });
+      if (teamResult) {
+        // Real team found: use its required missability checks.
+        for (const id of teamResult.team.missability_required ?? []) {
+          requiredCheckIds.add(id);
+        }
+      } else if (VG4_TEAM_SENTINELS.has(trimmedTeam)) {
+        // No yaml for this name AND it's the known ensureRun no-team sentinel →
+        // treat as no-team-source; continue silently.
+      } else {
+        // No yaml AND not a sentinel → malformed source; fail closed.
+        throw new MissabilityGateViolation(
+          `PP-VG-4: finalize_run(complete) blocked — run ${input.run_id} references team '${trimmedTeam}' ` +
+          `but it could not be loaded. Fix the team yaml before finalizing.`,
+          input.run_id,
+          [],
+        );
+      }
+    }
+
+    // Source 3: forum.required_missability_checks
+    // NULL = no forum declared (no source). Present-but-blank = malformed: fail closed.
+    // Unknown forum id = malformed: fail closed.
+    const rawForum = vg4Row.forum;
+    if (rawForum !== null) {
+      const trimmedForum = rawForum.trim();
+      if (trimmedForum === "") {
+        throw new MissabilityGateViolation(
+          `PP-VG-4: finalize_run(complete) blocked — run ${input.run_id} has a blank forum value. ` +
+          `A blank forum identifier is malformed. Fix the runs.forum column before finalizing.`,
+          input.run_id,
+          [],
+        );
+      }
+      const forumObj = getForum(trimmedForum);
+      if (!forumObj) {
+        throw new MissabilityGateViolation(
+          `PP-VG-4: finalize_run(complete) blocked — run ${input.run_id} references forum '${trimmedForum}' ` +
+          `but it is not a recognised forum id. Fix the forum reference before finalizing.`,
+          input.run_id,
+          [],
+        );
+      }
+      for (const id of forumObj.required_missability_checks ?? []) {
+        requiredCheckIds.add(id);
+      }
+    }
+
+    // Query the latest persisted row per check_id using rowid as the insertion
+    // tiebreak so same-millisecond ties are broken deterministically by insertion
+    // order (the truly-last-inserted row wins). Uses a correlated subquery rather
+    // than GROUP BY / HAVING which can pick a non-last row on ties.
+    // Re-use persisted rows — do NOT re-run runMissabilityChecks.
+    if (requiredCheckIds.size > 0) {
+      const latestChecks = db()
+        .prepare(
+          `SELECT check_id, status
+             FROM missability_checks m
+            WHERE run_id = ?
+              AND check_id IN (${[...requiredCheckIds].map(() => "?").join(", ")})
+              AND rowid = (
+                SELECT rowid FROM missability_checks
+                 WHERE run_id = m.run_id AND check_id = m.check_id
+                 ORDER BY created_at DESC, rowid DESC
+                 LIMIT 1
+              )`,
+        )
+        .all(input.run_id, ...[...requiredCheckIds]) as Array<{ check_id: string; status: string }>;
+
+      // Build a map of latest status per check_id.
+      const latestStatusById = new Map<string, string>(
+        latestChecks.map(r => [r.check_id, r.status]),
+      );
+
+      const failedRequired: string[] = [];
+      for (const checkId of requiredCheckIds) {
+        const status = latestStatusById.get(checkId);
+        // A required check with no persisted row counts as 'fail' (hasn't run = unknown = fail-closed).
+        if (!status || status === "fail") {
+          failedRequired.push(checkId);
+        }
+      }
+
+      if (failedRequired.length > 0) {
+        throw new MissabilityGateViolation(
+          `PP-VG-4: finalize_run(complete) blocked — ${failedRequired.length} required missability check(s) ` +
+          `have status='fail' (or are missing) for run ${input.run_id}: ${failedRequired.join(", ")}. ` +
+          `Required checks are the union of profile-, team-, and forum-declared sets. ` +
+          `Advisory (non-required) failures do not block. Run mcp__pp_harness__run_missability_checks ` +
+          `to re-evaluate and re-persist, then retry finalize. ` +
+          `Or finalize with status='surfaced' to accept the failures.`,
+          input.run_id,
+          failedRequired,
+        );
       }
     }
   }
