@@ -77,6 +77,7 @@ export async function validateC4(input: { artifact_abs_path: string }): Promise<
       timeout: PLANTUML_TIMEOUT_MS,
       reject: false,
       shell: false,
+      windowsHide: true,
       env: { ...process.env, NO_COLOR: "1" },
     });
   } catch (err) {
@@ -144,17 +145,18 @@ async function resolveBinary(): Promise<Resolved> {
 }
 
 async function onPath(binary: string): Promise<boolean> {
-  // We can't call execa with `shell: true` to do `which`/`where` portably,
-  // so the cheapest reliable test is to actually invoke the binary with a
-  // harmless flag. Two cases mean "not present":
-  //   - ENOENT thrown (POSIX behavior)
-  //   - Windows cmd shim emits "not recognized as an internal or external
-  //     command" with exit 1 — execa surfaces stderr but no throw, because
-  //     the spawn itself succeeded (cmd ran, the inner command didn't).
-  // We bias toward false on any failure mode so missing binaries always
+  // Cross-platform existence probe: attempt to spawn the binary directly with
+  // a harmless flag.  We do NOT shell out to `which` (POSIX) or `where`
+  // (Windows) because that requires shell: true and introduces platform
+  // branching.  Instead we rely on execa's cross-platform PATHEXT resolution
+  // (handles .cmd shims on Windows automatically) and catch ENOENT.
+  //   - ENOENT thrown  → binary not on PATH (all platforms)
+  //   - Windows: "not recognized as an internal or external command" → missing
+  //   - Non-zero exit with no error marker → binary is present, just unhappy
+  // We bias toward false on any ambiguous failure so missing binaries always
   // skip rather than block.
   try {
-    const r = await execa(binary, ["-version"], { timeout: 10_000, reject: false, shell: false });
+    const r = await execa(binary, ["-version"], { timeout: 10_000, reject: false, shell: false, windowsHide: true });
     if (r.exitCode === 0) return true;
     const stderr = (r.stderr ?? "").toString().toLowerCase();
     const stdout = (r.stdout ?? "").toString().toLowerCase();

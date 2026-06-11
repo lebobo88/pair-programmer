@@ -161,6 +161,14 @@ The `trace` array records which layer set the final tier ("frontmatter", "team_y
     - A tier-breakdown row: query `budget_status(scope="tier:opus")`, `tier:sonnet`, `tier:haiku` and show their totals so the user sees where spend went.
     - A one-paragraph summary of what changed.
 
+## Windows / PowerShell portability notes
+
+**Subprocess spawn on Windows:** All daemon subprocesses (git, npx, plantuml, judge CLIs) are spawned via `trackedExeca` / `trackedExecaNoRefuse` with `windowsHide: true` and arguments passed as an array (never a shell string, never `shell: true`). `execa` resolves `.cmd` shims via PATHEXT automatically so `npx` works without extra shim handling.
+
+**Binary existence probe:** The `onPath()` helper in `c4-render.ts` spawns the binary directly with a no-op flag rather than calling `which` (POSIX) or `where` (Windows). This avoids platform branching while catching ENOENT on all platforms.
+
+**Parallel subagent spawn on Windows/PowerShell:** Parallel Task dispatch (e.g. multiple engineer candidates or browser-validator + engineer in the same stage) can be unreliable on Windows due to PowerShell process-group limits and pipe contention. If parallel dispatch hangs or produces incomplete results, fall back to sequential dispatch: invoke each sub-agent Task call in series, awaiting each before starting the next. The harness timer still applies to the full sequence.
+
 ## Failure handling
 
 - Any harness MCP call error → print verbatim, then `mcp__pp_harness__finalize_run(status="aborted", summary_md=<error context>)` and STOP.

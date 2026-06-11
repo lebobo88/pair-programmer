@@ -19,12 +19,33 @@
  *
  * PP-RS-3 (issue 1 + 2): This module maintains a process-wide registry of
  * in-flight child processes and exports:
- *   - trackedExeca()            — drop-in execa wrapper that auto-registers /
- *                                 deregisters; all MCP-path spawns use this.
- *   - abortAllInFlightChildren() — async: SIGTERM, 2s grace, SIGKILL on
- *                                 timeout; awaits each exit so locks are only
- *                                 released after children are confirmed dead.
- *   - _activeChildrenSize()     — test-only size accessor.
+ *   - trackedExeca()              — drop-in execa wrapper that auto-registers /
+ *                                   deregisters; all MCP-path spawns use this.
+ *                                   Throws SpawnRefusedError once shutdown begins.
+ *   - trackedExecaNoRefuse()      — teardown-safe variant: skips the
+ *                                   _spawnRefused guard so worktree cleanup can
+ *                                   proceed during shutdown, but still registers
+ *                                   the child in ACTIVE_CHILDREN.  Throws
+ *                                   SpawnRefusedError once _sealTeardown() is
+ *                                   called (the final drain phase).
+ *   - abortAllInFlightChildren()  — dynamic drain loop: SIGTERM→SIGKILL each
+ *                                   batch, re-snapshot after each pass until
+ *                                   empty (catches teardown children spawned
+ *                                   mid-drain), then seals teardown so no new
+ *                                   children can join after the final pass.
+ *                                   While a critical op is in flight the drain
+ *                                   uses ABORT_CRITICAL_GRACE_MS (default 10 s)
+ *                                   instead of ABORT_GRACEFUL_MS (2 s) before
+ *                                   escalating to SIGKILL, allowing small merges
+ *                                   to complete atomically.  SIGKILL is always
+ *                                   the final backstop.
+ *   - enterCriticalOp() /         — bracket a project-root write (git merge /
+ *     exitCriticalOp()              cpSync).  The drain loop reads the counter
+ *                                   to decide which grace cap to use.
+ *   - SpawnRefusedError           — typed sentinel for "daemon shutting down";
+ *                                   callers MUST rethrow this before any
+ *                                   destructive fallback.
+ *   - _activeChildrenSize()       — test-only size accessor.
  */
 
 import { execa, type ExecaError, type Options as ExecaOptions } from "execa";
@@ -38,23 +59,79 @@ import {
 } from "../config.js";
 import { log } from "../util/logger.js";
 
-// ─── In-flight child-process registry (PP-RS-3, issues 1, 2, post-snapshot) ──
+// ─── In-flight child-process registry (PP-RS-3, WS7) ─────────────────────────
 //
-// trackedExeca() is the single choke-point: every MCP-triggered subprocess
-// goes through it so shutdownAndExit() can SIGTERM → SIGKILL all of them
-// before releasing project locks.
+// Shutdown sequence (abortAllInFlightChildren):
+//   1. _refuseNewSpawns()   — in-flight trackedExeca calls throw SpawnRefusedError.
+//   2. DRAIN LOOP           — repeatedly SIGTERM→SIGKILL ACTIVE_CHILDREN, re-
+//                             snapshot after each pass to catch teardown children
+//                             spawned between passes.  Loop exits when a pass
+//                             completes with an empty registry, or the overall
+//                             ABORT_TOTAL_CAP_MS deadline is hit.
+//   3. _sealTeardown()      — trackedExecaNoRefuse also throws SpawnRefusedError;
+//                             no child can ever join the registry again.
+//   4. FINAL DRAIN          — one more pass to confirm the registry is empty
+//                             (handles any child spawned between the last loop
+//                             pass and the seal).
+//   5. Return unconfirmed   — true if any cap-hit survivors remain.
 //
-// Post-snapshot spawn race (PP-RS-3 revision): once shutdown begins, no new
-// child is allowed to start.  trackedExeca checks _spawnRefused before calling
-// execa() — if true it throws synchronously.  shutdown.ts calls
-// _refuseNewSpawns() as its very first action (before the registry snapshot),
-// closing the race window entirely.
+// This guarantees that a teardown child spawned between the snapshot and the
+// seal is caught by the drain loop (it's in ACTIVE_CHILDREN already), and
+// nothing can spawn after the seal.
 
 /** Graceful-shutdown timeout per child: SIGTERM, then wait, then SIGKILL. */
 const ABORT_GRACEFUL_MS = 2_000;
 
+/**
+ * Extended SIGTERM grace period for children that are inside a CRITICAL SECTION
+ * (e.g. an in-flight git merge or copy-mode cpSync into the user's project root).
+ * Allows a small merge to complete atomically before SIGKILL is sent.
+ * The overall ABORT_TOTAL_CAP_MS still bounds the total shutdown time.
+ */
+const ABORT_CRITICAL_GRACE_MS = 10_000;
+
 /** Overall cap so shutdown can't hang forever even if many children stall. */
-const ABORT_TOTAL_CAP_MS = 8_000;
+const ABORT_TOTAL_CAP_MS = 15_000;
+
+/** Min remaining time needed before starting another drain pass (ms). */
+const DRAIN_PASS_MIN_BUDGET_MS = 100;
+
+/**
+ * Count of critical operations currently in flight (e.g. git merge or cpSync
+ * into the user's project root).  Incremented by enterCriticalOp() BEFORE the
+ * op begins, decremented in the finally block via exitCriticalOp().
+ *
+ * The drain loop checks this count when deciding whether to escalate from
+ * SIGTERM to SIGKILL: as long as _criticalOpInFlight > 0, each child gets
+ * ABORT_CRITICAL_GRACE_MS instead of ABORT_GRACEFUL_MS before SIGKILL.
+ * SIGKILL is ALWAYS the final backstop once the critical grace cap is exceeded.
+ */
+let _criticalOpInFlight = 0;
+
+/** Mark entry into a critical section (project-root write). */
+export function enterCriticalOp(): void {
+  _criticalOpInFlight++;
+}
+
+/** Mark exit from a critical section. Always call from a finally block. */
+export function exitCriticalOp(): void {
+  if (_criticalOpInFlight > 0) _criticalOpInFlight--;
+}
+
+/** Returns true while at least one critical op is in flight. */
+export function isCriticalOpInFlight(): boolean {
+  return _criticalOpInFlight > 0;
+}
+
+/** Test-only: returns the raw counter value. */
+export function _criticalOpInFlightCount(): number {
+  return _criticalOpInFlight;
+}
+
+/** Test-only: reset the critical-op counter. NEVER call in production. */
+export function _resetCriticalOpForTest(): void {
+  _criticalOpInFlight = 0;
+}
 
 interface ChildEntry {
   /** Kill the process with the given signal. */
@@ -68,19 +145,72 @@ interface ChildEntry {
 const ACTIVE_CHILDREN = new Set<ChildEntry>();
 
 /**
- * Module-level flag set by shutdown.ts BEFORE taking the registry snapshot.
- * Once true, trackedExeca refuses all new spawns, making the snapshot complete-
- * by-construction: no child can be added between _refuseNewSpawns() and the
- * Array.from(ACTIVE_CHILDREN) call in abortAllInFlightChildren().
+ * Typed sentinel thrown by trackedExeca (always) and trackedExecaNoRefuse
+ * (after _sealTeardown).  Callers that catch git errors MUST check
+ * `if (err instanceof SpawnRefusedError) throw err` BEFORE taking any
+ * destructive fallback action (copy-mode fallback, rmSync, etc.), because a
+ * refusal means the daemon is shutting down — not that git failed.
+ */
+export class SpawnRefusedError extends Error {
+  constructor(message = "daemon shutting down — refusing new child spawn") {
+    super(message);
+    this.name = "SpawnRefusedError";
+  }
+}
+
+/**
+ * Module-level flag set by shutdown.ts BEFORE the drain loop.
+ * Once true, trackedExeca throws SpawnRefusedError on every call.
  */
 let _spawnRefused = false;
 
 /**
- * Called by shutdown.ts as its first action.  After this returns, trackedExeca
- * throws on every call so no new child can join the registry.
+ * Set by abortAllInFlightChildren() AFTER the drain loop empties the registry,
+ * BEFORE the final drain pass.  Once true, trackedExecaNoRefuse also throws
+ * SpawnRefusedError — sealing the registry so nothing can spawn between the
+ * last drain pass and lock release.
+ */
+let _teardownSealed = false;
+
+/**
+ * Called by shutdown.ts (or abortAllInFlightChildren) as the first action.
+ * After this returns, trackedExeca throws on every call.
  */
 export function _refuseNewSpawns(): void {
   _spawnRefused = true;
+}
+
+/**
+ * Called by abortAllInFlightChildren() after the drain loop empties the
+ * registry.  After this returns, trackedExecaNoRefuse also throws, sealing
+ * the registry permanently.
+ */
+export function _sealTeardown(): void {
+  _teardownSealed = true;
+}
+
+/**
+ * Returns true once shutdown has begun (i.e. _refuseNewSpawns() has been
+ * called), including after teardown is sealed.
+ *
+ * WHY THIS EXISTS — the killed-mid-flight case:
+ *   `instanceof SpawnRefusedError` only guards spawns that were REFUSED before
+ *   starting.  A git child that was already running when the shutdown drain
+ *   sends SIGTERM/SIGKILL rejects as an ordinary ExecaError (killed process),
+ *   NOT SpawnRefusedError.  Without this predicate, those kills look like a
+ *   genuine git failure and trigger destructive fallbacks (copy-mode, rmSync).
+ *
+ *   Callers MUST use the combined guard:
+ *     if (err instanceof SpawnRefusedError || isShuttingDown()) throw err;
+ *   BEFORE any destructive/copy/rmSync fallback.  This covers both:
+ *     - refused-before-spawn  → SpawnRefusedError
+ *     - killed-mid-flight     → isShuttingDown() === true
+ *
+ *   Normal (non-shutdown) git failures when isShuttingDown() is false still
+ *   take their legitimate fallback (e.g. non-git repo → copy-mode is correct).
+ */
+export function isShuttingDown(): boolean {
+  return _spawnRefused;
 }
 
 /**
@@ -89,11 +219,11 @@ export function _refuseNewSpawns(): void {
  * (tdd-gate, artifact-validators, copilot probe, cli-runner retry loop) MUST
  * use this instead of calling execa() directly.
  *
- * Throws synchronously with "daemon shutting down — refusing new child spawn"
- * once _refuseNewSpawns() has been called.  MCP tool handlers already treat a
- * failed CLI spawn as an error result (the execa call is wrapped in try/catch
- * or returns a non-zero exit), so this rejection surfaces gracefully to the
- * caller without crashing the server.
+ * Throws SpawnRefusedError synchronously once _refuseNewSpawns() has been
+ * called.  Callers MUST use the combined guard
+ * `if (err instanceof SpawnRefusedError || isShuttingDown()) throw err`
+ * before any destructive fallback — a refusal/kill is not a git/CLI failure,
+ * it is a shutdown signal.
  *
  * Returns the same ResultPromise that execa() would return; callers await it
  * exactly as before.
@@ -105,8 +235,61 @@ export function trackedExeca(
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 ): ReturnType<typeof execa<any>> {
   if (_spawnRefused) {
-    throw new Error("daemon shutting down — refusing new child spawn");
+    throw new SpawnRefusedError();
   }
+  return _spawnTracked(file, args, options);
+}
+
+/**
+ * Teardown-safe variant of trackedExeca.
+ *
+ * WHY THIS EXISTS: worktree cleanup (git worktree remove --force, git branch
+ * -D) runs during teardownCandidates() and release(), which can be called while
+ * shutdown is already in progress (_spawnRefused=true).  Routing teardown git
+ * calls through the refusing trackedExeca would throw and leave orphaned
+ * worktrees on disk.  trackedExecaNoRefuse skips the _spawnRefused guard so
+ * teardown ALWAYS completes while the drain loop is running.
+ *
+ * DRAIN LOOP + SEAL contract:
+ *   abortAllInFlightChildren() runs a dynamic drain loop that re-snapshots
+ *   ACTIVE_CHILDREN after each pass, so any child spawned mid-drain (including
+ *   from a teardown callback that the previous pass's SIGTERM triggered) is
+ *   caught by the next pass.  Once the loop sees an empty registry, it calls
+ *   _sealTeardown() so trackedExecaNoRefuse ALSO throws SpawnRefusedError —
+ *   nothing can join after the seal.
+ *
+ * Both trackedExeca and trackedExecaNoRefuse register identically in
+ * ACTIVE_CHILDREN; abortAllInFlightChildren() sees no distinction.
+ * janitor.ts is the last-resort sync fallback for worktrees neither path
+ * could clean up.
+ */
+export function trackedExecaNoRefuse(
+  file: string,
+  args?: readonly string[],
+  options?: ExecaOptions,
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+): ReturnType<typeof execa<any>> {
+  // Sealed after the drain loop empties: nothing may spawn after the final pass.
+  if (_teardownSealed) {
+    throw new SpawnRefusedError("daemon shutting down — teardown sealed, refusing new child spawn");
+  }
+  // Intentionally does NOT check _spawnRefused — teardown must proceed while
+  // the drain loop is running.
+  return _spawnTracked(file, args, options);
+}
+
+/**
+ * Internal: spawn the child and register it in ACTIVE_CHILDREN.
+ * Called by both trackedExeca (after refuse-guard) and trackedExecaNoRefuse
+ * (after seal-guard).  Both variants register identically.
+ * abortAllInFlightChildren() treats them identically.
+ */
+function _spawnTracked(
+  file: string,
+  args?: readonly string[],
+  options?: ExecaOptions,
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+): ReturnType<typeof execa<any>> {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const child = execa(file, args as string[], options as any);
   // Wrap the child promise so we can await exit without .kill() interfering.
@@ -130,94 +313,158 @@ export function trackedExeca(
 /**
  * Terminate all registered in-flight CLI child processes and await confirmed exit.
  *
- * Algorithm (PP-RS-3 issue 2 — corrected):
- *   For each child still in ACTIVE_CHILDREN at call time:
- *     1. Send SIGTERM.
- *     2. Await its exitPromise with ABORT_GRACEFUL_MS timeout.
- *     3. If not exited: send SIGKILL, then await its exitPromise AGAIN with a
- *        short bounded wait (NOT a fixed sleep — we wait for the real exit event).
- *     4. Remove the entry from ACTIVE_CHILDREN only after its exitPromise settles.
- *     5. If the entry is still not confirmed after the overall ABORT_TOTAL_CAP_MS
- *        deadline, log a warning naming the child and proceed (best-effort).
+ * Algorithm (WS7 dynamic drain + seal):
  *
- * The registry is NOT pre-cleared: entries are removed one-by-one as each child's
- * exit is confirmed, so a concurrent re-entrant call that reaches the size-0 guard
- * is only reached when the set is actually empty.  shutdownAndExit awaits this
- * function before releasing locks, guaranteeing [child exits] → [lock release].
+ *   Pre-condition: _refuseNewSpawns() has been called (trackedExeca throws).
  *
- * Returns true if any children were left UNCONFIRMED at the cap deadline.
- * shutdownAndExit uses this to conservatively retain ALL locks when any survivor
- * exists — releasing a lock while its child may still be alive violates the
- * invariant.  The janitor TTL reaper will clean up retained locks.
+ *   DRAIN LOOP (while teardown children may still join):
+ *     Repeat until a pass starts with ACTIVE_CHILDREN empty OR the overall
+ *     ABORT_TOTAL_CAP_MS deadline is hit:
+ *       1. Snapshot the current ACTIVE_CHILDREN.
+ *       2. For each entry: SIGTERM → wait ABORT_GRACEFUL_MS → SIGKILL → wait
+ *          remaining budget.  Confirmed exits are removed from the set.
+ *       3. After the pass, re-check ACTIVE_CHILDREN.  If empty: DONE.
+ *          If not: teardown children joined during this pass; loop again.
+ *
+ *   SEAL:
+ *     _sealTeardown() — trackedExecaNoRefuse now also throws SpawnRefusedError.
+ *
+ *   FINAL DRAIN:
+ *     One more pass for children spawned between the last loop pass and the
+ *     seal (extremely narrow race; handled for correctness).
+ *
+ *   RETURN: true if any cap-hit survivors remain in ACTIVE_CHILDREN.
+ *     shutdownAndExit conservatively retains locks when any survivor exists.
+ *     The janitor TTL reaper will clean up retained locks.
  */
 export async function abortAllInFlightChildren(): Promise<boolean> {
-  if (ACTIVE_CHILDREN.size === 0) return false;
-  // Snapshot the live entries.  New entries added concurrently (unlikely during
-  // shutdown, but possible) are left in ACTIVE_CHILDREN for the idempotency
-  // guard to catch on a hypothetical second call.
-  const entries = Array.from(ACTIVE_CHILDREN);
-  log.info({ count: entries.length }, "shutdown: aborting in-flight CLI children");
-
   const overallDeadline = Date.now() + ABORT_TOTAL_CAP_MS;
 
-  const perChildTasks = entries.map(async (entry) => {
-    // 1. Send SIGTERM.
-    entry.kill("SIGTERM");
-
-    // 2. Await real exit, bounded by grace period.
-    const gracePeriod = Math.min(
-      ABORT_GRACEFUL_MS,
-      Math.max(0, overallDeadline - Date.now()),
-    );
-    const exitedAfterTerm = await Promise.race([
-      entry.exitPromise.then(() => true),
-      sleep(gracePeriod).then(() => false),
-    ]);
-
-    if (!exitedAfterTerm) {
-      // 3. Grace period expired — escalate to SIGKILL.
-      log.warn("shutdown: child did not exit after SIGTERM grace; sending SIGKILL");
-      entry.kill("SIGKILL");
-
-      // 4. Await the REAL exit event after SIGKILL (not a fixed sleep).
-      //    Bound by whatever remains of the overall deadline.
-      const remainingAfterKill = Math.max(0, overallDeadline - Date.now());
-      const exitedAfterKill = await Promise.race([
-        entry.exitPromise.then(() => true),
-        sleep(remainingAfterKill).then(() => false),
-      ]);
-
-      if (!exitedAfterKill) {
-        // 5. Hard cap hit — log and proceed without confirmed exit.
-        //    Do NOT remove from set here — entry remains so the caller can
-        //    detect that this child is an unconfirmed survivor.
-        log.warn(
-          { pid: entry.pid },
-          "shutdown: child not confirmed terminated before cap; entry retained in registry",
-        );
-        return;
-      }
+  // ── DRAIN LOOP ────────────────────────────────────────────────────────────
+  // Re-snapshot on every iteration so teardown children spawned between passes
+  // are caught.  Loop terminates when a pass starts empty (no more children to
+  // kill) or the overall deadline is exceeded.
+  while (ACTIVE_CHILDREN.size > 0) {
+    const remaining = overallDeadline - Date.now();
+    if (remaining < DRAIN_PASS_MIN_BUDGET_MS) {
+      log.warn("shutdown: ABORT_TOTAL_CAP_MS hit during drain loop; breaking");
+      break;
     }
 
-    // Entry's exit confirmed — remove from the live set.
-    ACTIVE_CHILDREN.delete(entry);
-  });
+    const entries = Array.from(ACTIVE_CHILDREN);
+    log.info({ count: entries.length }, "shutdown: drain pass — aborting in-flight CLI children");
 
-  // Apply the overall cap across the whole batch.
-  await Promise.race([
-    Promise.allSettled(perChildTasks),
-    sleep(ABORT_TOTAL_CAP_MS).then(() => {
-      log.warn("shutdown: overall ABORT_TOTAL_CAP_MS hit; proceeding");
-    }),
-  ]);
+    const passDeadline = overallDeadline; // share the overall deadline across passes
 
-  // After the sweep: any entry still in ACTIVE_CHILDREN is a genuine cap-hit
-  // survivor (not confirmed terminated).  Return true so shutdownAndExit can
-  // conservatively retain locks rather than release-under-live-child.
+    const perChildTasks = entries.map(async (entry) => {
+      // 1. Send SIGTERM.
+      entry.kill("SIGTERM");
+
+      // 2. Await real exit, bounded by grace period.
+      // If a critical op (project-root merge/copy) is in flight, use the longer
+      // ABORT_CRITICAL_GRACE_MS so a small merge can finish atomically before we
+      // escalate to SIGKILL.  SIGKILL is always the final backstop.
+      const baseGrace = _criticalOpInFlight > 0 ? ABORT_CRITICAL_GRACE_MS : ABORT_GRACEFUL_MS;
+      const gracePeriod = Math.min(
+        baseGrace,
+        Math.max(0, passDeadline - Date.now()),
+      );
+      if (_criticalOpInFlight > 0) {
+        log.info(
+          { pid: entry.pid, critical_ops: _criticalOpInFlight, grace_ms: gracePeriod },
+          "shutdown: critical op in flight — awaiting extended SIGTERM grace before SIGKILL",
+        );
+      }
+      const exitedAfterTerm = await Promise.race([
+        entry.exitPromise.then(() => true),
+        sleep(gracePeriod).then(() => false),
+      ]);
+
+      if (!exitedAfterTerm) {
+        // 3. Grace period expired — escalate to SIGKILL.
+        // If a critical op is still in flight here, the critical-grace cap was
+        // exceeded; SIGKILL is inevitable.  The caller must detect this and emit
+        // a recovery note (see best-of-n.ts mergeInterrupted path).
+        log.warn({ pid: entry.pid, critical_ops: _criticalOpInFlight }, "shutdown: child did not exit after SIGTERM grace; sending SIGKILL");
+        entry.kill("SIGKILL");
+
+        // 4. Await the REAL exit event after SIGKILL (not a fixed sleep).
+        const remainingAfterKill = Math.max(0, passDeadline - Date.now());
+        const exitedAfterKill = await Promise.race([
+          entry.exitPromise.then(() => true),
+          sleep(remainingAfterKill).then(() => false),
+        ]);
+
+        if (!exitedAfterKill) {
+          // 5. Hard cap hit for this entry — entry remains for survivor detection.
+          log.warn(
+            { pid: entry.pid },
+            "shutdown: child not confirmed terminated before cap; entry retained in registry",
+          );
+          return;
+        }
+      }
+
+      // Exit confirmed — remove from the live set.
+      ACTIVE_CHILDREN.delete(entry);
+    });
+
+    // Apply the pass-level overall cap.
+    await Promise.race([
+      Promise.allSettled(perChildTasks),
+      sleep(Math.max(0, overallDeadline - Date.now())).then(() => {
+        log.warn("shutdown: overall cap hit during drain pass; breaking loop");
+      }),
+    ]);
+    // Loop head re-checks ACTIVE_CHILDREN.size; if children were added during
+    // this pass (teardown spawning new children), the next iteration catches them.
+  }
+
+  // ── SEAL ─────────────────────────────────────────────────────────────────
+  // Prevent any further spawns from trackedExecaNoRefuse.  Called here so the
+  // seal happens after the drain loop has emptied (or capped out on) the
+  // registry.
+  _sealTeardown();
+
+  // ── FINAL DRAIN ──────────────────────────────────────────────────────────
+  // Extremely narrow window: a child could have been spawned between the last
+  // loop pass and the seal above.  One final pass handles that race.
+  if (ACTIVE_CHILDREN.size > 0) {
+    log.info(
+      { count: ACTIVE_CHILDREN.size },
+      "shutdown: final drain pass after teardown seal",
+    );
+    const finalEntries = Array.from(ACTIVE_CHILDREN);
+    await Promise.allSettled(
+      finalEntries.map(async (entry) => {
+        entry.kill("SIGTERM");
+        const remainingFinal = Math.max(0, overallDeadline - Date.now());
+        const exited = await Promise.race([
+          entry.exitPromise.then(() => true),
+          sleep(remainingFinal).then(() => false),
+        ]);
+        if (exited) {
+          ACTIVE_CHILDREN.delete(entry);
+        } else {
+          entry.kill("SIGKILL");
+          // Best-effort: don't wait further if deadline is gone.
+          const afterKill = Math.max(0, overallDeadline - Date.now());
+          const exitedK = await Promise.race([
+            entry.exitPromise.then(() => true),
+            sleep(afterKill).then(() => false),
+          ]);
+          if (exitedK) ACTIVE_CHILDREN.delete(entry);
+        }
+      }),
+    );
+  }
+
+  // After all passes: any entry still in ACTIVE_CHILDREN is a genuine cap-hit
+  // survivor.  Return true so shutdownAndExit retains locks conservatively.
   if (ACTIVE_CHILDREN.size > 0) {
     log.warn(
       { remaining: ACTIVE_CHILDREN.size },
-      "shutdown: registry non-empty after abort sweep — cap-hit children not confirmed terminated",
+      "shutdown: registry non-empty after drain+seal — cap-hit children not confirmed terminated",
     );
     return true;
   }
@@ -243,13 +490,19 @@ export function _isSpawnRefused(): boolean {
   return _spawnRefused;
 }
 
+/** Test-only: returns whether teardown has been sealed. */
+export function _isTeardownSealed(): boolean {
+  return _teardownSealed;
+}
+
 /**
- * Test-only: reset the spawn-refused flag so a test that runs after a
- * shutdownAndExit call can still exercise trackedExeca / abortAllInFlightChildren
- * directly.  NEVER call this in production code.
+ * Test-only: reset all shutdown flags so tests that run sequentially can
+ * exercise the full lifecycle more than once.  NEVER call in production code.
  */
 export function _resetSpawnRefusedForTest(): void {
   _spawnRefused = false;
+  _teardownSealed = false;
+  _criticalOpInFlight = 0;
 }
 
 /**

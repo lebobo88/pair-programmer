@@ -201,6 +201,7 @@ async function runStyleDictionary(absArtifactPath: string): Promise<SdOutcome> {
       timeout: SD_TIMEOUT_MS,
       reject: false,
       shell: false,
+      windowsHide: true,
       env: { ...process.env, NO_COLOR: "1" },
     });
   } catch (err) {

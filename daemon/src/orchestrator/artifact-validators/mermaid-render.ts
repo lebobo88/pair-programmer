@@ -101,7 +101,7 @@ export async function validateMermaid(input: { artifact_abs_path: string }): Pro
       result = await execa(
         "npx",
         ["-y", "-p", "@mermaid-js/mermaid-cli@10.x", "mmdc", "-i", inFile, "-o", outFile, "-q"],
-        { timeout: MMDC_TIMEOUT_MS, reject: false, shell: false, env: { ...process.env, NO_COLOR: "1" } },
+        { timeout: MMDC_TIMEOUT_MS, reject: false, shell: false, windowsHide: true, env: { ...process.env, NO_COLOR: "1" } },
       );
     } catch (err) {
       return {

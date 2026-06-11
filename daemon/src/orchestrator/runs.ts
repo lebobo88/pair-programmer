@@ -2,7 +2,6 @@ import { nanoid } from "nanoid";
 import { createHash } from "node:crypto";
 import { mkdirSync, writeFileSync, statSync, existsSync, readFileSync } from "node:fs";
 import { join, relative } from "node:path";
-import { execa } from "execa";
 import { trackedExeca } from "../mcp/cli-runner.js";
 import YAML from "yaml";
 import { db, txImmediate } from "../db/database.js";
@@ -2854,8 +2853,8 @@ function tallyBudgets(
 
 async function tryGitCommand(cwd: string, args: string[]): Promise<string | null> {
   try {
-    const { stdout } = await execa("git", args, { cwd });
-    return stdout.trim() || null;
+    const { stdout } = await trackedExeca("git", args, { cwd, windowsHide: true });
+    return (stdout ?? "").toString().trim() || null;
   } catch {
     return null;
   }
@@ -2873,8 +2872,8 @@ async function tryCmd(cmd: string, args: string[]): Promise<string | null> {
   try {
     // trackedExeca so doctor's CLI-version probes are registered in
     // ACTIVE_CHILDREN and aborted on shutdown (PP-RS-3 issue 1).
-    const { stdout } = await trackedExeca(cmd, args);
-    return (stdout ?? "").trim();
+    const { stdout } = await trackedExeca(cmd, args, { windowsHide: true });
+    return (stdout ?? "").toString().trim();
   } catch {
     return null;
   }

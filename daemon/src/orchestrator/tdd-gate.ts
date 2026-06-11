@@ -426,6 +426,7 @@ export async function runTddCheck(opts: { stage_id: string; phase: "pre" | "post
       timeout: timeoutMs,
       reject: false,
       shell: false,
+      windowsHide: true,
       all: false,
       stripFinalNewline: false,
       env: { ...process.env, CI: "1", FORCE_COLOR: "0" },

@@ -21,7 +21,7 @@
 
 import { mkdirSync, writeFileSync, readFileSync, existsSync, cpSync, rmSync, statSync, copyFileSync } from "node:fs";
 import { join, dirname, relative, sep, isAbsolute, resolve as resolvePath } from "node:path";
-import { execa } from "execa";
+import { trackedExeca, trackedExecaNoRefuse, SpawnRefusedError, isShuttingDown, enterCriticalOp, exitCriticalOp } from "../mcp/cli-runner.js";
 import { nanoid } from "nanoid";
 import { db, txImmediate } from "../db/database.js";
 import { createWorktree } from "./worktree.js";
@@ -331,7 +331,8 @@ async function autoCommitCandidate(opts: {
   candidate_index: number;
 }): Promise<{ committed: boolean; was_dirty: boolean; reason?: string }> {
   try {
-    const { stdout: porcelain } = await execa("git", ["status", "--porcelain"], { cwd: opts.cwd });
+    const { stdout: _porcelain } = await trackedExeca("git", ["status", "--porcelain"], { cwd: opts.cwd, windowsHide: true });
+    const porcelain = (_porcelain ?? "") as string;
     const dirty = porcelain.trim().length > 0;
     if (!dirty) {
       // Worktree is clean -- do NOT commit. A --allow-empty commit would
@@ -340,8 +341,8 @@ async function autoCommitCandidate(opts: {
       // correctly classify this as merge_status="empty".
       return { committed: false, was_dirty: false };
     }
-    await execa("git", ["add", "-A"], { cwd: opts.cwd });
-    await execa(
+    await trackedExeca("git", ["add", "-A"], { cwd: opts.cwd, windowsHide: true });
+    await trackedExeca(
       "git",
       [
         "-c", "user.email=harness@pp",
@@ -349,7 +350,7 @@ async function autoCommitCandidate(opts: {
         "commit",
         "-m", `pp(${opts.run_id}): auto-snapshot candidate-${opts.candidate_index}`,
       ],
-      { cwd: opts.cwd },
+      { cwd: opts.cwd, windowsHide: true },
     );
     return { committed: true, was_dirty: true };
   } catch (err) {
@@ -427,9 +428,12 @@ export async function archiveWinnerAndLosers(opts: {
       if (existsSync(candPath)) {
         try {
           mkdirSync(dest, { recursive: true });
+          // Point-of-action guard: smoke-failed path can execute during shutdown.
+          if (isShuttingDown()) throw new SpawnRefusedError("shutdown in progress — aborting smoke-failed loser cpSync");
           cpSync(candPath, dest, { recursive: true, force: true });
           losers_archived_early++;
         } catch (err) {
+          if (err instanceof SpawnRefusedError) throw err;
           log.warn({ err, src: candPath, dest }, "archive loser failed (smoke-gated path)");
         }
       }
@@ -472,22 +476,65 @@ export async function archiveWinnerAndLosers(opts: {
       let diffStdout = "";
       let gitDiffOk = false;
       try {
-        const result = await execa("git", ["diff", "HEAD", branch], { cwd: run.project_path });
-        diffStdout = result.stdout;
+        const result = await trackedExeca("git", ["diff", "HEAD", branch], { cwd: run.project_path, windowsHide: true });
+        diffStdout = (result.stdout ?? "") as string;
         gitDiffOk = true;
       } catch (err) {
+        // Abort if refused-before-spawn OR killed-mid-flight during shutdown.
+        // Copying over the project root during shutdown would be destructive.
+        if (err instanceof SpawnRefusedError || isShuttingDown()) throw err;
         log.warn({ err }, "git diff failed for winner; falling back to candidate-tree archive");
         const fallback = join(stageDir, "winner.tree");
         if (existsSync(candPath)) {
+          // Point-of-action guard: shutdown may have started while we awaited git.
+          if (isShuttingDown()) throw new SpawnRefusedError("shutdown in progress — aborting winner-tree cpSync");
           mkdirSync(fallback, { recursive: true });
           cpSync(candPath, fallback, { recursive: true, force: true });
           winner_diff_path = relative(run.project_path, fallback).replaceAll("\\", "/");
           // Non-git path: copy the winner tree directly over the project.
+          // CRITICAL SECTION: once cpSync begins writing into project_path, a
+          // SIGKILL mid-write leaves a partial tree.  enterCriticalOp() signals
+          // abortAllInFlightChildren to use the extended ABORT_CRITICAL_GRACE_MS
+          // so this copy can complete atomically in the common case.
+          // SIGKILL after the critical grace cap is still the final backstop;
+          // the catch block below emits a recovery note if that happens.
+          let copyMergeStarted = false;
+          enterCriticalOp();
           try {
+            // Pre-action guard: do not start IF shutdown already in progress.
+            if (isShuttingDown()) throw new SpawnRefusedError("shutdown in progress — aborting copy-mode merge-back");
+            copyMergeStarted = true;
             cpSync(candPath, run.project_path, { recursive: true, force: true });
             merge_status = "copy";
           } catch (copyErr) {
+            if (copyErr instanceof SpawnRefusedError) {
+              // Interrupted during shutdown.  Log recovery note regardless of
+              // whether the copy had started (partial write is possible only if
+              // copyMergeStarted=true).
+              if (copyMergeStarted) {
+                const recoveryNote =
+                  `winner copy-mode merge-back into ${run.project_path} was interrupted by shutdown; ` +
+                  `the project directory may contain a partially-copied tree. ` +
+                  `Recovery: inspect the directory, restore from git, or re-run the workflow. ` +
+                  `Note: copy-mode is used only for non-git project directories.`;
+                log.error(
+                  { run_id: opts.run_id, project_path: run.project_path, recovery_note: recoveryNote },
+                  "SHUTDOWN INTERRUPTED copy-mode merge-back — manual recovery may be required",
+                );
+                // Annotate the run record so /pp:doctor and operators can see it.
+                try {
+                  txImmediate(() => {
+                    db()
+                      .prepare(`UPDATE runs SET notes_json = json_patch(COALESCE(notes_json, '{}'), ?) WHERE id = ?`)
+                      .run(JSON.stringify({ merge_interrupted: true, recovery_note: recoveryNote }), opts.run_id);
+                  });
+                } catch { /* best-effort — we are shutting down */ }
+              }
+              throw copyErr;
+            }
             log.warn({ err: copyErr }, "copy-mode merge-back failed");
+          } finally {
+            exitCriticalOp();
           }
           continue;  // skip the git merge attempt below for non-git
         }
@@ -500,10 +547,13 @@ export async function archiveWinnerAndLosers(opts: {
         if (diffStdout.length === 0) {
           let baseSame = false;
           try {
-            const a = (await execa("git", ["rev-parse", "HEAD"], { cwd: run.project_path })).stdout.trim();
-            const b = (await execa("git", ["rev-parse", branch], { cwd: run.project_path })).stdout.trim();
+            const a = ((await trackedExeca("git", ["rev-parse", "HEAD"], { cwd: run.project_path, windowsHide: true })).stdout ?? "").toString().trim();
+            const b = ((await trackedExeca("git", ["rev-parse", branch], { cwd: run.project_path, windowsHide: true })).stdout ?? "").toString().trim();
             baseSame = a === b;
-          } catch {
+          } catch (err) {
+            // Propagate on shutdown — killed mid-flight means we can't trust the
+            // result; continuing to a merge during shutdown is unsafe.
+            if (err instanceof SpawnRefusedError || isShuttingDown()) throw err;
             // If rev-parse fails the branch likely has no commits; treat as empty too.
             baseSame = true;
           }
@@ -520,43 +570,104 @@ export async function archiveWinnerAndLosers(opts: {
         }
 
         // Real, non-empty diff — write it for audit.
+        // Point-of-action guard: shutdown may have begun while awaiting git calls above.
+        if (isShuttingDown()) throw new SpawnRefusedError("shutdown in progress — aborting winner.diff writeFileSync");
         const diffPath = join(stageDir, "winner.diff");
         writeFileSync(diffPath, diffStdout, "utf8");
         winner_diff_path = relative(run.project_path, diffPath).replaceAll("\\", "/");
       }
 
       // Step 3: merge the winner branch into HEAD.
+      //
+      // CRITICAL SECTION: git merge writes into the user's project_path.  Once
+      // it has started, a SIGKILL mid-write leaves an in-progress merge state
+      // (MERGE_HEAD, partial index).  enterCriticalOp() signals the drain loop
+      // to use ABORT_CRITICAL_GRACE_MS (10 s) instead of ABORT_GRACEFUL_MS (2 s)
+      // so a small merge can finish atomically in the common case.
+      //
+      // Residual: if the critical grace cap is exceeded, SIGKILL is sent and git
+      // leaves a RECOVERABLE (not corrupt) state — MERGE_HEAD + index are intact
+      // and the user can run `git merge --abort` or `git reset --hard` to recover.
+      // The catch block below detects this case and emits a recovery note.
+      //
+      // Pre-spawn guard: do not start if shutdown already in progress.
+      if (isShuttingDown()) throw new SpawnRefusedError("shutdown in progress — aborting git merge before spawn");
+      let mergeSpawned = false;
+      enterCriticalOp();
       try {
-        await execa(
+        mergeSpawned = true;
+        await trackedExeca(
           "git",
           ["merge", "--no-ff", "-m", `pp(${opts.run_id}): apply best-of-N winner ${branch}`, branch],
-          { cwd: run.project_path },
+          { cwd: run.project_path, windowsHide: true },
         );
         merge_status = "merged";
       } catch (err) {
+        // Abort if refused-before-spawn OR killed-mid-flight during shutdown.
+        // A shutdown-killed merge must not be misread as a real conflict — that
+        // would trigger status/porcelain/cpSync archiving during shutdown.
+        if (err instanceof SpawnRefusedError || isShuttingDown()) {
+          // Recovery note: if the merge had already spawned (mergeSpawned=true),
+          // the git process may have been killed mid-write.  git leaves a
+          // recoverable MERGE_HEAD/index state — NOT silent corruption.  Emit
+          // a recovery note so the operator knows exactly what to do.
+          if (mergeSpawned) {
+            const recoveryNote =
+              `winner merge-back into ${run.project_path} was interrupted by shutdown; ` +
+              `the repo may have an in-progress merge — run \`git merge --abort\` or ` +
+              `\`git status\` / \`git reset --hard\` to recover. ` +
+              `git leaves a recoverable MERGE_HEAD/index state, not silent corruption.`;
+            log.error(
+              { run_id: opts.run_id, project_path: run.project_path, recovery_note: recoveryNote },
+              "SHUTDOWN INTERRUPTED git merge — manual recovery may be required (git merge --abort)",
+            );
+            // Annotate the run record so /pp:doctor and operators can see it.
+            try {
+              txImmediate(() => {
+                db()
+                  .prepare(`UPDATE runs SET notes_json = json_patch(COALESCE(notes_json, '{}'), ?) WHERE id = ?`)
+                  .run(JSON.stringify({ merge_interrupted: true, recovery_note: recoveryNote }), opts.run_id);
+              });
+            } catch { /* best-effort — we are shutting down */ }
+          }
+          throw err;
+        }
         const e = err as { stdout?: string; stderr?: string };
         const text = `${e.stdout ?? ""}\n${e.stderr ?? ""}`;
         // Detect conflicts via `git status --porcelain` in case the merge errored mid-way.
         try {
-          const { stdout } = await execa("git", ["status", "--porcelain"], { cwd: run.project_path });
-          conflict_paths = stdout
+          const { stdout: _conflictOut } = await trackedExeca("git", ["status", "--porcelain"], { cwd: run.project_path, windowsHide: true });
+          const conflictOut = (_conflictOut ?? "") as string;
+          conflict_paths = conflictOut
             .split(/\r?\n/)
-            .map(l => l.trim())
-            .filter(l => /^(UU|AA|DD|AU|UA|DU|UD)\b/.test(l))
-            .map(l => l.replace(/^[A-Z]{2}\s+/, ""));
-        } catch { /* ignore */ }
+            .map((l: string) => l.trim())
+            .filter((l: string) => /^(UU|AA|DD|AU|UA|DU|UD)\b/.test(l))
+            .map((l: string) => l.replace(/^[A-Z]{2}\s+/, ""));
+        } catch (statusErr) {
+          // Inner status killed during shutdown — propagate rather than silently
+          // continuing to conflict archiving with unknown repository state.
+          if (statusErr instanceof SpawnRefusedError || isShuttingDown()) throw statusErr;
+          /* genuine status failure: proceed with empty conflict_paths */
+        }
+        // Point-of-action guard: shutdown may have begun while awaiting status.
+        if (isShuttingDown()) throw new SpawnRefusedError("shutdown in progress — aborting conflict archiving");
         merge_status = "conflict";
         log.warn({ err: text.slice(0, 512), conflict_paths }, "best-of-N winner merge failed");
         // Leave conflict markers in place — driver will surface the run.
+      } finally {
+        exitCriticalOp();
       }
     } else {
       const dest = join(losersDir, `candidate-${idx}`);
       if (existsSync(candPath)) {
         try {
           mkdirSync(dest, { recursive: true });
+          // Point-of-action guard: skip loser archiving if shutdown began mid-loop.
+          if (isShuttingDown()) throw new SpawnRefusedError("shutdown in progress — aborting loser cpSync");
           cpSync(candPath, dest, { recursive: true, force: true });
           losers_archived++;
         } catch (err) {
+          if (err instanceof SpawnRefusedError) throw err;
           log.warn({ err, src: candPath, dest }, "archive loser failed");
         }
       }
@@ -633,10 +744,13 @@ export async function teardownCandidates(opts: {
               continue;
             }
             mkdirSync(dirname(toAbs), { recursive: true });
+            // Point-of-action guard: skip preserve copy if shutdown began mid-loop.
+            if (isShuttingDown()) throw new SpawnRefusedError("shutdown in progress — aborting preserve copyFileSync");
             copyFileSync(fromAbs, toAbs);
             db().prepare(`UPDATE artifacts SET path = ? WHERE id = ?`).run(toRel, row.id);
             preserved.push({ candidate_index: idx, from: row.path, to: toRel, artifact_id: row.id });
           } catch (err) {
+            if (err instanceof SpawnRefusedError) throw err;
             log.warn(
               { err, artifact_id: row.id, fromAbs, toAbs },
               "teardown: preserve copy failed",
@@ -657,12 +771,34 @@ export async function teardownCandidates(opts: {
       continue;
     }
 
+    // Intentionally runs during shutdown via trackedExecaNoRefuse — removes only
+    // the throwaway candidate worktree/branch (never the user's project); janitor
+    // is the sync backstop.  Do NOT guard with isShuttingDown() here.
+    //
+    // trackedExecaNoRefuse skips the _spawnRefused gate so shutdown does NOT
+    // orphan these directories; it still registers in ACTIVE_CHILDREN so
+    // abortAllInFlightChildren can terminate the child if the overall cap fires.
+    // The _sealTeardown() gate (set after drain completes) stops any new spawn
+    // from either variant once the drain loop is finished.
     try {
-      await execa("git", ["worktree", "remove", "--force", path], { cwd: opts.project_path });
-    } catch {
+      await trackedExecaNoRefuse("git", ["worktree", "remove", "--force", path], { cwd: opts.project_path, windowsHide: true });
+    } catch (err) {
+      // Rethrow if the daemon drained and sealed before this call landed
+      // (SpawnRefusedError), or if the child was killed during drain (isShuttingDown).
+      // In either case do NOT rmSync — the janitor is the last-resort cleaner for
+      // worktree dirs that survive a hard shutdown.
+      if (err instanceof SpawnRefusedError || isShuttingDown()) throw err;
+      // Point-of-action guard: shutdown may have begun while awaiting git.
+      if (isShuttingDown()) throw new SpawnRefusedError("shutdown in progress — aborting worktree rmSync");
       try { if (existsSync(path)) rmSync(path, { recursive: true, force: true }); } catch { /* ignore */ }
     }
-    try { await execa("git", ["branch", "-D", branch], { cwd: opts.project_path }); } catch { /* ignore */ }
+    try {
+      await trackedExecaNoRefuse("git", ["branch", "-D", branch], { cwd: opts.project_path, windowsHide: true });
+    } catch (err) {
+      // Rethrow on refused/killed; swallow genuine git errors (branch already gone).
+      if (err instanceof SpawnRefusedError || isShuttingDown()) throw err;
+      /* branch may already be gone */
+    }
   }
 
   let teardown_status: "ok" | "preserve_failed" | "partial" = "ok";
