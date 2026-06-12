@@ -1,5 +1,5 @@
 name: game-cert-team
-description: Pre-cert sweep against TRC / XR / Lotcheck (non-authoritative — studio's NDA docs are source of truth). Plus IARC questionnaire, store listing, accessibility cert pass, final smoke. Profile-gated to console-cert: true.
+description: "Pre-cert sweep against TRC / XR / Lotcheck (non-authoritative — studio's NDA docs are source of truth). Plus IARC questionnaire, store listing, accessibility cert pass, final smoke. Profile-gated to console-cert: true."
 profiles_compatible: [game-dev, game-dev-unity, game-dev-unreal, game-dev-godot, game-dev-custom]
 stages:
   - kind: cert_submission_packet

@@ -1,5 +1,5 @@
 name: game-netcode-team
-description: Online / netcode design — replication topology, server-auth audit, determinism invariants, load-test plan, anti-cheat integration. Profile-gated to online: true.
+description: "Online / netcode design — replication topology, server-auth audit, determinism invariants, load-test plan, anti-cheat integration. Profile-gated to online: true."
 profiles_compatible: [game-dev, game-dev-unity, game-dev-unreal, game-dev-godot, game-dev-web, game-dev-custom]
 stages:
   - kind: netcode_topology_design

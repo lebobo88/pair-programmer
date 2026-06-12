@@ -1,5 +1,5 @@
 name: game-live-ops-team
-description: Live-ops planning — season plan, telemetry taxonomy, A/B test plan, patch notes, hotfix runbook. Profile-gated to live-service: true.
+description: "Live-ops planning — season plan, telemetry taxonomy, A/B test plan, patch notes, hotfix runbook. Profile-gated to live-service: true."
 profiles_compatible: [game-dev, game-dev-unity, game-dev-unreal, game-dev-godot, game-dev-web, game-dev-custom]
 stages:
   - kind: liveops_season_plan
