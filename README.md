@@ -9,9 +9,18 @@ A TypeScript daemon that orchestrates code generation across Claude, OpenAI Code
 
 Supports Claude Code and GitHub Copilot CLI as entrypoints. Enforces a 16-section software development taxonomy on every task.
 
-<p align="center">
-  <img src="docs/assets/architecture-overview.svg" alt="pair-programmer architecture overview" width="700"/>
-</p>
+> **Architecture diagrams** (C1 system context, C2 containers, run lifecycle, C3 subsystems, and the judging concepts) live in [`ARCHITECTURE.md`](ARCHITECTURE.md) as native Mermaid blocks with ASCII fallbacks.
+
+```mermaid
+%%{init: {'theme':'dark'}}%%
+graph LR
+    CC["Claude Code / Copilot CLI"] --> H["pp-daemon"]
+    H --> HARNESS["pp_harness (75 tools)"]
+    H --> CODEX["pp_codex → Codex CLI"]
+    H --> GEMINI["pp_gemini → Gemini CLI"]
+    H --> HTTP["HTTP control plane<br/>127.0.0.1:7878"]
+    H --> DB[("SQLite ~/.pp-harness")]
+```
 
 ---
 
@@ -19,9 +28,7 @@ Supports Claude Code and GitHub Copilot CLI as entrypoints. Enforces a 16-sectio
 
 pair-programmer wraps a structured lifecycle around every coding task — from a one-line bug fix to a multi-stage feature build. The daemon manages state, routes generation to sub-agents, and gates artifacts through tiered judging (cross-vendor for critical gates, same-vendor-different-model for code/docs) before they ship.
 
-<p align="center">
-  <img src="docs/assets/run-lifecycle.svg" alt="Run lifecycle diagram" width="640"/>
-</p>
+The full nine-phase run lifecycle (triage → profile → taxonomy → stage loop → missability → master-plan patch → finalize) is diagrammed as a `stateDiagram-v2` in [`ARCHITECTURE.md` §3](ARCHITECTURE.md#3-run-lifecycle-9-phases).
 
 ### Key Concepts
 
@@ -66,11 +73,7 @@ sequenceDiagram
 
 ## Ecosystem Integration
 
-pair-programmer operates as the **engineering squad** within a larger multi-agent ecosystem. It works fully standalone, but gains cross-squad coordination, persistent memory, and governance enforcement when connected to sibling services.
-
-<p align="center">
-  <img src="docs/assets/ecosystem-integration.svg" alt="Ecosystem integration diagram" width="700"/>
-</p>
+pair-programmer operates as the **engineering squad** within a larger multi-agent ecosystem. It works fully standalone, but gains cross-squad coordination, persistent memory, and governance enforcement when connected to sibling services. See the C1 system-context diagram in [`ARCHITECTURE.md` §1](ARCHITECTURE.md#1-c1--system-context).
 
 | System | Role | Integration |
 |--------|------|-------------|
@@ -139,11 +142,11 @@ Cross-vendor gates require **two** configured vendors. The `SessionStart.vendor-
 | **MCP Tools** | 79 | 75 on `pp_harness` (orchestration, taxonomy, gates, best-of-N, replay, janitor) + 2 on `pp_codex` + 2 on `pp_gemini` |
 | **Sub-Agents** | 75 | engineer, architect, judge-cross-vendor, security-reviewer, designer, game-ai-programmer, live-ops-manager, and 68 more |
 | **Slash Commands** | 19 | `/pp:run`, `/pp:best-of`, `/pp:team`, `/pp:review`, `/pp:constitution`, `/pp:evolution`, and 13 more |
-| **Teams** | 24 | feature, bug-fix, refactor, security-review, ux, design-system, game-cert, game-live-ops, and 16 more |
+| **Teams** | 25 | feature, bug-fix, refactor, security-review, ux, design-system, deep-reasoning (Fable-5), game-cert, game-live-ops, and 16 more |
 | **Profiles** | 16 | web-ui, api-platform, enterprise, ai-agentic, mobile, game-dev-unity, game-dev-unreal, and 9 more |
 | **Rubrics** | 25 | WCAG 2.2 AA, OWASP ASVS L1/L2, C4, OpenAPI 3.1, SLSA L2/L3, NIST AI RMF, Game Accessibility Guidelines, and 17 more |
-| **Hooks** | 26 | `block-destructive-shell`, cost tallying, vendor-matrix check, constitution attestation, and 22 more |
-| **Missability Checks** | 56 | 26 generic (NFRs, authz, data retention) + 30 game-dev (console TRC, netcode, live-service, accessibility) |
+| **Hooks** | 29 | across 5 events (SessionStart, PreToolUse, PostToolUse, UserPromptSubmit, Stop): `block-destructive-shell`, cost tallying, vendor-matrix check, +3 TheEights recall hooks, and 23 more (26 wired in `settings.json`, all 29 in `hooks.json`) |
+| **Missability Checks** | 56 | 23 generic (NFRs, authz, data retention) + 33 game-dev (console TRC, netcode, live-service, accessibility) |
 | **Skills** | 8 | pair-programmer master skill, taxonomy-adherence, master-plan-patching, game-design, frontend-design, and 3 more |
 
 ---
@@ -209,11 +212,11 @@ Installs as a Copilot CLI plugin for the current user. Re-run after `git pull` (
 pair-programmer/
   daemon/                         # TypeScript daemon (MCP + SQLite + orchestration)
     src/
-      mcp/                        # 3 MCP servers: harness, codex, gemini
+      mcp/                        # 3 MCP servers: harness (75 tools), codex (2), gemini (2)
       orchestrator/               # runs, gates, taxonomy, missability, best-of-n, profiles, teams, forums
       ecosystem/                  # TheEights client, Hydra envelopes
       rubrics/                    # 25 standard-aligned rubric definitions
-      hooks/                      # 26 hook handlers (bash-safety, cost-tally, etc.)
+      hooks/                      # hook dispatcher + bash-safety (29 hooks / 5 events)
       security/                   # untrusted-envelope wrapping, secret-scan
       http/                       # read-only control plane (127.0.0.1:7878)
       db/                         # SQLite schema + WAL connection pool
@@ -222,16 +225,16 @@ pair-programmer/
   .claude/
     agents/                       # 75 sub-agent definitions
     commands/pp/                  # 19 slash commands
-    teams/                        # 24 specialized team pipelines
+    teams/                        # 25 specialized team pipelines (incl. deep-reasoning-team)
     profiles/                     # 16 project profile templates
     rubrics/                      # rubric markdown mirrors
     skills/                       # 8 domain skills
-    settings.json                 # permissions + 26 hook commands
+    settings.json                 # permissions + 26 hook commands (hooks.json adds 3 eights-recall → 29)
   .github/                        # generated Copilot CLI assets
   docs/
     USER_GUIDE.md                 # full reference guide
     INSTALL.md                    # installation details
-    assets/                       # SVG diagrams
+  ARCHITECTURE.md                 # C1-C3 + lifecycle Mermaid/ASCII diagrams
   taxonomy_blueprint.md           # 16-section taxonomy (the blueprint)
   .mcp.json                       # MCP server registration (stdio)
   plugin.json                     # Copilot CLI plugin manifest
@@ -280,6 +283,7 @@ node test/smoke.mjs        # end-to-end MCP roundtrip checks
 
 ## Documentation
 
+- [`ARCHITECTURE.md`](ARCHITECTURE.md) — Architecture diagrams (C1 context, C2 containers, run lifecycle, C3 subsystems) + judging concepts, as Mermaid with ASCII fallbacks
 - [`docs/USER_GUIDE.md`](docs/USER_GUIDE.md) — Canonical reference (commands, agents, teams, profiles, rubrics, forums, hooks, MCP tools, security model)
 - [`docs/INSTALL.md`](docs/INSTALL.md) — Installation options and prerequisites
 - [`docs/troubleshooting.md`](docs/troubleshooting.md) — Common issues and solutions

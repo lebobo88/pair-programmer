@@ -28,7 +28,7 @@ missability_required: [nfrs-declared, schema-evolution]
 
 ## Built-in team catalog
 
-15 teams ship with the harness: `strategy-team`, `discovery-team`, `feature-team`, `bug-fix-team`, `refactor-team`, `ux-team`, `design-system-team`, `data-team`, `security-review-team`, `release-team`, `ops-team`, `docs-team`, `governance-team`, `ai-controls-team`, `retirement-team`.
+25 teams ship with the harness — 18 generic + 7 game-dev (`game-dev*` profiles only). Generic: `strategy-team`, `discovery-team`, `feature-team`, `feature-team-tdd`, `bug-fix-team`, `refactor-team`, `ux-team`, `design-system-team`, `data-team`, `security-review-team`, `release-team`, `ops-team`, `docs-team`, `governance-team`, `ai-controls-team`, `retirement-team`, `marketing-team`, `deep-reasoning-team` (Fable-5, explicit-only). Game-dev: `game-feature-team`, `game-bug-fix-team`, `game-refactor-team`, `game-cert-team`, `game-live-ops-team`, `game-accessibility-team`, `game-netcode-team`. See `docs/USER_GUIDE.md` §9 for the full catalog.
 
 `/pp:teams` lists what's available; `/pp:team <name> <request>` runs the pipeline.
 

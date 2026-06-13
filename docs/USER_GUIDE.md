@@ -17,18 +17,18 @@ This guide is the single canonical reference for using the harness day-to-day. T
 5. [The lifecycle: 9 phases](#5-the-lifecycle-9-phases)
 6. [Validator policy — the core differentiator](#6-validator-policy--the-core-differentiator)
 7. [Taxonomy & PROJECT_MASTER.md](#7-taxonomy--project_mastermd)
-8. [Slash command reference (16)](#8-slash-command-reference-16)
-9. [Specialized teams (23)](#9-specialized-teams-23)
+8. [Slash command reference (19)](#8-slash-command-reference-19)
+9. [Specialized teams (25)](#9-specialized-teams-25)
 10. [Project profiles (16)](#10-project-profiles-16)
 11. [Rubrics (25)](#11-rubrics-25)
 12. [Governance forums (10)](#12-governance-forums-10)
-13. [Missability checks (54)](#13-missability-checks-54)
+13. [Missability checks (56)](#13-missability-checks-56)
 14. [Best-of-N — the why and the how](#14-best-of-n--the-why-and-the-how)
 15. [Visual regression](#15-visual-regression)
 16. [Design templates](#16-design-templates)
-17. [Sub-agents (41)](#17-sub-agents-41)
-18. [Hooks (26)](#18-hooks-26)
-19. [MCP tools reference (60)](#19-mcp-tools-reference-60)
+17. [Sub-agents (75)](#17-sub-agents-75)
+18. [Hooks (29)](#18-hooks-29)
+19. [MCP tools reference (79)](#19-mcp-tools-reference-79)
 20. [HTTP control plane](#20-http-control-plane)
 21. [Operations & state](#21-operations--state)
 22. [Security & trust model](#22-security--trust-model)
@@ -83,15 +83,15 @@ For lower-stakes gates (`code_style`, `docs_polish`, `lint_class`) the harness p
 
 | Surface | Count |
 |---|---|
-| Slash commands | 16 |
-| Sub-agents | 41 |
-| Specialized teams | 23 |
+| Slash commands | 19 |
+| Sub-agents | 75 |
+| Specialized teams | 25 |
 | Project profiles | 16 |
 | Standard-aligned rubrics | 25 |
 | Governance forums | 10 |
-| Missability checks | 54 |
-| Hooks (5 events) | 26 |
-| MCP tools (3 servers) | 60 |
+| Missability checks | 56 |
+| Hooks (5 events) | 29 |
+| MCP tools (3 servers) | 79 |
 | Design templates | 5 |
 
 ---
@@ -273,7 +273,7 @@ Every `/pp:*` command follows this lifecycle (some phases are skipped for `/pp:s
 | 3 | **Start run** | `pp_harness.start_run` allocates `run_id`, creates `.harness/<run_id>/`, captures HEAD SHA + CLI versions. |
 | 4 | **Taxonomy mapping** | `taxonomy-mapper` agent maps the request to ≥1 of the 16 taxonomy sections, plus the required artifacts and missability checks. Persisted via `record_taxonomy_mapping`. |
 | 5 | **Stage loop** | For each stage: `start_stage` → `gate_eligible_judges` (decides cross-vendor vs same-vendor) → generator → `archive_artifact` → judge → `record_verdict`. On `fail`/`revise`: invoke `reflexion-coach` exactly once. After ×1, the stage `surfaced`s and the loop breaks. |
-| 6 | **Missability** | `missability-inspector` runs the 54-item library (21 generic + 33 game-dev). Each check's `triggers(artifactKinds, requiredSections)` decides whether it fires; team / profile `required_missability_checks` entries force-evaluate (yielding pass/fail, never n/a). Any `fail` flips the run to `surfaced`. |
+| 6 | **Missability** | `missability-inspector` runs the 56-item library (23 generic + 33 game-dev). Each check's `triggers(artifactKinds, requiredSections)` decides whether it fires; team / profile `required_missability_checks` entries force-evaluate (yielding pass/fail, never n/a). Any `fail` flips the run to `surfaced`. |
 | 7 | **Master-plan patch** | `master-plan-patcher` patches `PROJECT_MASTER.md` per touched taxonomy section. |
 | 8 | **Finalize** | `run-finalizer` writes `run.summary.md`, archives losers (best-of-N), calls `finalize_run`. |
 | 9 | **Report** | The driver prints stages, verdicts, cost, master-plan delta, and missability tally. |
@@ -437,13 +437,14 @@ If you edit `PROJECT_MASTER.md` by hand and a subsequent run wants to patch the 
 
 ---
 
-## 8. Slash command reference (16)
+## 8. Slash command reference (19)
 
-Three role groups:
+Four role groups (19 commands under `.claude/commands/pp/`):
 
 - **Active** (kicks off a run): `/pp:run`, `/pp:best-of`, `/pp:team`, `/pp:review`, `/pp:retry`, `/pp:gate`.
 - **Inspect** (read-only): `/pp:status`, `/pp:taxonomy`, `/pp:budget`, `/pp:replay`, `/pp:master`, `/pp:checklist`, `/pp:doctor`.
 - **Reference** (catalogs): `/pp:profile`, `/pp:rubrics`, `/pp:teams`.
+- **Governance / self-evolution**: `/pp:claudemd` (show/scaffold AGENTS.md + CLAUDE.md), `/pp:constitution` (show/scaffold/amend the Immortal Head), `/pp:evolution` (list/review/trigger autogenesis proposals).
 
 ### `/pp:run <free-text>`
 
@@ -526,13 +527,13 @@ DB reachable? · CLI versions (codex, gemini, git, node) · vendor credentials (
 
 ---
 
-## 9. Specialized teams (23)
+## 9. Specialized teams (25)
 
 A team is a YAML pipeline. Each stage names a `kind`, a `gate_type`, a generator agent + primary vendor, and a judge tier (with optional rubric hint). The harness resolves `<project>/.claude/teams/` → `~/.claude/teams/` → built-in.
 
 ### Team catalog
 
-#### Generic teams (16)
+#### Generic teams (18)
 
 | Team | When to use | Stages |
 |---|---|---|
@@ -552,6 +553,8 @@ A team is a YAML pipeline. Each stage names a `kind`, a `gate_type`, a generator
 | **ops-team** | SLO doc, telemetry, dashboards, alerts, runbooks. | slo_doc → telemetry_taxonomy → dashboards → alerts → runbooks |
 | **governance-team** | RACI, decision log, review forums, cadence. | raci → decision_log → review_forums → cadence |
 | **retirement-team** | EOL, migration guide, archive/retention, sunset, shutdown. | eol_plan → migration_guide → archive_retention → sunset_comms → shutdown_checklist |
+| **marketing-team** | High-surface-area marketing code (landing pages, blog, ad copy) where seed diversity matters — best-of-N=5 with different framings (primary, devils-advocate, terse-diff, failing-test-first, fresh-stack), Borda-pick a winner. | spec → design → code → tests → test_plan → browser_validation → browser_validation_report → docs |
+| **deep-reasoning-team** | **Fable-5 capability-gated.** Formal verification, multi-constraint architecture, adversarial security analysis, algorithmic proofs, or tasks where opus-class attempts failed under Reflexion. Generator is Fable (Claude); judge is ALWAYS cross-vendor (Codex/Gemini). Explicit-only — never auto-routed, no `--tier fable` flag. | spec → architecture → code → docs |
 
 #### Game-dev teams (7)
 
@@ -817,7 +820,7 @@ Each forum's pipeline is defined in [`daemon/src/orchestrator/forums.ts`](../dae
 
 ---
 
-## 13. Missability checks (54)
+## 13. Missability checks (56)
 
 A missability check is a heuristic inspector that scans run artifacts for evidence that an easy-to-miss topic was addressed. Each check returns `pass | fail | n/a`. Triggered by artifact-kind / taxonomy-section heuristics (see each entry's `triggers(artifactKinds, requiredSections)` function in [`missability.ts`](../daemon/src/orchestrator/missability.ts)), or forced via `required_missability_checks` in a team or profile yaml. The game-dev section headings below match the source-file groupings (`console TRC`, `online netcode`, `live-service / legal`, `accessibility`, `IP / asset / AI provenance`, `perf`) — those headings describe which artifact kinds typically activate each cluster, not a runtime profile-flag check.
 
@@ -1042,9 +1045,9 @@ The current `getDesignTemplate(kind)` implementation reads from the in-process `
 
 ---
 
-## 17. Sub-agents (41)
+## 17. Sub-agents (75)
 
-Verified against `Get-ChildItem .claude/agents/*.md`. Direct invocation of these is rare — the orchestrator routes for you. Listed here for advanced users who want to delegate ad-hoc.
+Verified against `.claude/agents/*.md` (75 files). Direct invocation of these is rare — the orchestrator routes for you. The tables below cover the engineering / lifecycle / judging agents most users delegate to; the roster also includes the executive-suite personas (CEO/CFO/CTO/CISO/…), governance authors, and AgentSmith watchers (sentinel/archivist/quarantine/replicator/inspector) that round the directory out to 75.
 
 ### Generic generators (19)
 
@@ -1112,9 +1115,9 @@ Activated under any `game-dev*` profile. Each reads the matching `.claude/gotcha
 
 ---
 
-## 18. Hooks (26)
+## 18. Hooks (29)
 
-Hooks are shell commands Claude Code runs at lifecycle events. They read a JSON envelope on stdin and return exit code 0 (allow) or 2 (block). All 26 are wired in [`.claude/settings.json`](../.claude/settings.json).
+Hooks are shell commands Claude Code runs at lifecycle events. They read a JSON envelope on stdin and return exit code 0 (allow) or 2 (block). 29 distinct hooks span 5 events. [`.claude/settings.json`](../.claude/settings.json) wires **26** of them; [`hooks.json`](../hooks.json) (the Copilot CLI hook file) is the superset and adds the **3 TheEights ecosystem-recall hooks** (`eights-recall-project` on SessionStart, `eights-recall-stage` on PreToolUse, `eights-recall-request` on UserPromptSubmit). The subsection counts below reflect the `.claude/settings.json` wiring.
 
 ### SessionStart (5)
 
@@ -1183,11 +1186,11 @@ Stage-kind → sandbox mapping is in [`daemon/src/hooks/dispatcher.ts`](../daemo
 
 ---
 
-## 19. MCP tools reference (61)
+## 19. MCP tools reference (79)
 
-Three MCP servers register with Claude Code over stdio (`pp_harness` 57 + `pp_codex` 2 + `pp_gemini` 2). Tool schemas live in [`daemon/src/mcp/`](../daemon/src/mcp/).
+Three MCP servers register with Claude Code over stdio: **`pp_harness` 75 + `pp_codex` 2 + `pp_gemini` 2 = 79 tools**. The authoritative `pp_harness` list is the `TOOLS` array in [`daemon/src/mcp/harness-server.ts`](../daemon/src/mcp/harness-server.ts) (and mirrored in [`mesh-manifest.yaml`](../mesh-manifest.yaml)). The catalog below documents the most commonly used tools grouped by subsystem; the remaining harness tools (e.g. `force_unlock`, `ensure_run`, `retract_verdict`, `archive_winner_and_losers`, `teardown_candidates`, `detect_profile`, `write_profile`, `get_builtin_profile`, `get_copilot_claude_tier_models`, the ecosystem advisory bridges `request_strategic_framing` / `request_brand_review` / `request_visual_advisory`, `report_hydra_completion`, `hydra_envelope_query`, `audit_status`, `list_evolution_proposals` / `review_evolution_proposal` / `analyze_autogenesis`, `agents_md_*`, `constitution_status`, and `replay`) round out the surface to 75.
 
-### `pp_harness` (57 tools)
+### `pp_harness` (75 tools)
 
 #### Run lifecycle (7)
 
@@ -1233,7 +1236,7 @@ Three MCP servers register with Claude Code over stdio (`pp_harness` 57 + `pp_co
 
 | Tool | Purpose |
 |---|---|
-| `list_missability_checks` | The 54-item library (id + name). |
+| `list_missability_checks` | The 56-item library (id + name). |
 | `run_missability_checks` | Execute checks against a run's artifacts. |
 
 #### Validator policy (3)
@@ -1453,7 +1456,47 @@ The harness tracks but does not enforce budgets. To keep spend sensible:
 
 The daemon takes a per-project file lock at `<project>/.harness/.lock` at `start_run` and releases it at `finalize_run`. Two runs in the same project serialize. The janitor sweeps stale locks on next startup. To force-release, delete `.lock` (only when no daemon is running).
 
-> Source: [`.claude/skills/artifact-conventions.md`](../.claude/skills/artifact-conventions.md), [`daemon/src/orchestrator/janitor.ts`](../daemon/src/orchestrator/janitor.ts).
+### Claude model tiers (and Fable-5)
+
+Claude generation runs on a tier ladder resolved by the driver from the tables in [`daemon/src/config.ts`](../daemon/src/config.ts):
+
+| Tier | Claude model (entrypoint) | Copilot mirror | Reachable by auto-escalation? |
+|---|---|---|---|
+| `haiku`  | `claude-haiku-4-5-20251001` | same | yes — bottom of `TIER_ORDER` |
+| `sonnet` | `claude-sonnet-4-6` | same | yes — middle |
+| `opus`   | `claude-opus-4-7` | `claude-opus-4-6` | yes — top of `TIER_ORDER`; `shiftTier` clamps here |
+| **`fable`** | `claude-fable-5` | `claude-fable-5` | **No — capability-gated, off the ladder** |
+
+`shiftTier` walks `TIER_ORDER = [haiku, sonnet, opus]`. **Fable-5 is intentionally absent** from that array, so `shiftTier("opus", +1)` clamps at opus and can **never** auto-escalate to fable. There is no `--tier fable` CLI flag. Fable is selected only by **explicit operator config**, via one of three paths:
+
+1. The **`deep-reasoning-team`** (`/pp:team deep-reasoning-team "goal"` — see §9). Its judge is ALWAYS cross-vendor (the generator is Fable/Claude, so a Codex/Gemini judge satisfies JUDGE-1).
+2. An explicit per-stage `generator.model_tier: fable` in any team yaml.
+3. A profile's `model_tier_policy.per_stage_override[<stage.kind>]: fable`.
+
+Use Fable for formal verification, complex multi-constraint architecture, adversarial security analysis, algorithmic proofs, or tasks where opus-class attempts already exhausted Reflexion. It is expensive and explicit-only.
+
+### AgentMesh control-plane enrollment
+
+pair-programmer ships an AgentMesh manifest at [`mesh-manifest.yaml`](../mesh-manifest.yaml) (`apiVersion: agentmesh/v1`, `kind: SiblingManifest`). The mesh control plane reads it to enroll the harness, drive health checks, and resolve the gateway backend. Key fields:
+
+- **`runtime`** — `node20-ts`, entrypoint `daemon/dist/index.js` with args `["mcp"]`, cwd the repo root.
+- **`backendsKey: pp_harness`** — reconciles `metadata.id` (`pair-programmer`) with the flat-dict key in `~/.hydra/backends.json`.
+- **`healthProbe`** — an `mcp-tool-call` to the cheap no-args **`doctor`** tool (`intervalMs: 20000`, `timeoutMs: 8000`, `failureThreshold: 3`).
+- **`mcp.tools`** — the full advertised `pp_harness` tool surface (mirrors the `TOOLS` array; keep in sync).
+- **`lifecycle`** — `gracefulShutdownMs: 10000` and a crash-loop breaker (threshold 5 / 60 s).
+- **`audit` / `governance`** — `audit_status` as the export tool, `constitution_status` as the connectivity/attestation probe (formal audit + hash attestation federate through TheEights).
+
+### Graceful shutdown (lock release + child abort on disconnect)
+
+On MCP transport disconnect (`stdin` end / `transport.onclose`), SIGTERM/SIGINT, or an unhandled rejection/exception, the daemon runs a single idempotent `shutdownAndExit` ([`daemon/src/util/shutdown.ts`](../daemon/src/util/shutdown.ts)):
+
+1. **Refuse new spawns** (`_refuseNewSpawns()`) before snapshotting the child registry — closes the post-snapshot spawn race.
+2. **Abort all in-flight CLI children** (`abortAllInFlightChildren()`): SIGTERM → 2 s grace → SIGKILL, awaited so we know each child's fate.
+3. **Release project locks** — but only if every child is confirmed dead. If any child is unconfirmed at the cap deadline, **all** locks are conservatively retained (never release a lock while its child may still be alive); the janitor TTL reaper sweeps them later.
+
+This guarantees the harness never strands a half-written run or orphans a Codex/Gemini subprocess when Claude Code (or the gateway) disconnects.
+
+> Source: [`.claude/skills/artifact-conventions.md`](../.claude/skills/artifact-conventions.md), [`daemon/src/orchestrator/janitor.ts`](../daemon/src/orchestrator/janitor.ts), [`daemon/src/util/shutdown.ts`](../daemon/src/util/shutdown.ts), [`daemon/src/config.ts`](../daemon/src/config.ts), [`mesh-manifest.yaml`](../mesh-manifest.yaml).
 
 ---
 
@@ -1650,7 +1693,7 @@ You should only need the manual flag when calling the Codex CLI yourself outside
 | **`.harness/`** | Per-project directory holding all run artifacts. |
 | **loop ceiling** | Anti-runaway cap on validator (judge) calls per run. Default 6. |
 | **master plan** | `<project>/PROJECT_MASTER.md` — 20-section template auto-patched per run. |
-| **missability check** | Heuristic inspector that scans artifacts for evidence of an easy-to-miss topic. 54 in the library (21 generic + 33 game-dev). Each check's `triggers(artifactKinds, requiredSections)` function decides whether it fires; team / profile `required_missability_checks` force-evaluate a check (yielding `pass` or `fail`, never `n/a`). |
+| **missability check** | Heuristic inspector that scans artifacts for evidence of an easy-to-miss topic. 56 in the library (23 generic + 33 game-dev). Each check's `triggers(artifactKinds, requiredSections)` function decides whether it fires; team / profile `required_missability_checks` force-evaluate a check (yielding `pass` or `fail`, never `n/a`). |
 | **profile** | YAML at `<project>/.harness/profile.yaml` that activates project-type-specific gates. 16 built-ins. |
 | **Reflexion ×1** | At most one critique-fed retry per failed attempt. Then surface. |
 | **rubric** | Standard-aligned scoring guide applied at a gate. 25 ship in the registry; project files at `<project>/.claude/rubrics/<bare-id>.md` are loaded only for IDs the registry doesn't have (registry-first). |
@@ -1658,10 +1701,10 @@ You should only need the manual flag when calling the Codex CLI yourself outside
 | **same-vendor judge** | Judge whose vendor matches the generator. Usually a different model id; Gemini is a documented degenerate same-model exception, and Codex is only allowed when the generator model differs from the pinned `gpt-5.4` critique model. |
 | **sandbox** | Codex's `read-only | workspace-write | danger-full-access` flag. Mapped per stage kind. |
 | **stage** | One slot in a run's pipeline (e.g. `spec`, `code`, `tests`). |
-| **sub-agent** | Specialized Claude Code agent invoked via the Task tool. 41 ship (19 generic generators + 11 game-dev generators + 5 lifecycle + 3 judging + 1 recovery + 1 closing + 1 Copilot orchestrator). |
+| **sub-agent** | Specialized Claude Code agent invoked via the Task tool. 75 ship in `.claude/agents/` — engineering/lifecycle/judging generators plus executive-suite personas, governance authors, and AgentSmith watchers. |
 | **surfaced** | Run/stage status meaning "automated checks couldn't approve; humans take it from here." |
 | **taxonomy section** | One of the 16 sections in `taxonomy_blueprint.md` (4.1 through 4.16). |
-| **team** | A YAML pipeline (23 built-ins: 16 generic + 7 game-dev) with stage list + gate types + generator/judge bindings. Run via `/pp:team`. |
+| **team** | A YAML pipeline (25 built-ins: 18 generic + 7 game-dev) with stage list + gate types + generator/judge bindings. Run via `/pp:team`. |
 | **untrusted-envelope** | XML wrapper around external content passed to a model, instructing it to treat the contents as data not instructions. |
 | **verdict** | The judge's outcome on an attempt: `pass | revise | fail`. |
 | **worktree** | A git worktree allocated per candidate in best-of-N. Falls back to copy-mode for non-git projects. |
