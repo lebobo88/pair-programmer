@@ -28,14 +28,18 @@ generate → judge → missability lifecycle is unaffected.
 ```mermaid
 %%{init: {'theme':'dark'}}%%
 graph TB
-    PP["pair-programmer<br/>(engineering squad / coding harness)"]
+    subgraph MESH["AgentMesh — binding control plane (registry · lifecycle · audit · protocol edge)"]
+        PP["pair-programmer<br/>(engineering squad / coding harness)"]
 
-    HYDRA["Hydra<br/>multi-squad LangGraph supervisor"]
-    EIGHTS["TheEights<br/>memory fabric + evolution + audit"]
-    SMITH["AgentSmith<br/>meta-governance / 10 invariants"]
-    EXEC["ExecutiveSuite<br/>C-Suite decision support"]
-    RLM["RLM-Creative<br/>brand & visual advisory"]
-    MB["MarketBliss<br/>brand-voice advisory"]
+        HYDRA["Hydra<br/>multi-squad LangGraph supervisor"]
+        EIGHTS["TheEights<br/>memory fabric + evolution + audit · root of trust"]
+        SMITH["AgentSmith<br/>meta-governance / N1..N10 invariants"]
+        EXEC["ExecutiveSuite<br/>C-Suite decision support"]
+        RLM["RLM-Creative<br/>brand & visual advisory"]
+        MB["MarketBliss<br/>brand-voice advisory"]
+        SENATE["Senate<br/>legal-compliance squad (the Curia)"]
+        XENIA["Xenia<br/>customer-support squad (the Hearth)"]
+    end
 
     HYDRA -- "DevTask envelope" --> PP
     PP -- "DECISION_RECORD" --> HYDRA
@@ -44,23 +48,40 @@ graph TB
     PP -- "CSuiteDecisionPacket (strategic framing)" --> EXEC
     PP -- "CreativeBrief (visual-direction-advisory)" --> RLM
     PP -- "CreativeBrief (brand-voice-check)" --> MB
+    SENATE -. "sibling squads under Hydra" .- HYDRA
+    XENIA -. "sibling squads under Hydra" .- HYDRA
+    MESH -. "enroll via mesh-manifest.yaml<br/>(fail-closed; authority stays TheEights→AgentSmith→Hydra)" .- PP
 ```
 
 ```
-                         +-----------------------------+
-            DevTask  -->  |                             |  --> DECISION_RECORD
-        (from Hydra)      |       pair-programmer        |     (to Hydra)
-                         |   engineering squad / harness |
-                         +--+-----+--------+------+----+-+
-                            |     |        |      |    |
-              episodic      |     |        |      |    |   brand-voice
-              memory +      |     |        |      |    |   advisory
-              critiques     |     | .claude |      |    |
-                            v     v artifacts     v    v
-                       +--------+ +-------+  +-------+ +-----+ +----------+
-                       |TheEights| |Smith |  |Exec   | | RLM | |MarketBliss|
-                       | mem/evo | |invar |  |Suite  | |creat| | brand    |
-                       +--------+ +-------+  +-------+ +-----+ +----------+
+  +================ AgentMesh — binding control plane (tenth layer) ==============+
+  ‖  ONE registry · ONE lifecycle supervisor · ONE audit timeline ·              ‖
+  ‖  ONE protocol edge (A2A/REST/MCP-over-HTTP) · ONE operator console.          ‖
+  ‖  Enroll via mesh-manifest.yaml (fail-closed). Authority stays:              ‖
+  ‖  TheEights -> AgentSmith -> Hydra. AgentMesh routes + observes; never        ‖
+  ‖  arbitrates.                                                                 ‖
+  ‖                                                                              ‖
+  ‖                       +-----------------------------+                        ‖
+  ‖          DevTask  -->  |                             |  --> DECISION_RECORD  ‖
+  ‖      (from Hydra)      |       pair-programmer        |     (to Hydra)       ‖
+  ‖                       |   engineering squad / harness |                      ‖
+  ‖                       +--+-----+--------+------+----+-+                       ‖
+  ‖                          |     |        |      |    |                         ‖
+  ‖            episodic      |     |        |      |    |   brand-voice           ‖
+  ‖            memory +      |     |        |      |    |   advisory              ‖
+  ‖            critiques     |     | .claude |      |    |                        ‖
+  ‖                          v     v artifacts     v    v                        ‖
+  ‖                     +--------+ +-------+  +-------+ +-----+ +----------+       ‖
+  ‖                     |TheEights| |Smith |  |Exec   | | RLM | |MarketBliss|     ‖
+  ‖                     | mem/evo | |N1-N10|  |Suite  | |creat| | brand    |      ‖
+  ‖                     +--------+ +-------+  +-------+ +-----+ +----------+       ‖
+  ‖                                                                              ‖
+  ‖   Sibling squads under Hydra (not direct pp peers):                          ‖
+  ‖     +----------------------+   +----------------------+                       ‖
+  ‖     | Senate (the Curia)   |   | Xenia (the Hearth)   |                       ‖
+  ‖     | legal-compliance     |   | customer-support     |                       ‖
+  ‖     +----------------------+   +----------------------+                       ‖
+  +==============================================================================+
 
   All sibling calls are advisory + null-tolerant (circuit-broken). Offline peer
   => feature degrades to no-op; generate/judge/missability core is unaffected.
