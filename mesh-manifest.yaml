@@ -13,16 +13,18 @@ metadata:
 
 runtime:
   type: node20-ts
-  # entrypoint: absolute path from backends.json "pp_harness" entry.
-  # Source: ~/.hydra/backends.json — "command": "node", "args": ["C:/AiAppDeployments/pair-programmer/daemon/dist/index.js","mcp"]
+  # entrypoint: path to the built daemon, relative to runtime.cwd (portable across machines).
+  # Source: ~/.hydra/backends.json — "command": "node", "args": ["<root>/daemon/dist/index.js","mcp"]
   # The runtime.entrypoint carries the script path; the "mcp" sub-command arg is in runtime.args.
   # Amendment 2026-06-05 (campaign mesh-console-unification, C1): runtime.args added to the
   # manifest schema — BackendsJsonWriter previously dropped the "mcp" subcommand when
   # regenerating the pp_harness spawn spec, which broke the gateway connection
   # (node index.js with no args prints help and exits).
-  entrypoint: "C:/AiAppDeployments/pair-programmer/daemon/dist/index.js"
+  # Amendment 2026-06-13 (portability): entrypoint made relative + cwd tokenized to
+  # ${PAIR_PROGRAMMER_ROOT} so the manifest runs on any machine (Windows + POSIX).
+  entrypoint: "daemon/dist/index.js"
   args: ["mcp"]
-  cwd: "C:/AiAppDeployments/pair-programmer"
+  cwd: "${PAIR_PROGRAMMER_ROOT}"
   # No runtime.env: backends.json "env": {} — no extra env needed.
   healthProbe:
     type: mcp-tool-call
@@ -134,8 +136,8 @@ audit:
   dedupeKeyField: "run_id"
 
 governance:
-  # Constitution path relative to runtime.cwd (C:/AiAppDeployments/pair-programmer).
-  # Destination after merge pass: C:/AiAppDeployments/pair-programmer/CONSTITUTION.md
+  # Constitution path relative to runtime.cwd (${PAIR_PROGRAMMER_ROOT}).
+  # Destination after merge pass: ${PAIR_PROGRAMMER_ROOT}/CONSTITUTION.md
   # (authored at manifests/constitutions/pair-programmer.CONSTITUTION.md — see README).
   constitutionPath: "CONSTITUTION.md"
   # pair-programmer has no dedicated constitution attestation tool.

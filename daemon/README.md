@@ -23,4 +23,4 @@ pp-daemon doctor       # health check
 
 State lives at `~/.pair-programmer/state.db` (SQLite, WAL mode). Per-project artifacts at `<project>/.harness/<run_id>/`.
 
-See `C:\Users\robob\.claude\plans\help-me-discover-plan-giggly-puddle.md` for the full plan.
+See the project plan under your local Claude Code plans directory (`~/.claude/plans/`) for the full plan.
