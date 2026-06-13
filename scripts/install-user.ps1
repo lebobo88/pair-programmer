@@ -112,9 +112,19 @@ foreach ($s in $ppServers) {
 }
 
 # 3. Merge settings.json -----------------------------------------------------
-# The committed template uses `__PP_DAEMON__` as a placeholder for the
-# absolute path to daemon/dist/index.js, so the repo stays path-portable.
-# Substitute it with $daemonPath before parsing JSON.
+# The committed template uses `__PP_DAEMON__` as a placeholder so the repo
+# stays path-portable.  There are TWO render variants:
+#
+#   (a) USER scope  (~/.claude/settings.json)
+#       __PP_DAEMON__ -> $daemonPath  (absolute, machine-specific)
+#       Hooks fire in every project where $CLAUDE_PROJECT_DIR is NOT the
+#       pair-programmer repo, so the path must be absolute.
+#
+#   (b) PROJECT scope  (<repo>/.claude/settings.json, git-ignored)
+#       __PP_DAEMON__ -> $CLAUDE_PROJECT_DIR/daemon/dist/index.js  (literal)
+#       Claude Code expands $CLAUDE_PROJECT_DIR at hook-execution time, so the
+#       project-local file is identical on every machine and self-relocating.
+#       The literal dollar-sign is emitted as-is; PowerShell must NOT expand it.
 
 $srcSettingsPath = Join-Path $RepoClaude 'settings.template.json'
 if (-not (Test-Path $srcSettingsPath)) {
@@ -124,6 +134,8 @@ if (-not (Test-Path $srcSettingsPath)) {
 $dstSettingsPath = Join-Path $UserClaude 'settings.json'
 
 $srcRaw      = Get-Content $srcSettingsPath -Raw
+
+# (a) USER-scope render: absolute path so hooks work in every project.
 $srcRendered = $srcRaw -replace '__PP_DAEMON__', $daemonPath
 $srcSettings = $srcRendered | ConvertFrom-Json
 $dstSettings = if (Test-Path $dstSettingsPath) {
@@ -132,11 +144,12 @@ $dstSettings = if (Test-Path $dstSettingsPath) {
     [pscustomobject]@{}
 }
 
-# Also render a local copy at <repo>/.claude/settings.json so the repo
-# functions as a project-scope Claude Code project for harness developers.
-# This file is gitignored.
+# (b) PROJECT-scope render: self-relocating literal so the file is
+# machine-independent.  Use a single-quoted replacement string so PowerShell
+# passes the dollar-sign through verbatim (no variable expansion).
+$localRendered    = $srcRaw -replace '__PP_DAEMON__', '$CLAUDE_PROJECT_DIR/daemon/dist/index.js'
 $localRenderedPath = Join-Path $RepoClaude 'settings.json'
-$srcRendered | Set-Content $localRenderedPath -Encoding UTF8
+$localRendered | Set-Content $localRenderedPath -Encoding UTF8
 
 $dstSettings | Add-Member -NotePropertyName hooks -NotePropertyValue $srcSettings.hooks -Force
 

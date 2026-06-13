@@ -1,6 +1,6 @@
 {
   "$schema": "https://json.schemastore.org/claude-code-settings.json",
-  "_comment": "Template for Phase 10 settings (24 hooks across 5 events). The installer (`scripts/install-user.ps1`) substitutes `__PP_DAEMON__` with the absolute path to `daemon/dist/index.js` on the installing machine before merging into `~/.claude/settings.json`. Each hook calls `node <daemon> hook <event> <name>` which dispatches to a typed handler in `src/hooks/dispatcher.ts`. PreToolUse blockers default to advisory; set PP_ENFORCE_ACTIVE_RUN=1 / PP_ALLOW_DANGER=0 to harden.",
+  "_comment": "Template for Phase 10 settings (24 hooks across 5 events). The installer (`scripts/install-user.ps1`) substitutes `__PP_DAEMON__` in TWO ways: (a) USER scope (~/.claude/settings.json) — replaced with the absolute path to daemon/dist/index.js on the installing machine, so hooks fire correctly in every project where $CLAUDE_PROJECT_DIR is not the pair-programmer repo; (b) PROJECT scope (<repo>/.claude/settings.json, git-ignored) — replaced with the literal string `$CLAUDE_PROJECT_DIR/daemon/dist/index.js`, which Claude Code expands at hook-execution time, making the project-local file machine-independent and self-relocating. Each hook calls `node <daemon> hook <event> <name>` which dispatches to a typed handler in `src/hooks/dispatcher.ts`. PreToolUse blockers default to advisory; set PP_ENFORCE_ACTIVE_RUN=1 / PP_ALLOW_DANGER=0 to harden.",
   "permissions": {
     "allow": [
       "mcp__pp_harness__doctor",
