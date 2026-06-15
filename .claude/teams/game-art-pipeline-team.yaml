@@ -1,0 +1,35 @@
+name: game-art-pipeline-team
+description: 3D art/animation pipeline, DCC → engine. Model spec → rig spec → blend-tree / anim state machine → DCC asset & rig export validation. Validates Blender (blender-mcp) output against engine-import correctness and the studio mesh-topology-budget / rig-quality bars. Engine sub-mode (unity/unreal/godot/web/custom) auto-selected by detect_profile.
+profiles_compatible: [game-dev, game-dev-unity, game-dev-unreal, game-dev-godot, game-dev-web, game-dev-custom]
+stages:
+  - kind: model_spec
+    artifact_kind: art_bible
+    gate_type: design
+    generator: { agent: technical-artist, primary: claude }
+    judge:     { tier: same_vendor, rubric: game-perf-budget@1, model_pref: claude_alt_model }
+  - kind: rig_spec
+    gate_type: design
+    generator: { agent: tech-animator, primary: claude }
+    judge:     { tier: same_vendor, model_pref: claude_alt_model }
+  - kind: blend_tree
+    gate_type: design
+    generator: { agent: tech-animator, primary: claude }
+    judge:     { tier: same_vendor, model_pref: claude_alt_model }
+  - kind: anim_state_machine
+    gate_type: design
+    generator: { agent: tech-animator, primary: claude }
+    judge:     { tier: same_vendor, model_pref: claude_alt_model }
+  - kind: export_validation
+    artifact_kind: test_plan
+    gate_type: contract
+    generator: { agent: technical-artist, primary: claude }
+    judge:     { tier: cross_vendor, rubric: dcc-asset-validation@1, model_pref: gemini }
+  - kind: docs
+    gate_type: docs_polish
+    generator: { agent: docs-author, primary: claude }
+    judge:     { tier: same_vendor, model_pref: claude_alt_model }
+taxonomy_required: ["4.4", "4.6", "4.10", "4.13"]
+missability_required:
+  - perf-budget-evidence
+  - ai-provenance-record
+  - decision-logging
