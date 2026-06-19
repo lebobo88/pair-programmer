@@ -148,6 +148,21 @@ export function vendorFor(producer: string): Vendor | null {
 export const COPILOT_FALLBACK_ENABLED =
   (process.env.PP_COPILOT_FALLBACK ?? "1") !== "0";
 
+/**
+ * Global Gemini kill-switch. Set PP_DISABLE_GEMINI=1 to disable ALL Gemini
+ * interactions (as a cross-vendor judge AND as a generation producer) without
+ * removing any code, MCP registration, or team `model_pref: gemini` hints —
+ * flip the flag back to re-enable once the Gemini CLI is re-authenticated.
+ *
+ * Implemented as a function (not a top-level const) so it reads process.env on
+ * every call: the daemon stays a long-running process, but this keeps the
+ * behavior unit-testable by toggling the env between calls. When disabled, the
+ * default cross-vendor pair becomes Codex (openai) + Claude (anthropic).
+ */
+export function geminiEnabled(): boolean {
+  return (process.env.PP_DISABLE_GEMINI ?? "0") !== "1";
+}
+
 // ─── Ecosystem integration (Hydra / TheEights / Constitution) ───────────
 // Phase A spine. Every ecosystem call is best-effort: if the eights-daemon
 // MCP peer is unreachable, all wrappers short-circuit to null and pp

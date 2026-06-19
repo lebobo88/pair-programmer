@@ -23,4 +23,9 @@ pp-daemon doctor       # health check
 
 State lives at `~/.pair-programmer/state.db` (SQLite, WAL mode). Per-project artifacts at `<project>/.harness/<run_id>/`.
 
+## Environment flags
+
+- `PP_DISABLE_GEMINI=1` — global Gemini kill-switch. Disables ALL Gemini interactions (cross-vendor judge **and** generation producer) without removing any code, MCP registration, or team `model_pref: gemini` hints. `doctor()` reports `vendors_configured.google=false` and `gemini_disabled=true`; the default cross-vendor pair becomes Codex (openai) + Claude (anthropic), so `cross_vendor_ready` stays true. Unset (and re-authenticate the Gemini CLI) to re-enable.
+- `PP_COPILOT_FALLBACK=0` — disable the Copilot CLI fallback for codex/gemini.
+
 See the project plan under your local Claude Code plans directory (`~/.claude/plans/`) for the full plan.

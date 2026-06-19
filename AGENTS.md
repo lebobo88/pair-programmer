@@ -11,6 +11,7 @@ A TypeScript daemon + MCP server that wraps a **taxonomy-aware, best-of-N, cross
 - **Core lifecycle**: triage → profile detect → taxonomy map → stage loop (generate → judge → Reflexion ×1 on fail) → 56 missability checks → `PROJECT_MASTER.md` patch → finalize.
 - **Model tiers** (source: `daemon/src/config.ts:CLAUDE_TIER_MODELS`): `haiku`, `sonnet`, `opus`, and `fable` (capability-gated, off the auto-escalation ladder — never reached by `shiftTier`; see Hard Rules).
 - **Cross-vendor judge**: default pin is Codex `gpt-5.4` (`JUDGE-1` in `CONSTITUTION.md`; `DEFAULT_MODELS.codex_critique` in `daemon/src/config.ts`). Escalated judging uses `gpt-5.5` (opt-in, major-scope / last-resort only; `DEFAULT_MODELS.codex_critique_escalated`). A second judge (Gemini) for Borda scoring at N≥3 is driver-selected and optional, not automatic (best-of.md:41).
+- **Gemini kill-switch**: `PP_DISABLE_GEMINI=1` globally disables all Gemini interactions (judge + generation) without removing code or config (see Hard Rule 10). When set, the default cross-vendor pair is Codex (openai) + Claude (anthropic).
 - **Teams**: 25 team pipelines under `.claude/teams/`, including `deep-reasoning-team` (Fable-5 capability-gated).
 - **State**: `~/.pair-programmer/state.db` (SQLite WAL). Artifacts: `<project>/.harness/<run_id>/`.
 
@@ -35,6 +36,8 @@ See `README.md` for the full capability table and quick-start.
 8. **Test deletion requires documented replacement in the same commit** (CONSTITUTION.md FORBIDDEN-3). Note: CONSTITUTION.md references `daemon/tests/` but the actual directory is `daemon/test/`. No automated guard enforces this — it is a human/review obligation.
 
 9. **Governance precedence**: TheEights → AgentSmith → Hydra → pair-programmer. No run may override a TheEights or AgentSmith gate (CONSTITUTION.md Article II).
+
+10. **Gemini is opt-out-able via `PP_DISABLE_GEMINI=1`.** The flag is read by `geminiEnabled()` (config.ts) and gated at two chokepoints: `doctor()`'s `vendors_configured.google` (runs.ts — cascades to the enforce-vendor-matrix hook, best-of-N preconditions, and `cross_vendor_ready`) and `listAllowedJudges()`'s producer pool (gates.ts — so `gate_eligible_judges` never hints at Gemini). All Gemini code, the `pp_gemini` MCP registration, the judge agents, and team `model_pref: gemini` hints stay intact — `gate_eligible_judges`' filtered `preferred_producers` is authoritative over `model_pref`. JUDGE-1 (Codex `gpt-5.4`) is unaffected; Codex + Claude remains a valid cross-vendor pair. Activated in `.claude/settings.local.json`; flip it off to re-enable.
 
 ## Engineering Standards
 

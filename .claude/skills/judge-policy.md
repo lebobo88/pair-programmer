@@ -40,6 +40,10 @@ If the harness has only one configured vendor (`mcp__pp_harness__doctor` returns
 
 The daemon will not silently downgrade a security/spec/design/contract gate to same-vendor.
 
+### Gemini disabled (`PP_DISABLE_GEMINI=1`)
+
+When the global Gemini kill-switch is set, `doctor()` reports `vendors_configured.google=false` and `gemini_disabled=true`, and `gate_eligible_judges` drops Gemini from `allowed_judges[].preferred_producers`. Cross-vendor judging therefore routes to **Codex only** (the default pair is Codex + Claude, so cross-vendor gates still run), and the degenerate same-vendor Gemini lane is unavailable. The `preferred_producers` list returned by `gate_eligible_judges` is **authoritative** — it overrides any team yaml `model_pref: gemini` hint when Gemini is disabled. Re-enable by unsetting the flag (and re-authenticating the Gemini CLI).
+
 ## De-biasing in best-of-N
 
 When `N ≥ 3`, the daemon randomizes the candidate order before sending them to the judge (Fisher-Yates with a seeded RNG; the seed is recorded for replay). The judge produces a ranking; the daemon runs **Borda count** to pick the winner. This mitigates position bias.

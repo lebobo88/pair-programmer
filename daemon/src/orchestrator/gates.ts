@@ -4,7 +4,7 @@
  * selection can also honor explicit stage hints and canonical artifact kinds.
  */
 
-import { DEFAULT_MODELS } from "../config.js";
+import { DEFAULT_MODELS, geminiEnabled } from "../config.js";
 import type { ProfileName } from "./profiles.js";
 import { getRubric } from "../rubrics/registry.js";
 
@@ -284,15 +284,30 @@ export type AllowedJudge = {
 
 export function listAllowedJudges(decision: GateDecision, generator_producer: string): AllowedJudge[] {
   const generatorVendor = vendorFor(generator_producer);
-  const otherVendors = ["codex", "gemini", "claude"].filter(p => vendorFor(p) !== generatorVendor);
+  // Honor the global Gemini kill-switch (PP_DISABLE_GEMINI=1). This is the one
+  // judge-selection path that does NOT flow through doctor()'s vendor matrix,
+  // so it must consult geminiEnabled() directly — otherwise the preferred_producers
+  // hint returned by gate_eligible_judges could still point the driver at Gemini,
+  // on EITHER the cross-vendor pool or (for a gemini generator) the same-vendor lane.
+  const pool = geminiEnabled() ? ["codex", "gemini", "claude"] : ["codex", "claude"];
+  const otherVendors = pool.filter(p => vendorFor(p) !== generatorVendor);
 
   if (decision.required_cross_vendor) {
     return [{ agent: "judge-cross-vendor", tier: "cross_vendor", preferred_producers: otherVendors }];
   }
-  return [
-    { agent: "judge-same-vendor",  tier: "same_vendor",  preferred_producers: [generator_producer] },
-    { agent: "judge-cross-vendor", tier: "cross_vendor", preferred_producers: otherVendors },
-  ];
+
+  const judges: AllowedJudge[] = [];
+  // Drop the same-vendor lane only when it would point at a disabled vendor
+  // (currently just the gemini lane under PP_DISABLE_GEMINI=1). All other
+  // producers — codex, claude, copilot — keep their existing same-vendor
+  // behavior unchanged. The cross-vendor judge below is always offered and is
+  // never empty (a gemini generator still falls back to codex/claude).
+  const sameVendorDisabled = generator_producer === "gemini" && !geminiEnabled();
+  if (!sameVendorDisabled) {
+    judges.push({ agent: "judge-same-vendor", tier: "same_vendor", preferred_producers: [generator_producer] });
+  }
+  judges.push({ agent: "judge-cross-vendor", tier: "cross_vendor", preferred_producers: otherVendors });
+  return judges;
 }
 
 function vendorFor(producer: string): string {

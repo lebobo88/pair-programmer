@@ -24,6 +24,7 @@ import { doctor } from "../orchestrator/runs.js";
 import { masterPlanStatus, applyMasterPlanPatch, ensureMasterPlan } from "../orchestrator/master-plan.js";
 import { loadProjectProfile } from "../orchestrator/profiles.js";
 import { evaluateGate, type GateType, type Profile } from "../orchestrator/gates.js";
+import { geminiEnabled } from "../config.js";
 import { evaluateShellSafety } from "./bash-safety.js";
 import { recallProjectContext, recallByQuery, listPriorCritiques } from "../ecosystem/eights-writes.js";
 
@@ -301,7 +302,12 @@ const HANDLERS: Record<string, Record<string, (input: HookInput) => Promise<void
 
       // 1. Direct vendor presence — block if the requested vendor is missing.
       if (wantsCodex && !v.openai)  reply(false, "[pp] pp_codex tools blocked: OpenAI not configured (set OPENAI_API_KEY or `codex login`).");
-      if (wantsGemini && !v.google) reply(false, "[pp] pp_gemini tools blocked: Google not configured (set GEMINI_API_KEY or `gemini auth`).");
+      if (wantsGemini && !v.google) {
+        const why = !geminiEnabled()
+          ? "disabled via PP_DISABLE_GEMINI=1 (unset it to re-enable)"
+          : "Google not configured (set GEMINI_API_KEY or `gemini auth`)";
+        reply(false, `[pp] pp_gemini tools blocked: ${why}.`);
+      }
 
       // 2. Stage-aware: replicate gate_eligible_judges' decision (base tier
       // + content-aware upgrades + profile-aware upgrades) using the same

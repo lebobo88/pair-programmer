@@ -17,7 +17,7 @@ import { applyMasterPlanPatch, ensureMasterPlan, masterPlanStatus } from "./mast
 import { TAXONOMY_BY_ID, MASTER_PLAN_SECTIONS } from "./taxonomy.js";
 import { ProjectLock, ProjectLockBusyError } from "../util/lock.js";
 import { tmpdir } from "node:os";
-import { DEFAULT_MODELS } from "../config.js";
+import { DEFAULT_MODELS, geminiEnabled } from "../config.js";
 import { codexCritique } from "../mcp/codex-server.js";
 import { geminiCritique } from "../mcp/gemini-server.js";
 import { describeJudgeCapabilities } from "./gates.js";
@@ -2903,9 +2903,14 @@ export async function doctor(opts: DoctorOptions = {}): Promise<unknown> {
   // permissive — a freshly-installed CLI without an API key cannot serve
   // requests, so reporting "configured" would mislead /pp:doctor consumers
   // and hide cross-vendor outages until the first runtime call.
+  // geminiEnabled() is the global Gemini kill-switch (PP_DISABLE_GEMINI=1).
+  // Gating `google` here is the single master chokepoint: a false value
+  // cascades to the enforce-vendor-matrix hook, best-of-N preconditions, the
+  // cross_vendor_ready count, and the critique smoke test — making the harness
+  // behave as if Google were simply not a configured vendor.
   const vendors: Record<string, boolean> = {
     openai:    cliVersions.codex  !== null && hasOpenAiCreds(),
-    google:    cliVersions.gemini !== null && hasGoogleCreds(),
+    google:    geminiEnabled() && cliVersions.gemini !== null && hasGoogleCreds(),
     anthropic: cliVersions.claude !== null && hasAnthropicCreds(),
   };
   const vendor_credentials: Record<string, { cli: boolean; api_key: boolean; logged_in: boolean }> = {
@@ -2962,6 +2967,7 @@ export async function doctor(opts: DoctorOptions = {}): Promise<unknown> {
     vendor_credentials,
     judge_capabilities: describeJudgeCapabilities(),
     vendor_degraded,
+    gemini_disabled: !geminiEnabled(),
     cross_vendor_ready: vendorCount >= 2,
     critique_smoke,
     browser_engines,
