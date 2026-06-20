@@ -97,6 +97,17 @@ type CodexCliArgOptions = {
 
 export function buildCodexExecArgs(opts: CodexCliArgOptions): string[] {
   const cliArgs: string[] = ["exec", "--json", "--cd", opts.cwd, "--sandbox", opts.sandbox, "--model", opts.model];
+  // Headless `codex exec` has no TTY to answer an approval prompt. Without an
+  // explicit policy it falls back to the user's ~/.codex/config.toml
+  // `approval_policy` (often on-request / untrusted), which auto-DENIES the
+  // write and surfaces as "writing is blocked by read-only sandbox; rejected by
+  // user approval settings" — even on an editing stage that requested
+  // `--sandbox workspace-write` (regression seen on Hydra run_VSTckQaMndVO: a
+  // workspace-write generate that wrote nothing). Pin approvals to "never" via a
+  // config override (codex 0.128 `exec` has no --ask-for-approval flag) so the
+  // chosen --sandbox is the SOLE gate: read-only still blocks writes;
+  // workspace-write applies patches within the worktree without prompting.
+  cliArgs.push("-c", 'approval_policy="never"');
   // The daemon already chooses the target cwd and sandbox; bypass Codex's
   // interactive trust gate for headless MCP runs unless a caller opts out.
   if (opts.skip_git_repo_check ?? true) cliArgs.push("--skip-git-repo-check");
