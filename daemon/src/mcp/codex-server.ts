@@ -108,6 +108,15 @@ export function buildCodexExecArgs(opts: CodexCliArgOptions): string[] {
   // chosen --sandbox is the SOLE gate: read-only still blocks writes;
   // workspace-write applies patches within the worktree without prompting.
   cliArgs.push("-c", 'approval_policy="never"');
+  // Pin a valid service_tier so the daemon is robust to a broken/incompatible
+  // ~/.codex/config.toml. Codex Desktop periodically REWRITES that file with
+  // `service_tier = "default"`, which codex-cli 0.128 rejects at config-load
+  // ("unknown variant `default`, expected `fast` or `flex`") — breaking every
+  // headless generate/critique before the model is even reached. An explicit
+  // `-c` override takes precedence over the file, so a Desktop rewrite can no
+  // longer wedge the harness. ("fast" is the value this account accepts; "flex"
+  // parses in the CLI but is API-rejected on the current tier.)
+  cliArgs.push("-c", 'service_tier="fast"');
   // The daemon already chooses the target cwd and sandbox; bypass Codex's
   // interactive trust gate for headless MCP runs unless a caller opts out.
   if (opts.skip_git_repo_check ?? true) cliArgs.push("--skip-git-repo-check");
