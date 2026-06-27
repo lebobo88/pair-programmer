@@ -27,6 +27,7 @@ verification-report*.md
 
 # Harness per-run artifacts (written locally by /pp:run)
 .harness/runs/
+.harness/run_*/
 
 # Ephemeral best-of-N candidate worktrees
 .claude/worktrees/

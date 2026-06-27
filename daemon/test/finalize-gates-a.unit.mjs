@@ -260,9 +260,9 @@ await record("finalizeRun(surfaced) bypasses the artifact gate entirely", async 
 console.log("\nVG-3: browser validation gate");
 
 /** Thin wrapper around browserValidationFinalize. */
-async function bvFinalize({ run_id, stage_id, findings = [], engine = "playwright" } = {}) {
+async function bvFinalize({ run_id, stage_id, findings = [], engine = "playwright", engine_status, unavailable_reason } = {}) {
   const bv = await importDist("orchestrator/browser-validation.js");
-  return bv.browserValidationFinalize({ run_id, stage_id, engine, findings });
+  return bv.browserValidationFinalize({ run_id, stage_id, engine, findings, engine_status, unavailable_reason });
 }
 
 await record("unexpected 4xx -> severity=errors (fail-closed)", async () => {
@@ -461,6 +461,74 @@ await record("getStageFinalizeReadiness does NOT block when severity=clean", asy
     const readiness = runs.getStageFinalizeReadiness(stage.stage_id);
     const blocker = readiness.blockers.find(b => b.gate === "browser_validation");
     assert.equal(blocker, undefined, "clean BV must not block");
+  } finally { rmSync(project, { recursive: true, force: true }); }
+});
+
+// ─── PP-BV-ISO: degrade-open "unavailable" outcome ──────────────────────────
+console.log("\nPP-BV-ISO: browser-unavailable degrade-open gate");
+
+await record("engine_status=unavailable -> severity=unavailable (NOT errors)", async () => {
+  const project = makeProject();
+  try {
+    const { run, stage } = await bootstrap(project);
+    const result = await bvFinalize({
+      run_id: run.run_id, stage_id: stage.stage_id,
+      engine_status: "unavailable",
+      unavailable_reason: "playwright unavailable: Executable doesn't exist",
+      findings: [],
+    });
+    assert.equal(result.severity, "unavailable");
+    assert.equal(result.effective_severity, "unavailable");
+  } finally { rmSync(project, { recursive: true, force: true }); }
+});
+
+await record("unavailable does NOT block finalize(passed) — code commits", async () => {
+  const project = makeProject();
+  try {
+    const { runs, run, stage } = await bootstrap(project);
+    await bvFinalize({
+      run_id: run.run_id, stage_id: stage.stage_id,
+      engine_status: "unavailable", unavailable_reason: "live-Chrome conflict", findings: [],
+    });
+    const readiness = runs.getStageFinalizeReadiness(stage.stage_id);
+    const blocker = readiness.blockers.find(b => b.gate === "browser_validation");
+    assert.equal(blocker, undefined, "unavailable BV must NOT raise a browser_validation blocker");
+  } finally { rmSync(project, { recursive: true, force: true }); }
+});
+
+await record("ratchet: errors-then-unavailable -> effective stays errors (never downgrades)", async () => {
+  const project = makeProject();
+  try {
+    const { run, stage } = await bootstrap(project);
+    const r1 = await bvFinalize({
+      run_id: run.run_id, stage_id: stage.stage_id,
+      findings: [{ route: "/x", step: "load", status: "fail", console_errors: ["crash"], network_errors: [] }],
+    });
+    assert.equal(r1.effective_severity, "errors");
+    const r2 = await bvFinalize({
+      run_id: run.run_id, stage_id: stage.stage_id,
+      engine_status: "unavailable", unavailable_reason: "later flake", findings: [],
+    });
+    assert.equal(r2.severity, "unavailable", "this-call severity is unavailable");
+    assert.equal(r2.effective_severity, "errors", "errors ratchet must NOT be downgraded by a later unavailable run");
+  } finally { rmSync(project, { recursive: true, force: true }); }
+});
+
+await record("ratchet: unavailable-then-clean -> effective upgrades to clean (real evidence wins)", async () => {
+  const project = makeProject();
+  try {
+    const { run, stage } = await bootstrap(project);
+    const r1 = await bvFinalize({
+      run_id: run.run_id, stage_id: stage.stage_id,
+      engine_status: "unavailable", unavailable_reason: "first try no browser", findings: [],
+    });
+    assert.equal(r1.effective_severity, "unavailable");
+    const r2 = await bvFinalize({
+      run_id: run.run_id, stage_id: stage.stage_id,
+      findings: [{ route: "/", step: "load", status: "pass", console_errors: [], network_errors: [] }],
+    });
+    assert.equal(r2.severity, "clean");
+    assert.equal(r2.effective_severity, "clean", "a genuine clean run upgrades out of the evidence gap");
   } finally { rmSync(project, { recursive: true, force: true }); }
 });
 

@@ -80,6 +80,17 @@ export function browserValidationStart(input: StartInput): StartOutput {
   };
 }
 
+/**
+ * PP-BV-ISO: "unavailable" is a fourth, DEGRADE-OPEN severity for when the
+ * browser engine could not run at all (no engine in this environment, headless
+ * launch refused, or a live-Chrome conflict). It is NOT "errors": the finalize
+ * gate only blocks on "errors", so an "unavailable" run still commits. The
+ * browser-validation-evidence missability check then surfaces it as an evidence
+ * gap (severity is neither clean nor warnings), so the run is downgraded to
+ * "surfaced" for later operator review instead of stalling mid-stage.
+ */
+export type BvSeverity = "clean" | "warnings" | "errors" | "unavailable";
+
 export type FinalizeInput = {
   run_id: string;
   stage_id: string;
@@ -87,6 +98,11 @@ export type FinalizeInput = {
   base_url?: string;
   findings: Finding[];
   gif_path?: string;       // chrome-mcp gif_creator output, if any
+  /** "ran" (default) = a browser actually drove the flows. "unavailable" =
+   *  no browser could run; degrade-open (commit + surface gap, never block). */
+  engine_status?: "ran" | "unavailable";
+  /** Human-readable reason captured into the report when engine_status="unavailable". */
+  unavailable_reason?: string;
 };
 
 export type FinalizeOutput = {
@@ -94,13 +110,13 @@ export type FinalizeOutput = {
   /** Project-relative path of THIS call's report file. */
   report_path: string;
   /** Severity of THIS call's findings (not ratcheted). */
-  severity: "clean" | "warnings" | "errors";
+  severity: BvSeverity;
   /**
    * PP-VG-3: append-only ratcheted max severity across ALL calls for this
    * stage. Once "errors" is persisted it never downgrades. Always check
    * effective_severity (not severity) to know the gate state.
    */
-  effective_severity: "clean" | "warnings" | "errors";
+  effective_severity: BvSeverity;
   /**
    * PP-VG-3: the report path associated with the highest-severity result.
    * The errors-report is retained even after a later clean run — only
@@ -161,11 +177,20 @@ export function browserValidationFinalize(input: FinalizeInput): FinalizeOutput 
     if (hasUnexpectedNetworkError) break;
   }
 
+  // PP-BV-ISO: a browser that could not run at all is "unavailable" — a
+  // degrade-open outcome that is computed BEFORE the content rules and never
+  // escalates to "errors". (An unavailable run carries no findings, so the
+  // content rules below would otherwise mislabel it "clean" and falsely claim
+  // the UI was validated.)
+  const engineStatus: "ran" | "unavailable" = input.engine_status ?? "ran";
+
   // Severity rule (fail-closed):
+  //   "unavailable" — engine_status="unavailable" (no browser ran)
   //   "errors"   — any status="fail", any console_errors, or any unexpected 4xx/5xx
   //   "warnings" — any status="warn" (explicit; NOT triggered by expected network codes)
   //   "clean"    — otherwise
-  const severity: "clean" | "warnings" | "errors" =
+  const severity: BvSeverity =
+    engineStatus === "unavailable"                                          ? "unavailable" :
     fail_count > 0 || console_error_total > 0 || hasUnexpectedNetworkError ? "errors" :
     warn_count > 0                                                          ? "warnings" :
                                                                               "clean";
@@ -220,17 +245,31 @@ export function browserValidationFinalize(input: FinalizeInput): FinalizeOutput 
     }
   }
 
-  // Append-only severity ratchet: errors > warnings > clean.
+  // Append-only severity ratchet for the BLOCKING dimension: errors > warnings.
+  // "clean" outranks "unavailable" so a later genuine clean run upgrades out of
+  // an evidence gap, while "errors"/"warnings" are never downgraded (PP-VG-3).
+  // "unavailable" is only the effective severity when neither errors, warnings,
+  // nor a real clean run was ever recorded for this stage.
   const prevSeverity = prevSeverityFromStorage;
-  let effectiveSeverity: "clean" | "warnings" | "errors";
+  let effectiveSeverity: BvSeverity;
   if (prevSeverity === "errors" || severity === "errors") {
     effectiveSeverity = "errors";
   } else if (prevSeverity === "warnings" || severity === "warnings") {
     effectiveSeverity = "warnings";
-  } else {
+  } else if (prevSeverity === "clean" || severity === "clean") {
     effectiveSeverity = "clean";
+  } else {
+    effectiveSeverity = "unavailable";
   }
   stageNotes["browser_validation_severity"] = effectiveSeverity;
+  // PP-BV-ISO: stamp an explicit evidence-gap marker + reason so /pp:status and
+  // the operator can see WHY validation didn't run, without parsing the report.
+  if (effectiveSeverity === "unavailable") {
+    stageNotes["browser_validation_evidence_gap"] = true;
+    if (input.unavailable_reason) {
+      stageNotes["browser_validation_unavailable_reason"] = input.unavailable_reason;
+    }
+  }
 
   // Use a timestamp suffix so multiple finalize calls don't clobber each other.
   const ts = Date.now();
@@ -255,7 +294,7 @@ export function browserValidationFinalize(input: FinalizeInput): FinalizeOutput 
   //   anything → errors : errors report retained        (2 >= any yes)
   //   warnings → warnings: newer warnings report retained (1 >= 1 yes)
   const severityRank = (s: string | undefined): number =>
-    s === "errors" ? 2 : s === "warnings" ? 1 : 0;
+    s === "errors" ? 3 : s === "warnings" ? 2 : s === "clean" ? 1 : 0; // "unavailable"/undefined = 0
 
   const prevReportPath = stageNotes["browser_validation_report_path"] as string | undefined;
   let effectiveReportPath: string;
@@ -293,7 +332,7 @@ export function browserValidationFinalize(input: FinalizeInput): FinalizeOutput 
 
 function renderReport(
   data: FinalizeInput & {
-    severity: "clean" | "warnings" | "errors";
+    severity: BvSeverity;
     fail_count: number;
     warn_count: number;
     pass_count: number;
@@ -307,6 +346,15 @@ function renderReport(
   lines.push("");
   lines.push(`severity: ${data.severity}`);
   lines.push(`engine: ${data.engine}`);
+  // PP-BV-ISO: when the browser could not run, the report leads with the reason
+  // so the operator sees the evidence gap at a glance. severity="unavailable"
+  // is NOT a pass and NOT a hard failure — the code committed; this UI flow was
+  // not exercised and should be spot-checked.
+  if (data.engine_status === "unavailable") {
+    lines.push(`engine_status: unavailable`);
+    lines.push(`evidence_gap: true`);
+    lines.push(`reason: ${data.unavailable_reason ?? "browser engine could not run in this environment"}`);
+  }
   if (data.base_url) lines.push(`base_url: ${data.base_url}`);
   lines.push(`findings: ${data.findings.length} (pass=${data.pass_count}, warn=${data.warn_count}, fail=${data.fail_count})`);
   lines.push(`console_errors: ${data.console_error_total}`);

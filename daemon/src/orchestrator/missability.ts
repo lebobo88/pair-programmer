@@ -269,6 +269,17 @@ export const CHECK_DEFINITIONS: Array<{
       if (blocking) {
         return { status: "fail", evidence: `${blocking.path}: severity=errors` };
       }
+      // PP-BV-ISO: a browser that could not run records severity="unavailable".
+      // It is a degrade-open outcome (the code committed), but it is NOT validation
+      // evidence — surface it as a gap so the run is downgraded to "surfaced" and
+      // the operator knows this UI flow was never exercised in a browser.
+      const unavailable = reports.find(r => /^severity:\s*unavailable\b/im.test(r.text));
+      if (unavailable) {
+        return {
+          status: "fail",
+          evidence: `${unavailable.path}: severity=unavailable — browser self-check could not run (code committed; spot-check this UI flow)`,
+        };
+      }
       const ok = reports.find(r => /^severity:\s*(clean|warnings)\b/im.test(r.text));
       return ok
         ? { status: "pass", evidence: ok.path }

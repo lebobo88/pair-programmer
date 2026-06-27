@@ -506,6 +506,14 @@ const BrowserValidationFinalizeSchema = z.object({
   engine:   z.enum(["chrome-mcp", "playwright"]),
   base_url: z.string().optional(),
   gif_path: z.string().optional(),
+  // PP-BV-ISO: engine_status distinguishes a browser that actually RAN (default)
+  // from one that could not run at all ("unavailable": no browser engine in this
+  // environment, headless launch refused, or a live-Chrome conflict). "unavailable"
+  // is a DEGRADE-OPEN outcome — it never produces severity="errors", so the code
+  // still commits; the missing evidence is surfaced as a gap by the
+  // browser-validation-evidence missability check instead of stalling the run.
+  engine_status:      z.enum(["ran", "unavailable"]).default("ran"),
+  unavailable_reason: z.string().optional(),
   findings: z.array(z.object({
     route: z.string(),
     step:  z.string(),
@@ -517,7 +525,7 @@ const BrowserValidationFinalizeSchema = z.object({
     // A 401 expected on /api/login does NOT suppress a 500 on /api/data.
     // There is no run-level expected_statuses — only per-finding scope.
     expected_statuses: z.array(z.number().int().min(400).max(599)).optional(),
-  })),
+  })).default([]),
   // NOTE: top-level expected_statuses has been intentionally removed (PP-VG-3).
   // A run-level list would globally suppress all matching status codes across
   // every finding, defeating the fail-closed intent. Use per-finding
@@ -1217,7 +1225,7 @@ const TOOLS: ToolDef[] = [
   {
     name: "browser_validation_finalize",
     description:
-      "Persist a structured findings array (route × step × status × console_errors × network_errors × screenshot_path) and render .harness/<run_id>/browser-validation/report.md. Computes severity: 'errors' if any fail/console-error/5xx; 'warnings' if any warn/4xx; 'clean' otherwise. The browser-validator agent calls this exactly once after exercising all acceptance criteria.",
+      "Persist a structured findings array (route × step × status × console_errors × network_errors × screenshot_path) and render .harness/<run_id>/browser-validation/report.md. Computes severity: 'errors' if any fail/console-error/5xx; 'warnings' if any warn/4xx; 'clean' otherwise. Pass engine_status='unavailable' (with unavailable_reason) when no browser could run at all (no engine in this environment / headless launch refused / live-Chrome conflict): this records severity='unavailable', a DEGRADE-OPEN outcome that never blocks finalize — the code still commits and the missing evidence is surfaced as a gap by the browser-validation-evidence missability check. The browser-validator agent calls this exactly once after exercising all acceptance criteria (or once with engine_status='unavailable' if it could not).",
     schema: BrowserValidationFinalizeSchema,
     handler: (args) => browserValidationFinalize(BrowserValidationFinalizeSchema.parse(args)),
   },

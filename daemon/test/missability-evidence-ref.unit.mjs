@@ -123,6 +123,38 @@ await record("run-archive fallback resolves to .harness/<run_id>/ when project t
   }
 });
 
+await record("PP-BV-ISO: browser_validation_report severity=unavailable -> evidence gap (fail)", async () => {
+  const project = setupProject();
+  try {
+    const runs = await importDist("orchestrator/missability.js");
+    const r = await importDist("orchestrator/runs.js");
+    const m = runs; // missability module
+    const run = await r.ensureRun({ request_text: "bv-unavailable", project_path: project, mode: "single" });
+    const stage = await r.startStage({ run_id: run.run_id, kind: "browser_validation", gate_type: "contract" });
+
+    // A degrade-open report: the browser could not run. The check MUST surface
+    // this as a gap (NOT a pass) so the run is downgraded to "surfaced".
+    await r.archiveArtifact({
+      run_id: run.run_id,
+      stage_id: stage.stage_id,
+      kind: "browser_validation_report",
+      relative_path: "browser-validation/report-unavailable.md",
+      bytes: "# Browser validation report\n\nseverity: unavailable\nengine: playwright\nengine_status: unavailable\nevidence_gap: true\nreason: playwright unavailable\n",
+    });
+
+    const result = m.runMissabilityChecks({
+      run_id: run.run_id,
+      required_check_ids: ["browser-validation-evidence"],
+    });
+    const bv = result.results.find(x => x.check_id === "browser-validation-evidence");
+    assert.equal(bv?.status, "fail",
+      `unavailable BV must surface as a gap; got ${bv?.status} (${bv?.evidence})`);
+    assert.match(bv.evidence, /unavailable/, "evidence should name the unavailable gap");
+  } finally {
+    rmSync(project, { recursive: true, force: true });
+  }
+});
+
 console.log();
 console.log(`${passed} passed, ${failed} failed`);
 process.exit(failed === 0 ? 0 : 1);
