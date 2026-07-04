@@ -59,7 +59,7 @@ async function main() {
       hydra_workflow_id:   "wf_smoke_001",
       hydra_envelope_id:   "env_smoke_001",
       hydra_origin_squad:  "executive",
-      hydra_envelope_type: "DevTask",
+      hydra_envelope_type: "DEV_TASK",
     });
     console.log(`✓ start_run -> ${run.run_id}`);
 
@@ -147,8 +147,8 @@ async function main() {
       throw new Error(`expected hydra_envelope_id=env_smoke_001, got ${tree.run.hydra_envelope_id}`);
     if (tree.run.hydra_origin_squad !== "executive")
       throw new Error(`expected hydra_origin_squad=executive, got ${tree.run.hydra_origin_squad}`);
-    if (tree.run.hydra_envelope_type !== "DevTask")
-      throw new Error(`expected hydra_envelope_type=DevTask, got ${tree.run.hydra_envelope_type}`);
+    if (tree.run.hydra_envelope_type !== "DEV_TASK")
+      throw new Error(`expected hydra_envelope_type=DEV_TASK, got ${tree.run.hydra_envelope_type}`);
     console.log(`✓ hydra context round-trip: workflow=${tree.run.hydra_workflow_id}, squad=${tree.run.hydra_origin_squad}`);
 
     // 9b. P2: ensure_run idempotent contract for Hydra dispatchers.
