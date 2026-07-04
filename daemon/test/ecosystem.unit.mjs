@@ -108,7 +108,7 @@ async function testEightsClientDegradedMode() {
     await mod.hydra.envelopeRecord({
       envelope_id: "e1",
       workflow_id: "wf",
-      type: "DecisionRecord",
+      type: "DECISION_RECORD",
       origin_squad: "engineering",
       payload: {},
     }),
@@ -252,6 +252,65 @@ async function testHydraEnvelopeEmitters() {
   console.log("✓ hydra-envelopes.ts: 3 emitters allocate ids, degrade gracefully");
 }
 
+async function testEnvelopeTypeVocabularyContract() {
+  // Contract: every value in HYDRA_RECORD_ENVELOPE_TYPES and HYDRA_ENVELOPE_TYPES
+  // must be UPPER_SNAKE_CASE. If this test fails someone has re-introduced a
+  // CamelCase alias — the canonical vocabulary is UPPER_SNAKE ecosystem-wide
+  // (TheEights Phase 3b; Hydra hydra_core/schemas.py:369-376).
+  const UPPER_SNAKE_RE = /^[A-Z][A-Z0-9]*(_[A-Z0-9]+)*$/;
+
+  const config = await importDist("config.js");
+
+  const recordTypes = config.HYDRA_RECORD_ENVELOPE_TYPES;
+  assert.ok(Array.isArray(recordTypes) && recordTypes.length > 0,
+    "HYDRA_RECORD_ENVELOPE_TYPES must be a non-empty array");
+  for (const t of recordTypes) {
+    assert.match(
+      t,
+      UPPER_SNAKE_RE,
+      `HYDRA_RECORD_ENVELOPE_TYPES: "${t}" is not UPPER_SNAKE — CamelCase literals are banned`
+    );
+  }
+
+  const inboundTypes = config.HYDRA_ENVELOPE_TYPES;
+  assert.ok(Array.isArray(inboundTypes) && inboundTypes.length > 0,
+    "HYDRA_ENVELOPE_TYPES must be a non-empty array");
+  for (const t of inboundTypes) {
+    assert.match(
+      t,
+      UPPER_SNAKE_RE,
+      `HYDRA_ENVELOPE_TYPES: "${t}" is not UPPER_SNAKE — CamelCase literals are banned`
+    );
+  }
+
+  // Spot-check: the specific literals that were CamelCase pre-Phase-3c must
+  // now appear in their UPPER_SNAKE form and must NOT appear in CamelCase.
+  const banned = ["ArchRFC", "DevTask", "CreativeBrief", "ShotList", "AssetJob",
+                  "DecisionRecord", "HITLRequest", "Handoff", "CSuiteDecisionPacket"];
+  for (const b of banned) {
+    assert.equal(
+      recordTypes.includes(b), false,
+      `HYDRA_RECORD_ENVELOPE_TYPES must not contain CamelCase literal "${b}"`
+    );
+    assert.equal(
+      inboundTypes.includes(b), false,
+      `HYDRA_ENVELOPE_TYPES must not contain CamelCase literal "${b}"`
+    );
+  }
+
+  const required = ["DECISION_RECORD", "CREATIVE_BRIEF", "DEV_TASK", "ARCH_RFC",
+                    "HITL_REQUEST", "HANDOFF", "SHOT_LIST", "ASSET_JOB",
+                    "C_SUITE_DECISION_PACKET", "PRD"];
+  for (const r of required) {
+    assert.equal(
+      recordTypes.includes(r), true,
+      `HYDRA_RECORD_ENVELOPE_TYPES must include canonical literal "${r}"`
+    );
+  }
+
+  console.log("✓ envelope-type vocabulary contract: all values are UPPER_SNAKE, no CamelCase");
+}
+
 async function testAutogenesisAnalyzer() {
   // T4 — Phase F. Pure-function tests against the analyzer's DB queries.
   // We can't easily seed the analyzer's project_path query without
@@ -287,6 +346,7 @@ async function main() {
   await testConstitution();
   await testAuditDegradedMode();
   await testHydraEnvelopeEmitters();
+  await testEnvelopeTypeVocabularyContract();
   await testAutogenesisAnalyzer();
   console.log("✓ ecosystem.unit.mjs: all assertions passed");
 }

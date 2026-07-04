@@ -12,7 +12,7 @@
 // and asserts the wire contract:
 //   1. probe connects (isAvailable() === true) and lists eights.memory.* tools.
 //   2. memory.add round-trips WITHOUT isError (returns a memory id).
-//   3. hydra.envelope.record of a DecisionRecord returns recorded/ok.
+//   3. hydra.envelope.record of a DECISION_RECORD returns recorded/ok.
 //   4. hydra.envelope.query(workflow_id) finds the just-recorded envelope.
 //   5. audit.trace accepts its (read) args and returns an array.
 //   6. constitution.attest accepts its args, OR returns a DOMAIN error
@@ -82,12 +82,12 @@ async function main() {
   );
   console.log(`✓ memory.add round-tripped: id=${added.id}`);
 
-  // ── 3. hydra.envelope.record (DecisionRecord) ──────────────────────────
+  // ── 3. hydra.envelope.record (DECISION_RECORD) ────────────────────────
   const envelope_id = `env_pp_itest_dr_${Date.now()}`;
   const recorded = await mod.hydra.envelopeRecord({
     envelope_id,
     workflow_id,
-    type: "DecisionRecord",
+    type: "DECISION_RECORD",
     origin_squad: "engineering",
     target_squad: "executive",
     payload: {
@@ -132,8 +132,8 @@ async function main() {
   );
   assert.equal(
     found.type,
-    "DecisionRecord",
-    "round-tripped envelope must preserve type=DecisionRecord"
+    "DECISION_RECORD",
+    "round-tripped envelope must preserve type=DECISION_RECORD"
   );
   console.log(`✓ hydra.envelope.query found the envelope (type=${found.type})`);
 

@@ -197,29 +197,28 @@ export const DEFAULT_CELL: EightCell = "context";
 
 /** Hydra envelope types pp may receive on start_run. */
 export const HYDRA_ENVELOPE_TYPES = [
-  "CSuiteDecisionPacket", "PRD", "ArchRFC", "DevTask", "HANDOFF",
+  "C_SUITE_DECISION_PACKET", "PRD", "ARCH_RFC", "DEV_TASK", "HANDOFF",
 ] as const;
 export type HydraEnvelopeType = typeof HYDRA_ENVELOPE_TYPES[number];
 
 /**
  * The canonical HydraEnvelope `type` discriminator enum, mirroring
  * TheEights/daemon/src/schemas/hydra-envelope.ts:HydraEnvelopeType EXACTLY.
- * This is what pp must send on `eights.hydra.envelope.record` — note the
- * casing: `DecisionRecord` (NOT `DECISION_RECORD`), `Handoff` (NOT `HANDOFF`),
- * `C_SUITE_DECISION_PACKET` (screaming-snake). The inbound HYDRA_ENVELOPE_TYPES
- * list above is a separate, narrower set pp recognizes on start_run and is
- * intentionally NOT unified with this one.
+ * All values are UPPER_SNAKE — this is the ecosystem-wide canonical vocabulary
+ * (TheEights Phase 3b; Hydra hydra_core/schemas.py:369-376). The inbound
+ * HYDRA_ENVELOPE_TYPES list above is a separate, narrower set pp recognizes
+ * on start_run and is intentionally NOT unified with this one.
  */
 export const HYDRA_RECORD_ENVELOPE_TYPES = [
   "C_SUITE_DECISION_PACKET",
   "PRD",
-  "ArchRFC",
-  "DevTask",
-  "CreativeBrief",
-  "ShotList",
-  "AssetJob",
-  "DecisionRecord",
-  "HITLRequest",
-  "Handoff",
+  "ARCH_RFC",
+  "DEV_TASK",
+  "CREATIVE_BRIEF",
+  "SHOT_LIST",
+  "ASSET_JOB",
+  "DECISION_RECORD",
+  "HITL_REQUEST",
+  "HANDOFF",
 ] as const;
 export type HydraRecordEnvelopeType = typeof HYDRA_RECORD_ENVELOPE_TYPES[number];

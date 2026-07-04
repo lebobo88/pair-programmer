@@ -663,7 +663,7 @@ const TOOLS: ToolDef[] = [
   {
     name: "request_strategic_framing",
     description:
-      "T3 — Phase E. Emit a CSuiteDecisionPacket envelope to the executive squad asking for strategic framing on a major-tier request. When Hydra+TheEights are running, ExecutiveSuite's boardroom picks this up and the reply (a PRD envelope) lands in TheEights' envelope store keyed by workflow_id; poll via hydra_envelope_query. When TheEights is offline, recorded=false but envelope_id is still allocated — the driver may fall back to spawning the local `boardroom` agent directly via Task. Call this BEFORE spec-author on profiles enterprise|ai-agentic|data-product when triage returns scope=major.",
+      "T3 — Phase E. Emit a C_SUITE_DECISION_PACKET envelope to the executive squad asking for strategic framing on a major-tier request. When Hydra+TheEights are running, ExecutiveSuite's boardroom picks this up and the reply (a PRD envelope) lands in TheEights' envelope store keyed by workflow_id; poll via hydra_envelope_query. When TheEights is offline, recorded=false but envelope_id is still allocated — the driver may fall back to spawning the local `boardroom` agent directly via Task. Call this BEFORE spec-author on profiles enterprise|ai-agentic|data-product when triage returns scope=major.",
     schema: RequestStrategicFramingSchema,
     handler: async (args) => {
       const p = RequestStrategicFramingSchema.parse(args);
@@ -682,7 +682,7 @@ const TOOLS: ToolDef[] = [
   {
     name: "request_brand_review",
     description:
-      "T3 — Phase E. Emit a CreativeBrief envelope (brief_kind=brand-voice-check) to the marketing-strategy squad (MarketBliss) reviewing customer-facing copy on a UX surface. Advisory, not gating — the ux-team continues regardless of whether a reply arrives. The reply (a DecisionRecord with brand-narrative notes) lands in TheEights' envelope store keyed by workflow_id. Returns {envelope_id, recorded}.",
+      "T3 — Phase E. Emit a CREATIVE_BRIEF envelope (brief_kind=brand-voice-check) to the marketing-strategy squad (MarketBliss) reviewing customer-facing copy on a UX surface. Advisory, not gating — the ux-team continues regardless of whether a reply arrives. The reply (a DECISION_RECORD with brand-narrative notes) lands in TheEights' envelope store keyed by workflow_id. Returns {envelope_id, recorded}.",
     schema: RequestBrandReviewSchema,
     handler: async (args) => {
       const p = RequestBrandReviewSchema.parse(args);
@@ -703,7 +703,7 @@ const TOOLS: ToolDef[] = [
   {
     name: "request_visual_advisory",
     description:
-      "T3 — Phase E. Emit a CreativeBrief envelope (brief_kind=visual-direction-advisory) to the creative squad (RLM-Creative — Calliope) asking for visual tone notes on a new screen family or significant UI change. Strictly advisory: the ux-team does NOT block on a reply. Returns {envelope_id, recorded}.",
+      "T3 — Phase E. Emit a CREATIVE_BRIEF envelope (brief_kind=visual-direction-advisory) to the creative squad (RLM-Creative — Calliope) asking for visual tone notes on a new screen family or significant UI change. Strictly advisory: the ux-team does NOT block on a reply. Returns {envelope_id, recorded}.",
     schema: RequestVisualAdvisorySchema,
     handler: async (args) => {
       const p = RequestVisualAdvisorySchema.parse(args);

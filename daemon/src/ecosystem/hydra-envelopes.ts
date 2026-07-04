@@ -4,18 +4,18 @@
  * pp now speaks Hydra's cross-squad message protocol when it has
  * something to say to the rest of the ecosystem:
  *
- *   - DECISION_RECORD       — fired at finalize_run when the run was
- *                             invoked by Hydra (hydra_workflow_id set).
- *                             Tells Hydra "the engineering work this
- *                             workflow asked for is done; here's how".
- *   - CSuiteDecisionPacket  — fired at triage when scope=major and the
- *                             profile is enterprise/ai-agentic/data-product.
- *                             Asks the executive crown for strategic
- *                             framing before pp authors a PRD.
- *   - CreativeBrief         — fired by the ux-team's new stages on
- *                             customer-facing surfaces: brand-narrative
- *                             review (MarketBliss) + visual direction
- *                             (RLM-Creative).
+ *   - DECISION_RECORD          — fired at finalize_run when the run was
+ *                               invoked by Hydra (hydra_workflow_id set).
+ *                               Tells Hydra "the engineering work this
+ *                               workflow asked for is done; here's how".
+ *   - C_SUITE_DECISION_PACKET  — fired at triage when scope=major and the
+ *                               profile is enterprise/ai-agentic/data-product.
+ *                               Asks the executive crown for strategic
+ *                               framing before pp authors a PRD.
+ *   - CREATIVE_BRIEF           — fired by the ux-team's new stages on
+ *                               customer-facing surfaces: brand-narrative
+ *                               review (MarketBliss) + visual direction
+ *                               (RLM-Creative).
  *
  * All emissions go through TheEights' hydra.envelope.record API. Hydra's
  * supervisor subscribes to that store via eights.hydra.envelope.query
@@ -83,7 +83,7 @@ export async function emitDecisionRecord(ctx: DecisionRecordContext): Promise<En
     const result = await hydra.envelopeRecord({
       envelope_id,
       workflow_id: ctx.workflow_id,
-      type: "DecisionRecord",
+      type: "DECISION_RECORD",
       origin_squad: "engineering",
       target_squad: ctx.origin_squad ?? "executive",
       parent_id: ctx.hydra_envelope_id_in ?? undefined,
@@ -151,7 +151,7 @@ export async function emitStrategicFramingRequest(ctx: CSuitePacketContext): Pro
     if (result?.recorded) {
       log.info(
         { run_id: ctx.run_id, workflow_id, envelope_id },
-        "hydra CSuiteDecisionPacket emitted (strategic framing requested)"
+        "hydra C_SUITE_DECISION_PACKET emitted (strategic framing requested)"
       );
       return { envelope_id, recorded: true };
     }
@@ -173,11 +173,11 @@ export type CreativeBriefContext = {
 };
 
 /**
- * Fire a CreativeBrief envelope to Garland (RLM-Creative) or MarketBliss
+ * Fire a CREATIVE_BRIEF envelope to Garland (RLM-Creative) or MarketBliss
  * (marketing-strategy squad). pp's ux-team stages emit these on
  * customer-facing surfaces. They are advisory by default — pp does NOT
  * block merge on a missing reply. The driver should poll for a returned
- * DecisionRecord within a short window and surface it as context, not
+ * DECISION_RECORD within a short window and surface it as context, not
  * as a gate.
  */
 export async function emitCreativeBrief(ctx: CreativeBriefContext): Promise<EnvelopeResult> {
@@ -198,7 +198,7 @@ export async function emitCreativeBrief(ctx: CreativeBriefContext): Promise<Enve
     const result = await hydra.envelopeRecord({
       envelope_id,
       workflow_id,
-      type: "CreativeBrief",
+      type: "CREATIVE_BRIEF",
       origin_squad: "engineering",
       target_squad: ctx.target,
       payload,
@@ -206,7 +206,7 @@ export async function emitCreativeBrief(ctx: CreativeBriefContext): Promise<Enve
     if (result?.recorded) {
       log.info(
         { run_id: ctx.run_id, workflow_id, target: ctx.target, brief_kind: ctx.brief_kind, envelope_id },
-        "hydra CreativeBrief emitted"
+        "hydra CREATIVE_BRIEF emitted"
       );
       return { envelope_id, recorded: true };
     }
