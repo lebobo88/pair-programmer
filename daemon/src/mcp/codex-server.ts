@@ -6,7 +6,8 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 import { mkdirSync, writeFileSync, readFileSync, existsSync } from "node:fs";
-import { join } from "node:path";
+import { join, dirname, resolve } from "node:path";
+import { spawnSync } from "node:child_process";
 import { nanoid } from "nanoid";
 import { errorContent, jsonContent, zodToJsonSchema } from "./helpers.js";
 import { buildCritiqueOutputSchema } from "./critique-schema.js";
@@ -85,6 +86,42 @@ type CodexGenerateInternalOptions = {
   _invoke?: (genArgs: z.infer<typeof GenerateSchema>) => Promise<CodexResult>;
 };
 
+/**
+ * Detect whether `cwd` is a git linked worktree by probing `git rev-parse
+ * --git-common-dir`. Returns the resolved absolute path of the git-common-dir
+ * when it falls OUTSIDE cwd (linked worktree), or null for the main repo,
+ * non-git directories, and any error.
+ *
+ * A linked worktree has a `.git` TEXT FILE (not a directory) whose content
+ * is `gitdir: <path>/worktrees/<name>` — pointing into the main repo's
+ * `.git` tree, which lives outside the worktree root. When the Codex sandbox
+ * restricts filesystem access to the cwd subtree, git ops that follow this
+ * pointer hit "Permission denied" on the main repo's object store.
+ *
+ * Synchronous, 5s timeout, fail-soft (returns null on timeout or error).
+ */
+export function detectLinkedWorktree(cwd: string): string | null {
+  try {
+    const result = spawnSync("git", ["-C", cwd, "rev-parse", "--git-common-dir"], {
+      timeout: 5000,
+      encoding: "utf8",
+    });
+    if (result.status !== 0 || result.error || !result.stdout?.trim()) return null;
+    const commonDir = result.stdout.trim();
+    // Resolve to an absolute path — in the main repo this is ".git" (relative),
+    // in a linked worktree it is already the absolute main repo .git path.
+    const absCommonDir = resolve(cwd, commonDir);
+    const absCwd = resolve(cwd);
+    // If the common .git dir is inside cwd it's the main repo; not a linked worktree.
+    if (absCommonDir === absCwd || absCommonDir.startsWith(absCwd + "/") || absCommonDir.startsWith(absCwd + "\\")) {
+      return null;
+    }
+    return absCommonDir;
+  } catch {
+    return null;
+  }
+}
+
 type CodexCliArgOptions = {
   cwd: string;
   sandbox: SandboxPolicy;
@@ -93,6 +130,27 @@ type CodexCliArgOptions = {
   resumeSessionId?: string;
   outputSchemaPath?: string;
   skip_git_repo_check?: boolean;
+  /**
+   * When cwd is a git linked worktree, the absolute path of the git-common-dir
+   * (the main repo's .git directory). Combined with sandbox==="read-only", causes
+   * `--add-dir <mainRepoRoot>` to be appended so the read-only Codex sandbox can
+   * follow the .git FILE reference through to the main repo's object store without
+   * "Permission denied" (the critique failure scenario).
+   *
+   * IMPORTANT: `--add-dir` is ONLY injected for sandbox==="read-only". In
+   * workspace-write mode the sandbox already permits out-of-workspace reads, so
+   * --add-dir is not needed there; worse, it would make the main repo ROOT
+   * writable inside a best-of-N candidate worktree, bypassing candidate isolation.
+   *
+   * `--add-dir` is documented by codex CLI as "Additional directories that should
+   * be writable alongside the primary workspace." The read-only sandbox still
+   * registers the directory in its scope, enabling git to traverse the .git file
+   * pointer. If a future codex version enforces a stricter read boundary for
+   * --add-dir in read-only mode, the fallback would be
+   * `-c 'sandbox_permissions=["disk-full-read-access"]'`, but that is broader
+   * than needed and not used here.
+   */
+  linkedWorktreeCommonDir?: string | null;
 };
 
 export function buildCodexExecArgs(opts: CodexCliArgOptions): string[] {
@@ -123,6 +181,20 @@ export function buildCodexExecArgs(opts: CodexCliArgOptions): string[] {
   if (opts.reasoning_effort) cliArgs.push("--config", `model_reasoning_effort=${opts.reasoning_effort}`);
   if (opts.resumeSessionId) cliArgs.push("--resume", opts.resumeSessionId);
   if (opts.outputSchemaPath) cliArgs.push("--output-schema", opts.outputSchemaPath);
+  // Judge-sandbox linked-worktree fix: when cwd is a git linked worktree the
+  // .git entry is a TEXT FILE pointing to the main repo's .git directory, which
+  // is OUTSIDE the sandbox root. In read-only mode (critique) git ops fail with
+  // "Permission denied". Grant the main repo root via --add-dir so the sandbox
+  // can traverse the .git file pointer.
+  //
+  // Gated on read-only ONLY: workspace-write already permits out-of-workspace
+  // reads, so --add-dir is unnecessary there; more critically, it would make the
+  // main repo root WRITABLE inside a best-of-N candidate worktree, breaking
+  // candidate isolation.
+  if (opts.linkedWorktreeCommonDir && opts.sandbox === "read-only") {
+    const mainRepoRoot = dirname(opts.linkedWorktreeCommonDir);
+    cliArgs.push("--add-dir", mainRepoRoot);
+  }
   cliArgs.push("-");
   return cliArgs;
 }
@@ -221,6 +293,15 @@ async function codexGenerate(
     );
     outputSchemaPath = schemaPath;
   }
+  // Detect linked worktree so buildCodexExecArgs can inject --add-dir for the
+  // main repo root. Fail-soft: null means "not a linked worktree or probe failed".
+  const linkedWorktreeCommonDir = detectLinkedWorktree(args.cwd);
+  if (linkedWorktreeCommonDir) {
+    process.stderr.write(
+      `[pp_codex.generate] linked worktree detected: git-common-dir=${linkedWorktreeCommonDir}; ` +
+      `adding --add-dir ${dirname(linkedWorktreeCommonDir)} to sandbox args.\n`,
+    );
+  }
   const cliArgs = buildCodexExecArgs({
     cwd: args.cwd,
     sandbox: args.sandbox,
@@ -229,6 +310,7 @@ async function codexGenerate(
     resumeSessionId,
     outputSchemaPath,
     skip_git_repo_check: opts.skip_git_repo_check,
+    linkedWorktreeCommonDir,
   });
 
   const run = await runCliWithRetry({

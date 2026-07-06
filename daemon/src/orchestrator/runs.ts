@@ -744,6 +744,13 @@ export type RetractVerdictInput = {
 };
 export type RetractVerdictOutput = { verdict_id: string; retracted_at: string };
 
+export class RunNotFound extends Error {
+  constructor(message: string, public readonly run_id: string) {
+    super(message);
+    this.name = "RunNotFound";
+  }
+}
+
 export class VerdictNotFound extends Error {
   constructor(message: string, public readonly verdict_id: string) {
     super(message);
@@ -2751,6 +2758,54 @@ export function archiveArtifact(input: ArchiveArtifactInput): ArchiveArtifactOut
   });
 
   return { status: "ok", artifact_id: id, absolute_path: absolute, sha256 };
+}
+
+// RA-4: surfaced-run operator ack types and implementation.
+export type AckRunInput = {
+  run_id: string;
+  /** Human reason for acknowledging — stored verbatim for the audit trail. */
+  reason: string;
+};
+
+export type AckRunOutput =
+  | { acked: true;         run_id: string; acked_at: string }
+  | { already_acked: true; run_id: string; acked_at: string };
+
+/**
+ * Mark a surfaced (or any status) run as operator-acknowledged.
+ *
+ * Sets `acked_at` to the current ISO timestamp and persists the operator's
+ * `reason` in `acked_reason`. Both banner queries in dispatcher.ts filter
+ * `WHERE acked_at IS NULL`, so an acked run stops appearing in session
+ * startup nags.
+ *
+ * Idempotent: a second call with any reason returns `already_acked: true`
+ * without overwriting the original timestamp or reason, so the first ack
+ * wins and the audit trail stays clean.
+ *
+ * Throws `RunNotFound` when the run_id does not exist.
+ */
+export function ackRun(input: AckRunInput): AckRunOutput {
+  const existing = db()
+    .prepare(`SELECT id, acked_at, acked_reason FROM runs WHERE id = ?`)
+    .get(input.run_id) as { id: string; acked_at: string | null; acked_reason: string | null } | undefined;
+  if (!existing) {
+    throw new RunNotFound(`run ${input.run_id} not found`, input.run_id);
+  }
+  if (existing.acked_at) {
+    // Idempotent: already acked — return the original timestamp so the caller
+    // can display it. Any reason is accepted for re-ack (unlike retractVerdict
+    // which guards the audit trail with a same-reason check; ack is advisory
+    // only and does not affect run integrity).
+    return { already_acked: true, run_id: existing.id, acked_at: existing.acked_at };
+  }
+  const ts = now();
+  txImmediate(() => {
+    db()
+      .prepare(`UPDATE runs SET acked_at = ?, acked_reason = ? WHERE id = ?`)
+      .run(ts, input.reason, input.run_id);
+  });
+  return { acked: true, run_id: input.run_id, acked_at: ts };
 }
 
 export function listRuns(filter: { project_path?: string; status?: RunStatus; limit?: number }): unknown[] {

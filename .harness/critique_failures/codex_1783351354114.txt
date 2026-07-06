@@ -1,0 +1,20 @@
+# codex bridge failure
+timestamp_unix_ms: 1783351354114
+cwd: C:\AiAppDeployments\pair-programmer\.harness\worktrees\attended-run_BfP8_Q4YqaSi
+bin: codex
+attempts: 2
+final_exit_code: 1
+  attempt[0]: exit=1 wall_ms=8659 class=transient
+  attempt[1]: exit=1 wall_ms=5448 class=transient
+cli_args_sanitized: ["exec","--json","--cd","C:\\AiAppDeployments\\pair-programmer\\.harness\\worktrees\\attended-run_BfP8_Q4YqaSi","--sandbox","read-only","--model","gpt-5.4","-c","approval_policy=\"never\"","-c","service_tier=\"fast\"","--skip-git-repo-check","--config","model_reasoning_effort=high","--output-schema","~\\.pair-programmer\\sandboxes\\codex-TTiVYU19\\schema.json","-"]
+cli_args_total_chars: 312
+
+## stderr (full)
+
+
+## stdout (full; codex --json emits errors here)
+{"type":"thread.started","thread_id":"019f3806-1357-7d51-8469-cf8f079586da"}
+{"type":"turn.started"}
+{"type":"error","message":"You've hit your usage limit. Upgrade to Pro (https://chatgpt.com/explore/pro), visit https://chatgpt.com/codex/settings/usage to purchase more credits or try again at Jul 7th, 2026 12:55 PM."}
+{"type":"turn.failed","error":{"message":"You've hit your usage limit. Upgrade to Pro (https://chatgpt.com/explore/pro), visit https://chatgpt.com/codex/settings/usage to purchase more credits or try again at Jul 7th, 2026 12:55 PM."}}
+SUCCESS: The process with PID 55320 (child process of PID 5276) has been terminated.
