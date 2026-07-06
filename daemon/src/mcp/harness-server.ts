@@ -9,7 +9,7 @@ import { errorContent, jsonContent, zodToJsonSchema } from "./helpers.js";
 import {
   startRun, ensureRun, startStage, recordAttempt, recordVerdict, retractVerdict, finalizeStage,
   finalizeRun, archiveArtifact, listRuns, getRun, budgetStatus, doctor,
-  recordTaxonomyMapping, getStageFinalizeReadiness,
+  recordTaxonomyMapping, getStageFinalizeReadiness, ackRun,
 } from "../orchestrator/runs.js";
 import { evaluateGate, listAllowedJudges, type GateType, type Profile } from "../orchestrator/gates.js";
 import { heuristicTriage, heuristicMapping, TAXONOMY_SECTIONS, COMPLETION_CHECKLIST } from "../orchestrator/taxonomy.js";
@@ -163,6 +163,13 @@ const RecordAttemptSchema = z.object({
   // eights prop_885cc22f. Free-form string; NULL = no subagent
   // information passed (legacy callers; allowed).
   agent_type:         z.string().min(1).optional(),
+});
+
+// RA-4: operator ack tool. Marks a surfaced-run as acknowledged so it no
+// longer appears in the session banner nag.
+const AckRunSchema = z.object({
+  run_id: z.string().min(1),
+  reason: z.string().min(1),
 });
 
 // R3-tail post-mortem Fix 1.3: retract_verdict tool. Marks a prior verdict
@@ -597,6 +604,18 @@ const TOOLS: ToolDef[] = [
       "Log a judge verdict against an attempt. cross_vendor is computed by the daemon based on judge_producer vs attempt's producer. outcome is pass | fail | revise.",
     schema: RecordVerdictSchema,
     handler: (args) => recordVerdict(RecordVerdictSchema.parse(args)),
+  },
+  {
+    name: "ack_run",
+    description:
+      "RA-4: operator-acknowledge a surfaced run that was preserved-and-merged manually. " +
+      "Sets acked_at=now ISO on the run row and stores the operator's reason for the audit trail. " +
+      "Once acked, the run no longer appears in the session banner nag (both surfaced-runs and " +
+      "surfaced-run-reminder hooks filter WHERE acked_at IS NULL). " +
+      "Idempotent: a second call returns already_acked=true with the original timestamp. " +
+      "Throws RunNotFound when run_id is unknown.",
+    schema: AckRunSchema,
+    handler: (args) => ackRun(AckRunSchema.parse(args)),
   },
   {
     name: "retract_verdict",

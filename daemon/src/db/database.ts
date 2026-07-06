@@ -62,6 +62,18 @@ function applyMigrations(conn: Database.Database): void {
   if (!runCols.some(c => c.name === "cli_flags_json")) {
     conn.exec("ALTER TABLE runs ADD COLUMN cli_flags_json TEXT");
   }
+  // RA-4: surfaced-run operator ack. acked_at stores the ISO timestamp when an
+  // operator explicitly dismissed a surfaced run they preserved-and-merged
+  // manually. acked_reason stores the operator's explanation for the audit
+  // trail. Both columns are NULL until ack_run is called; banner queries
+  // filter WHERE acked_at IS NULL so acknowledged runs disappear from the
+  // session startup nag.
+  if (!runCols.some(c => c.name === "acked_at")) {
+    conn.exec("ALTER TABLE runs ADD COLUMN acked_at TEXT");
+  }
+  if (!runCols.some(c => c.name === "acked_reason")) {
+    conn.exec("ALTER TABLE runs ADD COLUMN acked_reason TEXT");
+  }
 
   // v7: ecosystem integration columns (Hydra context + Constitution +
   // TheEights handles). All optional — pp degrades to v6 behavior when

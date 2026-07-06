@@ -207,13 +207,14 @@ const HANDLERS: Record<string, Record<string, (input: HookInput) => Promise<void
     "surfaced-runs": (input) => {
       if (!input.cwd) return reply(true);
       try {
+        // RA-4: exclude runs the operator has already acknowledged via ack_run.
         const rows = db()
-          .prepare(`SELECT id, request_text FROM runs WHERE project_path = ? AND status = 'surfaced' ORDER BY started_at DESC LIMIT 5`)
+          .prepare(`SELECT id, request_text FROM runs WHERE project_path = ? AND status = 'surfaced' AND acked_at IS NULL ORDER BY started_at DESC LIMIT 5`)
           .all(input.cwd) as Array<{ id: string; request_text: string }>;
         if (rows.length) {
           console.log(`[pp] ${rows.length} surfaced run(s) waiting:`);
           for (const r of rows) console.log(`  - ${r.id}: ${r.request_text.slice(0, 60)}`);
-          console.log("Use /pp:retry <run_id> to resume.");
+          console.log("Use /pp:retry <run_id> to resume, or pp_harness.ack_run to dismiss.");
         }
       } catch { /* ignore */ }
       reply(true);
@@ -701,8 +702,10 @@ const HANDLERS: Record<string, Record<string, (input: HookInput) => Promise<void
     "surfaced-run-reminder": (input) => {
       if (!input.cwd) return reply(true);
       try {
+        // RA-4: exclude operator-acked runs — they have already been handled
+        // via preserved-and-merge and the operator called ack_run to dismiss.
         const rows = db()
-          .prepare(`SELECT id FROM runs WHERE project_path = ? AND status = 'surfaced' ORDER BY started_at DESC LIMIT 1`)
+          .prepare(`SELECT id FROM runs WHERE project_path = ? AND status = 'surfaced' AND acked_at IS NULL ORDER BY started_at DESC LIMIT 1`)
           .get(input.cwd) as { id: string } | undefined;
         if (rows?.id) console.log(`[pp] reminder: surfaced run ${rows.id} is awaiting attention. /pp:retry ${rows.id}`);
       } catch { /* ignore */ }
