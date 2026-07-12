@@ -456,7 +456,36 @@ async function main() {
     const dl = missResult.results.find(r => r.check_id === "decision-logging");
     if (dl?.status !== "pass") throw new Error(`decision-logging should pass on artifact mentioning "Decision log"`);
     console.log(`✓ run_missability_checks: ${missResult.pass_count} pass, ${missResult.fail_count} fail, ${missResult.na_count} n/a`);
-    await callTool(client, "finalize_stage", { stage_id: missStage.stage_id, status: "passed" });
+
+    // PP-VG-5: missStage produced a diff artifact, so the lifecycle requires
+    // (a) an attempt with notes.candidate_index, (b) a passing verdict (LV-4),
+    // and (c) a smoke pass tied to that candidate before finalize(passed).
+    const missAtt = await callTool(client, "record_attempt", {
+      stage_id: missStage.stage_id,
+      producer: "codex",
+      model_id: "gpt-5.5",
+      tokens_in: 100,
+      tokens_out: 50,
+      cost_usd: 0.001,
+      status: "ok",
+      notes: { candidate_index: 1 },
+    });
+    await callTool(client, "record_verdict", {
+      attempt_id: missAtt.attempt_id,
+      judge_producer: "codex",
+      judge_model_id: "gpt-5.4",
+      outcome: "pass",
+      critique_md: "Missability smoke verdict: diff artifact contains decision log and doc ownership evidence; rubric dimensions decision-logging and doc-ownership both satisfied for this synthetic lifecycle.",
+      score_json: { correctness: 0.9, minimality: 0.9 },
+    });
+    await callTool(client, "record_smoke_status", {
+      stage_id:        missStage.stage_id,
+      candidate_index: 1,
+      status:          "pass",
+      reason:          "synthetic-smoke exit=0 (missability test lifecycle)",
+    });
+    console.log(`✓ record_smoke_status -> missStage candidate_index=1 pass (PP-VG-5)`);
+    await callTool(client, "finalize_stage", { stage_id: missStage.stage_id, status: "passed", winner_attempt_id: missAtt.attempt_id });
     await callTool(client, "finalize_run", { run_id: missRun.run_id, status: "complete" });
 
     // 17. Phase 4: loop_ceiling_status reflects the verdict count.
