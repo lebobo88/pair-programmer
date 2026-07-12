@@ -553,7 +553,12 @@ const TOOLS: ToolDef[] = [
   {
     name: "start_run",
     description:
-      "Allocate a run row in the harness DB and create the per-run artifact directory. Returns run_id and absolute artifact_dir path.",
+      "Allocate a run row in the harness DB and create the per-run artifact directory. " +
+      "Returns run_id, absolute artifact_dir path, and started_at. " +
+      "When called with hydra_workflow_id, also returns hydra_context_block — the rendered Hydra " +
+      "context block (## Hydra context heading + YAML fields) for injection into generator prompts. " +
+      "The driver (Hydra host_bridge / squad_node) injects this block; pp never assembles prompts itself. " +
+      "Absent from the result on standalone (non-Hydra) runs.",
     schema: StartRunSchema,
     handler: (args) => startRun(StartRunSchema.parse(args)),
   },
@@ -577,7 +582,11 @@ const TOOLS: ToolDef[] = [
       "Pass project_path + request_text + optional kind (default: 'ad-hoc', stored as the run's `team`); " +
       "if a run is already open on this project_path with that kind, returns its run_id and created=false; " +
       "otherwise allocates a minimal 'single'-mode run, acquires the project lock, and returns the new " +
-      "run_id with created=true. CONTRACT: Hydra dispatchers MUST call ensure_run before spawning any " +
+      "run_id with created=true. When the run (existing or newly-created) was started with a hydra_workflow_id, " +
+      "the result also includes hydra_context_block — the rendered Hydra context block for injection into " +
+      "generator prompts. The driver (Hydra host_bridge / squad_node) injects this block; pp never assembles " +
+      "prompts itself. Absent when the run has no hydra_workflow_id. " +
+      "CONTRACT: Hydra dispatchers MUST call ensure_run before spawning any " +
       "generator sub-agent (architect, data-modeler, security-reviewer, release-planner, …) and pass " +
       "the returned run_id into the sub-agent's prompt. The sub-agent then calls archive_artifact " +
       "and record_attempt with run_id=<that value> as it normally would. Lifecycle: finalize_run closes " +

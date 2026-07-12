@@ -31,7 +31,7 @@ import {
   runArtifactValidator,
   type ArtifactValidationRow,
 } from "./artifact-validators/index.js";
-import { parseHydraContext, hydraContextSummary } from "../ecosystem/hydra-context.js";
+import { parseHydraContext, renderHydraContextBlock, hydraContextSummary } from "../ecosystem/hydra-context.js";
 import {
   writeRunStartEpisode,
   writeArtifactMemory,
@@ -56,8 +56,10 @@ export type StartRunInput = {
   forum?: string;
   n?: number;
   session_id?: string;
-  // v7 ecosystem fields (optional). When present, persisted on the runs row
-  // and surfaced to sub-agent prompts via ${HYDRA_CONTEXT}.
+  // v7 ecosystem fields (optional). When present, persisted on the runs row.
+  // The daemon returns the rendered context as `hydra_context_block` on
+  // start_run / ensure_run; the driver (Hydra host_bridge / squad_node)
+  // injects it into generation prompts. pp never assembles prompts itself.
   hydra_workflow_id?: string;
   hydra_envelope_id?: string;
   hydra_origin_squad?: string;
@@ -68,6 +70,11 @@ export type StartRunOutput = {
   run_id: string;
   artifact_dir: string;
   started_at: string;
+  /** Rendered Hydra context block ready for injection into generator prompts.
+   *  Present only when the run was started with `hydra_workflow_id`. The
+   *  driver (Hydra host_bridge / squad_node) injects this into prompts; pp
+   *  never assembles prompts itself. Absent on standalone runs. */
+  hydra_context_block?: string;
 };
 
 export async function startRun(input: StartRunInput): Promise<StartRunOutput> {
@@ -224,7 +231,11 @@ export async function startRun(input: StartRunInput): Promise<StartRunOutput> {
     },
     "run started"
   );
-  return { run_id: id, artifact_dir: dir, started_at: startedAt };
+  const result: StartRunOutput = { run_id: id, artifact_dir: dir, started_at: startedAt };
+  if (hydraCtx) {
+    result.hydra_context_block = renderHydraContextBlock(hydraCtx);
+  }
+  return result;
 }
 
 // ─── ensure_run ──────────────────────────────────────────────────────────
@@ -257,6 +268,11 @@ export type EnsureRunOutput = {
   run_id: string;
   created: boolean;
   artifact_dir: string;
+  /** Rendered Hydra context block ready for injection into generator prompts.
+   *  Present when the run (existing or newly-created) was linked to a Hydra
+   *  workflow. The driver injects this into prompts; pp never assembles
+   *  prompts itself. Absent when the run has no hydra_workflow_id. */
+  hydra_context_block?: string;
 };
 
 export async function ensureRun(input: EnsureRunInput): Promise<EnsureRunOutput> {
@@ -268,11 +284,20 @@ export async function ensureRun(input: EnsureRunInput): Promise<EnsureRunOutput>
   // don't compound it by spawning more).
   const existing = db()
     .prepare(
-      `SELECT id, project_path FROM runs
-       WHERE project_path = ? AND team = ? AND status IN ('running','pending')
-       ORDER BY started_at DESC LIMIT 1`
+      `SELECT id, project_path,
+              hydra_workflow_id, hydra_envelope_id, hydra_origin_squad, hydra_envelope_type
+         FROM runs
+        WHERE project_path = ? AND team = ? AND status IN ('running','pending')
+        ORDER BY started_at DESC LIMIT 1`
     )
-    .get(input.project_path, kind) as { id: string; project_path: string } | undefined;
+    .get(input.project_path, kind) as {
+      id: string;
+      project_path: string;
+      hydra_workflow_id: string | null;
+      hydra_envelope_id: string | null;
+      hydra_origin_squad: string | null;
+      hydra_envelope_type: string | null;
+    } | undefined;
 
   if (existing) {
     const dir = projectArtifactDir(existing.project_path, existing.id);
@@ -280,7 +305,17 @@ export async function ensureRun(input: EnsureRunInput): Promise<EnsureRunOutput>
       { run_id: existing.id, project_path: input.project_path, kind },
       "ensure_run: reusing open run"
     );
-    return { run_id: existing.id, created: false, artifact_dir: dir };
+    const existingHydraCtx = parseHydraContext({
+      hydra_workflow_id: existing.hydra_workflow_id,
+      hydra_envelope_id: existing.hydra_envelope_id,
+      hydra_origin_squad: existing.hydra_origin_squad,
+      hydra_envelope_type: existing.hydra_envelope_type,
+    });
+    const existingResult: EnsureRunOutput = { run_id: existing.id, created: false, artifact_dir: dir };
+    if (existingHydraCtx) {
+      existingResult.hydra_context_block = renderHydraContextBlock(existingHydraCtx);
+    }
+    return existingResult;
   }
 
   // No open run for this (project_path, kind) — spin one up. We route through
@@ -296,7 +331,11 @@ export async function ensureRun(input: EnsureRunInput): Promise<EnsureRunOutput>
     { run_id: out.run_id, project_path: input.project_path, kind },
     "ensure_run: created minimal single-mode run for dispatched sub-agents"
   );
-  return { run_id: out.run_id, created: true, artifact_dir: out.artifact_dir };
+  const createdResult: EnsureRunOutput = { run_id: out.run_id, created: true, artifact_dir: out.artifact_dir };
+  if (out.hydra_context_block) {
+    createdResult.hydra_context_block = out.hydra_context_block;
+  }
+  return createdResult;
 }
 
 export type StartStageInput = {

@@ -13,9 +13,11 @@
  *   2. **Persist** — runs.ts INSERTs them into runs.hydra_* columns (v7
  *      schema). pp DBs from before v7 tolerate NULLs via additive migration.
  *   3. **Surface** — `renderHydraContextBlock()` formats the context for
- *      injection into agent system prompts via the `${HYDRA_CONTEXT}`
- *      template variable. Empty string when no context present, so
- *      standalone runs are unaffected.
+ *      return as `hydra_context_block` on start_run / ensure_run. The
+ *      driver (Hydra host_bridge / squad_node) injects the rendered block
+ *      into generation prompts. pp never assembles prompts itself. Empty
+ *      string when no context is present; absent from the tool result on
+ *      standalone runs.
  *
  * This module is pure data — no I/O, no MCP calls. Safe to import
  * everywhere.
