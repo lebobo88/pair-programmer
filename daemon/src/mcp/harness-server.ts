@@ -226,7 +226,8 @@ const FinalizeStageSchema = z.object({
 });
 
 const GetStageFinalizeReadinessSchema = z.object({
-  stage_id: z.string().min(1),
+  stage_id:          z.string().min(1),
+  winner_attempt_id: z.string().optional(),
 });
 
 const FinalizeRunSchema = z.object({
@@ -627,9 +628,16 @@ const TOOLS: ToolDef[] = [
   {
     name: "get_stage_finalize_readiness",
     description:
-      "Read-only preflight for finalize_stage(status='passed'). Returns {can_pass, recommended_status, next_action, blockers[]} based on the same TDD and artifact-validator gate logic the daemon enforces inside finalize_stage. Call this after judge pass and after any tdd_* / artifact_validate tools to choose the correct branch before attempting finalize_stage. Typical outcomes: next_action='run_tdd_pre_check' | 'run_tdd_post_check' | 'run_artifact_validate' for missing gate rows, 'retry_or_surface' for gate violations, 'surface_stage' for execution_error, or 'finalize_passed' when the stage may be closed as passed.",
+      "Read-only preflight for finalize_stage(status='passed'). Returns {can_pass, recommended_status, next_action, blockers[]} based on the same TDD and artifact-validator gate logic the daemon enforces inside finalize_stage. " +
+      "Pass winner_attempt_id to tie the PP-VG-5 smoke-row check to the chosen winning attempt: the gate resolves the attempt's notes_json.candidate_index and confirms smoke_results[<candidate_index>].status='pass' in the stage notes. " +
+      "Without winner_attempt_id the VG-5 gate falls back to the stage's persisted winner_attempt_id column (which is not set until finalize_stage writes it), so passing it here is required for code/diff-producing stages on the pre-finalize readiness check. " +
+      "Call this after judge pass and after any tdd_* / artifact_validate tools to choose the correct branch before attempting finalize_stage. " +
+      "Typical outcomes: next_action='run_tdd_pre_check' | 'run_tdd_post_check' | 'run_artifact_validate' for missing gate rows, 'retry_or_surface' for gate violations, 'surface_stage' for execution_error, or 'finalize_passed' when the stage may be closed as passed.",
     schema: GetStageFinalizeReadinessSchema,
-    handler: (args) => getStageFinalizeReadiness(GetStageFinalizeReadinessSchema.parse(args).stage_id),
+    handler: (args) => {
+      const p = GetStageFinalizeReadinessSchema.parse(args);
+      return getStageFinalizeReadiness(p.stage_id, p.winner_attempt_id);
+    },
   },
   {
     name: "finalize_stage",

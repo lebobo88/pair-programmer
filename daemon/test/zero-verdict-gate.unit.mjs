@@ -275,3 +275,95 @@ describe("LV-4 zero-verdict gate: finalizeStage integration", () => {
   });
 
 });
+
+// ── LV-6: VG-5 smoke-row resolution via winner_attempt_id ─────────────────────
+//
+// getStageFinalizeReadiness(stage_id, winner_attempt_id) must:
+//   1. Resolve the winner attempt's notes_json.candidate_index.
+//   2. Confirm smoke_results[<candidate_index>].status='pass' in stage notes.
+//   3. Return can_pass=true / next_action='finalize_passed' when all other
+//      gates are clear.
+//
+// Without winner_attempt_id the call must NOT crash — VG-5 is blocked (no
+// candidate_index to resolve) and can_pass=false is the expected outcome.
+
+describe("LV-6 VG-5 smoke-row + winner_attempt_id: getStageFinalizeReadiness", () => {
+
+  /** Insert a 'diff' artifact row for a stage (triggers VG-5 code/diff check). */
+  async function insertDiffArtifact(run_id, stage_id) {
+    const db = await getDb();
+    const id = `artifact_vg5_${Math.random().toString(36).slice(2, 12)}`;
+    const ts = new Date().toISOString();
+    db().prepare(
+      `INSERT INTO artifacts(id, run_id, stage_id, kind, path, sha256, bytes, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run(id, run_id, stage_id, "diff", "code/test.diff", "deadbeef0011", 42, ts);
+    return id;
+  }
+
+  /** Insert an attempt whose notes_json carries candidate_index. */
+  async function insertAttemptWithIndex(stage_id, candidateIndex) {
+    const db = await getDb();
+    const id = `attempt_vg5_${Math.random().toString(36).slice(2, 12)}`;
+    const ts = new Date().toISOString();
+    db().prepare(
+      `INSERT INTO attempts(id, stage_id, producer, model_id, status, notes_json, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    ).run(id, stage_id, "claude", "claude-sonnet-4-6", "ok",
+      JSON.stringify({ candidate_index: candidateIndex }), ts);
+    return id;
+  }
+
+  /** Write smoke_results into the stage notes_json for a given candidate_index. */
+  async function setSmokePass(stage_id, candidateIndex) {
+    const db = await getDb();
+    db().prepare(`UPDATE stages SET notes_json = ? WHERE id = ?`).run(
+      JSON.stringify({ smoke_results: { [String(candidateIndex)]: { status: "pass" } } }),
+      stage_id,
+    );
+  }
+
+  it("code stage with attempt(candidate_index=1) + pass verdict + smoke pass row → can_pass=true when winner_attempt_id supplied", async () => {
+    const runs = await getRuns();
+    const run_id = await insertRun();
+    const stage_id = await insertStage(run_id, "code");
+    const attempt_id = await insertAttemptWithIndex(stage_id, 1);
+    // Pass verdict with no findings_closed → no cross-vendor re-judge gate.
+    await insertVerdict(attempt_id, { outcome: "pass" });
+    // 'diff' artifact activates the VG-5 smoke gate.
+    await insertDiffArtifact(run_id, stage_id);
+    // Smoke pass row tied to candidate_index=1 satisfies VG-5.
+    await setSmokePass(stage_id, 1);
+
+    const readiness = runs.getStageFinalizeReadiness(stage_id, attempt_id);
+
+    assert.equal(readiness.can_pass, true,
+      `expected can_pass=true; blockers=${JSON.stringify(readiness.blockers.map(b => b.gate))}`);
+    assert.equal(readiness.next_action, "finalize_passed",
+      `expected next_action=finalize_passed, got ${readiness.next_action}`);
+  });
+
+  it("same setup without winner_attempt_id does not crash — VG-5 blocks (can_pass=false acceptable)", async () => {
+    const runs = await getRuns();
+    const run_id = await insertRun();
+    const stage_id = await insertStage(run_id, "code");
+    const attempt_id = await insertAttemptWithIndex(stage_id, 1);
+    await insertVerdict(attempt_id, { outcome: "pass" });
+    await insertDiffArtifact(run_id, stage_id);
+    await setSmokePass(stage_id, 1);
+
+    // Must NOT throw even without winner_attempt_id.
+    let readiness;
+    assert.doesNotThrow(() => {
+      readiness = runs.getStageFinalizeReadiness(stage_id);
+    }, "getStageFinalizeReadiness must not throw when winner_attempt_id is omitted");
+
+    // VG-5 cannot resolve candidate_index without the winner; can_pass must be false.
+    assert.equal(typeof readiness, "object",
+      "getStageFinalizeReadiness must return an object even without winner_attempt_id");
+    assert.equal(readiness.can_pass, false,
+      "VG-5 must block when no winner_attempt_id is supplied (stage.winner_attempt_id is also unset)");
+    void attempt_id; // suppress unused-variable lint
+  });
+
+});
