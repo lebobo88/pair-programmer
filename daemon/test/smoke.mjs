@@ -677,9 +677,9 @@ async function main() {
     }
     console.log(`✓ detect_profile (bin only): ${detectCli.recommendation}/${detectCli.confidence}`);
 
-    // 24. Phase 7: 15 built-in teams resolve.
+    // 24. Phase 7: 26 built-in teams resolve (newest: deep-reasoning-team).
     const teams = await callTool(client, "team_list", { project_path: projectPath });
-    if (teams.length !== 25) throw new Error(`expected 25 builtin teams, got ${teams.length}: ${teams.map(t => t.name).join(",")}`);
+    if (teams.length !== 26) throw new Error(`expected 26 builtin teams, got ${teams.length}: ${teams.map(t => t.name).join(",")}`);
     console.log(`✓ team_list: ${teams.length} teams`);
     const featureTeam = await callTool(client, "team_get", { name: "feature-team", project_path: projectPath });
     if (!featureTeam?.team || featureTeam.origin !== "builtin") throw new Error(`feature-team should resolve to builtin`);
