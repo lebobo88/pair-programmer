@@ -5,8 +5,8 @@ The driver MUST call `mcp__pp_harness__gate_eligible_judges` before invoking any
 ## Decision inputs
 
 - `gate_type` — `spec | design | security | contract | code_style | docs_polish | lint_class`
-- `generator_producer` — `codex | gemini | claude | <subagent name>`
-- `generator_model` — optional but recommended; if omitted, the daemon infers Codex/Gemini defaults where possible
+- `generator_producer` — `codex | agy | claude | <subagent name>`
+- `generator_model` — optional but recommended; if omitted, the daemon infers Codex/agy defaults where possible
 - `prompt_keywords` — typically the user request text
 - `profile` — the profile snapshot's `name` (when set)
 - `artifact_kind` — the canonical artifact kind being judged (when known)
@@ -36,7 +36,7 @@ The tool returns:
   "reason":                "content keyword: oauth",
   "rubric_id":             "owasp-asvs-l1@1",
   "allowed_judges": [
-    { "agent": "judge-cross-vendor", "preferred_producers": ["gemini"] }
+    { "agent": "judge-cross-vendor", "preferred_producers": ["agy"] }
   ]
 }
 ```

@@ -1,6 +1,6 @@
 # AGENTS.md — pair-programmer Cross-Tool Behavioral Contract
 
-This file is the single source of truth for any AI agent (Claude Code, Codex, Gemini, Copilot, etc.) working inside the pair-programmer repo. Tool-specific shims (`CLAUDE.md`, etc.) import from this file.
+This file is the single source of truth for any AI agent (Claude Code, Codex, Antigravity (agy), Copilot, etc.) working inside the pair-programmer repo. Tool-specific shims (`CLAUDE.md`, etc.) import from this file.
 
 ## What pair-programmer Is
 
@@ -10,8 +10,8 @@ A TypeScript daemon + MCP server that wraps a **taxonomy-aware, best-of-N, cross
 - **As Hydra's engineering squad**: Hydra dispatches `DevTask` envelopes to the daemon over MCP; results return as `DecisionRecord` envelopes to TheEights.
 - **Core lifecycle**: triage → profile detect → taxonomy map → stage loop (generate → judge → Reflexion ×1 on fail) → 56 missability checks → `PROJECT_MASTER.md` patch → finalize.
 - **Model tiers** (source: `daemon/src/config.ts:CLAUDE_TIER_MODELS`): `haiku`, `sonnet`, `opus`, and `fable` (capability-gated, off the auto-escalation ladder — never reached by `shiftTier`; see Hard Rules).
-- **Cross-vendor judge**: default pin is Codex `gpt-5.4` (`JUDGE-1` in `CONSTITUTION.md`; `DEFAULT_MODELS.codex_critique` in `daemon/src/config.ts`). Escalated judging uses `gpt-5.5` (opt-in, major-scope / last-resort only; `DEFAULT_MODELS.codex_critique_escalated`). A second judge (Gemini) for Borda scoring at N≥3 is driver-selected and optional, not automatic (best-of.md:41).
-- **Gemini kill-switch**: `PP_DISABLE_GEMINI=1` globally disables all Gemini interactions (judge + generation) without removing code or config (see Hard Rule 10). When set, the default cross-vendor pair is Codex (openai) + Claude (anthropic).
+- **Cross-vendor judge**: default pin is Codex `gpt-5.4` (`JUDGE-1` in `CONSTITUTION.md`; `DEFAULT_MODELS.codex_critique` in `daemon/src/config.ts`). Escalated judging uses `gpt-5.5` (opt-in, major-scope / last-resort only; `DEFAULT_MODELS.codex_critique_escalated`). A second judge (agy) for Borda scoring at N≥3 is driver-selected and optional, not automatic (best-of.md:41).
+- **agy kill-switch**: `PP_DISABLE_AGY=1` globally disables all agy interactions (judge + generation) without removing code or config (default OFF — agy enabled; see Hard Rule 10). When set, the default cross-vendor pair is Codex (openai) + Claude (anthropic).
 - **Teams**: 25 team pipelines under `.claude/teams/`, including `deep-reasoning-team` (Fable-5 capability-gated).
 - **State**: `~/.pair-programmer/state.db` (SQLite WAL). Artifacts: `<project>/.harness/<run_id>/`.
 
@@ -23,9 +23,9 @@ See `README.md` for the full capability table and quick-start.
 
 2. **JUDGE-1 pin is inviolable.** The default cross-vendor judge is Codex `gpt-5.4` (`DEFAULT_MODELS.codex_critique`). Do not change it; do not bypass it.
 
-3. **Gate judge policy is enforced by the driver and judge-router, not the daemon.** `startStage` and `finalizeStage` do not check vendor readiness or gate type (runs.ts:309). The cross-vendor requirement at `spec`/`design`/`security`/`contract` gates is enforced by the `/pp:run` driver calling `gate_eligible_judges` → choosing the judge per `.claude/skills/judge-policy.md` → routing to `judge-cross-vendor` or `judge-same-vendor`. The daemon **records** verdicts (computing the `cross_vendor` flag from the two producers) and blocks on: (a) same producer + same model_id for non-gemini (runs.ts:640), (b) TDD/artifact-validator/findings-closure readiness at `finalize_stage(passed)` (runs.ts:1022, 1399). It does NOT refuse a stage for an incomplete vendor matrix or wrong gate-tier — that refusal lives in the driver (run.md failure-handling section).
+3. **Gate judge policy is enforced by the driver and judge-router, not the daemon.** `startStage` and `finalizeStage` do not check vendor readiness or gate type (runs.ts:309). The cross-vendor requirement at `spec`/`design`/`security`/`contract` gates is enforced by the `/pp:run` driver calling `gate_eligible_judges` → choosing the judge per `.claude/skills/judge-policy.md` → routing to `judge-cross-vendor` or `judge-same-vendor`. The daemon **records** verdicts (computing the `cross_vendor` flag from the two producers) and blocks on: (a) same producer + same model_id for non-agy (runs.ts:640), (b) TDD/artifact-validator/findings-closure readiness at `finalize_stage(passed)` (runs.ts:1022, 1399). It does NOT refuse a stage for an incomplete vendor matrix or wrong gate-tier — that refusal lives in the driver (run.md failure-handling section).
 
-4. **Cross-vendor for Fable is team-config policy, not daemon-enforced.** `deep-reasoning-team.yaml` explicitly pins `judge.tier: cross_vendor` with `model_pref: codex` or `gemini` — that is a policy choice in the team config. The daemon's only runtime block is the same-producer + same-model-id guard at runs.ts:640 (prevents identical-model self-judging for non-gemini producers). Teams.ts:98 validates tier names only; a different Claude model judging a Fable-generated attempt is accepted by the daemon.
+4. **Cross-vendor for Fable is team-config policy, not daemon-enforced.** `deep-reasoning-team.yaml` explicitly pins `judge.tier: cross_vendor` with `model_pref: codex` or `agy` — that is a policy choice in the team config. The daemon's only runtime block is the same-producer + same-model-id guard at runs.ts:640 (prevents identical-model self-judging for non-agy producers). Teams.ts:98 validates tier names only; a different Claude model judging a Fable-generated attempt is accepted by the daemon.
 
 5. **Never write source files without an active run.** The `enforce-active-run` pre-tool hook (dispatcher.ts:268) requires an active run for Edit/Write/MultiEdit/NotebookEdit. It PERMITS: `.harness/` edits, `.claude/` edits, and any edit when `PP_ALLOW_AD_HOC=1`. It does not require an active stage or specific worktree path.
 
@@ -37,7 +37,7 @@ See `README.md` for the full capability table and quick-start.
 
 9. **Governance precedence**: TheEights → AgentSmith → Hydra → pair-programmer. No run may override a TheEights or AgentSmith gate (CONSTITUTION.md Article II).
 
-10. **Gemini is opt-out-able via `PP_DISABLE_GEMINI=1`.** The flag is read by `geminiEnabled()` (config.ts) and gated at two chokepoints: `doctor()`'s `vendors_configured.google` (runs.ts — cascades to the enforce-vendor-matrix hook, best-of-N preconditions, and `cross_vendor_ready`) and `listAllowedJudges()`'s producer pool (gates.ts — so `gate_eligible_judges` never hints at Gemini). All Gemini code, the `pp_gemini` MCP registration, the judge agents, and team `model_pref: gemini` hints stay intact — `gate_eligible_judges`' filtered `preferred_producers` is authoritative over `model_pref`. JUDGE-1 (Codex `gpt-5.4`) is unaffected; Codex + Claude remains a valid cross-vendor pair. Activated in `.claude/settings.local.json`; flip it off to re-enable.
+10. **agy is opt-out-able via `PP_DISABLE_AGY=1` (default OFF — agy enabled).** The flag is read by `agyEnabled()` (config.ts) and gated at two chokepoints: `doctor()`'s `vendors_configured.google` (runs.ts — cascades to the enforce-vendor-matrix hook, best-of-N preconditions, and `cross_vendor_ready`) and `listAllowedJudges()`'s producer pool (gates.ts — so `gate_eligible_judges` never hints at agy). All agy code, the `pp_agy` MCP registration, the judge agents, and team `model_pref: agy` hints stay intact — `gate_eligible_judges`' filtered `preferred_producers` is authoritative over `model_pref`. JUDGE-1 (Codex `gpt-5.4`) is unaffected; Codex + Claude remains a valid cross-vendor pair. Unlike the legacy Gemini kill-switch (which carried a disabled default after the Gemini CLI subscription-login breakage), `PP_DISABLE_AGY` defaults OFF because agy authenticates via interactive Google Sign-In (system keyring) or a `GEMINI_API_KEY` / `GOOGLE_API_KEY` / `ANTIGRAVITY_API_KEY` headless env var, rather than depending on the API-key-only subscription login that broke the legacy Gemini CLI. Set it in `.claude/settings.local.json` to disable; unset (the default) to keep agy enabled.
 
 ## Engineering Standards
 
@@ -82,8 +82,8 @@ Large outputs should be written to a file with a short inline summary. Do not in
 
 - **Secret scanning**: the `enforce-no-secrets` pre-tool hook (dispatcher.ts:383) scans Edit/Write/MultiEdit/`archive_artifact` content before write. `archiveArtifact` also scans at the daemon level (runs.ts:2612). Credentials must be env vars — not hardcoded.
 - **Constitution pin**: `start_run` records `CONSTITUTION.md` SHA on every run (runs.ts:160, 194). Replay and release/retirement attestation bind to this SHA.
-- **MCP namespacing**: tool access is governed by separate MCP server namespaces (`pp_harness`, `pp_codex`, `pp_gemini`) and client-side permission hooks in `.claude/settings.json`. The daemon does not enforce per-call RBAC internally.
-- **Cross-vendor enforcement**: the daemon's runtime block is narrow — same producer + same model_id on a verdict is rejected for non-gemini producers (runs.ts:640). The broader cross-vendor gate requirement (refusing to run when the vendor matrix is incomplete) is enforced by the driver via the `enforce-vendor-matrix` hook and run.md failure-handling, not by the daemon.
+- **MCP namespacing**: tool access is governed by separate MCP server namespaces (`pp_harness`, `pp_codex`, `pp_agy`) and client-side permission hooks in `.claude/settings.json`. The daemon does not enforce per-call RBAC internally.
+- **Cross-vendor enforcement**: the daemon's runtime block is narrow — same producer + same model_id on a verdict is rejected for non-agy producers (runs.ts:640). The broader cross-vendor gate requirement (refusing to run when the vendor matrix is incomplete) is enforced by the driver via the `enforce-vendor-matrix` hook and run.md failure-handling, not by the daemon.
 
 ## Where To Read More
 

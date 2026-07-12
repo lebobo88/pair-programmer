@@ -21,4 +21,4 @@ Render as a separate small table titled "Spend by Claude tier" so the user can s
 
 | tier   | tokens_in | tokens_out | cost_usd |
 
-Skip rows that return null (no spend yet on that tier). Only Claude generators tally to `tier:*` scopes; Codex/Gemini spend rolls up only to `model:<id>` and `run:*` / `day:*`.
+Skip rows that return null (no spend yet on that tier). Only Claude generators tally to `tier:*` scopes; Codex/Antigravity (agy) spend rolls up only to `model:<id>` and `run:*` / `day:*`.

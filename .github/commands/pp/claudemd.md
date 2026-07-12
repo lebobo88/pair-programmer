@@ -6,7 +6,7 @@ argument-hint: [status|scaffold|check]
 
 <!-- Generated from .claude\commands\pp\claudemd.md. Edit the .claude source file and rerun node scripts/sync-copilot-assets.mjs. -->
 
-The harness treats AGENTS.md as the source of truth (cross-tool, loaded by Claude / Codex / Gemini / Cursor) and CLAUDE.md as a thin Claude-specific import shim (`@AGENTS.md` plus Claude-Code-only add-ons). PROJECT_MASTER.md is the planning artifact; AGENTS.md is the slim operating manual derived from it.
+The harness treats AGENTS.md as the source of truth (cross-tool, loaded by Claude / Codex / Antigravity (agy) / Cursor) and CLAUDE.md as a thin Claude-specific import shim (`@AGENTS.md` plus Claude-Code-only add-ons). PROJECT_MASTER.md is the planning artifact; AGENTS.md is the slim operating manual derived from it.
 
 If $ARGUMENTS is empty or `status`, call `mcp__pp_harness__agents_md_status` with `project_path` set to the current working directory. Render:
 - `AGENTS.md`: exists / bytes / line count / `over_adherence_cliff` flag (true when >200 lines). A table of the six canonical sections (Build and test commands, Project layout, Coding conventions, Workflow rules, Do not, Notes from the harness) with their populated bool and bytes.

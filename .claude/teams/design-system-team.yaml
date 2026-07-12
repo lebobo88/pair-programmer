@@ -5,11 +5,11 @@ stages:
   - kind: design_tokens
     gate_type: design
     generator: { agent: design-system-curator, primary: claude }
-    judge:     { tier: cross_vendor, rubric: wcag-2.2-aa@1, model_pref: gemini }
+    judge:     { tier: cross_vendor, rubric: wcag-2.2-aa@1, model_pref: agy }
   - kind: component_specs
     gate_type: contract
     generator: { agent: design-system-curator, primary: claude }
-    judge:     { tier: cross_vendor, rubric: wcag-2.2-aa@1, model_pref: gemini }
+    judge:     { tier: cross_vendor, rubric: wcag-2.2-aa@1, model_pref: agy }
   - kind: component_preview
     gate_type: design
     generator: { agent: visual-regression-runner, primary: claude }
@@ -17,7 +17,7 @@ stages:
   - kind: token_contract_tests
     gate_type: contract
     generator: { agent: test-strategist, primary: codex }
-    judge:     { tier: cross_vendor, model_pref: gemini }
+    judge:     { tier: cross_vendor, model_pref: agy }
   - kind: browser_validation
     artifact_kind: browser_validation_report
     gate_type: contract

@@ -1,11 +1,11 @@
 ---
 name: "engineer"
 model: "claude-sonnet-4-6"
-description: "Code-generator sub-agent. Given a coding request, a stage_id, a producer, and a working directory, produces a code artifact. For best-of-N runs the producer is \"claude\" and the agent authors files directly using its native edit/execute tools inside the candidate worktree, committing before returning. For non-best-of legacy paths it can dispatch to Codex or Gemini via their MCP wrappers. Use ONLY inside an active /pp:* run."
+description: "Code-generator sub-agent. Given a coding request, a stage_id, a producer, and a working directory, produces a code artifact. For best-of-N runs the producer is \"claude\" and the agent authors files directly using its native edit/execute tools inside the candidate worktree, committing before returning. For non-best-of legacy paths it can dispatch to Codex or Antigravity (agy) via their MCP wrappers. Use ONLY inside an active /pp:* run."
 target: github-copilot
 tools:
   - "pp_codex/*"
-  - "pp_gemini/*"
+  - "pp_agy/*"
   - "pp_harness/*"
   - "read"
   - "edit"
@@ -25,8 +25,8 @@ You are the engineer sub-agent in the pair-programmer harness. You produce a sin
 - `cwd` — absolute path of the working directory:
   - **Best-of-N**: a per-candidate git worktree at `<project>/.harness/<run_id>/<kind>/candidate-<N>/`. You write into this worktree directly. Files committed here are merged back to the project root by `archive_winner_and_losers`.
   - **Single mode**: the project path. You produce a unified-diff or a self-contained file under `.harness/<run_id>/code/` and let the driver decide whether to apply.
-- `producer` — `"claude"` (default for best-of-N), `"codex"`, or `"gemini"`. Determines the dispatch path below.
-- `model` — model id (e.g. `claude-sonnet-4-6`, `claude-opus-4-6`, `gpt-5.4`, `gemini-3.1-pro-preview`). You MUST forward this verbatim into any `pp_codex.generate` / `pp_gemini.generate` call. Never omit the `model` arg and rely on the bridge's schema default — defaults can drift if the installed CLI version no longer serves them. If `model` is missing from input, fail loudly to the parent rather than guessing.
+- `producer` — `"claude"` (default for best-of-N), `"codex"`, or `"agy"`. Determines the dispatch path below.
+- `model` — model id (e.g. `claude-sonnet-4-6`, `claude-opus-4-6`, `gpt-5.4`, `gemini-3.1-pro-preview`). You MUST forward this verbatim into any `pp_codex.generate` / `pp_agy.generate` call. Never omit the `model` arg and rely on the bridge's schema default — defaults can drift if the installed CLI version no longer serves them. If `model` is missing from input, fail loudly to the parent rather than guessing.
 - `attempted_tier` — optional Claude tier hint (`"opus" | "sonnet" | "haiku"`) recorded alongside the attempt for cost-by-tier analytics. Only meaningful on Path A; ignored on Path B/C. See **Tier policy** below.
 
 ## Tier policy
@@ -36,7 +36,7 @@ This agent's frontmatter pins `model: claude-sonnet-4-6` as the Path-A default �
 Paths interact differently with the tier system:
 
 - **Path A (`producer="claude"`)** — your active model IS the tier. Frontmatter wins unless the driver passes an explicit override. On Reflexion ×1 retry, the driver bumps the tier by one step (haiku→sonnet, sonnet→opus, opus stays).
-- **Path B/C (`producer="codex"` / `"gemini"`)** — frontmatter is irrelevant. The Codex/Gemini model is whatever the driver passes in `input.model` (defaults from `daemon/src/config.ts:DEFAULT_MODELS`). The tier system does not govern non-Claude producers.
+- **Path B/C (`producer="codex"` / `"agy"`)** — frontmatter is irrelevant. The Codex/agy model is whatever the driver passes in `input.model` (defaults from `daemon/src/config.ts:DEFAULT_MODELS`). The tier system does not govern non-Claude producers.
 
 When `attempted_tier` is present, pass it through to `mcp__pp_harness__record_attempt` so cost-by-tier analytics and `/pp:replay` work correctly. Omit on Path B/C.
 - `seed` — optional diversification hint for best-of-N (e.g. `"primary"`, `"devils-advocate"`, `"failing-test-first"`, `"terse-diff"`). Steer your prompt phrasing accordingly when set.
@@ -130,9 +130,9 @@ You ARE Claude. No external CLI call is needed; you author code directly using y
 4. Call `record_attempt` with `producer: "codex"`, model, tokens, etc.
 5. Return as in Path A step 7.
 
-### Path C — `producer="gemini"` (legacy / non-best-of)
+### Path C — `producer="agy"` (legacy / non-best-of)
 
-Identical to Path B but call `mcp__pp_gemini__generate` instead. Pass `model` explicitly (the input `model`, or `gemini-3.1-pro-preview` if no input). Never let the bridge's schema default fire.
+Identical to Path B but call `mcp__pp_agy__generate` instead. Pass `model` explicitly (the input `model`, or `gemini-3.1-pro-preview` if no input). Never let the bridge's schema default fire.
 
 ## TDD post-check (when prior stage was `tests_pre`)
 

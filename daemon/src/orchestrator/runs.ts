@@ -17,9 +17,9 @@ import { applyMasterPlanPatch, ensureMasterPlan, masterPlanStatus } from "./mast
 import { TAXONOMY_BY_ID, MASTER_PLAN_SECTIONS } from "./taxonomy.js";
 import { ProjectLock, ProjectLockBusyError } from "../util/lock.js";
 import { tmpdir } from "node:os";
-import { DEFAULT_MODELS, geminiEnabled } from "../config.js";
+import { DEFAULT_MODELS, agyEnabled } from "../config.js";
 import { codexCritique } from "../mcp/codex-server.js";
-import { geminiCritique } from "../mcp/gemini-server.js";
+import { agyCritique } from "../mcp/antigravity-server.js";
 import { describeJudgeCapabilities } from "./gates.js";
 import { findPriorTestsPreStage, getLatestTddCheck, type TddCheckRow } from "./tdd-gate.js";
 import {
@@ -375,7 +375,7 @@ export type RecordAttemptInput = {
   /**
    * Resolved Claude tier for this attempt. Only meaningful when
    * producer === "claude"; ignored otherwise (the driver still records it
-   * for Codex/Gemini attempts as `null` so the column is uniform).
+   * for Codex/agy attempts as `null` so the column is uniform).
    */
   attempted_tier?: ClaudeTier;
   /** Engineer self-verification surface; see AttemptNotes. */
@@ -631,13 +631,13 @@ export function recordVerdict(input: RecordVerdictInput): RecordVerdictOutput {
       `because pp_codex.critique is pinned to those models (default or escalated)`
     );
   }
-  if (input.judge_producer === "gemini" && input.judge_model_id !== DEFAULT_MODELS.gemini_critique) {
+  if (input.judge_producer === "agy" && input.judge_model_id !== DEFAULT_MODELS.agy_critique) {
     throw new Error(
-      `judge_producer=gemini must record judge_model_id="${DEFAULT_MODELS.gemini_critique}" ` +
-      `because pp_gemini.critique is hard-pinned to that model`
+      `judge_producer=agy must record judge_model_id="${DEFAULT_MODELS.agy_critique}" ` +
+      `because pp_agy.critique is hard-pinned to that model`
     );
   }
-  if (att.producer === input.judge_producer && att.model_id === input.judge_model_id && att.producer !== "gemini") {
+  if (att.producer === input.judge_producer && att.model_id === input.judge_model_id && att.producer !== "agy") {
     throw new Error(
       `same-vendor verdict requires different model ids for producer=${att.producer}: ` +
       `generator=${att.model_id}, judge=${input.judge_model_id}`
@@ -2917,7 +2917,7 @@ async function tryGitCommand(cwd: string, args: string[]): Promise<string | null
 
 async function captureCliVersions(): Promise<Record<string, string | null>> {
   const out: Record<string, string | null> = {};
-  for (const cli of ["codex", "gemini", "claude", "git", "node"]) {
+  for (const cli of ["codex", "agy", "claude", "git", "node"]) {
     out[cli] = (await tryCmd(cli, ["--version"])) ?? null;
   }
   return out;
@@ -2958,14 +2958,14 @@ export async function doctor(opts: DoctorOptions = {}): Promise<unknown> {
   // permissive — a freshly-installed CLI without an API key cannot serve
   // requests, so reporting "configured" would mislead /pp:doctor consumers
   // and hide cross-vendor outages until the first runtime call.
-  // geminiEnabled() is the global Gemini kill-switch (PP_DISABLE_GEMINI=1).
+  // agyEnabled() is the global Antigravity (agy) kill-switch (PP_DISABLE_AGY=1).
   // Gating `google` here is the single master chokepoint: a false value
   // cascades to the enforce-vendor-matrix hook, best-of-N preconditions, the
   // cross_vendor_ready count, and the critique smoke test — making the harness
   // behave as if Google were simply not a configured vendor.
   const vendors: Record<string, boolean> = {
     openai:    cliVersions.codex  !== null && hasOpenAiCreds(),
-    google:    geminiEnabled() && cliVersions.gemini !== null && hasGoogleCreds(),
+    google:    agyEnabled() && cliVersions.agy !== null && hasGoogleCreds(),
     anthropic: cliVersions.claude !== null && hasAnthropicCreds(),
   };
   const vendor_credentials: Record<string, { cli: boolean; api_key: boolean; logged_in: boolean }> = {
@@ -2975,9 +2975,9 @@ export async function doctor(opts: DoctorOptions = {}): Promise<unknown> {
       logged_in: codexLoggedIn(),
     },
     google: {
-      cli: cliVersions.gemini !== null,
-      api_key: !!process.env.GEMINI_API_KEY || !!process.env.GOOGLE_API_KEY,
-      logged_in: geminiLoggedIn(),
+      cli: cliVersions.agy !== null,
+      api_key: !!process.env.GEMINI_API_KEY || !!process.env.GOOGLE_API_KEY || !!process.env.ANTIGRAVITY_API_KEY,
+      logged_in: agyLoggedIn(),
     },
     anthropic: {
       cli: cliVersions.claude !== null,
@@ -2998,18 +2998,18 @@ export async function doctor(opts: DoctorOptions = {}): Promise<unknown> {
     reason?: string;
   };
   const critique_smoke: Record<string, SmokeResult> = {
-    codex:  { status: "skipped", model: DEFAULT_MODELS.codex_critique },
-    gemini: { status: "skipped", model: DEFAULT_MODELS.gemini_critique },
+    codex: { status: "skipped", model: DEFAULT_MODELS.codex_critique },
+    agy:   { status: "skipped", model: DEFAULT_MODELS.agy_critique },
   };
   if (opts.smoke) {
-    if (vendors.openai)  critique_smoke.codex  = await codexCritiqueSmoke();
-    if (vendors.google)  critique_smoke.gemini = await geminiCritiqueSmoke();
+    if (vendors.openai)  critique_smoke.codex = await codexCritiqueSmoke();
+    if (vendors.google)  critique_smoke.agy   = await agyCritiqueSmoke();
   }
 
   // Degraded = creds say "configured" but smoke reveals broken bridge.
   const vendor_degraded: Record<string, boolean> = {
-    openai:    !!vendors.openai && critique_smoke.codex?.status  === "fail",
-    google:    !!vendors.google && critique_smoke.gemini?.status === "fail",
+    openai:    !!vendors.openai && critique_smoke.codex?.status === "fail",
+    google:    !!vendors.google && critique_smoke.agy?.status   === "fail",
     anthropic: false, // no smoke for in-process Claude judge
   };
 
@@ -3022,7 +3022,7 @@ export async function doctor(opts: DoctorOptions = {}): Promise<unknown> {
     vendor_credentials,
     judge_capabilities: describeJudgeCapabilities(),
     vendor_degraded,
-    gemini_disabled: !geminiEnabled(),
+    agy_disabled: !agyEnabled(),
     cross_vendor_ready: vendorCount >= 2,
     critique_smoke,
     browser_engines,
@@ -3131,7 +3131,7 @@ async function codexCritiqueSmoke(): Promise<{
   }
 }
 
-async function geminiCritiqueSmoke(): Promise<{
+async function agyCritiqueSmoke(): Promise<{
   status: "ok" | "fail" | "skipped";
   model: string;
   exit_code?: number;
@@ -3141,11 +3141,11 @@ async function geminiCritiqueSmoke(): Promise<{
 }> {
   const cwd = tmpdir();
   try {
-    const run = await geminiCritique({
+    const run = await agyCritique({
       artifact_text: SMOKE_ARTIFACT,
       rubric_md: SMOKE_RUBRIC,
       cwd,
-      model: DEFAULT_MODELS.gemini_critique,
+      model: DEFAULT_MODELS.agy_critique,
       timeout_ms: SMOKE_TIMEOUT_MS,
     });
     if (run.exit_code === 0) {
@@ -3163,7 +3163,7 @@ async function geminiCritiqueSmoke(): Promise<{
   } catch (err) {
     return {
       status: "fail",
-      model: DEFAULT_MODELS.gemini_critique,
+      model: DEFAULT_MODELS.agy_critique,
       reason: `exception: ${(err as Error).message}`,
     };
   }
@@ -3184,7 +3184,7 @@ function hasOpenAiCreds(): boolean {
 }
 
 function hasGoogleCreds(): boolean {
-  return !!process.env.GEMINI_API_KEY || !!process.env.GOOGLE_API_KEY || geminiLoggedIn();
+  return !!process.env.GEMINI_API_KEY || !!process.env.GOOGLE_API_KEY || !!process.env.ANTIGRAVITY_API_KEY || agyLoggedIn();
 }
 
 function hasAnthropicCreds(): boolean {
@@ -3213,11 +3213,13 @@ function codexLoggedIn(): boolean {
 }
 
 /**
- * Detection of a Gemini logged-in session. The Gemini CLI persists OAuth
- * state at `~/.gemini/oauth_creds.json`. Same caveat — we only check
- * presence + non-empty, not validity.
+ * Detection of an Antigravity (agy) logged-in session. agy shares its
+ * Google Sign-In OAuth state with the legacy Gemini CLI's config tree at
+ * `~/.gemini/oauth_creds.json` (agy's own config lives under
+ * `~/.gemini/config/`, alongside `~/.gemini/antigravity-cli/`). Same
+ * caveat as codexLoggedIn — we only check presence + non-empty, not validity.
  */
-function geminiLoggedIn(): boolean {
+function agyLoggedIn(): boolean {
   try {
     const home = (process.env.USERPROFILE ?? process.env.HOME) ?? "";
     if (!home) return false;

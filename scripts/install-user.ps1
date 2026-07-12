@@ -93,7 +93,7 @@ if (-not (Test-Path $daemonPath)) {
 $ppServers = @(
     @{ Name = 'pp_harness'; SubCmd = 'mcp'        },
     @{ Name = 'pp_codex';   SubCmd = 'mcp-codex'  },
-    @{ Name = 'pp_gemini';  SubCmd = 'mcp-gemini' }
+    @{ Name = 'pp_agy';     SubCmd = 'mcp-agy'    }
 )
 
 $currentList = & claude mcp list 2>&1

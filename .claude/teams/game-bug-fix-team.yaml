@@ -14,7 +14,7 @@ stages:
     artifact_kind: tdd_manifest
     gate_type: contract
     generator: { agent: test-strategist, primary: codex }
-    judge:     { tier: cross_vendor, model_pref: gemini }
+    judge:     { tier: cross_vendor, model_pref: agy }
   - kind: code
     gate_type: code_style
     generator: { agent: engineer, primary: codex }
@@ -23,7 +23,7 @@ stages:
     artifact_kind: test_plan
     gate_type: contract
     generator: { agent: test-strategist, primary: codex }
-    judge:     { tier: cross_vendor, model_pref: gemini }
+    judge:     { tier: cross_vendor, model_pref: agy }
   - kind: docs
     gate_type: docs_polish
     generator: { agent: docs-author, primary: claude }

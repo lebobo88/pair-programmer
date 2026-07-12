@@ -5,7 +5,7 @@ stages:
   - kind: spec
     gate_type: spec
     generator: { agent: spec-author, primary: claude }
-    judge:     { tier: cross_vendor, rubric: rfc-2119-normative@1, model_pref: gemini }
+    judge:     { tier: cross_vendor, rubric: rfc-2119-normative@1, model_pref: agy }
   - kind: design
     gate_type: design
     generator: { agent: designer, primary: claude }
@@ -13,7 +13,7 @@ stages:
   - kind: code
     gate_type: code_style
     generator: { agent: engineer, primary: claude }
-    judge:     { tier: cross_vendor, model_pref: gemini }
+    judge:     { tier: cross_vendor, model_pref: agy }
     # Marketing-page work is the canonical high-surface-area scenario: the
     # "right" output is more about taste + diversity than convergence to a
     # single correct answer. Fan out to 5 candidates so the seed dimension
@@ -25,7 +25,7 @@ stages:
     artifact_kind: test_plan
     gate_type: contract
     generator: { agent: test-strategist, primary: codex }
-    judge:     { tier: cross_vendor, model_pref: gemini }
+    judge:     { tier: cross_vendor, model_pref: agy }
   - kind: browser_validation
     artifact_kind: browser_validation_report
     gate_type: contract

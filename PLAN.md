@@ -2,9 +2,9 @@
 
 ## Context
 
-You want a multi-agent coding harness in which **Claude Code drives**, **Codex CLI (GPT)** and **Gemini CLI** are callable as sub-agents, and **every artifact a user asks for is validated by a different model**. You want on-demand **best-of-N** and pre-composed **specialized teams**, plus **taxonomy adherence on every task** referencing the 16-section blueprint at `<repo-root>\taxonomy_blueprint.md`. After review, the plan also covers all 16 taxonomy sections (not just code-shaped ones), supports the 10 project-type deviations from Section 7, ships standard-aligned judge rubrics (WCAG/ASVS/C4/OpenAPI/SLSA/NIST AI RMF), maintains a per-project master plan that runs patch over time, exposes the 10 governance review forums as commands, and uses Claude Code hooks systematically — not as nudges — to keep agents aligned.
+You want a multi-agent coding harness in which **Claude Code drives**, **Codex CLI (GPT)** and the **Antigravity CLI (agy)** are callable as sub-agents, and **every artifact a user asks for is validated by a different model**. You want on-demand **best-of-N** and pre-composed **specialized teams**, plus **taxonomy adherence on every task** referencing the 16-section blueprint at `<repo-root>\taxonomy_blueprint.md`. After review, the plan also covers all 16 taxonomy sections (not just code-shaped ones), supports the 10 project-type deviations from Section 7, ships standard-aligned judge rubrics (WCAG/ASVS/C4/OpenAPI/SLSA/NIST AI RMF), maintains a per-project master plan that runs patch over time, exposes the 10 governance review forums as commands, and uses Claude Code hooks systematically — not as nudges — to keep agents aligned.
 
-This plan turns that request into a concrete build: a Claude Code plugin (the user-facing driver), a local TypeScript daemon (durable orchestration state), and two thin MCP wrappers (Codex + Gemini), with verification gates at every stage and Reflexion-style retry once before surfacing.
+This plan turns that request into a concrete build: a Claude Code plugin (the user-facing driver), a local TypeScript daemon (durable orchestration state), and two thin MCP wrappers (Codex + agy), with verification gates at every stage and Reflexion-style retry once before surfacing.
 
 **Key research findings that shaped the design:**
 - Both Codex CLI and Gemini CLI run natively on Windows 11, support headless JSON output, and act as MCP server + client. (Confirmed: `developers.openai.com/codex/cli`, `geminicli.com/docs`.)
@@ -36,7 +36,7 @@ Claude Code (driver)        ── .claude/skills, agents, commands, hooks, team
 pp-daemon (Node)            ── ~/.pair-programmer/state.db, logs, sandboxes, worktree manager
   ├── pp.harness.*  (orchestration: runs, stages, attempts, verdicts, gates, budgets, teams, profiles, master plan)
   ├── pp.codex.*    (wraps `codex exec --json --output-schema …`)
-  └── pp.gemini.*   (wraps Gemini CLI headless JSON mode)
+  └── pp.agy.*      (wraps the Antigravity CLI (agy) headless `-p` print mode; plain-text output)
 
 per-project:
   <project>/.claude/                  (plugin)
@@ -45,7 +45,7 @@ per-project:
   <project>/PROJECT_MASTER.md         (Section 9 master plan, patched by runs)
 ```
 
-Three MCP servers, all spawned by the same `pp-daemon` binary (different entrypoints), registered in `.claude/.mcp.json`. Tool names are **namespaced** (`pp.codex.generate`, `pp.gemini.critique`) to prevent vendor-tool collision in Claude Code's tool registry.
+Three MCP servers, all spawned by the same `pp-daemon` binary (different entrypoints), registered in `.claude/.mcp.json`. Tool names are **namespaced** (`pp.codex.generate`, `pp.agy.critique`) to prevent vendor-tool collision in Claude Code's tool registry.
 
 ## Daemon design
 
@@ -108,17 +108,17 @@ rubrics(id PRIMARY KEY, kind, version, markdown, schema_json, source_url)
 
 ## External CLI MCP wrappers
 
-Both shipped inside `pp-daemon` as alternate entrypoints (`pp-daemon mcp-codex`, `pp-daemon mcp-gemini`).
+Both shipped inside `pp-daemon` as alternate entrypoints (`pp-daemon mcp-codex`, `pp-daemon mcp-agy`).
 
 **Workspace isolation per attempt**: each generator call gets its own ephemeral **git worktree** at `<project>/.harness/<run_id>/<stage>/<candidate>/` (created via `git worktree add`). On Windows, falls back to a copy-based workspace if worktrees fail. Sub-CLI runs with `--cd` pointed at the worktree. **Only the winner's worktree is merged back** to the main tree; losers are archived under `losers/`. This eliminates the file-system race when best-of-N runs concurrent edits.
 
-**Sub-CLI session continuity**: daemon tracks `(project_path, agent) → session_id` in `sub_cli_sessions` and passes the resume flag (Codex `--resume`, Gemini session UUID) on follow-up turns. If session is missing or version-mismatched, daemon synthesizes a "context recap" prompt rather than starting fresh silently.
+**Sub-CLI session continuity**: daemon tracks `(project_path, agent) → session_id` in `sub_cli_sessions` and passes the resume flag (Codex `--resume`, agy session UUID) on follow-up turns. If session is missing or version-mismatched, daemon synthesizes a "context recap" prompt rather than starting fresh silently.
 
 **Codex MCP tools** (`pp.codex.*`): `generate`, `critique`. Wrap `codex exec --json --output-schema <file> --model <id> --sandbox <policy> --cd <worktree>`. Cost from `task_complete` event × `~/.pair-programmer/prices.json`.
 
-**Gemini MCP tools** (`pp.gemini.*`): `generate`, `critique`. Wrap `gemini --model <id> --prompt-file <path> --output-format json`. Cost from `usageMetadata`.
+**agy MCP tools** (`pp.agy.*`): `generate`, `critique`. Wrap `agy -p <prompt> --model <id>` in headless print mode — the prompt is passed directly as the `-p` argument (not via stdin or a prompt-file), and agy emits plain text, not a JSON/JSONL envelope (it has no `--output-format json` flag). Cost from token counts.
 
-**Version pinning**: daemon reads `gemini --version` and `codex --version` at session start; gates on a known-good range; falls back to text-mode + zod parse if newer than tested range.
+**Version pinning**: daemon reads `agy --version` and `codex --version` at session start; gates on a known-good range; falls back to text-mode + zod parse if newer than tested range.
 
 **Network egress posture**: sub-CLI sandboxes default to **read-only filesystem + no network egress**. Promote to `workspace-write` only after the driver explicitly requests it for an editing stage. This is a hardening default against prompt-injection-driven exfiltration.
 
@@ -228,7 +228,7 @@ Each review writes its outputs to `<project>/.harness/<run_id>/review-<forum>/` 
 
 ```
 <project>/.claude/
-  .mcp.json                         # registers harness, codex, gemini stdio MCP servers
+  .mcp.json                         # registers harness, codex, agy stdio MCP servers
   skills/
     pair-programmer.md              # master skill: lifecycle, taxonomy adherence, Reflexion ×1, judge tiers
     taxonomy-adherence.md           # reusable policy text injected into every stage
@@ -334,16 +334,16 @@ Hooks are the teeth that make taxonomy "every task" actually enforced — not nu
 |---|---|---|
 | SessionStart | `daemon-up` | Spawn / health-check daemon. Block session start if daemon unreachable. |
 | SessionStart | `vendor-matrix` | Run `pp.harness.doctor`; error loudly if cross-vendor configs missing. |
-| SessionStart | `cli-version-pin` | Read `codex --version`, `gemini --version`; warn if outside tested range. |
+| SessionStart | `cli-version-pin` | Read `codex --version`, `agy --version`; warn if outside tested range. |
 | SessionStart | `master-plan-load` | If `PROJECT_MASTER.md` exists, summarize its 20-section status into context. |
 | SessionStart | `surfaced-runs` | List any runs in `surfaced` state needing attention. |
 | PreToolUse | `enforce-active-run` | Edit/Write to source code (outside `.harness/`) blocked unless an active run owns the stage. |
-| PreToolUse | `enforce-vendor-matrix` | `pp.codex.*`/`pp.gemini.*` blocked when a cross-vendor gate is active and the matched vendor is missing. |
-| PreToolUse | `enforce-sandbox-policy` | `pp.codex/gemini.generate` blocked unless `--sandbox` is appropriate for the active stage. |
+| PreToolUse | `enforce-vendor-matrix` | `pp.codex.*`/`pp.agy.*` blocked when a cross-vendor gate is active and the matched vendor is missing. |
+| PreToolUse | `enforce-sandbox-policy` | `pp.codex/agy.generate` blocked unless `--sandbox` is appropriate for the active stage. |
 | PreToolUse | `enforce-no-secrets` | Pre-write scan of artifact content (API key/.env regex set); block on match. |
 | PreToolUse | `enforce-validator-gate` | Code-modifying tools blocked until prior stage's verdict = `pass`. |
 | PreToolUse | `enforce-rfc2119-language` | Spec-stage outputs scanned for normative-language compliance; block on violation. |
-| PostToolUse | `cost-tally` | After every `pp.codex/gemini.*`, append tokens + cost via `record_attempt`. |
+| PostToolUse | `cost-tally` | After every `pp.codex/agy.*`, append tokens + cost via `record_attempt`. |
 | PostToolUse | `record-attempt` | Backstop for any direct CLI invocation; ensures DB completeness. |
 | PostToolUse | `taxonomy-coverage-update` | After artifact write, update which 4.x sections are covered. |
 | PostToolUse | `hash-artifact` | Store sha256 on write; mismatch on rewrite triggers manual-edit detection. |
@@ -442,7 +442,7 @@ USER  ──/pp:run "Add OAuth login to the admin dashboard"──▶  Claude Co
  │ ▶ pp.harness.start_stage(kind, gate_type)                   │
  │ ▶ pp.harness.gate_eligible_judges(gate_type, prompt_keywords, profile)
  │       → {required_cross_vendor, allowed_judges, rubric_id}  │
- │ ▶ Task → generator agent (codex/gemini/claude per binding)  │
+ │ ▶ Task → generator agent (codex/agy/claude per binding)     │
  │   PreToolUse hooks gate this (active-run, vendor-matrix,    │
  │     sandbox-policy, no-secrets, validator-gate, rfc2119)    │
  │ ▶ pp.harness.record_attempt                                 │
@@ -500,7 +500,7 @@ USER  ──/pp:run "Add OAuth login to the admin dashboard"──▶  Claude Co
 | All-N agree on bad answer | Diff-entropy check; low-diversity warning; optional devil's-advocate slot |
 | Sub-CLI context drift across turns | `sub_cli_sessions` table; resume flags; recap prompt on miss |
 | Daemon dies mid-run; orphaned worktrees | PID file; orphan sweep on startup; `crashed` status; `/pp:doctor` |
-| MCP tool-name collision | All tools namespaced `pp.harness.*` / `pp.codex.*` / `pp.gemini.*` |
+| MCP tool-name collision | All tools namespaced `pp.harness.*` / `pp.codex.*` / `pp.agy.*` |
 | Cross-vendor required but only one vendor configured | `doctor` errors loudly at session start; hooks block at PreToolUse |
 | Windows path length / cmd shim exit codes | Document `LongPathsEnabled`; capture `$LASTEXITCODE` after npm shims |
 | Audit replay gap | `runs` row captures HEAD SHA + dirty-tree hash + profile + CLI versions |
@@ -517,7 +517,7 @@ USER  ──/pp:run "Add OAuth login to the admin dashboard"──▶  Claude Co
 - `<repo-root>\daemon\src\index.ts`
 - `<repo-root>\daemon\src\mcp\harness-server.ts`
 - `<repo-root>\daemon\src\mcp\codex-server.ts`
-- `<repo-root>\daemon\src\mcp\gemini-server.ts`
+- `<repo-root>\daemon\src\mcp\antigravity-server.ts`
 - `<repo-root>\daemon\src\db\schema.sql`
 - `<repo-root>\daemon\src\orchestrator\loop-ceiling.ts`
 - `<repo-root>\daemon\src\orchestrator\worktree.ts`
@@ -557,7 +557,7 @@ Daemon: `pp-daemon` binary, SQLite + WAL schema, core MCP tools (`start_run`/`re
 
 ### Phase 2 — Cross-vendor + tiered policy
 
-Gemini MCP wrapper. Real `gate_eligible_judges` (tier table + content-keyword upgrade). `judge-cross-vendor` + `judge-router`. Vendor matrix check in `doctor` and `SessionStart.vendor-matrix` hook.
+agy MCP wrapper. Real `gate_eligible_judges` (tier table + content-keyword upgrade). `judge-cross-vendor` + `judge-router`. Vendor matrix check in `doctor` and `SessionStart.vendor-matrix` hook.
 
 ### Phase 3 — Taxonomy adherence + master plan
 
@@ -598,7 +598,7 @@ Concurrency hardening (`BEGIN IMMEDIATE`, file lock, janitor, orphan sweep). Sub
 ## Verification (how we'll know each phase works)
 
 - **Phase 1**: `/pp:run "add a docstring to file X"` → real artifact + verdict + run summary on disk; DB has 1 run/stage/attempt/verdict.
-- **Phase 2**: `/pp:run "harden auth middleware"` → cross-vendor judge fires (security keyword); verdict has `cross_vendor=1`; vendor-matrix doctor fails closed when Gemini key removed.
+- **Phase 2**: `/pp:run "harden auth middleware"` → cross-vendor judge fires (security keyword); verdict has `cross_vendor=1`; vendor-matrix doctor fails closed when the agy vendor is unconfigured (e.g. signed out).
 - **Phase 3**: Trivial task → changelog-only artifact + master plan patch. Standard task → full mapping with required 4.x sections covered. `PROJECT_MASTER.md` reflects the run.
 - **Phase 4**: Inject a known-bad generator → validator rejects → reflexion retries → if still bad, surfaced with both attempts. Third generator call rejected. Missability inspector blocks finalize when, e.g., schema-evolution check fails.
 - **Phase 5**: `/pp:best-of 3` → 3 worktrees, 3 parallel models, Borda picks winner, only winner merged. Diff-entropy fires on a request like "write a function to add two numbers."
@@ -607,7 +607,7 @@ Concurrency hardening (`BEGIN IMMEDIATE`, file lock, janitor, orphan sweep). Sub
 - **Phase 8**: UI-touching change auto-produces screen-state matrix + Playwright before/after screenshots. WCAG rubric scores all 8 states. `frontend-design` skill output appears in `<run_id>/ux/`.
 - **Phase 9**: `/pp:review threat` produces a threat model + control mapping verified by ASVS rubric. `/pp:checklist` lists which of Section 10's 15 items are open in `PROJECT_MASTER.md`.
 - **Phase 10**: `Edit` to source code outside an active run is blocked by `enforce-active-run`. `pp.codex.generate` with wrong sandbox flag is blocked. Spec-stage outputs lacking MUST/SHOULD/MAY are blocked. End-of-turn summary missing the expected pattern triggers a Stop hook nudge.
-- **Phase 11**: Two concurrent `/pp:run`s queue cleanly. `pp:doctor` after killing the daemon reports orphans + offers cleanup. `pp:replay <run_id>` reconstructs prompt set and CLI versions. End-to-end works on a fresh Win11 machine after `npm i -g @openai/codex @google/gemini-cli` + setting two API keys + scaffolding `.claude/`.
+- **Phase 11**: Two concurrent `/pp:run`s queue cleanly. `pp:doctor` after killing the daemon reports orphans + offers cleanup. `pp:replay <run_id>` reconstructs prompt set and CLI versions. End-to-end works on a fresh Win11 machine after `npm i -g @openai/codex`, installing the `agy` CLI, `codex login` + running `agy` once (Google Sign-In; no separate `auth` subcommand), and scaffolding `.claude/`.
 
 ## Defaults the plan picks (note now, override on request)
 

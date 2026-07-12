@@ -9,7 +9,7 @@ stages:
   - kind: gdd
     gate_type: spec
     generator: { agent: spec-author, primary: claude }
-    judge:     { tier: cross_vendor, rubric: rfc-2119-normative@1, model_pref: gemini }
+    judge:     { tier: cross_vendor, rubric: rfc-2119-normative@1, model_pref: agy }
   - kind: mechanic_spec
     gate_type: spec
     generator: { agent: spec-author, primary: claude }
@@ -34,7 +34,7 @@ stages:
     artifact_kind: test_plan
     gate_type: contract
     generator: { agent: test-strategist, primary: codex }
-    judge:     { tier: cross_vendor, model_pref: gemini }
+    judge:     { tier: cross_vendor, model_pref: agy }
   - kind: performance_profile
     gate_type: code_style
     generator: { agent: technical-artist, primary: claude }

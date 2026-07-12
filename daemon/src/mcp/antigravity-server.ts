@@ -24,7 +24,7 @@ import { getSession, setSession, synthesizeRecap } from "../orchestrator/sub-cli
 const GenerateSchema = z.object({
   prompt:           z.string().min(1),
   cwd:              z.string().min(1),
-  model:            z.string().default(DEFAULT_MODELS.gemini_generate),
+  model:            z.string().default(DEFAULT_MODELS.agy_generate),
   output_schema:    z.unknown().optional(),
   timeout_ms:       z.number().int().positive().optional(),
   untrusted_inputs: z.array(z.object({
@@ -38,12 +38,12 @@ const CritiqueSchema = z.object({
   artifact_text: z.string().min(1),
   rubric_md:     z.string().min(1),
   cwd:           z.string().min(1),
-  model:         z.string().default(DEFAULT_MODELS.gemini_critique),
+  model:         z.string().default(DEFAULT_MODELS.agy_critique),
   output_schema: z.unknown().optional(),
   timeout_ms:    z.number().int().positive().optional(),
 });
 
-type GeminiResult = {
+type AntigravityResult = {
   text: string;
   parsed?: unknown;
   tokens_in: number;
@@ -62,10 +62,23 @@ type GeminiResult = {
   reason?: string;
 };
 
-async function geminiGenerate(args: z.infer<typeof GenerateSchema>): Promise<GeminiResult> {
+/**
+ * Soft cap on a headless `-p` prompt's length. The Antigravity CLI (agy) has
+ * no `--prompt-file` or stdin-based prompt input for print mode (as the old
+ * Gemini CLI had via `-p "" ` + stdin) — the full prompt MUST be passed as
+ * the literal `-p` argument value. Very large prompts (a full artifact_text +
+ * rubric_md for a critique call, for example) risk hitting the Windows
+ * command-line length ceiling that historically bit this harness at ~8191
+ * chars. There is currently no better alternative in agy, so this is a
+ * best-effort warning, not a truncation — truncating would silently corrupt
+ * the critique/generate call, which is worse than attempting it as-is.
+ */
+const PROMPT_LENGTH_WARN_THRESHOLD = 7500;
+
+async function agyGenerate(args: z.infer<typeof GenerateSchema>): Promise<AntigravityResult> {
   ensureDirs();
   const sandboxId = nanoid(8);
-  const tmpDir = join(SANDBOX_DIR, `gemini-${sandboxId}`);
+  const tmpDir = join(SANDBOX_DIR, `agy-${sandboxId}`);
   mkdirSync(tmpDir, { recursive: true });
 
   let prompt = args.prompt;
@@ -74,52 +87,78 @@ async function geminiGenerate(args: z.infer<typeof GenerateSchema>): Promise<Gem
     prompt = `${prompt}\n\n${wrapped}`;
   }
 
-  // Session continuity: resume the prior gemini session for this project if
+  // Session continuity: resume the prior agy conversation for this project if
   // one exists; otherwise inject a recap so cold starts have grounding.
-  const existing = getSession(args.cwd, "gemini");
+  const existing = getSession(args.cwd, "agy");
   if (!existing && !args.skip_recap) {
-    const recap = synthesizeRecap(args.cwd, "gemini");
+    const recap = synthesizeRecap(args.cwd, "agy");
     if (recap) prompt = `${recap}\n${prompt}`;
   }
 
   if (args.output_schema) {
     prompt += `\n\nReturn ONLY a JSON object that conforms to this JSON Schema (no prose, no fences):\n${JSON.stringify(args.output_schema)}\n`;
   }
-  // gemini >=0.40 removed --prompt-file. Use `-p ""` to force headless
-  // (non-interactive) mode and pipe the prompt via stdin (CLI help:
-  // "Appended to input on stdin (if any)."). Avoids Windows 8191-char
-  // CMDLINE limit that the file-path workaround was originally for.
-  const cliArgs = ["--model", args.model, "-p", "", "--output-format", "json"];
-  // Resume flag: gemini CLI uses `--resume <id>`, NOT `--session <uuid>`
-  // (which is rejected as "Unknown argument: session"). `--session-id` exists
-  // but is for *fresh* sessions seeded with a manual UUID. Resume is the
-  // common path for the harness's session-continuity logic.
-  if (existing) cliArgs.push("--resume", existing.session_id);
+
+  if (prompt.length > PROMPT_LENGTH_WARN_THRESHOLD) {
+    log.warn(
+      { promptChars: prompt.length, cwd: args.cwd },
+      "agy prompt exceeds the safe command-line length threshold — agy has no stdin/file prompt input, so this call risks failing on the OS command-line limit",
+    );
+  }
+
+  // agy's `-p`/`--print` mode takes the prompt as the flag's OWN argument
+  // value and does NOT read stdin when `-p` is present (confirmed against
+  // agy 1.1.1: `-p ""` + stdin input errors "empty prompt"; passing the
+  // prompt text directly as the `-p` value is the only working invocation).
+  // There is also no `--output-format json` flag — headless stdout is plain
+  // text (the raw model response), so parseAgyOutput below does not attempt
+  // any structured-envelope parsing.
+  //
+  // `--dangerously-skip-permissions` + `--sandbox`: agy is a full agentic
+  // coding CLI (multi-file editing, tool/shell calling), unlike the old
+  // Gemini CLI's plain text-completion `-p` mode. Without auto-approval, a
+  // prompt that causes agy to reach for a tool call would hang waiting for
+  // an interactive confirmation that never comes in this headless daemon
+  // context (bounded only by --print-timeout). `--sandbox` restricts
+  // terminal command execution as defense-in-depth for critique calls,
+  // where the prompt embeds untrusted artifact_text via wrapUntrusted().
+  const cliArgs = [
+    "--model", args.model,
+    "--sandbox",
+    "--dangerously-skip-permissions",
+    "--print-timeout", `${Math.max(1, Math.ceil((args.timeout_ms ?? 300_000) / 1000))}s`,
+  ];
+  // Resume flag: agy has no session id in headless stdout to capture, so we
+  // track only "has this project talked to agy before" (see
+  // sub-cli-sessions.ts) and pass --continue to resume the most recent
+  // conversation for this workspace directory.
+  if (existing) cliArgs.push("--continue");
+  cliArgs.push("-p", prompt);
 
   const run = await runCliWithRetry({
-    bin: "gemini",
+    bin: "agy",
     cliArgs,
     cwd: args.cwd,
-    vendor: "gemini",
-    input: prompt,
+    vendor: "agy",
     timeout_ms: args.timeout_ms,
   });
 
-  const parsed = parseGeminiOutput(run.stdout);
-  const text       = parsed.text ?? run.stdout;
-  // Cost-telemetry fallback. The gemini CLI does not always surface
-  // usageMetadata (varies by transport + model). Without a non-zero token
-  // count the harness ledger stays empty and /pp:budget's 80%/100%
-  // tripwire never fires. Fall back to a coarse char-based estimate
-  // (~4 chars/token, OpenAI-style heuristic) so the budget gate has
-  // something to clamp on. Real usage, when available, always wins.
+  const parsed = parseAgyOutput(run.stdout);
+  const text = parsed.text ?? run.stdout;
+  // Cost-telemetry fallback. agy's headless print mode surfaces no usage
+  // envelope at all (no --output-format json equivalent exists), so this
+  // char-based estimate (~4 chars/token, OpenAI-style heuristic) is always
+  // used rather than being a fallback of last resort as it was for gemini.
   const estimateTokens = (s: string): number => Math.max(1, Math.ceil((s ?? "").length / 4));
-  const tokens_in  = parsed.tokens_in  ?? estimateTokens(prompt);
-  const tokens_out = parsed.tokens_out ?? estimateTokens(text);
+  const tokens_in  = estimateTokens(prompt);
+  const tokens_out = estimateTokens(text);
   const cost_usd   = computeCost(args.model, tokens_in, tokens_out);
 
-  if (parsed.session_id) {
-    setSession(args.cwd, "gemini", parsed.session_id);
+  // No session id is recoverable from plain-text stdout; record a sentinel so
+  // future calls for this project know a prior turn happened and pass
+  // --continue (see comment above).
+  if (run.exit_code === 0) {
+    setSession(args.cwd, "agy", "continue");
   }
 
   let parsedJson: unknown;
@@ -128,16 +167,16 @@ async function geminiGenerate(args: z.infer<typeof GenerateSchema>): Promise<Gem
     if (extracted.found) parsedJson = extracted.value;
   }
 
-  const result: GeminiResult = {
+  const result: AntigravityResult = {
     text,
     parsed: parsedJson,
     tokens_in,
     tokens_out,
     cost_usd,
-    model: parsed.model ?? args.model,
+    model: args.model,
     wall_ms: run.wall_ms,
     exit_code: run.exit_code,
-    session_id: parsed.session_id,
+    session_id: run.exit_code === 0 ? "continue" : undefined,
     resumed: !!existing,
     attempts: run.attempts,
     failure_archive_path: run.failure_archive_path,
@@ -179,11 +218,11 @@ async function geminiGenerate(args: z.infer<typeof GenerateSchema>): Promise<Gem
   return result;
 }
 
-export async function geminiCritique(args: z.infer<typeof CritiqueSchema>): Promise<GeminiResult> {
-  const pinnedModel = DEFAULT_MODELS.gemini_critique;
+export async function agyCritique(args: z.infer<typeof CritiqueSchema>): Promise<AntigravityResult> {
+  const pinnedModel = DEFAULT_MODELS.agy_critique;
   if (args.model && args.model !== pinnedModel) {
     process.stderr.write(
-      `[pp_gemini.critique] ignoring model="${args.model}" passed by caller; pinning to "${pinnedModel}". The judge agent contract requires this model.\n`,
+      `[pp_agy.critique] ignoring model="${args.model}" passed by caller; pinning to "${pinnedModel}". The judge agent contract requires this model.\n`,
     );
   }
   const wrappedArtifact = wrapUntrusted("artifact-under-review", args.artifact_text);
@@ -193,7 +232,7 @@ export async function geminiCritique(args: z.infer<typeof CritiqueSchema>): Prom
     `## Rubric\n${args.rubric_md}\n\n` +
     `## Artifact\n${wrappedArtifact}\n`;
   const useDefaultSchema = !args.output_schema;
-  const invoke = async () => await geminiGenerate({
+  const invoke = async () => await agyGenerate({
     prompt: judgePrompt,
     cwd: args.cwd,
     model: pinnedModel,
@@ -202,91 +241,43 @@ export async function geminiCritique(args: z.infer<typeof CritiqueSchema>): Prom
     timeout_ms: args.timeout_ms,
   });
   if (!useDefaultSchema) return await invoke();
-  return await stabilizeCritiqueResult(invoke, { cwd: args.cwd, vendor: "gemini" });
+  return await stabilizeCritiqueResult(invoke, { cwd: args.cwd, vendor: "agy" });
 }
 
-function parseGeminiOutput(stdout: string): {
-  text?: string;
-  tokens_in?: number;
-  tokens_out?: number;
-  model?: string;
-  session_id?: string;
-} {
-  const out: { text?: string; tokens_in?: number; tokens_out?: number; model?: string; session_id?: string } = {};
+/**
+ * agy's headless `-p`/`--print` mode has no `--output-format json` equivalent
+ * — stdout IS the model's raw response text, with no wrapping envelope, no
+ * usage metadata, and no session id (unlike the old Gemini CLI's
+ * `--output-format json`, which emitted a JSON/JSONL envelope this function
+ * used to parse). This is intentionally a pass-through, kept as a named
+ * function so future agy versions that add structured output have a single
+ * place to extend.
+ */
+function parseAgyOutput(stdout: string): { text?: string } {
   const trimmed = stdout.trim();
-  if (!trimmed) return out;
-
-  const captureSession = (evt: Record<string, unknown>): void => {
-    const candidate =
-      (typeof evt.session_id === "string" && evt.session_id) ||
-      (typeof evt.sessionId === "string" && evt.sessionId) ||
-      (typeof (evt.session as { id?: string } | undefined)?.id === "string" && (evt.session as { id?: string }).id) ||
-      undefined;
-    if (candidate && !out.session_id) out.session_id = candidate as string;
-  };
-
-  // Gemini CLI --output-format json may emit one envelope or JSONL events.
-  if (trimmed.startsWith("{")) {
-    try {
-      const evt = JSON.parse(trimmed) as Record<string, unknown>;
-      const text = (evt.response ?? evt.text ?? evt.candidates ?? evt.output) as unknown;
-      if (typeof text === "string") out.text = text;
-      else if (Array.isArray(text)) {
-        // candidates: [{ content: { parts: [{ text: "..." }] } }]
-        const first = text[0] as { content?: { parts?: Array<{ text?: string }> } } | undefined;
-        const part = first?.content?.parts?.[0]?.text;
-        if (typeof part === "string") out.text = part;
-      }
-      const usage = (evt.usageMetadata ?? evt.usage ?? {}) as Record<string, unknown>;
-      if (typeof usage.promptTokenCount === "number")     out.tokens_in  = usage.promptTokenCount;
-      if (typeof usage.candidatesTokenCount === "number") out.tokens_out = usage.candidatesTokenCount;
-      if (typeof evt.modelVersion === "string")           out.model      = evt.modelVersion;
-      captureSession(evt);
-      return out;
-    } catch { /* fall through to JSONL */ }
-  }
-
-  let textBuf = "";
-  for (const line of trimmed.split(/\r?\n/)) {
-    const ln = line.trim();
-    if (!ln || ln[0] !== "{") continue;
-    try {
-      const evt = JSON.parse(ln) as Record<string, unknown>;
-      const text = (evt.text ?? evt.delta ?? evt.response) as unknown;
-      if (typeof text === "string") textBuf += text;
-      const usage = (evt.usageMetadata ?? evt.usage) as Record<string, unknown> | undefined;
-      if (usage) {
-        if (typeof usage.promptTokenCount === "number")     out.tokens_in  = (out.tokens_in ?? 0) + usage.promptTokenCount;
-        if (typeof usage.candidatesTokenCount === "number") out.tokens_out = (out.tokens_out ?? 0) + usage.candidatesTokenCount;
-      }
-      captureSession(evt);
-    } catch { /* ignore */ }
-  }
-  if (textBuf) out.text = textBuf;
-  if (!out.text) out.text = trimmed;
-  return out;
+  return trimmed ? { text: trimmed } : {};
 }
 
 const TOOLS = [
   {
     name: "generate",
     description:
-      "Run the Gemini CLI in headless mode against a working directory. Returns text plus token counts and cost. Pass output_schema (JSON Schema object) to ask for structured JSON. Untrusted inputs are wrapped in a no-instructions XML envelope.",
+      "Run the Antigravity CLI (agy) in headless mode against a working directory. Returns text plus token counts and cost. Pass output_schema (JSON Schema object) to ask for structured JSON. Untrusted inputs are wrapped in a no-instructions XML envelope.",
     schema: GenerateSchema,
-    handler: (args: unknown) => geminiGenerate(GenerateSchema.parse(args)),
+    handler: (args: unknown) => agyGenerate(GenerateSchema.parse(args)),
   },
   {
     name: "critique",
     description:
-      "Use Gemini as a cross-vendor judge. Wraps the artifact in an untrusted envelope and applies the rubric_md. Returns a structured verdict (outcome | critique_md | score).",
+      "Use Antigravity (agy) as a cross-vendor judge. Wraps the artifact in an untrusted envelope and applies the rubric_md. Returns a structured verdict (outcome | critique_md | score).",
     schema: CritiqueSchema,
-    handler: (args: unknown) => geminiCritique(CritiqueSchema.parse(args)),
+    handler: (args: unknown) => agyCritique(CritiqueSchema.parse(args)),
   },
 ];
 
-export async function runGeminiMcpServer(): Promise<void> {
+export async function runAntigravityMcpServer(): Promise<void> {
   const server = new Server(
-    { name: "pp_gemini", version: "0.1.0" },
+    { name: "pp_agy", version: "0.1.0" },
     { capabilities: { tools: {} } }
   );
 
@@ -312,7 +303,7 @@ export async function runGeminiMcpServer(): Promise<void> {
 
   const transport = new StdioServerTransport();
   await server.connect(transport);
-  log.info("pp_gemini MCP server running on stdio");
+  log.info("pp_agy MCP server running on stdio");
 
   // PP-RS-3 (issue 3): chain onto any onclose the SDK installed during connect.
   const _sdkOnclose = transport.onclose;

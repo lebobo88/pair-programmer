@@ -38,7 +38,7 @@ Other profiles do not change tier directly; they bind specific rubrics (e.g. `we
 
 ## Vendor matrix
 
-If the harness has only one configured vendor (`mcp__pp_harness__doctor` returns `cross_vendor_ready: false`), every cross-vendor gate REFUSES to run. The driver must STOP, surface a clear error, and ask the user to configure the missing vendor (set `OPENAI_API_KEY` + `GEMINI_API_KEY` or run `codex login` / `gemini auth`).
+If the harness has only one configured vendor (`mcp__pp_harness__doctor` returns `cross_vendor_ready: false`), every cross-vendor gate REFUSES to run. The driver must STOP, surface a clear error, and ask the user to configure the missing vendor (set `OPENAI_API_KEY` + `GEMINI_API_KEY`/`ANTIGRAVITY_API_KEY` or run `codex login` / `agy` — agy has no separate `auth` subcommand, running it bare completes interactive Google Sign-In).
 
 The daemon will not silently downgrade a security/spec/design/contract gate to same-vendor.
 
@@ -51,7 +51,7 @@ For best-of-2, the driver should ask the judge for a structured rubric score per
 ## Self-bias
 
 - **Codex:** `pp_codex.critique` is hard-pinned to `gpt-5.4`. Same-vendor Codex judging is therefore only legal when the generator used a different model id. If the generator already used `gpt-5.4`, `gate_eligible_judges` upgrades the gate to cross-vendor.
-- **Gemini:** `pp_gemini.critique` is hard-pinned to `gemini-3.1-pro-preview`. Same-vendor Gemini judging is a documented degenerate case (same model on both sides) until a second supported 3.x critique model ships.
+- **Antigravity (agy):** `pp_agy.critique` is hard-pinned to `gemini-3.1-pro-preview`. Same-vendor agy judging is a documented degenerate case (same model on both sides) until a second supported 3.x critique model ships.
 - **Claude:** same-vendor Claude judging still requires a different model id from the generator.
 
 ## Fable-5 tier (capability-gated)
@@ -72,7 +72,7 @@ unchanged for `shiftTier("fable", ±N)`. Ordinary haiku→sonnet→opus ladder e
 can never reach fable.
 
 Judge contract for Fable-generated stages: the judge MUST be cross-vendor (Codex or
-Gemini). The same-vendor same-model guard at `runs.ts:641` already blocks fable-judges-fable,
+agy). The same-vendor same-model guard at `runs.ts:641` already blocks fable-judges-fable,
 but the team yaml must not even request it.
 
 Pricing: conservative placeholder at 2× opus rates. Confirm with Anthropic before
@@ -91,8 +91,8 @@ When `escalate: true`, the server selects `gpt-5.5` (pinned in `DEFAULT_MODELS.c
 
 1. Call `gate_eligible_judges(gate_type, generator_producer, generator_model?, prompt_keywords, profile, artifact_kind, rubric_hint?)`.
 2. Read `required_cross_vendor`, `rubric_id`, and `allowed_judges`.
-3. If `required_cross_vendor` and the generator was Codex → invoke `judge-cross-vendor` (which calls `pp_gemini.critique`). If the generator was Gemini → `judge-cross-vendor` calls `pp_codex.critique`.
-4. If `required_cross_vendor` is false → invoke `judge-same-vendor` (which calls `pp_<same>.critique` with a different `model_id`, except for the documented degenerate Gemini lane).
+3. If `required_cross_vendor` and the generator was Codex → invoke `judge-cross-vendor` (which calls `pp_agy.critique`). If the generator was agy → `judge-cross-vendor` calls `pp_codex.critique`.
+4. If `required_cross_vendor` is false → invoke `judge-same-vendor` (which calls `pp_<same>.critique` with a different `model_id`, except for the documented degenerate agy lane).
 5. `rubric_hint` is for stage-declared intent (for example a forum stage that already names `rfc-2119-normative@1` or `web-runtime-validation@2`). It does not bypass the daemon; it gives the daemon enough context to return the right `rubric_id`.
 6. The judge fetches the rubric body via `mcp__pp_harness__get_rubric(rubric_id)` and applies it to score the artifact when `rubric_id` is non-null. If `rubric_id` is null, the judge falls back to its default critique rubric.
 7. Verdict recorded via `record_verdict`. The daemon computes the `cross_vendor` flag from `judge_producer` vs `attempt.producer` and stores it.

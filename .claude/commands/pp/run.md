@@ -80,9 +80,9 @@ The `trace` array records which layer set the final tier ("frontmatter", "team_y
 
    For each stage:
    - `mcp__pp_harness__start_stage(run_id, kind, gate_type)`. Default `gate_type` per `kind`: `spec→spec`, `code→code_style`, `tests→lint_class`, `tests_pre→contract`, `docs→docs_polish`. Override per profile rubric bindings if the profile names a different gate type for the kind.
-   - `mcp__pp_harness__gate_eligible_judges` with `gate_type`, `generator_producer="claude"` (the `engineer` producer is **Path A / Claude** — see `.claude/agents/engineer.md`; Paths B/C codex/gemini *generation* are deprecated, external CLIs are critique-only, so cross-vendor judging resolves to codex), `generator_model=<the resolved Claude tier model id from step 6a when known; otherwise let the daemon infer a default>`, `prompt_keywords=$ARGUMENTS`, `profile=<profile.name or null>`, `artifact_kind` (per-stage canonical kind). Capture `{ required_cross_vendor, rubric_id, allowed_judges, upgraded, reason }`.
+   - `mcp__pp_harness__gate_eligible_judges` with `gate_type`, `generator_producer="claude"` (the `engineer` producer is **Path A / Claude** — see `.claude/agents/engineer.md`; Paths B/C codex/agy *generation* are deprecated, external CLIs are critique-only, so cross-vendor judging resolves to codex), `generator_model=<the resolved Claude tier model id from step 6a when known; otherwise let the daemon infer a default>`, `prompt_keywords=$ARGUMENTS`, `profile=<profile.name or null>`, `artifact_kind` (per-stage canonical kind). Capture `{ required_cross_vendor, rubric_id, allowed_judges, upgraded, reason }`.
 
-   - **6a. Resolve Claude tier for this stage.** Run the resolver below (highest-precedence wins, layers stack low→high). The resolver only governs Claude generators (Path A inside the `engineer` agent and any agent whose frontmatter pins `model:`). For Codex/Gemini producers (engineer Paths B/C, api-designer when delegated to Codex, etc.) skip the resolver and use the vendor's default model id from `daemon/src/config.ts:DEFAULT_MODELS`.
+   - **6a. Resolve Claude tier for this stage.** Run the resolver below (highest-precedence wins, layers stack low→high). The resolver only governs Claude generators (Path A inside the `engineer` agent and any agent whose frontmatter pins `model:`). For Codex/Antigravity (agy) producers (engineer Paths B/C, api-designer when delegated to Codex, etc.) skip the resolver and use the vendor's default model id from `daemon/src/config.ts:DEFAULT_MODELS`.
 
      ```
      initial_tier = AGENT_TIER_DEFAULTS[stage.agent]   // hard error if missing — /pp:doctor catches new agents without frontmatter
@@ -153,7 +153,7 @@ The `trace` array records which layer set the final tier ("frontmatter", "team_y
 
 10. **Report to the user.** Print:
     - The run id and status.
-    - A per-stage table: `stage | gate_type | rubric | producer/judge | model_tier | verdict | tokens_in/out | cost_usd`. The `model_tier` column shows `<tier>` for Claude generators (e.g. `sonnet`, or `sonnet→opus` if Reflexion escalated) and `—` for Codex/Gemini producers.
+    - A per-stage table: `stage | gate_type | rubric | producer/judge | model_tier | verdict | tokens_in/out | cost_usd`. The `model_tier` column shows `<tier>` for Claude generators (e.g. `sonnet`, or `sonnet→opus` if Reflexion escalated) and `—` for Codex/agy producers.
     - The artifact paths under `<project>/.harness/<run_id>/` (including `tier_decisions.json`).
     - The master-plan delta (`patches_applied` count + which sections were patched).
     - The missability check summary (`pass / fail / n/a` counts).

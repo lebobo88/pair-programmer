@@ -42,7 +42,7 @@ CREATE INDEX IF NOT EXISTS idx_stages_run ON stages(run_id);
 CREATE TABLE IF NOT EXISTS attempts (
   id                  TEXT PRIMARY KEY,
   stage_id            TEXT NOT NULL REFERENCES stages(id) ON DELETE CASCADE,
-  producer            TEXT NOT NULL,                       -- codex | gemini | claude | <subagent name>
+  producer            TEXT NOT NULL,                       -- codex | agy | claude | <subagent name> (historical rows may say "gemini" — see normalizeProducer() in config.ts)
   model_id            TEXT NOT NULL,
   prompt_hash         TEXT,
   artifact_path       TEXT,                                 -- relative to project .harness/
@@ -122,7 +122,7 @@ CREATE TABLE IF NOT EXISTS teams (
 
 CREATE TABLE IF NOT EXISTS sub_cli_sessions (
   project_path        TEXT NOT NULL,
-  agent               TEXT NOT NULL,                       -- codex | gemini
+  agent               TEXT NOT NULL,                       -- codex | agy
   session_id          TEXT NOT NULL,
   last_used_at        TEXT NOT NULL,
   PRIMARY KEY(project_path, agent)

@@ -43,15 +43,15 @@
     "PreToolUse": [
       { "matcher": "Bash|PowerShell", "hooks": [{ "type": "command", "command": "node \"__PP_DAEMON__\" hook PreToolUse block-destructive-shell" }] },
       { "matcher": "Edit|Write|MultiEdit|NotebookEdit", "hooks": [{ "type": "command", "command": "node \"__PP_DAEMON__\" hook PreToolUse enforce-active-run" }] },
-      { "matcher": "mcp__pp_codex__.*|mcp__pp_gemini__.*", "hooks": [{ "type": "command", "command": "node \"__PP_DAEMON__\" hook PreToolUse enforce-vendor-matrix" }] },
+      { "matcher": "mcp__pp_codex__.*|mcp__pp_agy__.*", "hooks": [{ "type": "command", "command": "node \"__PP_DAEMON__\" hook PreToolUse enforce-vendor-matrix" }] },
       { "matcher": "mcp__pp_codex__generate", "hooks": [{ "type": "command", "command": "node \"__PP_DAEMON__\" hook PreToolUse enforce-sandbox-policy" }] },
       { "matcher": "Edit|Write|MultiEdit|mcp__pp_harness__archive_artifact", "hooks": [{ "type": "command", "command": "node \"__PP_DAEMON__\" hook PreToolUse enforce-no-secrets" }] },
       { "matcher": "Edit|Write|MultiEdit", "hooks": [{ "type": "command", "command": "node \"__PP_DAEMON__\" hook PreToolUse enforce-validator-gate" }] },
       { "matcher": "Write|Edit|mcp__pp_harness__archive_artifact", "hooks": [{ "type": "command", "command": "node \"__PP_DAEMON__\" hook PreToolUse enforce-rfc2119-language" }] }
     ],
     "PostToolUse": [
-      { "matcher": "mcp__pp_codex__.*|mcp__pp_gemini__.*", "hooks": [{ "type": "command", "command": "node \"__PP_DAEMON__\" hook PostToolUse cost-tally" }] },
-      { "matcher": "mcp__pp_codex__.*|mcp__pp_gemini__.*", "hooks": [{ "type": "command", "command": "node \"__PP_DAEMON__\" hook PostToolUse record-attempt" }] },
+      { "matcher": "mcp__pp_codex__.*|mcp__pp_agy__.*", "hooks": [{ "type": "command", "command": "node \"__PP_DAEMON__\" hook PostToolUse cost-tally" }] },
+      { "matcher": "mcp__pp_codex__.*|mcp__pp_agy__.*", "hooks": [{ "type": "command", "command": "node \"__PP_DAEMON__\" hook PostToolUse record-attempt" }] },
       { "matcher": "mcp__pp_harness__archive_artifact", "hooks": [{ "type": "command", "command": "node \"__PP_DAEMON__\" hook PostToolUse taxonomy-coverage-update" }] },
       { "matcher": "mcp__pp_harness__archive_artifact", "hooks": [{ "type": "command", "command": "node \"__PP_DAEMON__\" hook PostToolUse hash-artifact" }] },
       { "matcher": "mcp__pp_harness__record_verdict", "hooks": [{ "type": "command", "command": "node \"__PP_DAEMON__\" hook PostToolUse loop-ceiling-tally" }] },

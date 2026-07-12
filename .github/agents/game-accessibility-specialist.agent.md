@@ -7,7 +7,7 @@ tools:
   - "read"
   - "search"
   - "pp_codex/*"
-  - "pp_gemini/*"
+  - "pp_agy/*"
   - "pp_harness/*"
 ---
 

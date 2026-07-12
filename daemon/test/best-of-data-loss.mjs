@@ -242,7 +242,7 @@ async function main() {
   });
 
   // ─── Test 4: precondition without PP_ALLOW_BEST_OF_WITHOUT_JUDGE ───────
-  // Skip in environments where both codex AND gemini are unreachable —
+  // Skip in environments where both codex AND agy are unreachable —
   // doctor() determines this dynamically. The user's machine has both
   // configured, so the precondition will PASS (which is what we want for
   // CI normally). To explicitly test the refusal path, re-run with

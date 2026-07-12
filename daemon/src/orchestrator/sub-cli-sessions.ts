@@ -1,7 +1,12 @@
 /**
- * Sub-CLI session continuity. The Codex and Gemini CLIs both emit a
- * session id on first invocation and accept a resume flag on subsequent
- * turns. We track `(project_path, agent) → session_id` so follow-up
+ * Sub-CLI session continuity. The Codex CLI emits a session id on first
+ * invocation and accepts a resume flag on subsequent turns. The Antigravity
+ * CLI (agy) has no such id in its headless plain-text output — instead its
+ * `--continue` flag resumes the most recent conversation for the invoking
+ * workspace directory with no id required. For agy we still write a row
+ * (sentinel session_id, see antigravity-server.ts) purely to track "has a
+ * prior turn happened in this project" so callers know whether to pass
+ * `--continue`. We track `(project_path, agent) → session_id` so follow-up
  * calls in the same project keep the conversation context.
  *
  * If the row is missing (cold start), the wrapper synthesizes a recap
@@ -11,7 +16,7 @@
 import { db, txImmediate } from "../db/database.js";
 import { log } from "../util/logger.js";
 
-export type SubAgent = "codex" | "gemini" | "copilot";
+export type SubAgent = "codex" | "agy" | "copilot";
 
 export type SubSession = {
   project_path: string;

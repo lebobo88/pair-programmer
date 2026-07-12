@@ -5,19 +5,19 @@ stages:
   - kind: vision
     gate_type: spec
     generator: { agent: strategy-author, primary: claude }
-    judge:     { tier: cross_vendor, rubric: rfc-2119-normative@1, model_pref: gemini }
+    judge:     { tier: cross_vendor, rubric: rfc-2119-normative@1, model_pref: agy }
   - kind: business_case
     gate_type: spec
     generator: { agent: strategy-author, primary: claude }
-    judge:     { tier: cross_vendor, model_pref: gemini }
+    judge:     { tier: cross_vendor, model_pref: agy }
   - kind: okrs
     gate_type: spec
     generator: { agent: strategy-author, primary: claude }
-    judge:     { tier: cross_vendor, model_pref: gemini }
+    judge:     { tier: cross_vendor, model_pref: agy }
   - kind: kill_criteria
     gate_type: spec
     generator: { agent: strategy-author, primary: claude }
-    judge:     { tier: cross_vendor, model_pref: gemini }
+    judge:     { tier: cross_vendor, model_pref: agy }
   - kind: risk_register
     gate_type: spec
     generator: { agent: governance-author, primary: claude }

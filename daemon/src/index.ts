@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { runHarnessMcpServer } from "./mcp/harness-server.js";
 import { runCodexMcpServer } from "./mcp/codex-server.js";
-import { runGeminiMcpServer } from "./mcp/gemini-server.js";
+import { runAntigravityMcpServer } from "./mcp/antigravity-server.js";
 import { runHookDispatcher } from "./hooks/dispatcher.js";
 import { runJanitor } from "./orchestrator/janitor.js";
 import { runHttpServer } from "./http/server.js";
@@ -34,7 +34,7 @@ const USAGE = `pp-daemon — Pair Programmer harness daemon
 Usage:
   pp-daemon mcp                 Run the harness MCP server on stdio (registered as "pp_harness").
   pp-daemon mcp-codex           Run the Codex CLI MCP wrapper on stdio (registered as "pp_codex").
-  pp-daemon mcp-gemini          Run the Gemini CLI MCP wrapper on stdio (registered as "pp_gemini").
+  pp-daemon mcp-agy             Run the Antigravity CLI MCP wrapper on stdio (registered as "pp_agy").
   pp-daemon doctor              Print a JSON health check (CLI versions, DB, vendor matrix).
   pp-daemon hook <event> <name> Run a hook handler (Claude Code hooks call this).
   pp-daemon janitor             Mark stale runs crashed; sweep stale candidate worktrees.
@@ -53,8 +53,8 @@ async function main() {
     case "mcp-codex":
       await runCodexMcpServer();
       return;
-    case "mcp-gemini":
-      await runGeminiMcpServer();
+    case "mcp-agy":
+      await runAntigravityMcpServer();
       return;
     case "doctor": {
       const report = await doctor();

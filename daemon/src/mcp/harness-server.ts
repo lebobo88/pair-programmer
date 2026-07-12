@@ -945,7 +945,7 @@ const TOOLS: ToolDef[] = [
   {
     name: "ensure_agents_md",
     description:
-      "Creates <project>/AGENTS.md (and optionally CLAUDE.md) from the harness template if absent. AGENTS.md is the cross-tool behavioral contract loaded by Claude, Codex, Gemini, Cursor, etc.; CLAUDE.md is a one-line `@AGENTS.md` import plus Claude-specific add-ons. Idempotent. Pass `profile`, `conventions`, `build_commands`, `extra_sections` to seed the template with profile-specific content. Pass `also_claude_md: true` to scaffold CLAUDE.md alongside.",
+      "Creates <project>/AGENTS.md (and optionally CLAUDE.md) from the harness template if absent. AGENTS.md is the cross-tool behavioral contract loaded by Claude, Codex, Antigravity (agy), Cursor, etc.; CLAUDE.md is a one-line `@AGENTS.md` import plus Claude-specific add-ons. Idempotent. Pass `profile`, `conventions`, `build_commands`, `extra_sections` to seed the template with profile-specific content. Pass `also_claude_md: true` to scaffold CLAUDE.md alongside.",
     schema: EnsureAgentsMdSchema,
     handler: (args) => {
       const p = EnsureAgentsMdSchema.parse(args);
@@ -1264,7 +1264,7 @@ const TOOLS: ToolDef[] = [
   {
     name: "gate_eligible_judges",
     description:
-      "Given a gate_type, the generator's producer, optional generator_model, optional prompt keywords, optional profile, optional artifact_kind, and optional rubric_hint, returns the judge tier policy: required_cross_vendor (bool), base_tier, whether it was upgraded by content/profile/capability, the reason, the recommended rubric_id, and the list of allowed judges with preferred providers. rubric_hint lets a team/forum stage declare its intended rubric when that intent cannot be inferred from gate_type alone; unknown hints are ignored. If generator_model is omitted, the daemon infers Codex/Gemini defaults from DEFAULT_MODELS where possible. Driver MUST call this before invoking any judge.",
+      "Given a gate_type, the generator's producer, optional generator_model, optional prompt keywords, optional profile, optional artifact_kind, and optional rubric_hint, returns the judge tier policy: required_cross_vendor (bool), base_tier, whether it was upgraded by content/profile/capability, the reason, the recommended rubric_id, and the list of allowed judges with preferred providers. rubric_hint lets a team/forum stage declare its intended rubric when that intent cannot be inferred from gate_type alone; unknown hints are ignored. If generator_model is omitted, the daemon infers Codex/agy defaults from DEFAULT_MODELS where possible. Driver MUST call this before invoking any judge.",
     schema: GateEligibleJudgesSchema,
     handler: (args) => {
       const parsed = GateEligibleJudgesSchema.parse(args);

@@ -1,10 +1,10 @@
 /**
- * GitHub Copilot CLI fallback for Codex and Gemini sub-CLIs.
+ * GitHub Copilot CLI fallback for Codex and Antigravity (agy) sub-CLIs.
  *
- * When the primary CLI (codex or gemini) fails after all retry attempts,
+ * When the primary CLI (codex or agy) fails after all retry attempts,
  * `attemptCopilotFallback` retries the same operation through the `copilot`
  * binary. The fallback is transparent to MCP consumers — callers of
- * `pp_codex.generate` / `pp_gemini.critique` etc. receive the same result
+ * `pp_codex.generate` / `pp_agy.critique` etc. receive the same result
  * types regardless of which CLI produced the output.
  *
  * Copilot is spawned in a temp directory (not the project dir) to avoid

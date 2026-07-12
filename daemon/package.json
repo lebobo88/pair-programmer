@@ -1,7 +1,7 @@
 {
   "name": "pp-daemon",
   "version": "0.1.0",
-  "description": "Pair Programmer harness daemon: orchestration state, MCP servers for Claude Code, Codex CLI, Gemini CLI",
+  "description": "Pair Programmer harness daemon: orchestration state, MCP servers for Claude Code, Codex CLI, Antigravity CLI (agy)",
   "type": "module",
   "bin": {
     "pp-daemon": "dist/index.js"

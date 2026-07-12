@@ -10,7 +10,7 @@ export const DEFAULT_CLI_TIMEOUT_MS = 5 * 60 * 1000;
 
 /**
  * Server-side retries on top of the original sub-CLI invocation. Applied per
- * call in `codexGenerate` / `geminiGenerate` when stderr does NOT match the
+ * call in `codexGenerate` / `agyGenerate` when stderr does NOT match the
  * persistent-failure regex (model not found, auth, ENOENT, etc.). The judge
  * sub-agent layer adds its own retry-once on top of this.
  */
@@ -22,13 +22,19 @@ export const CRITIQUE_RETRY_BACKOFF_MS = 2000;
  * pass `model` explicitly (see judge-cross-vendor / judge-same-vendor / engineer
  * agent prompts), but if the schema default fires it must point at a model the
  * installed CLI version actually serves. Keep in sync with `daemon/prices.json`.
+ *
+ * NOTE: `agy --model <id>` does NOT validate the id — an unrecognized model
+ * string is silently accepted and the CLI falls back to its own default
+ * rather than erroring. Run `agy models` after changing agy_generate /
+ * agy_critique to confirm the id is still recognized; exit code 0 alone does
+ * not prove the intended model actually served the request.
  */
 export const DEFAULT_MODELS = {
   codex_generate:            "gpt-5.4",
   codex_critique:            "gpt-5.4",   // constitutional default (JUDGE-1) — do NOT change
   codex_critique_escalated:  "gpt-5.5",   // opt-in escalation for major-scope/last-resort gates
-  gemini_generate:           "gemini-3.1-pro-preview",
-  gemini_critique:           "gemini-3.1-pro-preview",
+  agy_generate:              "gemini-3.1-pro-preview",
+  agy_critique:              "gemini-3.1-pro-preview",
 } as const;
 
 /**
@@ -133,34 +139,54 @@ export type RunMode = typeof RUN_MODE[number];
 export const VENDORS = ["openai", "google", "anthropic"] as const;
 export type Vendor = typeof VENDORS[number];
 
-export const PRODUCERS = ["codex", "gemini", "claude", "copilot"] as const;
+export const PRODUCERS = ["codex", "agy", "claude", "copilot"] as const;
 export type Producer = typeof PRODUCERS[number];
 
+/**
+ * Historical producer literal from before the Gemini CLI → Antigravity CLI
+ * (agy) migration. Gemini CLI is deprecated for individual/subscription users
+ * (2026-06-18); `agy` is its replacement and now owns the "google" vendor
+ * lane. Rows written before the migration still have producer="gemini" —
+ * `normalizeProducer` maps them onto "agy" for reads so historical runs stay
+ * queryable. Never written by new code.
+ */
+const LEGACY_PRODUCER_ALIASES: Record<string, Producer> = { gemini: "agy" };
+
+/** Normalize a possibly-legacy producer literal (e.g. DB rows predating the agy rename) to the current Producer enum. */
+export function normalizeProducer(producer: string): Producer | null {
+  if ((PRODUCERS as readonly string[]).includes(producer)) return producer as Producer;
+  return LEGACY_PRODUCER_ALIASES[producer] ?? null;
+}
+
 export function vendorFor(producer: string): Vendor | null {
-  if (producer === "codex") return "openai";
-  if (producer === "gemini") return "google";
-  if (producer === "claude") return "anthropic";
-  if (producer === "copilot") return "openai";
+  const normalized = normalizeProducer(producer) ?? producer;
+  if (normalized === "codex") return "openai";
+  if (normalized === "agy") return "google";
+  if (normalized === "claude") return "anthropic";
+  if (normalized === "copilot") return "openai";
   return null;
 }
 
-/** Set PP_COPILOT_FALLBACK=0 to disable the copilot CLI fallback for codex/gemini. */
+/** Set PP_COPILOT_FALLBACK=0 to disable the copilot CLI fallback for codex/agy. */
 export const COPILOT_FALLBACK_ENABLED =
   (process.env.PP_COPILOT_FALLBACK ?? "1") !== "0";
 
 /**
- * Global Gemini kill-switch. Set PP_DISABLE_GEMINI=1 to disable ALL Gemini
- * interactions (as a cross-vendor judge AND as a generation producer) without
- * removing any code, MCP registration, or team `model_pref: gemini` hints —
- * flip the flag back to re-enable once the Gemini CLI is re-authenticated.
+ * Global Antigravity (agy) kill-switch. Set PP_DISABLE_AGY=1 to disable ALL
+ * agy interactions (as a cross-vendor judge AND as a generation producer)
+ * without removing any code, MCP registration, or team `model_pref: agy`
+ * hints. Renamed from PP_DISABLE_GEMINI during the Gemini CLI → Antigravity
+ * CLI migration; defaults to enabled (unset) since agy uses a different auth
+ * model (system keyring / Google Sign-In) than the API-key-only Gemini CLI
+ * whose auth break originally motivated this switch.
  *
  * Implemented as a function (not a top-level const) so it reads process.env on
  * every call: the daemon stays a long-running process, but this keeps the
  * behavior unit-testable by toggling the env between calls. When disabled, the
  * default cross-vendor pair becomes Codex (openai) + Claude (anthropic).
  */
-export function geminiEnabled(): boolean {
-  return (process.env.PP_DISABLE_GEMINI ?? "0") !== "1";
+export function agyEnabled(): boolean {
+  return (process.env.PP_DISABLE_AGY ?? "0") !== "1";
 }
 
 // ─── Ecosystem integration (Hydra / TheEights / Constitution) ───────────

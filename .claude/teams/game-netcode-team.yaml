@@ -9,11 +9,11 @@ stages:
   - kind: determinism_invariants
     gate_type: spec
     generator: { agent: netcode-programmer, primary: claude }
-    judge:     { tier: cross_vendor, rubric: rfc-2119-normative@1, model_pref: gemini }
+    judge:     { tier: cross_vendor, rubric: rfc-2119-normative@1, model_pref: agy }
   - kind: server_auth_audit
     gate_type: security
     generator: { agent: game-security, primary: claude }
-    judge:     { tier: cross_vendor, rubric: owasp-asvs-l2@1, model_pref: gemini }
+    judge:     { tier: cross_vendor, rubric: owasp-asvs-l2@1, model_pref: agy }
   - kind: anti_cheat_integration
     gate_type: security
     generator: { agent: game-security, primary: claude }
@@ -21,7 +21,7 @@ stages:
   - kind: load_test_plan
     gate_type: contract
     generator: { agent: test-strategist, primary: codex }
-    judge:     { tier: cross_vendor, model_pref: gemini }
+    judge:     { tier: cross_vendor, model_pref: agy }
   - kind: docs
     gate_type: docs_polish
     generator: { agent: docs-author, primary: claude }

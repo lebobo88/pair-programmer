@@ -46,7 +46,7 @@ async function main() {
     if (health.judge_capabilities?.codex?.critique_model !== "gpt-5.4") {
       throw new Error(`expected codex critique model gpt-5.4, got: ${pretty(health.judge_capabilities?.codex)}`);
     }
-    console.log(`✓ doctor judge_capabilities: codex=${health.judge_capabilities.codex.same_vendor_mode}, gemini=${health.judge_capabilities.gemini.same_vendor_mode}`);
+    console.log(`✓ doctor judge_capabilities: codex=${health.judge_capabilities.codex.same_vendor_mode}, agy=${health.judge_capabilities.agy.same_vendor_mode}`);
 
     // 2. Start a run inside a temp dir (so we don't litter the project).
     //    Pass the v7 Hydra context fields too, so we can assert at step 9

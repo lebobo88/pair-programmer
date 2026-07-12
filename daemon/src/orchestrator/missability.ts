@@ -219,7 +219,7 @@ export const CHECK_DEFINITIONS: Array<{
   },
   {
     // MC-21 (Phase 12): every run-managed project must have an AGENTS.md (the
-    // cross-tool behavioral contract Claude / Codex / Gemini read at session
+    // cross-tool behavioral contract Claude / Codex / Antigravity (agy) read at session
     // start). CLAUDE.md is its Claude-specific import shim. Both are
     // scaffolded by step 5c of /pp:run via ensure_agents_md, so a missing
     // file at finalize means the lifecycle was bypassed somehow. Triggered

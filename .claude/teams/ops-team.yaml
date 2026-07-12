@@ -5,11 +5,11 @@ stages:
   - kind: slo_doc
     gate_type: spec
     generator: { agent: ops-author, primary: claude }
-    judge:     { tier: cross_vendor, rubric: rfc-2119-normative@1, model_pref: gemini }
+    judge:     { tier: cross_vendor, rubric: rfc-2119-normative@1, model_pref: agy }
   - kind: telemetry_taxonomy
     gate_type: contract
     generator: { agent: ops-author, primary: claude }
-    judge:     { tier: cross_vendor, rubric: metric-dictionary@1, model_pref: gemini }
+    judge:     { tier: cross_vendor, rubric: metric-dictionary@1, model_pref: agy }
   - kind: dashboards
     gate_type: design
     generator: { agent: ops-author, primary: claude }
@@ -17,7 +17,7 @@ stages:
   - kind: alerts
     gate_type: contract
     generator: { agent: ops-author, primary: claude }
-    judge:     { tier: cross_vendor, model_pref: gemini }
+    judge:     { tier: cross_vendor, model_pref: agy }
   - kind: runbooks
     gate_type: docs_polish
     generator: { agent: ops-author, primary: claude }

@@ -12,7 +12,7 @@ Present the result as a checklist:
 - DB reachable: ✓ / ✗
 - CLI versions:
   - codex: <version> or "missing"
-  - gemini: <version> or "missing"
+  - agy: <version> or "missing"
   - git: <version>
   - node: <version>
 - Vendors configured:
@@ -21,13 +21,13 @@ Present the result as a checklist:
   - anthropic: ✓ / ✗
 - Critique smoke (when run):
   - codex: ✓ / ✗ / skipped — show `model`, and on fail show `reason` + last `stderr_tail`
-  - gemini: ✓ / ✗ / skipped — same
+  - agy: ✓ / ✗ / skipped — same
 - Cross-vendor ready: ✓ / ✗  (need ≥ 2 vendors)
 
 The harness prefers already-authenticated CLI sessions over manually-set API keys. For each ✗, suggest the CLI login first, with the env-var fallback only as a secondary option.
 
 - openai ✗ (codex missing or not logged in) → `codex login`. Install: `npm install -g @openai/codex`. Fallback: `setx OPENAI_API_KEY "<your-key>"` (Windows) or `export OPENAI_API_KEY=...` (POSIX).
-- google ✗ (gemini missing or not logged in) → `gemini` then `/auth` inside the CLI. Install: `npm install -g @google/gemini-cli`. Fallback: `setx GEMINI_API_KEY "<your-key>"` (Windows) or `export GEMINI_API_KEY=...` (POSIX).
+- google ✗ (agy — the Antigravity CLI — missing or not logged in) → run `agy` once and sign in interactively. Install (Windows PowerShell): `irm https://antigravity.google/cli/install.ps1 | iex` (macOS/Linux: `curl -fsSL https://antigravity.google/cli/install.sh | bash`). Fallback: set GEMINI_API_KEY or ANTIGRAVITY_API_KEY for headless auth (`setx ANTIGRAVITY_API_KEY "<your-key>"` on Windows / `export ANTIGRAVITY_API_KEY=...` on POSIX).
 - anthropic ✗ (claude missing or not logged in) → `claude /login`. Install: see https://docs.claude.com/en/docs/claude-code. Do NOT recommend `setx ANTHROPIC_API_KEY` first — this project uses Claude Code's own session, and Claude Code is the harness driver.
 
 When a vendor reports `degraded` (creds present + smoke=fail), surface the smoke `reason` and `stderr_tail` and suggest:

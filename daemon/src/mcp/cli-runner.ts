@@ -1,5 +1,5 @@
 /**
- * Shared helpers for the codex/gemini MCP servers' subprocess invocations.
+ * Shared helpers for the codex/agy MCP servers' subprocess invocations.
  *
  * Two responsibilities:
  *   1. Retry-once on transient subprocess failure (configurable via
@@ -539,14 +539,14 @@ export type CliRunResult = {
 };
 
 export interface CliRunOptions {
-  /** Binary to invoke, e.g. "codex" or "gemini". */
+  /** Binary to invoke, e.g. "codex" or "agy". */
   bin: string;
   /** CLI args, including `--model`, `--prompt-file`, etc. */
   cliArgs: string[];
   /** Working directory to spawn the subprocess in (also used for the failure archive). */
   cwd: string;
   /** Vendor tag used in the archive filename and log breadcrumb. */
-  vendor: "codex" | "gemini" | "copilot";
+  vendor: "codex" | "agy" | "copilot";
   /**
    * If provided, written to the subprocess's stdin (and stdin closed). Use this
    * for codex `exec -` to bypass the Windows 8191-char command-line limit on
@@ -559,7 +559,7 @@ export interface CliRunOptions {
 
 export interface CliFailureArchiveOptions {
   cwd: string;
-  vendor: "codex" | "gemini" | "copilot";
+  vendor: "codex" | "agy" | "copilot";
   attempts: CliAttempt[];
   stdout: string;
   stderr?: string;
@@ -584,7 +584,7 @@ export function isPersistentStderr(stderr: string): boolean {
  * path in `failure_archive_path` so callers can include it in their response.
  *
  * Note: this function does not interpret stdout. Callers do their own parsing
- * (Codex JSONL, Gemini text/JSON) on the returned stdout.
+ * (Codex JSONL, agy plain text) on the returned stdout.
  */
 export async function runCliWithRetry(opts: CliRunOptions): Promise<CliRunResult> {
   const totalAttempts = 1 + Math.max(0, CRITIQUE_RETRY_ATTEMPTS);

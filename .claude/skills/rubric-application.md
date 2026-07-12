@@ -31,7 +31,7 @@ If `get_rubric` returns `null`, the rubric id is wrong or the rubric was deleted
 
 ## How to emit a verdict
 
-The judge agent passes the rubric markdown into the cross-vendor or same-vendor `critique` tool as the `rubric_md` parameter. The Codex/Gemini critique helpers force a structured response:
+The judge agent passes the rubric markdown into the cross-vendor or same-vendor `critique` tool as the `rubric_md` parameter. The Codex / Antigravity (agy) critique helpers force a structured response:
 
 ```json
 {
@@ -48,7 +48,7 @@ Then call `mcp__pp_harness__record_verdict`:
 ```jsonc
 {
   "attempt_id":     "attempt_xxx",
-  "judge_producer": "gemini",
+  "judge_producer": "agy",
   "judge_model_id": "gemini-2.5-pro",
   "rubric_id":      "wcag-2.2-aa@1",
   "outcome":        "revise",

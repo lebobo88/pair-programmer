@@ -14,7 +14,7 @@ type CritiqueBridgeResult = {
 
 export async function stabilizeCritiqueResult<T extends CritiqueBridgeResult>(
   runOnce: () => Promise<T>,
-  opts: { cwd: string; vendor: "codex" | "gemini" | "copilot" }
+  opts: { cwd: string; vendor: "codex" | "agy" | "copilot" }
 ): Promise<T & { parsed?: CritiqueVerdict; reason?: string }> {
   const attempts: CliAttempt[] = [];
   let wall_ms = 0;
