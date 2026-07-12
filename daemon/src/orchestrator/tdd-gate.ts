@@ -49,7 +49,7 @@ import {
 // ─── Manifest schema ─────────────────────────────────────────────────────
 
 export const TDD_MODES = ["bug-fix", "refactor", "feature-tdd"] as const;
-export const TDD_RUNNERS = ["vitest", "jest", "mocha", "pytest", "go-test", "cargo-test", "unittest", "playwright", "other"] as const;
+export const TDD_RUNNERS = ["vitest", "jest", "mocha", "pytest", "go-test", "cargo-test", "unittest", "playwright", "node", "other"] as const;
 export const TDD_OUTCOMES = ["all_pass", "all_fail"] as const;
 
 export const TddManifestSchema = z.object({
@@ -217,6 +217,7 @@ export function parseTestOutcome(runner: string, exitCode: number, stdout: strin
     case "go-test":  return parseGoTest(exitCode, combined);
     case "cargo-test": return parseCargoTest(exitCode, combined);
     case "unittest": return parseUnittest(exitCode, combined);
+    case "node":     return parseNode(exitCode, combined);
     default:         return parseGeneric(exitCode, combined);
   }
 }
@@ -313,6 +314,42 @@ function parseUnittest(exitCode: number, out: string): ParsedOutcome {
   return classify(exitCode, passed, failed, out, /FAILED\s+\(/i);
 }
 
+/**
+ * BUG-3 fix: dedicated parser for Node's built-in `node --test` runner.
+ *
+ * `node --test` emits TAP output. The summary lines at the end are:
+ *   # tests N
+ *   # pass N
+ *   # fail N
+ *
+ * Individual test results are TAP lines:
+ *   ok N - description
+ *   not ok N - description
+ *
+ * We prefer the summary lines (more reliable) and fall back to counting
+ * ok/not-ok markers when the summary is absent. The failPattern for
+ * classify() is /^not ok\b/im to match individual TAP failure lines.
+ */
+function parseNode(exitCode: number, out: string): ParsedOutcome {
+  // Try TAP summary lines first: "# tests N", "# pass N", "# fail N"
+  const passM = out.match(/^# pass (\d+)$/m);
+  const failM = out.match(/^# fail (\d+)$/m);
+
+  let passed: number | null = passM ? maybeInt(passM[1]) : null;
+  let failed: number | null = failM ? maybeInt(failM[1]) : null;
+
+  // Fall back to counting individual ok / not ok TAP markers when
+  // the summary block is absent (e.g. very early crash mid-run).
+  if (passed === null && failed === null) {
+    const okMatches = out.match(/^ok \d+/mg);
+    const notOkMatches = out.match(/^not ok \d+/mg);
+    passed = okMatches ? okMatches.length : null;
+    failed = notOkMatches ? notOkMatches.length : null;
+  }
+
+  return classify(exitCode, passed, failed, out, /^not ok\b/im);
+}
+
 function parseGeneric(exitCode: number, out: string): ParsedOutcome {
   // No structured parse; rely on exit code only.
   if (exitCode === 0) return { actual: "all_pass", passed: null, failed: 0, reason: "generic runner: exit 0 → assumed all_pass (no parse)" };
@@ -328,7 +365,14 @@ function classify(exitCode: number, passed: number | null, failed: number | null
   const p = passed ?? 0;
   const f = failed ?? 0;
   if (p === 0 && f === 0) return { actual: "error", passed: 0, failed: 0, reason: "runner reported zero tests executed" };
-  if (f === 0 && p > 0)  return { actual: "all_pass", passed: p, failed: 0, reason: null };
+  if (f === 0 && p > 0) {
+    // BUG-3 fix (B3-4): cross-check exit code. Parsed counts show all-pass, but
+    // a nonzero exit means the process crashed or errored AFTER tests completed
+    // (e.g. a post-test hook failed). That is NOT a clean pass — report as mixed
+    // with a distinguishable reason so the persisted tdd_checks.reason is diagnosable.
+    if (exitCode === 0) return { actual: "all_pass", passed: p, failed: 0, reason: null };
+    return { actual: "mixed", passed: p, failed: 0, reason: `nonzero exit (${exitCode}) despite reported zero failures — process likely crashed after tests completed` };
+  }
   if (p === 0 && f > 0)  return { actual: "all_fail", passed: 0, failed: f, reason: null };
   return { actual: "mixed", passed: p, failed: f, reason: `mixed outcome: ${p} passed, ${f} failed` };
 }

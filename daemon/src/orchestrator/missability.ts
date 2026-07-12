@@ -265,14 +265,43 @@ export const CHECK_DEFINITIONS: Array<{
       if (reports.length === 0) {
         return { status: "fail", evidence: "no browser_validation_report artifact in run" };
       }
-      const blocking = reports.find(r => /^severity:\s*errors\b/im.test(r.text));
+
+      // BUG-2 fix: group by stage_id and evaluate only the LATEST per stage.
+      // Per B2-3: reports with null stage_id are each their own scope (none
+      // supersedes another without a shared stage attribution).
+      //
+      // Algorithm:
+      // - For reports with a non-null stage_id: keep only the one with the
+      //   highest created_at per stage_id (ISO string lexicographic order ==
+      //   chronological order). Ties broken by path (deterministic).
+      // - For reports with null stage_id: include each individually.
+      const byStage = new Map<string, typeof reports[0]>();
+      const nullScopeReports: typeof reports = [];
+      for (const r of reports) {
+        if (r.stage_id === null) {
+          nullScopeReports.push(r);
+          continue;
+        }
+        const existing = byStage.get(r.stage_id);
+        if (
+          !existing ||
+          r.created_at > existing.created_at ||
+          (r.created_at === existing.created_at && r.path > existing.path)
+        ) {
+          byStage.set(r.stage_id, r);
+        }
+      }
+      const latestPerStage = [...nullScopeReports, ...byStage.values()];
+
+      // Severity semantics (B2-4): errors is blocking; any in-scope error fails.
+      const blocking = latestPerStage.find(r => /^severity:\s*errors\b/im.test(r.text));
       if (blocking) {
         return { status: "fail", evidence: `${blocking.path}: severity=errors` };
       }
-      const ok = reports.find(r => /^severity:\s*(clean|warnings)\b/im.test(r.text));
+      const ok = latestPerStage.find(r => /^severity:\s*(clean|warnings)\b/im.test(r.text));
       return ok
         ? { status: "pass", evidence: ok.path }
-        : { status: "fail", evidence: `${reports[0]!.path}: severity not parseable` };
+        : { status: "fail", evidence: `${latestPerStage[0]!.path}: severity not parseable` };
     },
   },
 
@@ -609,6 +638,10 @@ type ArtifactBundle = {
   // (after the project_path → .harness/<run_id> → evidence_ref cascade).
   // null when no candidate yielded content.
   resolved_from?: string | null;
+  // BUG-2 fix (additive): per-stage recency scoping for browser-validation-evidence.
+  // stage_id is null when the artifact was archived without a stage association.
+  stage_id: string | null;
+  created_at: string;
 };
 
 function textPatternCheck(texts: ArtifactBundle[], re: RegExp): { status: "pass" | "fail"; evidence?: string } {
@@ -685,9 +718,11 @@ export function runMissabilityChecks(opts: {
     | undefined;
   if (!run) throw new Error(`run ${opts.run_id} not found`);
 
+  // BUG-2 fix: also select stage_id and created_at so recency-scoped checks can
+  // group artifacts by stage and evaluate only the latest per stage.
   const artifactRows = db()
-    .prepare(`SELECT path, kind, evidence_ref FROM artifacts WHERE run_id = ?`)
-    .all(opts.run_id) as Array<{ path: string; kind: string | null; evidence_ref: string | null }>;
+    .prepare(`SELECT path, kind, evidence_ref, stage_id, created_at FROM artifacts WHERE run_id = ?`)
+    .all(opts.run_id) as Array<{ path: string; kind: string | null; evidence_ref: string | null; stage_id: string | null; created_at: string }>;
 
   // R3-tail Fix 1.2 (2026-05-21): resolve artifact text through a 3-step
   // cascade so checks don't silently fail when the artifact was archived
@@ -722,7 +757,7 @@ export function runMissabilityChecks(opts: {
         }
       } catch { /* ignore */ }
     }
-    return { path: r.path, kind: r.kind, text, resolved_from: resolvedFrom };
+    return { path: r.path, kind: r.kind, text, resolved_from: resolvedFrom, stage_id: r.stage_id, created_at: r.created_at };
   });
 
   const artifactKinds = new Set(artifactRows.map(r => r.kind ?? "").filter(Boolean));

@@ -1630,6 +1630,33 @@ function isInside(child: string, parent: string): boolean {
   return c === p || c.startsWith(p + "/");
 }
 
+/**
+ * BUG-1 fix: strip a SINGLE leading redundant ".harness/<runId>/" prefix from
+ * a caller-supplied relative_path. Callers sometimes pass a relative_path that
+ * already carries the ".harness/<run_id>/" segment that projectArtifactDir()
+ * would prepend, causing a doubled path on disk.
+ *
+ * Rules (B1-1 through B1-4):
+ * - Strips AT MOST ONE leading ".harness/<runId>/" prefix (single-strip).
+ * - The match is EXACT and run-id-scoped: ".harness/<other_run_id>/" and
+ *   ".harness-notes/<runId>/" are NOT stripped.
+ * - Tolerant of "/" and "\" path separators in the redundant prefix.
+ * - A non-redundant relative_path (e.g. "code/winner.diff") is returned unchanged.
+ */
+export function normalizeArtifactRelPath(runId: string, relPath: string): string {
+  // Escape special regex chars in runId (nanoid ids may contain only
+  // alphanumerics + "_" + "-", but we escape defensively).
+  const escaped = runId.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  // Match ".harness" + exactly one separator (/ or \) + runId + exactly one separator,
+  // anchored at the start of the string.
+  const prefix = new RegExp(`^\\.harness[/\\\\]${escaped}[/\\\\]`);
+  const m = prefix.exec(relPath);
+  if (m) {
+    return relPath.slice(m[0].length);
+  }
+  return relPath;
+}
+
 export function archiveArtifact(input: ArchiveArtifactInput): ArchiveArtifactOutput {
   // Encoding handling. Default is utf8 — write `input.bytes` verbatim. When
   // encoding='base64' is set, decode first. When encoding is omitted, run a
@@ -1669,8 +1696,13 @@ export function archiveArtifact(input: ArchiveArtifactInput): ArchiveArtifactOut
     .get(input.run_id) as { project_path: string } | undefined;
   if (!run) throw new Error(`run ${input.run_id} not found`);
 
+  // BUG-1 fix: strip any redundant ".harness/<run_id>/" prefix BEFORE joining,
+  // so a caller who prefixed relative_path with the artifact-dir segment does
+  // not produce a doubled path on disk. The containment guard runs AFTER on the
+  // normalized absolute path (so a normalized path inside a worktree still throws).
+  const normalizedRelPath = normalizeArtifactRelPath(input.run_id, input.relative_path);
   const dir = projectArtifactDir(run.project_path, input.run_id);
-  const absolute = join(dir, input.relative_path);
+  const absolute = join(dir, normalizedRelPath);
   const relPath = relative(run.project_path, absolute).replaceAll("\\", "/");
 
   // Path guard: refuse archives that resolve INSIDE an active candidate
