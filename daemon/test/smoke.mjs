@@ -283,6 +283,68 @@ async function main() {
     const tree3 = await callTool(client, "get_run", { run_id: run3.run_id });
     if (!tree3.run.taxonomy_mapping_json) throw new Error(`record_taxonomy_mapping did not persist`);
     console.log(`✓ record_taxonomy_mapping persisted on run row`);
+
+    // Archive all required artifact kinds declared by the taxonomy mapping so
+    // PP-VG-2 (artifact availability gate) doesn't block finalize_run(complete).
+    // The mapping for "add an OAuth login endpoint with new tests" requires:
+    //   4.7 → openapi, 4.8 → diff, 4.9 → threat_model, 4.10 → test_plan, 4.13 → changelog
+    // PP-VG-2 resolves kinds via JOIN on stages, so a stage_id is required.
+    const stage3 = await callTool(client, "start_stage", {
+      run_id: run3.run_id,
+      kind: "code",
+      gate_type: "code_style",
+    });
+    await callTool(client, "archive_artifact", {
+      run_id: run3.run_id, stage_id: stage3.stage_id,
+      taxonomy_section: "4.7", kind: "openapi",
+      relative_path: "plans/openapi-spec.yaml",
+      bytes: "# OpenAPI\nopenapi: '3.0'\ninfo:\n  title: OAuth Login API\n",
+    });
+    await callTool(client, "archive_artifact", {
+      run_id: run3.run_id, stage_id: stage3.stage_id,
+      taxonomy_section: "4.8", kind: "diff",
+      relative_path: "code/phase3-attempt.diff",
+      bytes: "diff --git a/src/auth.ts b/src/auth.ts\n--- a/src/auth.ts\n+++ b/src/auth.ts\n@@ -0,0 +1 @@\n+// OAuth endpoint\n",
+    });
+    await callTool(client, "archive_artifact", {
+      run_id: run3.run_id, stage_id: stage3.stage_id,
+      taxonomy_section: "4.9", kind: "threat_model",
+      relative_path: "plans/threat-model.md",
+      bytes: "# Threat Model\n\nOAuth endpoint security analysis.\n",
+    });
+    await callTool(client, "archive_artifact", {
+      run_id: run3.run_id, stage_id: stage3.stage_id,
+      taxonomy_section: "4.10", kind: "test_plan",
+      relative_path: "plans/test-plan.md",
+      bytes: "# Test Plan\n\nTest plan for OAuth login endpoint.\n",
+    });
+    await callTool(client, "archive_artifact", {
+      run_id: run3.run_id, stage_id: stage3.stage_id,
+      taxonomy_section: "4.13", kind: "changelog",
+      relative_path: "plans/changelog.md",
+      bytes: "# Changelog\n\n- Added OAuth login endpoint with tests.\n",
+    });
+    console.log(`✓ archive_artifact (run3 PP-VG-2 required kinds): openapi, diff, threat_model, test_plan, changelog`);
+
+    // Pre-populate master-plan sections at projectPath so PP-VG-1
+    // (completion-checklist gate) doesn't block finalize_run(complete).
+    // Section "13. Engineering standards..." (4.8) was already populated by
+    // run1's autoPatchMasterPlan; the remaining four responsible sections need
+    // explicit patches before we call finalize — autoPatch only runs on the
+    // SUCCESS path, after the gate, so we must pre-populate here.
+    for (const [mpSection, mpContent] of [
+      ["12. Interfaces and contracts",          "OpenAPI contract for OAuth login endpoint (phase3 mapping test).\n"],
+      ["14. Security, privacy, and compliance", "Threat model for OAuth login endpoint (phase3 mapping test).\n"],
+      ["15. Test and verification strategy",    "Test plan for OAuth login endpoint (phase3 mapping test).\n"],
+      ["Appendices",                            "Changelog for OAuth login endpoint (phase3 mapping test).\n"],
+    ]) {
+      await callTool(client, "apply_master_plan_patch", {
+        run_id: run3.run_id, project_path: projectPath,
+        section: mpSection, kind: "append", content_md: mpContent,
+      });
+    }
+    console.log(`✓ apply_master_plan_patch (run3 PP-VG-1 sections): 12, 14, 15, Appendices`);
+
     await callTool(client, "finalize_run", { run_id: run3.run_id, status: "complete" });
 
     // 13d. Phase 3: master plan ensure + patch + status.
