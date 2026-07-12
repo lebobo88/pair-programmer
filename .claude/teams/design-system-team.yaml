@@ -5,15 +5,25 @@ stages:
   - kind: design_tokens
     gate_type: design
     generator: { agent: design-system-curator, primary: claude }
-    judge:     { tier: cross_vendor, rubric: wcag-2.2-aa@1, model_pref: agy }
+    judge:     { tier: cross_vendor, rubric: design-token-discipline@1, model_pref: agy }
   - kind: component_specs
     gate_type: contract
     generator: { agent: design-system-curator, primary: claude }
-    judge:     { tier: cross_vendor, rubric: wcag-2.2-aa@1, model_pref: agy }
+    judge:     { tier: cross_vendor, rubric: design-token-discipline@1, model_pref: agy }
   - kind: component_preview
     gate_type: design
     generator: { agent: visual-regression-runner, primary: claude }
     judge:     { tier: same_vendor, rubric: wcag-2.2-aa@1 }
+  - kind: design_polish_review
+    gate_type: design
+    generator: { agent: design-system-curator, primary: claude }
+    judge:     { tier: same_vendor, rubric: design-polish@1 }
+    notes: |
+      Self-review pass per the design-polish-review skill, run on the
+      composed token set / component specs (AI-slop, hierarchy/rhythm,
+      token-scale discipline). Complements design-token-discipline@1
+      (naming/shape) and wcag-2.2-aa@1 (accessibility/contrast) — this
+      stage covers genericness/polish specifically.
   - kind: token_contract_tests
     gate_type: contract
     generator: { agent: test-strategist, primary: codex }
@@ -24,4 +34,4 @@ stages:
     generator: { agent: browser-validator, primary: claude }
     judge:     { tier: same_vendor, rubric: web-runtime-validation@2 }
 taxonomy_required: ["4.4", "4.7", "4.10"]
-missability_required: ["ui-error-empty-loading", "accessibility-localization", "browser-validation-evidence"]
+missability_required: ["ui-error-empty-loading", "accessibility-localization", "browser-validation-evidence", "design-polish-evidence"]
