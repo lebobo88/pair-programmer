@@ -27,6 +27,27 @@ import { getSession, setSession, synthesizeRecap } from "../orchestrator/sub-cli
 const SANDBOX_POLICY = ["read-only", "workspace-write", "danger-full-access"] as const;
 type SandboxPolicy = typeof SANDBOX_POLICY[number];
 
+/**
+ * Server-side sandbox policy guard (audit §9.6). Mirrors the client-side
+ * enforce-sandbox-policy hook (hooks/dispatcher.ts) which only fires for
+ * attended, non-headless MCP calls. This guard runs inside the generate
+ * handler so that headless callers cannot bypass the check.
+ *
+ * Exported so it can be unit-tested without spawning the Codex CLI.
+ */
+export function assertSandboxAllowed(sandbox: SandboxPolicy): void {
+  if (sandbox === "danger-full-access" && process.env.PP_ALLOW_DANGER !== "1") {
+    const err = new Error(
+      `[pp] sandbox=danger-full-access blocked by server-side gate (audit §9.6). ` +
+      `Policy 'danger-full-access' grants unrestricted filesystem access and is not ` +
+      `permitted in headless MCP sessions. Use 'workspace-write' for editing stages ` +
+      `or set PP_ALLOW_DANGER=1 to explicitly opt in.`,
+    );
+    err.name = "SandboxPolicyViolation";
+    throw err;
+  }
+}
+
 // ─── Schemas ─────────────────────────────────────────────────────────────
 
 const GenerateSchema = z.object({
@@ -204,6 +225,7 @@ async function codexGenerate(
   opts: CodexGenerateInternalOptions = {}
 ): Promise<CodexResult> {
   ensureDirs();
+  assertSandboxAllowed(args.sandbox);
   const sandboxId = nanoid(8);
   const tmpDir = join(SANDBOX_DIR, `codex-${sandboxId}`);
   mkdirSync(tmpDir, { recursive: true });

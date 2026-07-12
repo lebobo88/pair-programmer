@@ -821,6 +821,7 @@ export type StageFinalizeNextAction =
   | "retry_or_surface"
   | "surface_stage"
   | "dispatch_cross_vendor_rejudge"
+  | "record_verdict"
   | "record_smoke_or_assertion";
 
 export type StageFinalizeTddBlocker = {
@@ -908,6 +909,21 @@ export type StageFinalizeHallucinationBlocker = {
   verdict_id: string;
 };
 
+/**
+ * LV-4: Stage has ≥1 attempt but zero non-retracted verdicts. A stage must not
+ * be marked 'passed' without any judge verdict — live-proven: an attended stage
+ * finalized 'passed'+complete with no verdict row. Record a verdict before
+ * retrying finalize, or finalize with status='surfaced' to accept the unreviewed
+ * attempt.
+ */
+export type StageFinalizeZeroVerdictBlocker = {
+  gate: "zero_verdict";
+  next_action: "record_verdict";
+  message: string;
+  /** The winner (or latest) attempt that awaits a verdict. */
+  attempt_id: string;
+};
+
 export type StageFinalizeBlocker =
   | StageFinalizeTddBlocker
   | StageFinalizeArtifactBlocker
@@ -915,7 +931,8 @@ export type StageFinalizeBlocker =
   | StageFinalizeRejudgeBlocker
   | StageFinalizeBrowserValidationBlocker
   | StageFinalizeSmokeMissingBlocker
-  | StageFinalizeHallucinationBlocker;
+  | StageFinalizeHallucinationBlocker
+  | StageFinalizeZeroVerdictBlocker;
 
 export type StageFinalizeReadiness = {
   stage_id: string;
@@ -1090,6 +1107,22 @@ export function getStageFinalizeReadiness(stage_id: string, winner_attempt_id?: 
       attempt_id: latestVerdict.attempt_id,
       outcome: latestVerdict.outcome,
     }));
+  }
+
+  // LV-4 zero-verdict gate. If no non-retracted verdict exists but the stage
+  // has ≥1 attempt, block finalize(passed). Live-proven: an attended stage
+  // finalized 'passed'+complete with no verdict row. Stages with zero attempts
+  // (validation-only flows) are not affected — the existing attempt count
+  // check preserves their current behavior. No new escape hatches: the surfaced
+  // path (status='surfaced') is the supported opt-out.
+  if (!latestVerdict) {
+    const latestAttemptRow = db()
+      .prepare(`SELECT id FROM attempts WHERE stage_id = ? ORDER BY created_at DESC LIMIT 1`)
+      .get(stage_id) as { id: string } | undefined;
+    if (latestAttemptRow) {
+      const refAttemptId = winner_attempt_id ?? latestAttemptRow.id;
+      blockers.push(buildZeroVerdictFinalizeBlocker({ stage_id, attempt_id: refAttemptId }));
+    }
   }
 
   // R3-tail post-mortem Fix 0.2: mandatory cross-vendor re-judge gate.
@@ -1481,6 +1514,10 @@ export async function finalizeStage(input: FinalizeStageInput): Promise<void> {
       if (blocker.gate === "hallucination") {
         throw new Error(blocker.message);
       }
+      // LV-4: zero non-retracted verdicts on a stage that has ≥1 attempt.
+      if (blocker.gate === "zero_verdict") {
+        throw new Error(blocker.message);
+      }
       throw new ValidatorGateViolation(
         blocker.message,
         input.stage_id,
@@ -1561,6 +1598,22 @@ function buildVerdictFinalizeBlocker(opts: {
       `(verdict_id=${opts.verdict_id}, attempt_id=${opts.attempt_id}). ` +
       `Call mcp__pp_harness__retry_with_critique to run the Reflexion ×1 retry, ` +
       `or finalize the stage with status='surfaced' to ship the failure intact.`,
+  };
+}
+
+function buildZeroVerdictFinalizeBlocker(opts: {
+  stage_id: string;
+  attempt_id: string;
+}): StageFinalizeZeroVerdictBlocker {
+  return {
+    gate: "zero_verdict",
+    next_action: "record_verdict",
+    attempt_id: opts.attempt_id,
+    message:
+      `finalize_stage refused: stage ${opts.stage_id} has at least one attempt ` +
+      `(winner/latest attempt_id=${opts.attempt_id}) but no non-retracted verdict. ` +
+      `LV-4 gate: record a verdict via mcp__pp_harness__record_verdict before retrying ` +
+      `finalize_passed, or finalize with status='surfaced' to accept the unreviewed attempt.`,
   };
 }
 
