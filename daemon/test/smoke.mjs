@@ -81,6 +81,7 @@ async function main() {
       cost_usd: 0.012,
       wall_ms: 4321,
       status: "ok",
+      notes: { candidate_index: 1 },
     });
     console.log(`✓ record_attempt -> ${att.attempt_id}`);
 
@@ -108,9 +109,19 @@ async function main() {
     });
     console.log(`✓ record_verdict -> ${verdict.verdict_id} (cross_vendor=${verdict.cross_vendor})`);
 
+    // 6a. Record smoke status — required by PP-VG-5 gate before finalize_passed.
+    await callTool(client, "record_smoke_status", {
+      stage_id:        stage.stage_id,
+      candidate_index: 1,
+      status:          "pass",
+      reason:          "synthetic-smoke exit=0 (test lifecycle)",
+    });
+    console.log(`✓ record_smoke_status -> stage_id=${stage.stage_id}, candidate_index=1, status=pass`);
+
     // 7. Readiness preflight should already allow a passed finalize.
     const readiness = await callTool(client, "get_stage_finalize_readiness", {
-      stage_id: stage.stage_id,
+      stage_id:          stage.stage_id,
+      winner_attempt_id: att.attempt_id,
     });
     if (!readiness.can_pass || readiness.next_action !== "finalize_passed") {
       throw new Error(`expected finalize_passed readiness, got ${pretty(readiness)}`);
