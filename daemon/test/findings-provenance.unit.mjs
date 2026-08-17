@@ -182,6 +182,119 @@ await record("verdict without findings_provenance is not flagged", async () => {
   }
 });
 
+await record("provenance citing a missing-but-plausible path (real parent dir, sane extension) is unlanded_diff and does NOT flag hallucination", async () => {
+  const project = setupProject();
+  try {
+    const runs = await importDist("orchestrator/runs.js");
+    const { db } = await importDist("db/database.js");
+    const run = await runs.ensureRun({ request_text: "unlanded plausible", project_path: project, mode: "single" });
+    const stage = await runs.startStage({ run_id: run.run_id, kind: "code", gate_type: "code" });
+    const att = runs.recordAttempt({ stage_id: stage.stage_id, producer: "claude", model_id: "claude-sonnet-4-6", status: "ok" });
+
+    // The parent directory genuinely exists in the project; only the
+    // cited file itself is missing — a plausible unlanded-diff shape.
+    mkdirSync(join(project, "apps", "web", "src"), { recursive: true });
+
+    const verdict = runs.recordVerdict({
+      attempt_id: att.attempt_id,
+      judge_producer: "codex",
+      judge_model_id: "gpt-5.4",
+      outcome: "revise",
+      critique_md: "needs a null check",
+      score_json: {
+        findings_provenance: [
+          {
+            id: "UNLANDED-1",
+            file: "apps/web/src/new-feature.ts",
+            line: 12,
+            quoted_text: "export function newFeature() {",
+            claim: "new function missing a null check",
+          },
+        ],
+      },
+    });
+    const row = db().prepare(`SELECT hallucination_suspected, hallucination_details FROM verdicts WHERE id = ?`).get(verdict.verdict_id);
+    assert.equal(row?.hallucination_suspected, 0, "plausible unlanded path should NOT flag hallucination");
+    const details = JSON.parse(row.hallucination_details);
+    assert.equal(details.misses[0].severity, "unlanded_diff");
+  } finally {
+    rmSync(project, { recursive: true, force: true });
+  }
+});
+
+await record("provenance citing a fabricated path (parent dir doesn't exist anywhere in the project) IS flagged as fabrication", async () => {
+  const project = setupProject();
+  try {
+    const runs = await importDist("orchestrator/runs.js");
+    const { db } = await importDist("db/database.js");
+    const run = await runs.ensureRun({ request_text: "fabricated missing dir", project_path: project, mode: "single" });
+    const stage = await runs.startStage({ run_id: run.run_id, kind: "code", gate_type: "code" });
+    const att = runs.recordAttempt({ stage_id: stage.stage_id, producer: "claude", model_id: "claude-sonnet-4-6", status: "ok" });
+
+    const verdict = runs.recordVerdict({
+      attempt_id: att.attempt_id,
+      judge_producer: "codex",
+      judge_model_id: "gpt-5.4",
+      outcome: "fail",
+      critique_md: "cites a file that was never part of this project",
+      score_json: {
+        findings_provenance: [
+          {
+            id: "FAB-1",
+            file: "totally/bogus/nonexistent/module.ts",
+            line: 1,
+            quoted_text: "this text does not exist anywhere",
+            claim: "fabricated finding",
+          },
+        ],
+      },
+    });
+    const row = db().prepare(`SELECT hallucination_suspected, hallucination_details FROM verdicts WHERE id = ?`).get(verdict.verdict_id);
+    assert.equal(row?.hallucination_suspected, 1, "a missing file under a nonexistent directory must NOT get unlanded-diff benefit of the doubt");
+    const details = JSON.parse(row.hallucination_details);
+    assert.equal(details.misses[0].severity, "fabrication");
+  } finally {
+    rmSync(project, { recursive: true, force: true });
+  }
+});
+
+await record("provenance citing a missing file with no plausible extension (real parent dir) IS flagged as fabrication", async () => {
+  const project = setupProject();
+  try {
+    const runs = await importDist("orchestrator/runs.js");
+    const { db } = await importDist("db/database.js");
+    const run = await runs.ensureRun({ request_text: "fabricated no extension", project_path: project, mode: "single" });
+    const stage = await runs.startStage({ run_id: run.run_id, kind: "code", gate_type: "code" });
+    const att = runs.recordAttempt({ stage_id: stage.stage_id, producer: "claude", model_id: "claude-sonnet-4-6", status: "ok" });
+
+    // Parent directory is real, but the cited "file" has no extension at
+    // all — not a sane shape for a real source file citation.
+    mkdirSync(join(project, "apps", "web"), { recursive: true });
+
+    const verdict = runs.recordVerdict({
+      attempt_id: att.attempt_id,
+      judge_producer: "codex",
+      judge_model_id: "gpt-5.4",
+      outcome: "fail",
+      critique_md: "cites a made-up extensionless path",
+      score_json: {
+        findings_provenance: [
+          {
+            id: "FAB-2",
+            file: "apps/web/NOT_A_REAL_FILE",
+            quoted_text: "this text does not exist anywhere either",
+            claim: "fabricated finding",
+          },
+        ],
+      },
+    });
+    const row = db().prepare(`SELECT hallucination_suspected FROM verdicts WHERE id = ?`).get(verdict.verdict_id);
+    assert.equal(row?.hallucination_suspected, 1, "extensionless cited path in a real dir should still be fabrication-severity");
+  } finally {
+    rmSync(project, { recursive: true, force: true });
+  }
+});
+
 console.log();
 console.log(`${passed} passed, ${failed} failed`);
 process.exit(failed === 0 ? 0 : 1);
