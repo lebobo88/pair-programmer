@@ -10,7 +10,18 @@ export function db(): Database.Database {
   const conn = new Database(DB_PATH);
   conn.pragma("journal_mode = WAL");
   conn.pragma("foreign_keys = ON");
-  conn.pragma("busy_timeout = 5000");
+  // Every tool call spawns a fresh stdio daemon process (pp_harness isn't
+  // pooled), so a `record_verdict` write can land while a sibling process is
+  // mid cold-start (new Database, SCHEMA_SQL, applyMigrations) holding an
+  // IMMEDIATE write lock. 5000ms was tuned for a single long-lived daemon
+  // contending with itself, not for concurrent cold starts; under load it
+  // was observed to expire before the lock cleared, silently dropping a
+  // PASS verdict. 15000ms gives a concurrent cold-start writer enough room
+  // to finish its schema/migration work and release the lock without
+  // masking a genuine deadlock (a real deadlock never clears regardless of
+  // the timeout value — SQLITE_BUSY retry with backoff, added separately,
+  // is what recovers from ordinary lock contention within this window).
+  conn.pragma("busy_timeout = 15000");
   conn.exec(SCHEMA_SQL);
   applyMigrations(conn);
   conn
@@ -153,6 +164,21 @@ function applyMigrations(conn: Database.Database): void {
   if (!verdictCols.some(c => c.name === "hallucination_details")) {
     conn.exec("ALTER TABLE verdicts ADD COLUMN hallucination_details TEXT");
   }
+  // v9: client-supplied idempotency token on record_verdict. Every tool call
+  // spawns a fresh stdio daemon process, so a transport error can arrive
+  // after the write already committed; a caller that retries on that error
+  // must not create a second verdict row (and must not fire a second
+  // writeVerdictMemory into TheEights — the pp-watcher duplicate-memory
+  // flood class). The partial unique index allows unlimited legacy rows
+  // with idempotency_token IS NULL (pre-v9 rows, and any caller that opts
+  // out) while still rejecting a genuine duplicate token.
+  if (!verdictCols.some(c => c.name === "idempotency_token")) {
+    conn.exec("ALTER TABLE verdicts ADD COLUMN idempotency_token TEXT");
+  }
+  conn.exec(
+    "CREATE UNIQUE INDEX IF NOT EXISTS idx_verdicts_idempotency_token " +
+    "ON verdicts(idempotency_token) WHERE idempotency_token IS NOT NULL"
+  );
 
   // CREATE TABLE IF NOT EXISTS already covered by SCHEMA_SQL exec at boot,
   // but be defensive for DBs created at v6 before SCHEMA_SQL included it.
@@ -192,5 +218,92 @@ export function txImmediate<T>(fn: () => T): T {
   } catch (err) {
     try { conn.exec("ROLLBACK"); } catch { /* ignore */ }
     throw err;
+  }
+}
+
+const RETRYABLE_SQLITE_CODES = new Set(["SQLITE_BUSY", "SQLITE_BUSY_SNAPSHOT", "SQLITE_LOCKED"]);
+
+/**
+ * Heuristic match for SQLite lock-contention errors: a known busy/locked
+ * `.code` from better-sqlite3, or (as a fallback for wrapped/rethrown
+ * errors that lose the `.code`) a message matching "database is locked" /
+ * "database table is locked". It does not attempt to distinguish these
+ * from any other error shape that happens to carry the same code or
+ * message text, and does not match `SQLITE_CONSTRAINT_UNIQUE` or other
+ * validation/constraint failures, which are expected to fail on the first
+ * attempt rather than be retried.
+ */
+function isLockContentionError(err: unknown): boolean {
+  if (!err || typeof err !== "object") return false;
+  const code = (err as { code?: unknown }).code;
+  if (typeof code === "string" && RETRYABLE_SQLITE_CODES.has(code)) return true;
+  const message = (err as { message?: unknown }).message;
+  return typeof message === "string" && /database is locked|database table is locked/i.test(message);
+}
+
+/** Synchronous sleep (better-sqlite3 is sync end-to-end; there is no `await` point to yield at here). */
+function sleepSync(ms: number): void {
+  if (ms <= 0) return;
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+/**
+ * Run `fn` inside an IMMEDIATE transaction, retrying with exponential
+ * backoff ONLY on genuine SQLite lock-contention errors (SQLITE_BUSY /
+ * SQLITE_LOCKED / "database is locked").
+ *
+ * better-sqlite3's `busy_timeout` pragma already makes SQLite retry
+ * internally, at the C level, for up to that many ms before it raises
+ * SQLITE_BUSY — this is a second, application-level layer for the case
+ * where contention outlives that window (e.g. several fresh daemon
+ * processes cold-starting and writing at once, per-call, since pp_harness
+ * isn't a pooled long-lived process). It does nothing to a real deadlock:
+ * a transaction that can never acquire the lock exhausts `maxAttempts` and
+ * re-throws, it does not retry forever.
+ *
+ * A constraint or validation error is re-thrown on the very first attempt
+ * — retrying it would just reproduce the same failure.
+ *
+ * Wall-time budget (why `maxAttempts` defaults to 3, not 5): every attempt
+ * can independently block for up to `busy_timeout` (15000ms, see the
+ * `PRAGMA busy_timeout` above) inside SQLite's own busy handler before this
+ * function even sees SQLITE_BUSY. Callers of this function (currently just
+ * `recordVerdict`) ride the MCP dispatcher's default 120s tool timeout, not
+ * a harness-specific long-tool allowance. At 5 attempts the worst case was
+ * 5 * 15000ms = 75000ms of pure SQLite blocking, plus backoff sleeps
+ * (50+100+200+400ms, ~900ms with jitter) = ~75.9s — 63% of that 120s
+ * window, leaving too little headroom for a cold daemon start plus the
+ * actual insert/critique work stacked on top, which could reproduce the
+ * very timeout this retry layer exists to survive.
+ *
+ * At the new default of 3 attempts: 3 * 15000ms = 45000ms, plus backoff
+ * (50+100ms, ~180ms with jitter) = ~45.2s worst case — 38% of the 120s
+ * window, leaving ~75s of headroom. `maxWallMs` (default 60000ms) is a
+ * second, explicit backstop: even if `busy_timeout` or `maxAttempts` are
+ * changed later, no caller can be retried past 60s of measured wall time
+ * (half the dispatcher's 120s budget) — the loop checks elapsed time
+ * before each retry sleep and re-throws immediately once the budget is
+ * spent, rather than starting an attempt it can't complete in time to
+ * still leave headroom.
+ */
+export function txImmediateWithRetry<T>(
+  fn: () => T,
+  opts: { maxAttempts?: number; baseDelayMs?: number; maxWallMs?: number } = {},
+): T {
+  const maxAttempts = opts.maxAttempts ?? 3;
+  const baseDelayMs = opts.baseDelayMs ?? 50;
+  const maxWallMs = opts.maxWallMs ?? 60_000;
+  const startedAt = Date.now();
+  for (let attempt = 1; ; attempt++) {
+    try {
+      return txImmediate(fn);
+    } catch (err) {
+      if (!isLockContentionError(err) || attempt >= maxAttempts) throw err;
+      if (Date.now() - startedAt >= maxWallMs) throw err;
+      // Exponential backoff (50, 100, 200, 400ms...) with +/-20% jitter so
+      // several sibling processes retrying together don't re-collide in lockstep.
+      const delay = baseDelayMs * 2 ** (attempt - 1);
+      sleepSync(Math.round(delay * (0.8 + Math.random() * 0.4)));
+    }
   }
 }

@@ -3,7 +3,9 @@
 
 PRAGMA journal_mode = WAL;
 PRAGMA foreign_keys = ON;
-PRAGMA busy_timeout = 5000;
+-- See database.ts::db() for why 15000ms: a fresh daemon process spawns per
+-- tool call, so a write can land mid cold-start of a sibling process.
+PRAGMA busy_timeout = 15000;
 
 CREATE TABLE IF NOT EXISTS runs (
   id                       TEXT PRIMARY KEY,

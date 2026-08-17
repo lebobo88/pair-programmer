@@ -42,6 +42,18 @@ export function runJanitor(): {
   }
 
   // 2. Sweep stale candidate worktrees and 3. orphan project locks across every known project.
+  //
+  // DELIBERATE SCOPE, DO NOT WIDEN: the branch-name filter below
+  // (`refs/heads/pp/...`) means this sweep only ever considers pp's own
+  // best-of-N / team candidate worktrees. It never matches Hydra's
+  // `attended/*` worktrees, and that's intentional, not an oversight —
+  // an attended run legitimately sits idle for days while paused on a
+  // HITL gate upstream in Hydra, with a cursor that is non-terminal the
+  // entire time. Sweeping it here on mtime staleness would destroy live,
+  // in-progress work that this daemon has no way to know is still active.
+  // If a future change needs to reap abandoned attended worktrees, that
+  // policy belongs in Hydra (which owns the cursor's lifecycle and can
+  // tell "paused" apart from "abandoned"), not in this daemon-local sweep.
   const swept_worktrees: string[] = [];
   const swept_branches: string[] = [];
   const swept_locks: string[] = [];

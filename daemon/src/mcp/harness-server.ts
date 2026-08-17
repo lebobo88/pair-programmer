@@ -199,6 +199,14 @@ const RecordVerdictSchema = z.object({
       try { return JSON.parse(s); } catch { return {}; }
     }),
   ]).optional(),
+  // Client-supplied idempotency token (e.g. Hydra's attended-cursor call_key).
+  // A retried call carrying the same token is a no-op: recordVerdict returns
+  // the original verdict row instead of inserting a duplicate. Deliberately
+  // NOT a natural key on (attempt_id, judge_producer, judge_model_id) — that
+  // would break /pp:gate re-judging the same stage with the same judge, and
+  // the retract-then-rejudge flow, both of which legitimately record more
+  // than one verdict per (attempt, judge) tuple.
+  idempotency_token: z.string().min(1).optional(),
 })
   // Belt-and-suspenders against the "pragmatic pass" loophole. The judge
   // sub-agents already refuse to call this tool on critique-tool failure
@@ -611,7 +619,8 @@ const TOOLS: ToolDef[] = [
   {
     name: "record_verdict",
     description:
-      "Log a judge verdict against an attempt. cross_vendor is computed by the daemon based on judge_producer vs attempt's producer. outcome is pass | fail | revise.",
+      "Log a judge verdict against an attempt. cross_vendor is computed by the daemon based on judge_producer vs attempt's producer. outcome is pass | fail | revise. " +
+      "Pass idempotency_token (e.g. the caller's own call/retry key) to make retries safe: a second call with the same token returns the original verdict_id instead of inserting a duplicate row. Recommended for any caller that may retry on transport/timeout errors, since a lock-contention timeout can occur AFTER the write already committed.",
     schema: RecordVerdictSchema,
     handler: (args) => recordVerdict(RecordVerdictSchema.parse(args)),
   },

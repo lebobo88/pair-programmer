@@ -8,7 +8,10 @@ export const SCHEMA_VERSION = 7;
 export const SCHEMA_SQL = `
 PRAGMA journal_mode = WAL;
 PRAGMA foreign_keys = ON;
-PRAGMA busy_timeout = 5000;
+-- Kept in sync with the pragma set in database.ts::db() — see the comment
+-- there for why 15000ms (concurrent cold-start writers, not a single
+-- long-lived process).
+PRAGMA busy_timeout = 15000;
 
 CREATE TABLE IF NOT EXISTS runs (
   id                       TEXT PRIMARY KEY,
