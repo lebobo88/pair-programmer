@@ -104,6 +104,53 @@ await record("recordVerdict with distinct idempotency_tokens inserts separate ro
   }
 });
 
+await record("recordVerdict rejects a token already owned by a DIFFERENT attempt instead of returning the other attempt's verdict", async () => {
+  // LV-8: the idempotency_token unique index is global (unscoped by
+  // attempt). A caller that (by bug or genuine collision) reuses a token
+  // already recorded against another attempt must get a loud error, never
+  // that other attempt's verdict silently handed back as if it were its
+  // own. This is the exact defect class that stranded a Hydra attended
+  // stage: two different stages' first judge call shared the literal
+  // idempotency token "judge-0".
+  const project = setupProject();
+  try {
+    const runs = await importDist("orchestrator/runs.js");
+    const { db } = await importDist("db/database.js");
+    const run = await runs.ensureRun({ request_text: "idem collision", project_path: project, mode: "single" });
+
+    const stageA = await runs.startStage({ run_id: run.run_id, kind: "code", gate_type: "code" });
+    const attA = runs.recordAttempt({ stage_id: stageA.stage_id, producer: "claude", model_id: "claude-sonnet-4-6", status: "ok" });
+    const verdictA = runs.recordVerdict({
+      attempt_id: attA.attempt_id, judge_producer: "codex", judge_model_id: "gpt-5.4",
+      outcome: "pass", critique_md: "ok", score_json: {}, idempotency_token: "shared-collided-token",
+    });
+
+    const stageB = await runs.startStage({ run_id: run.run_id, kind: "code", gate_type: "code" });
+    const attB = runs.recordAttempt({ stage_id: stageB.stage_id, producer: "claude", model_id: "claude-sonnet-4-6", status: "ok" });
+
+    assert.throws(
+      () => runs.recordVerdict({
+        attempt_id: attB.attempt_id, judge_producer: "codex", judge_model_id: "gpt-5.4",
+        outcome: "pass", critique_md: "ok", score_json: {}, idempotency_token: "shared-collided-token",
+      }),
+      /idempotency_token .* already recorded against attempt/,
+      "a token collision across different attempts must throw, not return the other attempt's verdict",
+    );
+
+    // Attempt B must have NO verdict row at all -- the collision must not
+    // have silently written or silently "succeeded" as attempt A's row.
+    const countB = db().prepare(`SELECT COUNT(*) AS n FROM verdicts WHERE attempt_id = ?`).get(attB.attempt_id);
+    assert.equal(countB.n, 0, "the rejected call must not have inserted a row for attempt B");
+    // Attempt A's original verdict must be untouched.
+    const countA = db().prepare(`SELECT COUNT(*) AS n FROM verdicts WHERE attempt_id = ?`).get(attA.attempt_id);
+    assert.equal(countA.n, 1);
+    const stillA = db().prepare(`SELECT id FROM verdicts WHERE idempotency_token = ?`).get("shared-collided-token");
+    assert.equal(stillA.id, verdictA.verdict_id, "the token must still resolve to attempt A's verdict, unchanged");
+  } finally {
+    rmSync(project, { recursive: true, force: true });
+  }
+});
+
 await record("recordVerdict with no idempotency_token still inserts separately every call", async () => {
   const project = setupProject();
   try {

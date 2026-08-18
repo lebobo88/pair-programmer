@@ -754,11 +754,54 @@ export type RecordVerdictInput = {
 };
 export type RecordVerdictOutput = { verdict_id: string; cross_vendor: boolean };
 
-function findVerdictByIdempotencyToken(token: string): RecordVerdictOutput | undefined {
+/**
+ * LV-8 (defense in depth): the unique index on idempotency_token is global —
+ * unscoped by attempt. A caller that (by bug or collision) supplies a token
+ * already owned by a DIFFERENT attempt must never silently receive that
+ * other attempt's verdict back as if it were its own; that is exactly the
+ * shape of the incident this hardens against (Hydra's attended judge
+ * call_key was, pre-fix, unscoped across stages, so two different stages'
+ * first verdict shared the literal token "judge-0"). Checking attempt_id
+ * ownership here — independent of whatever scoping the caller does or
+ * doesn't do — is what makes that class of bug fail loudly instead of
+ * silently.
+ */
+function findVerdictByIdempotencyToken(
+  token: string
+): (RecordVerdictOutput & { attempt_id: string }) | undefined {
   const row = db()
-    .prepare(`SELECT id, cross_vendor FROM verdicts WHERE idempotency_token = ?`)
-    .get(token) as { id: string; cross_vendor: number } | undefined;
-  return row ? { verdict_id: row.id, cross_vendor: !!row.cross_vendor } : undefined;
+    .prepare(`SELECT id, cross_vendor, attempt_id FROM verdicts WHERE idempotency_token = ?`)
+    .get(token) as { id: string; cross_vendor: number; attempt_id: string } | undefined;
+  return row
+    ? { verdict_id: row.id, cross_vendor: !!row.cross_vendor, attempt_id: row.attempt_id }
+    : undefined;
+}
+
+class IdempotencyTokenAttemptMismatchError extends Error {
+  constructor(token: string, existingAttemptId: string, requestedAttemptId: string) {
+    super(
+      `idempotency_token ${JSON.stringify(token)} is already recorded against ` +
+      `attempt ${JSON.stringify(existingAttemptId)}, not the requested attempt ` +
+      `${JSON.stringify(requestedAttemptId)}. Refusing to return the other ` +
+      `attempt's verdict -- the caller must supply a token scoped uniquely to ` +
+      `its own attempt (e.g. include the run/stage/attempt id in the token).`
+    );
+    this.name = "IdempotencyTokenAttemptMismatchError";
+  }
+}
+
+/** Returns the existing row only if it truly belongs to `attemptId`; throws
+ * on a cross-attempt collision rather than ever returning it. */
+function resolveIdempotentVerdict(
+  token: string,
+  attemptId: string
+): RecordVerdictOutput | undefined {
+  const existing = findVerdictByIdempotencyToken(token);
+  if (!existing) return undefined;
+  if (existing.attempt_id !== attemptId) {
+    throw new IdempotencyTokenAttemptMismatchError(token, existing.attempt_id, attemptId);
+  }
+  return { verdict_id: existing.verdict_id, cross_vendor: existing.cross_vendor };
 }
 
 /**
@@ -784,7 +827,7 @@ export function recordVerdict(input: RecordVerdictInput): RecordVerdictOutput {
   // fire-and-forget re-memoing) a duplicate. Checked before any other
   // work so a replay is cheap and side-effect-free.
   if (input.idempotency_token) {
-    const existing = findVerdictByIdempotencyToken(input.idempotency_token);
+    const existing = resolveIdempotentVerdict(input.idempotency_token, input.attempt_id);
     if (existing) return existing;
   }
 
@@ -879,7 +922,7 @@ export function recordVerdict(input: RecordVerdictInput): RecordVerdictOutput {
     // a constraint error for what is, from the caller's perspective, a
     // successful retry.
     if (input.idempotency_token && isIdempotencyTokenCollision(err)) {
-      const existing = findVerdictByIdempotencyToken(input.idempotency_token);
+      const existing = resolveIdempotentVerdict(input.idempotency_token, input.attempt_id);
       if (existing) return existing;
     }
     throw err;
