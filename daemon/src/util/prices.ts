@@ -10,8 +10,8 @@ type PriceTable = Record<string, Record<string, PriceEntry>>;
 let _cached: PriceTable | null = null;
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-// Bundled defaults at daemon/prices.json (one level above dist/util/).
-const BUNDLED_PATH = join(__dirname, "..", "..", "..", "prices.json");
+// Bundled defaults at daemon/prices.json (two levels above dist/util/prices.js).
+const BUNDLED_PATH = join(__dirname, "..", "..", "prices.json");
 
 export function prices(): PriceTable {
   if (_cached) return _cached;
