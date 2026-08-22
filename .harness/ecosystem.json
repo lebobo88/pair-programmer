@@ -3,6 +3,7 @@
   "_comment": "Neutral, language-agnostic source of truth for ecosystem sibling resolution. Read by the daemon (daemon/src/config.ts), the link-ecosystem generators (scripts/link-ecosystem.ps1 / .sh), and scripts/sync-copilot-assets.mjs. Each sibling's root resolves dynamically: PP_CONSUMER_BASE (or its PP_ECOSYSTEM_ROOT alias) env var, else the folder adjacent to this clone. The generators scan each listed sibling's .claude/agents/*.md, .claude/skills/* and squads/* and materialize them into pp's per-machine (gitignored) overlay. Do NOT hardcode absolute paths here.",
   "siblings": [
     "AgentSmith",
-    "ExecutiveSuite"
+    "ExecutiveSuite",
+    "MarketBliss"
   ]
 }
