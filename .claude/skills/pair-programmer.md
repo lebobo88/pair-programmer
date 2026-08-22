@@ -9,13 +9,13 @@ You are driving the pair-programmer harness. Every request that flows through `/
 
 - `pp_harness` — orchestration (start_run, record_attempt, record_verdict, finalize_run, gate_eligible_judges, run_missability_checks, apply_master_plan_patch, …)
 - `pp_codex`   — wraps OpenAI Codex CLI (`generate`, `critique`)
-- `pp_gemini`  — wraps Google Gemini CLI (`generate`, `critique`)
+- `pp_agy`  — wraps Google Antigravity (agy) CLI (`generate`, `critique`)
 
 Both vendors are required for cross-vendor gates. `mcp__pp_harness__doctor` reports the configured matrix; if `cross_vendor_ready=false`, security/spec/design/contract gates will refuse to run.
 
 ## Delegation contract (load-bearing — read first)
 
-The driver (you) and the sub-agents have **different MCP tool surfaces by design**. Most `mcp__pp_harness__*`, `mcp__pp_codex__*`, and `mcp__pp_gemini__*` tools are exposed to the responsible sub-agent (via that agent's frontmatter `tools:` list) and reached via the `Task` tool — not by direct call from the driver. A small subset (`start_run`, `start_stage`, `gate_eligible_judges`, `record_taxonomy_mapping`, `archive_artifact`, `get_stage_finalize_readiness`, `finalize_stage`, `finalize_run`, `run_missability_checks`, `budget_status`, `retry_with_critique`) is also available to the driver where the lifecycle steps below explicitly call them. Use only the ones the steps explicitly name.
+The driver (you) and the sub-agents have **different MCP tool surfaces by design**. Most `mcp__pp_harness__*`, `mcp__pp_codex__*`, and `mcp__pp_agy__*` tools are exposed to the responsible sub-agent (via that agent's frontmatter `tools:` list) and reached via the `Task` tool — not by direct call from the driver. A small subset (`start_run`, `start_stage`, `gate_eligible_judges`, `record_taxonomy_mapping`, `archive_artifact`, `get_stage_finalize_readiness`, `finalize_stage`, `finalize_run`, `run_missability_checks`, `budget_status`, `retry_with_critique`) is also available to the driver where the lifecycle steps below explicitly call them. Use only the ones the steps explicitly name.
 
 **Hard rules — never violate, even when stuck:**
 
@@ -42,7 +42,7 @@ The exception to all of the above is **the harness's own working tree** (the `pa
 - **"Use the Task tool to invoke `<agent>`"** ⇒ you MUST delegate to that sub-agent. Do NOT replicate its tool calls in the driver. If `Task` itself fails (the agent type is unavailable, the agent crashes, or the response is malformed), `mcp__pp_harness__finalize_run(status="aborted", summary_md=<failure context>)` and STOP. Do NOT compensate by calling the agent's MCP tools yourself.
 - **"Call `mcp__pp_harness__<tool>`"** ⇒ this is a driver-callable tool (the small allowlist named in the Delegation Contract above). Call it directly. If it errors, halt per the failure handling rules below. Do NOT silently retry on a different surface or substitute a sub-agent.
 
-The driver MUST NOT call any `mcp__pp_codex__*`, `mcp__pp_gemini__*`, or `mcp__pp_harness__record_*` / `mcp__pp_harness__apply_master_plan_patch` / `mcp__pp_harness__retry_with_critique` (without a sub-agent shell) tool directly — those flow through sub-agents only.
+The driver MUST NOT call any `mcp__pp_codex__*`, `mcp__pp_agy__*`, or `mcp__pp_harness__record_*` / `mcp__pp_harness__apply_master_plan_patch` / `mcp__pp_harness__retry_with_critique` (without a sub-agent shell) tool directly — those flow through sub-agents only.
 
 1. **Triage.** Use the Task tool to invoke the `triage` agent. Pass `request_text`. It returns `{ class: "trivial" | "standard" | "major", signals: string[] }`. Trivial → minimum-artifact (changelog) path; major → consider escalating to `/pp:team` mode.
 
@@ -63,8 +63,8 @@ The driver MUST NOT call any `mcp__pp_codex__*`, `mcp__pp_gemini__*`, or `mcp__p
 
 5. **Stage loop.** For each stage in dependency order (default by triage class — see `artifact-conventions.md`):
    - Call `mcp__pp_harness__start_stage` with `kind` and `gate_type`. Capture `stage_id`.
-   - Call `mcp__pp_harness__gate_eligible_judges` with `gate_type`, `generator_producer`, `generator_model` when known, `prompt_keywords` (the user's request), the `profile.name` if any, and `artifact_kind` if known. If `generator_model` is omitted, the daemon infers Codex/Gemini defaults where possible. It returns `{ required_cross_vendor, base_tier, upgraded, rubric_id, allowed_judges }`.
-   - Use the Task tool to invoke the generator agent (`engineer`, `spec-author`, `architect`, `designer`, etc., per the team yaml or default). The agent calls `mcp__pp_codex__generate` (or Gemini, per binding), archives the result via `mcp__pp_harness__archive_artifact`, and records the attempt via `mcp__pp_harness__record_attempt`.
+   - Call `mcp__pp_harness__gate_eligible_judges` with `gate_type`, `generator_producer`, `generator_model` when known, `prompt_keywords` (the user's request), the `profile.name` if any, and `artifact_kind` if known. If `generator_model` is omitted, the daemon infers Codex/agy defaults where possible. It returns `{ required_cross_vendor, base_tier, upgraded, rubric_id, allowed_judges }`.
+   - Use the Task tool to invoke the generator agent (`engineer`, `spec-author`, `architect`, `designer`, etc., per the team yaml or default). The agent calls `mcp__pp_codex__generate` (or agy, per binding), archives the result via `mcp__pp_harness__archive_artifact`, and records the attempt via `mcp__pp_harness__record_attempt`.
    - Use the Task tool to invoke `judge-router`. Capture its route object: `{ judge_agent, preferred_producers, rubric_id, decision_reason }`.
    - Then use the Task tool to invoke the chosen judge agent (`judge-cross-vendor` or `judge-same-vendor`) with the attempt / artifact context plus `rubric_id` (or `rubric_md` if already resolved). That judge agent fetches the rubric if needed, runs the critique tool, and records the verdict via `mcp__pp_harness__record_verdict`.
    - **If the judge sub-agent returns `judge_tool_failed=true`** (instead of a verdict): the judge's underlying CLI failed persistently even after the agent's retry-once. Do NOT invoke Reflexion (Reflexion is for a generator that produced a flawed artifact; this is an environment failure on the *judge* side). Archive the failure context to `<artifact_dir>/critique_failures/<stage_id>.json` (write the full `{ judge_tool_failed, reason, vendor, model, exit_code, stderr_tail, attempts, failure_archive_path }` payload via `mcp__pp_harness__archive_artifact` with `kind: "critique_failure"`). Then call `mcp__pp_harness__finalize_stage(status="surfaced")` and `mcp__pp_harness__finalize_run(status="aborted", summary_md=<judge tool failure context, including the failure_archive_path so the user can find the stderr>)`. STOP. Do NOT advance to the next stage. Tell the user the judge bridge is broken and point at `failure_archive_path`. **Never fabricate a passing verdict to "unblock" the pipeline** — halting is correct.

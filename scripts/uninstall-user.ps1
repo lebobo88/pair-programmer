@@ -27,7 +27,7 @@ $manifest = if (Test-Path $Manifest) {
             (Join-Path $UserClaude 'agents'),
             (Join-Path $UserClaude 'skills')
         )
-        mcpServers   = @('pp_harness', 'pp_codex', 'pp_gemini')
+        mcpServers   = @('pp_harness', 'pp_codex', 'pp_agy')
         allowEntries = @()
     }
 }

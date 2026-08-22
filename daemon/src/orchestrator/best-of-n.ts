@@ -46,7 +46,7 @@ export async function startBestOfStage(opts: {
   if (opts.n < 2 || opts.n > 8) throw new Error(`n must be in [2, 8], got ${opts.n}`);
 
   // Precondition: best-of-N now runs all candidates as Claude, so judging
-  // requires at least one non-Claude vendor (codex OR gemini) reachable.
+  // requires at least one non-Claude vendor (codex OR agy) reachable.
   // Without that, every cross-vendor gate would refuse and the run can never
   // pick a winner. Fail fast before candidates burn tokens.
   if (process.env.PP_ALLOW_BEST_OF_WITHOUT_JUDGE !== "1") {
@@ -56,7 +56,7 @@ export async function startBestOfStage(opts: {
     if (!nonClaudeReachable) {
       throw new Error(
         "best-of-N refused: candidates run as Claude, so judging needs at least one non-Claude vendor (openai or google) reachable. " +
-        "Configure codex (openai) or gemini (google) credentials, then retry. " +
+        "Configure codex (openai) or agy (google) credentials, then retry. " +
         "Override with PP_ALLOW_BEST_OF_WITHOUT_JUDGE=1 (same-vendor Claude judging only — cross-vendor gates will refuse).",
       );
     }

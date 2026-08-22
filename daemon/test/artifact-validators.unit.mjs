@@ -461,7 +461,7 @@ await itAsync("stabilizeCritiqueResult retries exit-0 malformed critique output 
     };
   }, {
     cwd: mkdtempSync(join(tmpdir(), "pp-critique-bridge-")),
-    vendor: "gemini",
+    vendor: "agy",
   });
 
   assert.equal(callCount, 2);
@@ -482,7 +482,7 @@ await itAsync("stabilizeCritiqueResult converts repeated malformed output into a
     attempts: [{ exit_code: 0, stderr_tail: "", wall_ms: 3 }],
   }), {
     cwd,
-    vendor: "gemini",
+    vendor: "agy",
   });
 
   assert.equal(result.exit_code, 1);
@@ -532,11 +532,11 @@ it("resolveSameVendorCapability allows Codex same-vendor when generator model di
   assert.equal(capability.reason, null);
 });
 
-it("describeJudgeCapabilities reports Codex as conditional and Gemini as degenerate", () => {
+it("describeJudgeCapabilities reports Codex as conditional and agy as degenerate", () => {
   const caps = describeJudgeCapabilities();
   assert.equal(caps.codex.same_vendor_mode, "conditional_cross_vendor");
   assert.deepEqual(caps.codex.unavailable_when_generator_model_is, ["gpt-5.4"]);
-  assert.equal(caps.gemini.same_vendor_mode, "degenerate_same_model_allowed");
+  assert.equal(caps.agy.same_vendor_mode, "degenerate_same_model_allowed");
 });
 
 it("parseCodexJsonl extracts item.completed agent_message text payloads", () => {

@@ -133,7 +133,7 @@ function mapAgentTools(rawTools) {
     else if (/^(Task|Agent|custom-agent)$/i.test(token)) mapped.add("agent");
     else if (/^mcp__pp_harness__/i.test(token)) mapped.add("pp_harness/*");
     else if (/^mcp__pp_codex__/i.test(token)) mapped.add("pp_codex/*");
-    else if (/^mcp__pp_gemini__/i.test(token)) mapped.add("pp_gemini/*");
+    else if (/^mcp__pp_agy__/i.test(token)) mapped.add("pp_agy/*");
     else if (/^mcp__claude-in-chrome__/i.test(token)) mapped.add("web");
   }
   return [...mapped];

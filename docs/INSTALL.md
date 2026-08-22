@@ -5,7 +5,7 @@
 - Node 20+ (`node --version`).
 - Git (worktrees fall back to copy mode otherwise).
 - Codex CLI: `npm i -g @openai/codex`. Set `OPENAI_API_KEY` or run `codex login`.
-- Gemini CLI: `npm i -g @google/gemini-cli`. Set `GEMINI_API_KEY` (or `GOOGLE_API_KEY`) or run `gemini auth`.
+- Antigravity CLI (agy): install via `irm https://antigravity.google/cli/install.ps1 | iex` (Windows PowerShell) or `curl -fsSL https://antigravity.google/cli/install.sh | bash` (macOS/Linux). Authenticate by running `agy` once — there is no separate `auth` subcommand; it completes interactive Google Sign-In through the system keyring and reuses the legacy Gemini CLI's OAuth state at `~/.gemini/oauth_creds.json` when present — or set `GEMINI_API_KEY` / `GOOGLE_API_KEY` / `ANTIGRAVITY_API_KEY` for headless/CI use.
 - Optional (visual regression): `cd daemon && npx playwright install chromium`.
 
 ## Daemon

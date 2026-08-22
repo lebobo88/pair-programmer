@@ -53,7 +53,7 @@
         "bash": "node \"daemon/dist/index.js\" hook PreToolUse enforce-vendor-matrix",
         "powershell": "node \"daemon/dist/index.js\" hook PreToolUse enforce-vendor-matrix",
         "timeoutSec": 30,
-        "matcher": "mcp__pp_codex__.*|mcp__pp_gemini__.*"
+        "matcher": "mcp__pp_codex__.*|mcp__pp_agy__.*"
       },
       {
         "type": "command",
@@ -90,14 +90,14 @@
         "bash": "node \"daemon/dist/index.js\" hook PostToolUse cost-tally",
         "powershell": "node \"daemon/dist/index.js\" hook PostToolUse cost-tally",
         "timeoutSec": 30,
-        "matcher": "mcp__pp_codex__.*|mcp__pp_gemini__.*"
+        "matcher": "mcp__pp_codex__.*|mcp__pp_agy__.*"
       },
       {
         "type": "command",
         "bash": "node \"daemon/dist/index.js\" hook PostToolUse record-attempt",
         "powershell": "node \"daemon/dist/index.js\" hook PostToolUse record-attempt",
         "timeoutSec": 30,
-        "matcher": "mcp__pp_codex__.*|mcp__pp_gemini__.*"
+        "matcher": "mcp__pp_codex__.*|mcp__pp_agy__.*"
       },
       {
         "type": "command",

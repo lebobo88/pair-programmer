@@ -24,7 +24,7 @@ import { doctor } from "../orchestrator/runs.js";
 import { masterPlanStatus, applyMasterPlanPatch, ensureMasterPlan } from "../orchestrator/master-plan.js";
 import { loadProjectProfile } from "../orchestrator/profiles.js";
 import { evaluateGate, type GateType, type Profile } from "../orchestrator/gates.js";
-import { geminiEnabled } from "../config.js";
+import { agyEnabled } from "../config.js";
 import { evaluateShellSafety } from "./bash-safety.js";
 import { recallProjectContext, recallByQuery, listPriorCritiques } from "../ecosystem/eights-writes.js";
 
@@ -181,7 +181,7 @@ const HANDLERS: Record<string, Record<string, (input: HookInput) => Promise<void
 
       reply(
         false,
-        `${advisory} Set OPENAI_API_KEY + GEMINI_API_KEY (or run \`codex login\` / \`gemini auth\`) before continuing. Session start blocked. Set PP_ALLOW_SINGLE_VENDOR=1 to bypass for read-only / single-vendor sessions.`,
+        `${advisory} Set OPENAI_API_KEY + (GEMINI_API_KEY or ANTIGRAVITY_API_KEY) (or run \`codex login\` / \`agy\` to sign in) before continuing. Session start blocked. Set PP_ALLOW_SINGLE_VENDOR=1 to bypass for read-only / single-vendor sessions.`,
       );
     },
     "cli-version-pin": async () => {
@@ -207,13 +207,14 @@ const HANDLERS: Record<string, Record<string, (input: HookInput) => Promise<void
     "surfaced-runs": (input) => {
       if (!input.cwd) return reply(true);
       try {
+        // RA-4: exclude runs the operator has already acknowledged via ack_run.
         const rows = db()
-          .prepare(`SELECT id, request_text FROM runs WHERE project_path = ? AND status = 'surfaced' ORDER BY started_at DESC LIMIT 5`)
+          .prepare(`SELECT id, request_text FROM runs WHERE project_path = ? AND status = 'surfaced' AND acked_at IS NULL ORDER BY started_at DESC LIMIT 5`)
           .all(input.cwd) as Array<{ id: string; request_text: string }>;
         if (rows.length) {
           console.log(`[pp] ${rows.length} surfaced run(s) waiting:`);
           for (const r of rows) console.log(`  - ${r.id}: ${r.request_text.slice(0, 60)}`);
-          console.log("Use /pp:retry <run_id> to resume.");
+          console.log("Use /pp:retry <run_id> to resume, or pp_harness.ack_run to dismiss.");
         }
       } catch { /* ignore */ }
       reply(true);
@@ -294,19 +295,19 @@ const HANDLERS: Record<string, Record<string, (input: HookInput) => Promise<void
     },
     "enforce-vendor-matrix": async (input) => {
       const tool = input.tool_name ?? "";
-      if (!/pp_(codex|gemini)/.test(tool)) return reply(true);
+      if (!/pp_(codex|agy)/.test(tool)) return reply(true);
       const report = (await doctor()) as { vendors_configured?: Record<string, boolean>; cross_vendor_ready?: boolean };
       const v = report.vendors_configured ?? {};
       const wantsCodex = /pp_codex/.test(tool);
-      const wantsGemini = /pp_gemini/.test(tool);
+      const wantsAgy = /pp_agy/.test(tool);
 
       // 1. Direct vendor presence — block if the requested vendor is missing.
       if (wantsCodex && !v.openai)  reply(false, "[pp] pp_codex tools blocked: OpenAI not configured (set OPENAI_API_KEY or `codex login`).");
-      if (wantsGemini && !v.google) {
-        const why = !geminiEnabled()
-          ? "disabled via PP_DISABLE_GEMINI=1 (unset it to re-enable)"
-          : "Google not configured (set GEMINI_API_KEY or `gemini auth`)";
-        reply(false, `[pp] pp_gemini tools blocked: ${why}.`);
+      if (wantsAgy && !v.google) {
+        const why = !agyEnabled()
+          ? "disabled via PP_DISABLE_AGY=1 (unset it to re-enable)"
+          : "Google not configured (set GEMINI_API_KEY/ANTIGRAVITY_API_KEY or sign in via `agy`)";
+        reply(false, `[pp] pp_agy tools blocked: ${why}.`);
       }
 
       // 2. Stage-aware: replicate gate_eligible_judges' decision (base tier
@@ -502,7 +503,7 @@ const HANDLERS: Record<string, Record<string, (input: HookInput) => Promise<void
   PostToolUse: {
     "cost-tally": (input) => {
       const tool = input.tool_name ?? "";
-      if (!/pp_(codex|gemini)/.test(tool)) return reply(true);
+      if (!/pp_(codex|agy)/.test(tool)) return reply(true);
       const resp = input.tool_response as { tokens_in?: number; tokens_out?: number; cost_usd?: number; model?: string } | undefined;
       if (resp && (resp.tokens_in || resp.tokens_out || resp.cost_usd)) {
         console.log(`[pp] +${resp.tokens_in ?? 0}/${resp.tokens_out ?? 0} tok, $${(resp.cost_usd ?? 0).toFixed(4)} (${resp.model ?? "?"})`);
@@ -518,13 +519,13 @@ const HANDLERS: Record<string, Record<string, (input: HookInput) => Promise<void
       // `direct_cli` marker (the wrappers set this when the daemon detects
       // no in-flight stage). Without that marker, no-op.
       const tool = input.tool_name ?? "";
-      if (!/pp_(codex|gemini)/.test(tool)) return reply(true);
+      if (!/pp_(codex|agy)/.test(tool)) return reply(true);
       const resp = input.tool_response as
         | { direct_cli?: boolean; tokens_in?: number; tokens_out?: number; cost_usd?: number; model?: string; wall_ms?: number }
         | undefined;
       if (!resp?.direct_cli) return reply(true);
       try {
-        const producer = /pp_codex/.test(tool) ? "codex" : "gemini";
+        const producer = /pp_codex/.test(tool) ? "codex" : "agy";
         const stageId = `direct_${nanoid(8)}`;
         // Synthesize a stub stage if no run is active; this preserves an audit trail
         // without requiring the user to start a run first.
@@ -701,8 +702,10 @@ const HANDLERS: Record<string, Record<string, (input: HookInput) => Promise<void
     "surfaced-run-reminder": (input) => {
       if (!input.cwd) return reply(true);
       try {
+        // RA-4: exclude operator-acked runs — they have already been handled
+        // via preserved-and-merge and the operator called ack_run to dismiss.
         const rows = db()
-          .prepare(`SELECT id FROM runs WHERE project_path = ? AND status = 'surfaced' ORDER BY started_at DESC LIMIT 1`)
+          .prepare(`SELECT id FROM runs WHERE project_path = ? AND status = 'surfaced' AND acked_at IS NULL ORDER BY started_at DESC LIMIT 1`)
           .get(input.cwd) as { id: string } | undefined;
         if (rows?.id) console.log(`[pp] reminder: surfaced run ${rows.id} is awaiting attention. /pp:retry ${rows.id}`);
       } catch { /* ignore */ }

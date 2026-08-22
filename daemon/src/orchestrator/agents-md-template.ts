@@ -57,7 +57,7 @@ export function agentsMdTemplate(projectName: string, extras: AgentsMdTemplateEx
 
 ${MANAGED_OPEN}
 
-_Auto-scaffolded by the pair-programmer harness on ${created}. This file is the cross-tool behavioral contract for any AI agent (Claude, Codex, Gemini, Cursor, etc.) working in this repository. PROJECT_MASTER.md is the planning artifact; this file is the slim operating manual derived from it._
+_Auto-scaffolded by the pair-programmer harness on ${created}. This file is the cross-tool behavioral contract for any AI agent (Claude, Codex, Antigravity (agy), Cursor, etc.) working in this repository. PROJECT_MASTER.md is the planning artifact; this file is the slim operating manual derived from it._
 
 ## Build and test commands
 

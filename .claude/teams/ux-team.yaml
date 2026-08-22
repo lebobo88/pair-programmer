@@ -5,19 +5,29 @@ stages:
   - kind: ia_map
     gate_type: design
     generator: { agent: designer, primary: claude }
-    judge:     { tier: cross_vendor, rubric: c4-system-context@1, model_pref: gemini }
+    judge:     { tier: cross_vendor, rubric: c4-system-context@1, model_pref: agy }
   - kind: user_flows
     gate_type: design
     generator: { agent: designer, primary: claude }
-    judge:     { tier: cross_vendor, rubric: rfc-2119-normative@1, model_pref: gemini }
+    judge:     { tier: cross_vendor, rubric: rfc-2119-normative@1, model_pref: agy }
   - kind: screen_state_matrix
     gate_type: design
     generator: { agent: designer, primary: claude }
-    judge:     { tier: cross_vendor, rubric: wcag-2.2-aa@1, model_pref: gemini }
+    judge:     { tier: cross_vendor, rubric: wcag-2.2-aa@1, model_pref: agy }
   - kind: wireframes
     gate_type: design
     generator: { agent: designer, primary: claude }
     judge:     { tier: same_vendor, rubric: wcag-2.2-aa@1 }
+  - kind: design_polish_review
+    gate_type: design
+    generator: { agent: designer, primary: claude }
+    judge:     { tier: same_vendor, rubric: design-polish@1 }
+    notes: |
+      Self-review pass per the design-polish-review skill (AI-slop tropes,
+      hierarchy/rhythm, interaction-state completeness, wireframe low-fi-
+      first gate). Complements wcag-2.2-aa@1 — that rubric covers
+      accessibility; this one covers genericness/polish, which an
+      accessible artifact can still fail.
   - kind: content_guide
     gate_type: docs_polish
     generator: { agent: docs-author, primary: claude }
@@ -25,7 +35,7 @@ stages:
   - kind: a11y_plan
     gate_type: design
     generator: { agent: designer, primary: claude }
-    judge:     { tier: cross_vendor, rubric: wcag-2.2-aa@1, model_pref: gemini }
+    judge:     { tier: cross_vendor, rubric: wcag-2.2-aa@1, model_pref: agy }
   - kind: browser_validation
     artifact_kind: browser_validation_report
     gate_type: contract
@@ -59,8 +69,12 @@ stages:
     notes: |
       Driver should call mcp__pp_harness__request_visual_advisory when
       this is the first design pass on a new screen family. Reply (if
-      any) carries visual-tone notes from RLM-Creative/Calliope. Purely
-      informational — the designer agent's output is canonical for the
-      stage gate.
+      any) carries visual-tone notes from RLM-Creative/Calliope and feeds
+      into the designer agent's design-discovery §2 pass as an additional
+      input signal. No longer purely advisory: the designer agent runs
+      design-discovery §2 (propose 4 directions, commit to one with
+      concrete values) regardless of whether a Garland reply lands within
+      the poll window — the committed direction is a real, canonical
+      output of this stage, not a pass-through.
 taxonomy_required: ["4.4", "4.10"]
-missability_required: ["ui-error-empty-loading", "accessibility-localization", "browser-validation-evidence"]
+missability_required: ["ui-error-empty-loading", "accessibility-localization", "browser-validation-evidence", "design-polish-evidence"]

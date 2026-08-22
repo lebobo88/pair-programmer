@@ -119,10 +119,11 @@ export type HydraEnvelopeRecordInput = {
   envelope_id: string;
   workflow_id: string;
   /**
-   * Must be a member of TheEights' HydraEnvelopeType enum
-   * (schemas/hydra-envelope.ts): C_SUITE_DECISION_PACKET | PRD | ArchRFC |
-   * DevTask | CreativeBrief | ShotList | AssetJob | DecisionRecord |
-   * HITLRequest | Handoff. Note `DecisionRecord` (NOT `DECISION_RECORD`).
+   * Must be a member of the UPPER_SNAKE canonical vocabulary (Phase 3b).
+   * Full set: C_SUITE_DECISION_PACKET | PRD | ARCH_RFC | DEV_TASK |
+   * CREATIVE_BRIEF | SHOT_LIST | ASSET_JOB | DECISION_RECORD |
+   * HITL_REQUEST | HANDOFF. All values are UPPER_SNAKE — CamelCase aliases
+   * are rejected by TheEights' zod schema after the Phase 3b migration.
    */
   type: HydraRecordEnvelopeType;
   origin_squad: string;

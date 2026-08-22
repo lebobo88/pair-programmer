@@ -35,6 +35,7 @@ export type CheckId =
   | "ai-evals-hitl"
   | "agents-md-present"
   | "browser-validation-evidence"
+  | "design-polish-evidence"
   // Game-dev — console / TRC / XR / Lotcheck (gated behind console-cert: true)
   | "controller-disconnect-handling"
   | "save-data-atomicity"
@@ -219,7 +220,7 @@ export const CHECK_DEFINITIONS: Array<{
   },
   {
     // MC-21 (Phase 12): every run-managed project must have an AGENTS.md (the
-    // cross-tool behavioral contract Claude / Codex / Gemini read at session
+    // cross-tool behavioral contract Claude / Codex / Antigravity (agy) read at session
     // start). CLAUDE.md is its Claude-specific import shim. Both are
     // scaffolded by step 5c of /pp:run via ensure_agents_md, so a missing
     // file at finalize means the lifecycle was bypassed somehow. Triggered
@@ -284,6 +285,30 @@ export const CHECK_DEFINITIONS: Array<{
       return ok
         ? { status: "pass", evidence: ok.path }
         : { status: "fail", evidence: `${reports[0]!.path}: severity not parseable` };
+    },
+  },
+  {
+    id: "design-polish-evidence",
+    name: "Design polish self-review evidence (status clean | blockers resolved)",
+    // Not auto-injected globally on 4.4 (see taxonomy.ts) — a design_polish_review
+    // artifact only exists on teams that run the design_polish_review stage
+    // (ux-team, design-system-team). Wired into those teams' missability_required
+    // directly instead, so game-dev / other 4.4-mapped teams that don't produce
+    // this artifact aren't spuriously failed.
+    triggers: (k) => k.has("design_polish_review") || k.has("wireframes") || k.has("component_preview") || k.has("design_tokens"),
+    evaluate: ts => {
+      const reviews = ts.filter(a => a.kind === "design_polish_review");
+      if (reviews.length === 0) {
+        return { status: "fail", evidence: "no design_polish_review artifact in run" };
+      }
+      const blockersOpen = reviews.find(r => /^status:\s*blockers-open\b/im.test(r.text));
+      if (blockersOpen) {
+        return { status: "fail", evidence: `${blockersOpen.path}: status=blockers-open` };
+      }
+      const clean = reviews.find(r => /^status:\s*clean\b/im.test(r.text));
+      return clean
+        ? { status: "pass", evidence: clean.path }
+        : { status: "fail", evidence: `${reviews[0]!.path}: status not parseable` };
     },
   },
 

@@ -2,10 +2,10 @@
 
 **Multi-agent coding harness with tiered model validation, taxonomy enforcement, and best-of-N generation.**
 
-A TypeScript daemon that orchestrates code generation across Claude, OpenAI Codex (GPT), and Google Gemini with tiered validation:
+A TypeScript daemon that orchestrates code generation across Claude, OpenAI Codex (GPT), and Google (via the Antigravity CLI, agy) with tiered validation:
 
 - **Critical gates** (spec, design, security, contracts) → judged by a *different vendor* from the generator
-- **Lower-stakes gates** (code style, docs, lint) → judged by a different model from the *same* vendor (Codex same-vendor upgrades to cross-vendor when the generator used GPT-5.4; Gemini may fall back to same-model when no alternative exists)
+- **Lower-stakes gates** (code style, docs, lint) → judged by a different model from the *same* vendor (Codex same-vendor upgrades to cross-vendor when the generator used GPT-5.4; agy may fall back to same-model when no alternative exists)
 
 Supports Claude Code and GitHub Copilot CLI as entrypoints. Enforces a 16-section software development taxonomy on every task.
 
@@ -17,7 +17,7 @@ graph LR
     CC["Claude Code / Copilot CLI"] --> H["pp-daemon"]
     H --> HARNESS["pp_harness (75 tools)"]
     H --> CODEX["pp_codex → Codex CLI"]
-    H --> GEMINI["pp_gemini → Gemini CLI"]
+    H --> AGY["pp_agy → Antigravity CLI (agy)"]
     H --> HTTP["HTTP control plane<br/>127.0.0.1:7878"]
     H --> DB[("SQLite ~/.pp-harness")]
 ```
@@ -35,7 +35,7 @@ The full nine-phase run lifecycle (triage → profile → taxonomy → stage loo
 | Concept | What it does |
 |---------|-------------|
 | **16-Section Taxonomy** | Every task maps to sections of [`taxonomy_blueprint.md`](taxonomy_blueprint.md) — discovery, spec, architecture, contracts, code, security, tests, docs, and more. The harness ensures no section is skipped when the profile requires it. |
-| **Tiered Judging** | Spec/design/security/contract gates require a *different vendor* from the generator (Claude generates → Codex or Gemini judges). Code/docs/lint gates use a different model from the same vendor (Codex same-vendor is conditional — upgrades to cross-vendor when the generator used GPT-5.4). A degenerate same-model fallback exists for Gemini when no alternative is available. |
+| **Tiered Judging** | Spec/design/security/contract gates require a *different vendor* from the generator (Claude generates → Codex or agy judges). Code/docs/lint gates use a different model from the same vendor (Codex same-vendor is conditional — upgrades to cross-vendor when the generator used GPT-5.4). A degenerate same-model fallback exists for agy when no alternative is available. |
 | **Reflexion ×1** | On judge failure, the critique is fed back to the generator for exactly one retry. If it fails again, the stage surfaces for human review. Maximum 6 validator calls per run. |
 | **Best-of-N + Borda Count** | For major-scope requests, fan out to N parallel candidates (different model/seed mix in isolated git worktrees). A tournament judge picks the winner via Borda count + diff-entropy analysis. |
 | **Missability Gates** | Before finalization, 56 checks verify non-functional requirements: authorization models, data retention, rollout reversibility, accessibility, console cert compliance, and more. |
@@ -48,7 +48,7 @@ The full nine-phase run lifecycle (triage → profile → taxonomy → stage loo
 sequenceDiagram
     participant U as User
     participant H as Harness
-    participant G as Generator (Claude/Codex/Gemini)
+    participant G as Generator (Claude/Codex/agy)
     participant J as Cross-Vendor Judge
     U->>H: /pp:run "request"
     H->>H: Triage → Profile Detect → Taxonomy Map
@@ -99,7 +99,7 @@ pair-programmer operates as the **engineering squad** within a larger multi-agen
 - **Git** (worktrees used for best-of-N isolation)
 - At least one external CLI for cross-vendor judging:
   - Codex CLI: `npm i -g @openai/codex` + `OPENAI_API_KEY`
-  - Gemini CLI: `npm i -g @google/gemini-cli` + `GEMINI_API_KEY`
+  - Antigravity CLI (agy): install (`irm https://antigravity.google/cli/install.ps1 | iex` on Windows PowerShell, or `curl -fsSL https://antigravity.google/cli/install.sh | bash` on macOS/Linux), then run `agy` once to complete interactive Google Sign-In (no separate `auth` subcommand) — or set `GEMINI_API_KEY` / `ANTIGRAVITY_API_KEY` for headless auth
 
 ### Build
 
@@ -132,7 +132,8 @@ The MCP servers register automatically via `.mcp.json`. Restart Claude Code afte
 | Variable | Purpose |
 |----------|---------|
 | `OPENAI_API_KEY` | Codex CLI authentication (or use `codex login`) |
-| `GEMINI_API_KEY` | Gemini CLI authentication (or use `gemini auth`) |
+| `GEMINI_API_KEY` / `ANTIGRAVITY_API_KEY` | agy headless auth (`GOOGLE_API_KEY` also accepted). Or just run `agy` once for interactive Google Sign-In via the system keyring (no separate `auth` subcommand). |
+| `PP_DISABLE_AGY` | Set to `1` to disable agy entirely (default off — agy enabled). |
 
 Cross-vendor gates require **two** configured vendors. The `SessionStart.vendor-matrix` hook warns if only one is available.
 
@@ -142,7 +143,7 @@ Cross-vendor gates require **two** configured vendors. The `SessionStart.vendor-
 
 | Category | Count | Highlights |
 |----------|-------|------------|
-| **MCP Tools** | 79 | 75 on `pp_harness` (orchestration, taxonomy, gates, best-of-N, replay, janitor) + 2 on `pp_codex` + 2 on `pp_gemini` |
+| **MCP Tools** | 79 | 75 on `pp_harness` (orchestration, taxonomy, gates, best-of-N, replay, janitor) + 2 on `pp_codex` + 2 on `pp_agy` |
 | **Sub-Agents** | 75 | engineer, architect, judge-cross-vendor, security-reviewer, designer, game-ai-programmer, live-ops-manager, and 68 more |
 | **Slash Commands** | 19 | `/pp:run`, `/pp:best-of`, `/pp:team`, `/pp:review`, `/pp:constitution`, `/pp:evolution`, and 13 more |
 | **Teams** | 25 | feature, bug-fix, refactor, security-review, ux, design-system, deep-reasoning (Fable-5), game-cert, game-live-ops, and 16 more |
@@ -215,7 +216,7 @@ Installs as a Copilot CLI plugin for the current user. Re-run after `git pull` (
 pair-programmer/
   daemon/                         # TypeScript daemon (MCP + SQLite + orchestration)
     src/
-      mcp/                        # 3 MCP servers: harness (75 tools), codex (2), gemini (2)
+      mcp/                        # 3 MCP servers: harness (75 tools), codex (2), agy (2)
       orchestrator/               # runs, gates, taxonomy, missability, best-of-n, profiles, teams, forums
       ecosystem/                  # TheEights client, Hydra envelopes
       rubrics/                    # 25 standard-aligned rubric definitions

@@ -13,7 +13,7 @@ stages:
     gate_type: spec                 # one of spec | design | security | contract | code_style | docs_polish | lint_class
     generator:
       agent: spec-author            # an agent in .claude/agents/
-      primary: claude               # codex | gemini | claude (soft preference)
+      primary: claude               # codex | agy | claude (soft preference)
       binding_strict: false         # true → fail closed if primary unavailable
     judge:
       tier: cross_vendor            # cross_vendor | same_vendor (the daemon's gate decision overrides this)

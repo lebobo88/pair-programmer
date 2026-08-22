@@ -19,12 +19,12 @@
       ],
       "env": {}
     },
-    "pp_gemini": {
+    "pp_agy": {
       "type": "stdio",
       "command": "node",
       "args": [
         "daemon/dist/index.js",
-        "mcp-gemini"
+        "mcp-agy"
       ],
       "env": {}
     }

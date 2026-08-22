@@ -8,16 +8,16 @@ The `daemon-up` SessionStart hook fails closed: a session won't start while the 
 
 ## Vendor matrix
 
-Cross-vendor gates require both OpenAI (Codex) and Google (Gemini) configured. The fastest check:
+Cross-vendor gates require both OpenAI (Codex) and Google (via the Antigravity CLI, agy) configured. The fastest check:
 
 ```bash
 codex --version
-gemini --version
+agy --version
 ```
 
 If either is missing:
 - Codex: `npm i -g @openai/codex`, then `codex login` or `setx OPENAI_API_KEY <key>`.
-- Gemini: `npm i -g @google/gemini-cli`, then `gemini auth` or `setx GEMINI_API_KEY <key>`.
+- Antigravity (agy): install via `irm https://antigravity.google/cli/install.ps1 | iex` (Windows) or `curl -fsSL https://antigravity.google/cli/install.sh | bash` (macOS/Linux), then run `agy` once (no separate `auth` subcommand) to complete Google Sign-In — agy shares OAuth state with the legacy Gemini CLI at `~/.gemini/oauth_creds.json`, so an existing Google login carries over — or set `GEMINI_API_KEY` / `ANTIGRAVITY_API_KEY` for headless auth.
 
 The `vendor-matrix` SessionStart hook only fails closed when an active run already exists in this project. New projects can still start in same-vendor mode (until they hit a cross-vendor gate).
 
@@ -45,9 +45,9 @@ If artifact writes fail with `ENAMETOOLONG`:
 1. Enable `LongPathsEnabled` in the registry: `Computer\HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Control\FileSystem\LongPathsEnabled = 1`.
 2. Restart the shell.
 
-## Codex / Gemini exit codes
+## Codex / agy exit codes
 
-The npm shim wraps the binary's exit code on Windows. The wrappers in `daemon/src/mcp/{codex,gemini}-server.ts` already handle this — they read `exitCode` from execa's structured result rather than `$LASTEXITCODE`.
+The npm shim wraps the binary's exit code on Windows. The wrappers in `daemon/src/mcp/codex-server.ts` and `daemon/src/mcp/antigravity-server.ts` already handle this — they read `exitCode` from execa's structured result rather than `$LASTEXITCODE`.
 
 ## Codex "Not inside a trusted directory"
 

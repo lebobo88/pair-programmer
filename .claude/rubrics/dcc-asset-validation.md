@@ -3,7 +3,7 @@ id: dcc-asset-validation@1
 bare_id: dcc-asset-validation
 kind: contract
 version: 1
-title: "DCC 3D asset & rig validation (Blender → engine)"
+title: DCC 3D asset & rig validation (Blender → engine)
 source_url: https://registry.khronos.org/glTF/specs/2.0/glTF-2.0.html
 generated_by: pp-daemon dump-rubrics
 note: This file mirrors the registry in daemon/src/rubrics/registry.ts. Do not edit by hand — regenerate.

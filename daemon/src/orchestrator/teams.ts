@@ -24,7 +24,7 @@ export type TeamStage = {
      * Optional per-stage Claude tier pin. Sits in layer 5 of the driver's
      * tier resolver (above agent frontmatter, below profile policy /
      * triage / CLI). Only meaningful when generator.primary resolves to
-     * "claude"; ignored for Codex/Gemini producers.
+     * "claude"; ignored for Codex/agy producers.
      */
     model_tier?: ClaudeTier;
   };

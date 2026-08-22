@@ -1,10 +1,10 @@
 import { nanoid } from "nanoid";
 import { createHash } from "node:crypto";
 import { mkdirSync, writeFileSync, statSync, existsSync, readFileSync } from "node:fs";
-import { join, relative } from "node:path";
+import { join, relative, dirname, extname } from "node:path";
 import { trackedExeca } from "../mcp/cli-runner.js";
 import YAML from "yaml";
-import { db, txImmediate } from "../db/database.js";
+import { db, txImmediate, txImmediateWithRetry } from "../db/database.js";
 import { projectArtifactDir } from "../util/paths.js";
 import {
   RunMode, RunStatus, StageStatus, AttemptStatus, VerdictOutcome, vendorFor,
@@ -17,9 +17,9 @@ import { applyMasterPlanPatch, ensureMasterPlan, masterPlanStatus } from "./mast
 import { TAXONOMY_BY_ID, MASTER_PLAN_SECTIONS } from "./taxonomy.js";
 import { ProjectLock, ProjectLockBusyError } from "../util/lock.js";
 import { tmpdir } from "node:os";
-import { DEFAULT_MODELS, geminiEnabled } from "../config.js";
+import { DEFAULT_MODELS, agyEnabled } from "../config.js";
 import { codexCritique } from "../mcp/codex-server.js";
-import { geminiCritique } from "../mcp/gemini-server.js";
+import { agyCritique } from "../mcp/antigravity-server.js";
 import { describeJudgeCapabilities } from "./gates.js";
 import { findPriorTestsPreStage, getLatestTddCheck, type TddCheckRow } from "./tdd-gate.js";
 import {
@@ -31,7 +31,7 @@ import {
   runArtifactValidator,
   type ArtifactValidationRow,
 } from "./artifact-validators/index.js";
-import { parseHydraContext, hydraContextSummary } from "../ecosystem/hydra-context.js";
+import { parseHydraContext, renderHydraContextBlock, hydraContextSummary } from "../ecosystem/hydra-context.js";
 import {
   writeRunStartEpisode,
   writeArtifactMemory,
@@ -56,8 +56,10 @@ export type StartRunInput = {
   forum?: string;
   n?: number;
   session_id?: string;
-  // v7 ecosystem fields (optional). When present, persisted on the runs row
-  // and surfaced to sub-agent prompts via ${HYDRA_CONTEXT}.
+  // v7 ecosystem fields (optional). When present, persisted on the runs row.
+  // The daemon returns the rendered context as `hydra_context_block` on
+  // start_run / ensure_run; the driver (Hydra host_bridge / squad_node)
+  // injects it into generation prompts. pp never assembles prompts itself.
   hydra_workflow_id?: string;
   hydra_envelope_id?: string;
   hydra_origin_squad?: string;
@@ -68,6 +70,11 @@ export type StartRunOutput = {
   run_id: string;
   artifact_dir: string;
   started_at: string;
+  /** Rendered Hydra context block ready for injection into generator prompts.
+   *  Present only when the run was started with `hydra_workflow_id`. The
+   *  driver (Hydra host_bridge / squad_node) injects this into prompts; pp
+   *  never assembles prompts itself. Absent on standalone runs. */
+  hydra_context_block?: string;
 };
 
 export async function startRun(input: StartRunInput): Promise<StartRunOutput> {
@@ -224,7 +231,11 @@ export async function startRun(input: StartRunInput): Promise<StartRunOutput> {
     },
     "run started"
   );
-  return { run_id: id, artifact_dir: dir, started_at: startedAt };
+  const result: StartRunOutput = { run_id: id, artifact_dir: dir, started_at: startedAt };
+  if (hydraCtx) {
+    result.hydra_context_block = renderHydraContextBlock(hydraCtx);
+  }
+  return result;
 }
 
 // ─── ensure_run ──────────────────────────────────────────────────────────
@@ -257,6 +268,11 @@ export type EnsureRunOutput = {
   run_id: string;
   created: boolean;
   artifact_dir: string;
+  /** Rendered Hydra context block ready for injection into generator prompts.
+   *  Present when the run (existing or newly-created) was linked to a Hydra
+   *  workflow. The driver injects this into prompts; pp never assembles
+   *  prompts itself. Absent when the run has no hydra_workflow_id. */
+  hydra_context_block?: string;
 };
 
 export async function ensureRun(input: EnsureRunInput): Promise<EnsureRunOutput> {
@@ -268,11 +284,20 @@ export async function ensureRun(input: EnsureRunInput): Promise<EnsureRunOutput>
   // don't compound it by spawning more).
   const existing = db()
     .prepare(
-      `SELECT id, project_path FROM runs
-       WHERE project_path = ? AND team = ? AND status IN ('running','pending')
-       ORDER BY started_at DESC LIMIT 1`
+      `SELECT id, project_path,
+              hydra_workflow_id, hydra_envelope_id, hydra_origin_squad, hydra_envelope_type
+         FROM runs
+        WHERE project_path = ? AND team = ? AND status IN ('running','pending')
+        ORDER BY started_at DESC LIMIT 1`
     )
-    .get(input.project_path, kind) as { id: string; project_path: string } | undefined;
+    .get(input.project_path, kind) as {
+      id: string;
+      project_path: string;
+      hydra_workflow_id: string | null;
+      hydra_envelope_id: string | null;
+      hydra_origin_squad: string | null;
+      hydra_envelope_type: string | null;
+    } | undefined;
 
   if (existing) {
     const dir = projectArtifactDir(existing.project_path, existing.id);
@@ -280,7 +305,17 @@ export async function ensureRun(input: EnsureRunInput): Promise<EnsureRunOutput>
       { run_id: existing.id, project_path: input.project_path, kind },
       "ensure_run: reusing open run"
     );
-    return { run_id: existing.id, created: false, artifact_dir: dir };
+    const existingHydraCtx = parseHydraContext({
+      hydra_workflow_id: existing.hydra_workflow_id,
+      hydra_envelope_id: existing.hydra_envelope_id,
+      hydra_origin_squad: existing.hydra_origin_squad,
+      hydra_envelope_type: existing.hydra_envelope_type,
+    });
+    const existingResult: EnsureRunOutput = { run_id: existing.id, created: false, artifact_dir: dir };
+    if (existingHydraCtx) {
+      existingResult.hydra_context_block = renderHydraContextBlock(existingHydraCtx);
+    }
+    return existingResult;
   }
 
   // No open run for this (project_path, kind) — spin one up. We route through
@@ -296,7 +331,11 @@ export async function ensureRun(input: EnsureRunInput): Promise<EnsureRunOutput>
     { run_id: out.run_id, project_path: input.project_path, kind },
     "ensure_run: created minimal single-mode run for dispatched sub-agents"
   );
-  return { run_id: out.run_id, created: true, artifact_dir: out.artifact_dir };
+  const createdResult: EnsureRunOutput = { run_id: out.run_id, created: true, artifact_dir: out.artifact_dir };
+  if (out.hydra_context_block) {
+    createdResult.hydra_context_block = out.hydra_context_block;
+  }
+  return createdResult;
 }
 
 export type StartStageInput = {
@@ -375,7 +414,7 @@ export type RecordAttemptInput = {
   /**
    * Resolved Claude tier for this attempt. Only meaningful when
    * producer === "claude"; ignored otherwise (the driver still records it
-   * for Codex/Gemini attempts as `null` so the column is uniform).
+   * for Codex/agy attempts as `null` so the column is uniform).
    */
   attempted_tier?: ClaudeTier;
   /** Engineer self-verification surface; see AttemptNotes. */
@@ -496,14 +535,65 @@ export function recordAttempt(input: RecordAttemptInput): RecordAttemptOutput {
 }
 
 /**
+ * A reasonable-looking-but-obviously-nonexistent extension, used to reject
+ * paths whose "extension" is clearly not a source-file suffix (e.g. a
+ * fabricated path with no extension at all, or one so long it's plainly
+ * not a real extension).
+ */
+const MAX_PLAUSIBLE_EXTENSION_LENGTH = 8; // ".config" etc; generous on purpose
+
+/**
+ * Discriminates a plausible "hasn't landed yet" citation from a fabricated
+ * one, for a `file` that does not currently exist at `projectPath`.
+ *
+ * A real file whose diff simply hasn't landed still names a real,
+ * sane-looking path: it has a recognizable extension, and its parent
+ * directory already exists in the project (the file itself is new/pending,
+ * but the module/folder it belongs to is not). A citation that fails
+ * either check could not plausibly be a real file in this project
+ * regardless of landing state, so it is NOT given the unlanded-diff
+ * benefit of the doubt — per the fabrication-detection contract, when
+ * genuinely uncertain we prefer the fabrication classification.
+ *
+ * This is intentionally conservative: it does not attempt to correlate
+ * `file` against the attempt's actual diff (no diff text is persisted to
+ * cross-check against), so it can still excuse a fabricated-but-plausible
+ * path in a directory that happens to exist. It closes the specific gap
+ * where P4 excused *every* missing file unconditionally.
+ */
+function looksLikePlausibleUnlandedPath(file: string, projectPath: string): boolean {
+  const ext = extname(file);
+  if (!ext || ext.length > MAX_PLAUSIBLE_EXTENSION_LENGTH) return false;
+  // Reject control characters and unreasonably long paths outright.
+  if (file.length > 260 || /[\x00-\x1f]/.test(file)) return false;
+
+  const parent = dirname(join(projectPath, file));
+  try {
+    return existsSync(parent) && statSync(parent).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
+/**
  * R3-tail post-mortem Fix 1.4 (2026-05-21): validate that every finding the
  * judge cited in `score_json.findings_provenance` quotes text that ACTUALLY
  * appears in the cited file. Drift = the judge fabricated the citation.
  *
  * The check is best-effort and read-only — it doesn't block the verdict
  * insert (the operator can still see the critique and decide), but it
- * sets `hallucination_suspected = 1` on the verdict row so downstream
- * gates can surface the smell.
+ * sets `hallucination_suspected = 1` on the verdict row for any citation
+ * classified `severity: "fabrication"` — which covers a missing file or
+ * quoted_text field, a too-short quote, a non-project-relative path, a
+ * cited file that exists but doesn't contain the quoted text, a file that
+ * exists but couldn't be read, AND a missing file whose path isn't even
+ * plausible as an unlanded diff (see `looksLikePlausibleUnlandedPath`) —
+ * so downstream gates (PP-VG-6) can surface the smell. Only a missing
+ * file at a *plausible* project-relative path (real parent directory,
+ * sane extension) is excused as `severity: "unlanded_diff"`: it's
+ * recorded in `details_json` for visibility but does NOT set
+ * `hallucination_suspected`, since project_path resolves to the run's
+ * target repo root rather than the stage's own worktree.
  */
 function validateFindingsProvenance(args: {
   score_json: unknown;
@@ -533,12 +623,20 @@ function validateFindingsProvenance(args: {
     return { hallucination_suspected: false, details_json: null };
   }
 
+  // `project_path` resolves to the RUN's target repo root, not the stage's
+  // worktree — so for a stage whose diff hasn't landed there yet, a cited
+  // file is legitimately absent. That is an "unlanded diff" condition, not
+  // evidence of fabrication, and must not score the same as a citation
+  // whose file exists but doesn't contain the quoted text (a genuine
+  // fabrication signal). `severity` distinguishes the two: only
+  // "fabrication" entries set `hallucination_suspected` and trip PP-VG-6.
   const misses: Array<{
     id: string;
     file: string;
     line?: number;
     quoted_text: string;
     reason: string;
+    severity: "fabrication" | "unlanded_diff";
   }> = [];
 
   for (const entry of provenance) {
@@ -555,37 +653,75 @@ function validateFindingsProvenance(args: {
     if (!file || !quoted) {
       misses.push({
         id, file: file ?? "<missing>", line, quoted_text: quoted ?? "",
-        reason: "entry missing file or quoted_text",
+        reason: "entry missing file or quoted_text", severity: "fabrication",
       });
       continue;
     }
     if (quoted.trim().length < 8) {
       // Too-short quotes match too much by chance; reject as smell.
-      misses.push({ id, file, line, quoted_text: quoted, reason: "quoted_text shorter than 8 chars" });
+      misses.push({ id, file, line, quoted_text: quoted, reason: "quoted_text shorter than 8 chars", severity: "fabrication" });
       continue;
     }
     // Reject obvious path-traversal in `file` — judge agents must cite
     // project-relative paths.
     if (file.includes("..") || file.startsWith("/") || /^[A-Za-z]:[\\\/]/.test(file)) {
-      misses.push({ id, file, line, quoted_text: quoted, reason: "file is not project-relative" });
+      misses.push({ id, file, line, quoted_text: quoted, reason: "file is not project-relative", severity: "fabrication" });
       continue;
     }
+
+    const abs = join(projectRow.project_path, file);
+    let exists = false;
+    try {
+      exists = existsSync(abs);
+    } catch {
+      exists = false;
+    }
+    if (!exists) {
+      // The file isn't at project_path. That's only excusable as an
+      // "unlanded diff" (a stage whose changes haven't landed in the
+      // target repo yet) if the path is at least *plausible* — a
+      // well-formed, project-relative path under a directory that
+      // genuinely exists in this project. A path that couldn't
+      // plausibly be a real file here regardless of landing state
+      // (bogus extension, or a parent directory that doesn't exist
+      // either) gets no benefit of the doubt: it stays fabrication-
+      // severity. When genuinely uncertain, prefer fabrication — a
+      // false hallucination flag is recoverable, a missed one is not.
+      if (looksLikePlausibleUnlandedPath(file, projectRow.project_path)) {
+        misses.push({
+          id, file, line, quoted_text: quoted,
+          reason: "cited file does not exist at project_path (unlanded diff, or project_path predates this stage's changes)",
+          severity: "unlanded_diff",
+        });
+      } else {
+        misses.push({
+          id, file, line, quoted_text: quoted,
+          reason: "cited file does not exist at project_path, and the path is not plausible as an unlanded file " +
+            "(no recognizable extension, or its parent directory doesn't exist in the project either) — fabricated citation",
+          severity: "fabrication",
+        });
+      }
+      continue;
+    }
+
     let text = "";
     try {
-      const abs = join(projectRow.project_path, file);
-      if (existsSync(abs)) text = readFileSync(abs, "utf8");
+      text = readFileSync(abs, "utf8");
     } catch {
-      misses.push({ id, file, line, quoted_text: quoted, reason: "file read failed" });
-      continue;
-    }
-    if (!text) {
-      misses.push({ id, file, line, quoted_text: quoted, reason: "file empty or unreadable" });
+      // File exists but couldn't be read (permissions, race with a
+      // concurrent delete, etc.) — we can't confirm the quote either way,
+      // but an existing-yet-unreadable citation is closer to a bad
+      // citation than a missing one, so treat it as a fabrication smell.
+      misses.push({ id, file, line, quoted_text: quoted, reason: "file exists but could not be read", severity: "fabrication" });
       continue;
     }
     if (!text.includes(quoted)) {
+      // The file exists — the judge had something real to quote — and the
+      // quoted text still isn't in it. This is the genuine fabrication case.
       misses.push({
         id, file, line, quoted_text: quoted,
-        reason: "quoted_text not found in file (substring miss)",
+        reason: "file exists but quoted_text not found in it (substring miss) — fabricated citation",
+        severity: "fabrication",
       });
     }
   }
@@ -593,8 +729,12 @@ function validateFindingsProvenance(args: {
   if (misses.length === 0) {
     return { hallucination_suspected: false, details_json: null };
   }
+  const fabricationMisses = misses.filter(m => m.severity === "fabrication");
   return {
-    hallucination_suspected: true,
+    // Only fabrication-severity misses trip the PP-VG-6 gate. An
+    // unlanded-diff-only result still surfaces in details_json for
+    // visibility, but must not block finalize on its own.
+    hallucination_suspected: fabricationMisses.length > 0,
     details_json: JSON.stringify({
       total_provenance_entries: provenance.length,
       misses,
@@ -610,10 +750,87 @@ export type RecordVerdictInput = {
   outcome: VerdictOutcome;
   critique_md?: string;
   score_json?: unknown;
+  idempotency_token?: string;
 };
 export type RecordVerdictOutput = { verdict_id: string; cross_vendor: boolean };
 
+/**
+ * LV-8 (defense in depth): the unique index on idempotency_token is global —
+ * unscoped by attempt. A caller that (by bug or collision) supplies a token
+ * already owned by a DIFFERENT attempt must never silently receive that
+ * other attempt's verdict back as if it were its own; that is exactly the
+ * shape of the incident this hardens against (Hydra's attended judge
+ * call_key was, pre-fix, unscoped across stages, so two different stages'
+ * first verdict shared the literal token "judge-0"). Checking attempt_id
+ * ownership here — independent of whatever scoping the caller does or
+ * doesn't do — is what makes that class of bug fail loudly instead of
+ * silently.
+ */
+function findVerdictByIdempotencyToken(
+  token: string
+): (RecordVerdictOutput & { attempt_id: string }) | undefined {
+  const row = db()
+    .prepare(`SELECT id, cross_vendor, attempt_id FROM verdicts WHERE idempotency_token = ?`)
+    .get(token) as { id: string; cross_vendor: number; attempt_id: string } | undefined;
+  return row
+    ? { verdict_id: row.id, cross_vendor: !!row.cross_vendor, attempt_id: row.attempt_id }
+    : undefined;
+}
+
+class IdempotencyTokenAttemptMismatchError extends Error {
+  constructor(token: string, existingAttemptId: string, requestedAttemptId: string) {
+    super(
+      `idempotency_token ${JSON.stringify(token)} is already recorded against ` +
+      `attempt ${JSON.stringify(existingAttemptId)}, not the requested attempt ` +
+      `${JSON.stringify(requestedAttemptId)}. Refusing to return the other ` +
+      `attempt's verdict -- the caller must supply a token scoped uniquely to ` +
+      `its own attempt (e.g. include the run/stage/attempt id in the token).`
+    );
+    this.name = "IdempotencyTokenAttemptMismatchError";
+  }
+}
+
+/** Returns the existing row only if it truly belongs to `attemptId`; throws
+ * on a cross-attempt collision rather than ever returning it. */
+function resolveIdempotentVerdict(
+  token: string,
+  attemptId: string
+): RecordVerdictOutput | undefined {
+  const existing = findVerdictByIdempotencyToken(token);
+  if (!existing) return undefined;
+  if (existing.attempt_id !== attemptId) {
+    throw new IdempotencyTokenAttemptMismatchError(token, existing.attempt_id, attemptId);
+  }
+  return { verdict_id: existing.verdict_id, cross_vendor: existing.cross_vendor };
+}
+
+/**
+ * Matches the SQLite UNIQUE-constraint-violation message shape for the
+ * idempotency-token index (a concurrent duplicate insert): it string-tests
+ * the error message for "UNIQUE constraint failed" together with
+ * "idempotency_token", so it will not match a UNIQUE violation on a
+ * different column, but it is a message match, not a structural one — a
+ * constraint error whose message happens to contain both substrings for
+ * an unrelated reason would also match.
+ */
+function isIdempotencyTokenCollision(err: unknown): boolean {
+  if (!err || typeof err !== "object") return false;
+  const message = (err as { message?: unknown }).message;
+  return typeof message === "string" &&
+    /UNIQUE constraint failed/i.test(message) &&
+    /idempotency_token/i.test(message);
+}
+
 export function recordVerdict(input: RecordVerdictInput): RecordVerdictOutput {
+  // P3: a retried call carrying a previously-seen idempotency_token is a
+  // no-op — return the original verdict rather than recording (and
+  // fire-and-forget re-memoing) a duplicate. Checked before any other
+  // work so a replay is cheap and side-effect-free.
+  if (input.idempotency_token) {
+    const existing = resolveIdempotentVerdict(input.idempotency_token, input.attempt_id);
+    if (existing) return existing;
+  }
+
   const id = `verdict_${nanoid(10)}`;
   const att = db()
     .prepare(`SELECT producer, model_id FROM attempts WHERE id = ?`)
@@ -631,13 +848,13 @@ export function recordVerdict(input: RecordVerdictInput): RecordVerdictOutput {
       `because pp_codex.critique is pinned to those models (default or escalated)`
     );
   }
-  if (input.judge_producer === "gemini" && input.judge_model_id !== DEFAULT_MODELS.gemini_critique) {
+  if (input.judge_producer === "agy" && input.judge_model_id !== DEFAULT_MODELS.agy_critique) {
     throw new Error(
-      `judge_producer=gemini must record judge_model_id="${DEFAULT_MODELS.gemini_critique}" ` +
-      `because pp_gemini.critique is hard-pinned to that model`
+      `judge_producer=agy must record judge_model_id="${DEFAULT_MODELS.agy_critique}" ` +
+      `because pp_agy.critique is hard-pinned to that model`
     );
   }
-  if (att.producer === input.judge_producer && att.model_id === input.judge_model_id && att.producer !== "gemini") {
+  if (att.producer === input.judge_producer && att.model_id === input.judge_model_id && att.producer !== "agy") {
     throw new Error(
       `same-vendor verdict requires different model ids for producer=${att.producer}: ` +
       `generator=${att.model_id}, judge=${input.judge_model_id}`
@@ -660,31 +877,56 @@ export function recordVerdict(input: RecordVerdictInput): RecordVerdictOutput {
     attempt_id: input.attempt_id,
   });
 
-  txImmediate(() => {
-    db()
-      .prepare(
-        `INSERT INTO verdicts(
-          id, attempt_id, judge_producer, judge_model_id, rubric_id,
-          outcome, critique_md, score_json, cross_vendor,
-          hallucination_suspected, hallucination_details,
-          created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-      )
-      .run(
-        id,
-        input.attempt_id,
-        input.judge_producer,
-        input.judge_model_id,
-        input.rubric_id ?? null,
-        input.outcome,
-        input.critique_md ?? null,
-        input.score_json ? JSON.stringify(input.score_json) : null,
-        crossVendor ? 1 : 0,
-        provenanceCheck.hallucination_suspected ? 1 : 0,
-        provenanceCheck.details_json,
-        now()
-      );
-  });
+  // P1/P2: record_verdict writes land against a `busy_timeout` chosen to
+  // survive a concurrent sibling daemon's cold start (see database.ts),
+  // and txImmediateWithRetry adds an app-level SQLITE_BUSY/SQLITE_LOCKED
+  // retry with backoff for contention that outlives even that window.
+  // Neither retries a genuine constraint violation. record_verdict rides
+  // the MCP dispatcher's default 120s tool timeout (it isn't in Hydra's
+  // long-tool allowance), so txImmediateWithRetry's defaults are sized to
+  // stay well under that — see the wall-time-budget comment on
+  // txImmediateWithRetry in database.ts for the arithmetic.
+  try {
+    txImmediateWithRetry(() => {
+      db()
+        .prepare(
+          `INSERT INTO verdicts(
+            id, attempt_id, judge_producer, judge_model_id, rubric_id,
+            outcome, critique_md, score_json, cross_vendor,
+            hallucination_suspected, hallucination_details,
+            idempotency_token,
+            created_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        )
+        .run(
+          id,
+          input.attempt_id,
+          input.judge_producer,
+          input.judge_model_id,
+          input.rubric_id ?? null,
+          input.outcome,
+          input.critique_md ?? null,
+          input.score_json ? JSON.stringify(input.score_json) : null,
+          crossVendor ? 1 : 0,
+          provenanceCheck.hallucination_suspected ? 1 : 0,
+          provenanceCheck.details_json,
+          input.idempotency_token ?? null,
+          now()
+        );
+    });
+  } catch (err) {
+    // Two concurrent calls carrying the same idempotency_token can both
+    // pass the early no-op check above before either commits; the partial
+    // unique index then rejects the loser. Treat that exactly like the
+    // early no-op path — return the winner's row — rather than surfacing
+    // a constraint error for what is, from the caller's perspective, a
+    // successful retry.
+    if (input.idempotency_token && isIdempotencyTokenCollision(err)) {
+      const existing = resolveIdempotentVerdict(input.idempotency_token, input.attempt_id);
+      if (existing) return existing;
+    }
+    throw err;
+  }
 
   // Fire-and-forget: record the verdict as an evaluation memory. The
   // wrapper joins back to stage_kind + project_path so cross-run reflexion
@@ -743,6 +985,13 @@ export type RetractVerdictInput = {
   superseded_by?: string;                              // verdict_id of the replacement
 };
 export type RetractVerdictOutput = { verdict_id: string; retracted_at: string };
+
+export class RunNotFound extends Error {
+  constructor(message: string, public readonly run_id: string) {
+    super(message);
+    this.name = "RunNotFound";
+  }
+}
 
 export class VerdictNotFound extends Error {
   constructor(message: string, public readonly verdict_id: string) {
@@ -814,6 +1063,7 @@ export type StageFinalizeNextAction =
   | "retry_or_surface"
   | "surface_stage"
   | "dispatch_cross_vendor_rejudge"
+  | "record_verdict"
   | "record_smoke_or_assertion";
 
 export type StageFinalizeTddBlocker = {
@@ -901,6 +1151,21 @@ export type StageFinalizeHallucinationBlocker = {
   verdict_id: string;
 };
 
+/**
+ * LV-4: Stage has ≥1 attempt but zero non-retracted verdicts. A stage must not
+ * be marked 'passed' without any judge verdict — live-proven: an attended stage
+ * finalized 'passed'+complete with no verdict row. Record a verdict before
+ * retrying finalize, or finalize with status='surfaced' to accept the unreviewed
+ * attempt.
+ */
+export type StageFinalizeZeroVerdictBlocker = {
+  gate: "zero_verdict";
+  next_action: "record_verdict";
+  message: string;
+  /** The winner (or latest) attempt that awaits a verdict. */
+  attempt_id: string;
+};
+
 export type StageFinalizeBlocker =
   | StageFinalizeTddBlocker
   | StageFinalizeArtifactBlocker
@@ -908,7 +1173,8 @@ export type StageFinalizeBlocker =
   | StageFinalizeRejudgeBlocker
   | StageFinalizeBrowserValidationBlocker
   | StageFinalizeSmokeMissingBlocker
-  | StageFinalizeHallucinationBlocker;
+  | StageFinalizeHallucinationBlocker
+  | StageFinalizeZeroVerdictBlocker;
 
 export type StageFinalizeReadiness = {
   stage_id: string;
@@ -1083,6 +1349,22 @@ export function getStageFinalizeReadiness(stage_id: string, winner_attempt_id?: 
       attempt_id: latestVerdict.attempt_id,
       outcome: latestVerdict.outcome,
     }));
+  }
+
+  // LV-4 zero-verdict gate. If no non-retracted verdict exists but the stage
+  // has ≥1 attempt, block finalize(passed). Live-proven: an attended stage
+  // finalized 'passed'+complete with no verdict row. Stages with zero attempts
+  // (validation-only flows) are not affected — the existing attempt count
+  // check preserves their current behavior. No new escape hatches: the surfaced
+  // path (status='surfaced') is the supported opt-out.
+  if (!latestVerdict) {
+    const latestAttemptRow = db()
+      .prepare(`SELECT id FROM attempts WHERE stage_id = ? ORDER BY created_at DESC LIMIT 1`)
+      .get(stage_id) as { id: string } | undefined;
+    if (latestAttemptRow) {
+      const refAttemptId = winner_attempt_id ?? latestAttemptRow.id;
+      blockers.push(buildZeroVerdictFinalizeBlocker({ stage_id, attempt_id: refAttemptId }));
+    }
   }
 
   // R3-tail post-mortem Fix 0.2: mandatory cross-vendor re-judge gate.
@@ -1474,6 +1756,10 @@ export async function finalizeStage(input: FinalizeStageInput): Promise<void> {
       if (blocker.gate === "hallucination") {
         throw new Error(blocker.message);
       }
+      // LV-4: zero non-retracted verdicts on a stage that has ≥1 attempt.
+      if (blocker.gate === "zero_verdict") {
+        throw new Error(blocker.message);
+      }
       throw new ValidatorGateViolation(
         blocker.message,
         input.stage_id,
@@ -1554,6 +1840,22 @@ function buildVerdictFinalizeBlocker(opts: {
       `(verdict_id=${opts.verdict_id}, attempt_id=${opts.attempt_id}). ` +
       `Call mcp__pp_harness__retry_with_critique to run the Reflexion ×1 retry, ` +
       `or finalize the stage with status='surfaced' to ship the failure intact.`,
+  };
+}
+
+function buildZeroVerdictFinalizeBlocker(opts: {
+  stage_id: string;
+  attempt_id: string;
+}): StageFinalizeZeroVerdictBlocker {
+  return {
+    gate: "zero_verdict",
+    next_action: "record_verdict",
+    attempt_id: opts.attempt_id,
+    message:
+      `finalize_stage refused: stage ${opts.stage_id} has at least one attempt ` +
+      `(winner/latest attempt_id=${opts.attempt_id}) but no non-retracted verdict. ` +
+      `LV-4 gate: record a verdict via mcp__pp_harness__record_verdict before retrying ` +
+      `finalize_passed, or finalize with status='surfaced' to accept the unreviewed attempt.`,
   };
 }
 
@@ -2753,6 +3055,54 @@ export function archiveArtifact(input: ArchiveArtifactInput): ArchiveArtifactOut
   return { status: "ok", artifact_id: id, absolute_path: absolute, sha256 };
 }
 
+// RA-4: surfaced-run operator ack types and implementation.
+export type AckRunInput = {
+  run_id: string;
+  /** Human reason for acknowledging — stored verbatim for the audit trail. */
+  reason: string;
+};
+
+export type AckRunOutput =
+  | { acked: true;         run_id: string; acked_at: string }
+  | { already_acked: true; run_id: string; acked_at: string };
+
+/**
+ * Mark a surfaced (or any status) run as operator-acknowledged.
+ *
+ * Sets `acked_at` to the current ISO timestamp and persists the operator's
+ * `reason` in `acked_reason`. Both banner queries in dispatcher.ts filter
+ * `WHERE acked_at IS NULL`, so an acked run stops appearing in session
+ * startup nags.
+ *
+ * Idempotent: a second call with any reason returns `already_acked: true`
+ * without overwriting the original timestamp or reason, so the first ack
+ * wins and the audit trail stays clean.
+ *
+ * Throws `RunNotFound` when the run_id does not exist.
+ */
+export function ackRun(input: AckRunInput): AckRunOutput {
+  const existing = db()
+    .prepare(`SELECT id, acked_at, acked_reason FROM runs WHERE id = ?`)
+    .get(input.run_id) as { id: string; acked_at: string | null; acked_reason: string | null } | undefined;
+  if (!existing) {
+    throw new RunNotFound(`run ${input.run_id} not found`, input.run_id);
+  }
+  if (existing.acked_at) {
+    // Idempotent: already acked — return the original timestamp so the caller
+    // can display it. Any reason is accepted for re-ack (unlike retractVerdict
+    // which guards the audit trail with a same-reason check; ack is advisory
+    // only and does not affect run integrity).
+    return { already_acked: true, run_id: existing.id, acked_at: existing.acked_at };
+  }
+  const ts = now();
+  txImmediate(() => {
+    db()
+      .prepare(`UPDATE runs SET acked_at = ?, acked_reason = ? WHERE id = ?`)
+      .run(ts, input.reason, input.run_id);
+  });
+  return { acked: true, run_id: input.run_id, acked_at: ts };
+}
+
 export function listRuns(filter: { project_path?: string; status?: RunStatus; limit?: number }): unknown[] {
   const where: string[] = [];
   const params: unknown[] = [];
@@ -2862,7 +3212,7 @@ async function tryGitCommand(cwd: string, args: string[]): Promise<string | null
 
 async function captureCliVersions(): Promise<Record<string, string | null>> {
   const out: Record<string, string | null> = {};
-  for (const cli of ["codex", "gemini", "claude", "git", "node"]) {
+  for (const cli of ["codex", "agy", "claude", "git", "node"]) {
     out[cli] = (await tryCmd(cli, ["--version"])) ?? null;
   }
   return out;
@@ -2903,14 +3253,14 @@ export async function doctor(opts: DoctorOptions = {}): Promise<unknown> {
   // permissive — a freshly-installed CLI without an API key cannot serve
   // requests, so reporting "configured" would mislead /pp:doctor consumers
   // and hide cross-vendor outages until the first runtime call.
-  // geminiEnabled() is the global Gemini kill-switch (PP_DISABLE_GEMINI=1).
+  // agyEnabled() is the global Antigravity (agy) kill-switch (PP_DISABLE_AGY=1).
   // Gating `google` here is the single master chokepoint: a false value
   // cascades to the enforce-vendor-matrix hook, best-of-N preconditions, the
   // cross_vendor_ready count, and the critique smoke test — making the harness
   // behave as if Google were simply not a configured vendor.
   const vendors: Record<string, boolean> = {
     openai:    cliVersions.codex  !== null && hasOpenAiCreds(),
-    google:    geminiEnabled() && cliVersions.gemini !== null && hasGoogleCreds(),
+    google:    agyEnabled() && cliVersions.agy !== null && hasGoogleCreds(),
     anthropic: cliVersions.claude !== null && hasAnthropicCreds(),
   };
   const vendor_credentials: Record<string, { cli: boolean; api_key: boolean; logged_in: boolean }> = {
@@ -2920,9 +3270,9 @@ export async function doctor(opts: DoctorOptions = {}): Promise<unknown> {
       logged_in: codexLoggedIn(),
     },
     google: {
-      cli: cliVersions.gemini !== null,
-      api_key: !!process.env.GEMINI_API_KEY || !!process.env.GOOGLE_API_KEY,
-      logged_in: geminiLoggedIn(),
+      cli: cliVersions.agy !== null,
+      api_key: !!process.env.GEMINI_API_KEY || !!process.env.GOOGLE_API_KEY || !!process.env.ANTIGRAVITY_API_KEY,
+      logged_in: agyLoggedIn(),
     },
     anthropic: {
       cli: cliVersions.claude !== null,
@@ -2943,18 +3293,18 @@ export async function doctor(opts: DoctorOptions = {}): Promise<unknown> {
     reason?: string;
   };
   const critique_smoke: Record<string, SmokeResult> = {
-    codex:  { status: "skipped", model: DEFAULT_MODELS.codex_critique },
-    gemini: { status: "skipped", model: DEFAULT_MODELS.gemini_critique },
+    codex: { status: "skipped", model: DEFAULT_MODELS.codex_critique },
+    agy:   { status: "skipped", model: DEFAULT_MODELS.agy_critique },
   };
   if (opts.smoke) {
-    if (vendors.openai)  critique_smoke.codex  = await codexCritiqueSmoke();
-    if (vendors.google)  critique_smoke.gemini = await geminiCritiqueSmoke();
+    if (vendors.openai)  critique_smoke.codex = await codexCritiqueSmoke();
+    if (vendors.google)  critique_smoke.agy   = await agyCritiqueSmoke();
   }
 
   // Degraded = creds say "configured" but smoke reveals broken bridge.
   const vendor_degraded: Record<string, boolean> = {
-    openai:    !!vendors.openai && critique_smoke.codex?.status  === "fail",
-    google:    !!vendors.google && critique_smoke.gemini?.status === "fail",
+    openai:    !!vendors.openai && critique_smoke.codex?.status === "fail",
+    google:    !!vendors.google && critique_smoke.agy?.status   === "fail",
     anthropic: false, // no smoke for in-process Claude judge
   };
 
@@ -2967,7 +3317,7 @@ export async function doctor(opts: DoctorOptions = {}): Promise<unknown> {
     vendor_credentials,
     judge_capabilities: describeJudgeCapabilities(),
     vendor_degraded,
-    gemini_disabled: !geminiEnabled(),
+    agy_disabled: !agyEnabled(),
     cross_vendor_ready: vendorCount >= 2,
     critique_smoke,
     browser_engines,
@@ -3076,7 +3426,7 @@ async function codexCritiqueSmoke(): Promise<{
   }
 }
 
-async function geminiCritiqueSmoke(): Promise<{
+async function agyCritiqueSmoke(): Promise<{
   status: "ok" | "fail" | "skipped";
   model: string;
   exit_code?: number;
@@ -3086,11 +3436,11 @@ async function geminiCritiqueSmoke(): Promise<{
 }> {
   const cwd = tmpdir();
   try {
-    const run = await geminiCritique({
+    const run = await agyCritique({
       artifact_text: SMOKE_ARTIFACT,
       rubric_md: SMOKE_RUBRIC,
       cwd,
-      model: DEFAULT_MODELS.gemini_critique,
+      model: DEFAULT_MODELS.agy_critique,
       timeout_ms: SMOKE_TIMEOUT_MS,
     });
     if (run.exit_code === 0) {
@@ -3108,7 +3458,7 @@ async function geminiCritiqueSmoke(): Promise<{
   } catch (err) {
     return {
       status: "fail",
-      model: DEFAULT_MODELS.gemini_critique,
+      model: DEFAULT_MODELS.agy_critique,
       reason: `exception: ${(err as Error).message}`,
     };
   }
@@ -3129,7 +3479,7 @@ function hasOpenAiCreds(): boolean {
 }
 
 function hasGoogleCreds(): boolean {
-  return !!process.env.GEMINI_API_KEY || !!process.env.GOOGLE_API_KEY || geminiLoggedIn();
+  return !!process.env.GEMINI_API_KEY || !!process.env.GOOGLE_API_KEY || !!process.env.ANTIGRAVITY_API_KEY || agyLoggedIn();
 }
 
 function hasAnthropicCreds(): boolean {
@@ -3158,11 +3508,13 @@ function codexLoggedIn(): boolean {
 }
 
 /**
- * Detection of a Gemini logged-in session. The Gemini CLI persists OAuth
- * state at `~/.gemini/oauth_creds.json`. Same caveat — we only check
- * presence + non-empty, not validity.
+ * Detection of an Antigravity (agy) logged-in session. agy shares its
+ * Google Sign-In OAuth state with the legacy Gemini CLI's config tree at
+ * `~/.gemini/oauth_creds.json` (agy's own config lives under
+ * `~/.gemini/config/`, alongside `~/.gemini/antigravity-cli/`). Same
+ * caveat as codexLoggedIn — we only check presence + non-empty, not validity.
  */
-function geminiLoggedIn(): boolean {
+function agyLoggedIn(): boolean {
   try {
     const home = (process.env.USERPROFILE ?? process.env.HOME) ?? "";
     if (!home) return false;

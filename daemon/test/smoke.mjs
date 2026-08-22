@@ -46,7 +46,7 @@ async function main() {
     if (health.judge_capabilities?.codex?.critique_model !== "gpt-5.4") {
       throw new Error(`expected codex critique model gpt-5.4, got: ${pretty(health.judge_capabilities?.codex)}`);
     }
-    console.log(`✓ doctor judge_capabilities: codex=${health.judge_capabilities.codex.same_vendor_mode}, gemini=${health.judge_capabilities.gemini.same_vendor_mode}`);
+    console.log(`✓ doctor judge_capabilities: codex=${health.judge_capabilities.codex.same_vendor_mode}, agy=${health.judge_capabilities.agy.same_vendor_mode}`);
 
     // 2. Start a run inside a temp dir (so we don't litter the project).
     //    Pass the v7 Hydra context fields too, so we can assert at step 9
@@ -59,7 +59,7 @@ async function main() {
       hydra_workflow_id:   "wf_smoke_001",
       hydra_envelope_id:   "env_smoke_001",
       hydra_origin_squad:  "executive",
-      hydra_envelope_type: "DevTask",
+      hydra_envelope_type: "DEV_TASK",
     });
     console.log(`✓ start_run -> ${run.run_id}`);
 
@@ -81,6 +81,7 @@ async function main() {
       cost_usd: 0.012,
       wall_ms: 4321,
       status: "ok",
+      notes: { candidate_index: 1 },
     });
     console.log(`✓ record_attempt -> ${att.attempt_id}`);
 
@@ -108,9 +109,19 @@ async function main() {
     });
     console.log(`✓ record_verdict -> ${verdict.verdict_id} (cross_vendor=${verdict.cross_vendor})`);
 
+    // 6a. Record smoke status — required by PP-VG-5 gate before finalize_passed.
+    await callTool(client, "record_smoke_status", {
+      stage_id:        stage.stage_id,
+      candidate_index: 1,
+      status:          "pass",
+      reason:          "synthetic-smoke exit=0 (test lifecycle)",
+    });
+    console.log(`✓ record_smoke_status -> stage_id=${stage.stage_id}, candidate_index=1, status=pass`);
+
     // 7. Readiness preflight should already allow a passed finalize.
     const readiness = await callTool(client, "get_stage_finalize_readiness", {
-      stage_id: stage.stage_id,
+      stage_id:          stage.stage_id,
+      winner_attempt_id: att.attempt_id,
     });
     if (!readiness.can_pass || readiness.next_action !== "finalize_passed") {
       throw new Error(`expected finalize_passed readiness, got ${pretty(readiness)}`);
@@ -147,8 +158,8 @@ async function main() {
       throw new Error(`expected hydra_envelope_id=env_smoke_001, got ${tree.run.hydra_envelope_id}`);
     if (tree.run.hydra_origin_squad !== "executive")
       throw new Error(`expected hydra_origin_squad=executive, got ${tree.run.hydra_origin_squad}`);
-    if (tree.run.hydra_envelope_type !== "DevTask")
-      throw new Error(`expected hydra_envelope_type=DevTask, got ${tree.run.hydra_envelope_type}`);
+    if (tree.run.hydra_envelope_type !== "DEV_TASK")
+      throw new Error(`expected hydra_envelope_type=DEV_TASK, got ${tree.run.hydra_envelope_type}`);
     console.log(`✓ hydra context round-trip: workflow=${tree.run.hydra_workflow_id}, squad=${tree.run.hydra_origin_squad}`);
 
     // 9b. P2: ensure_run idempotent contract for Hydra dispatchers.
@@ -272,6 +283,68 @@ async function main() {
     const tree3 = await callTool(client, "get_run", { run_id: run3.run_id });
     if (!tree3.run.taxonomy_mapping_json) throw new Error(`record_taxonomy_mapping did not persist`);
     console.log(`✓ record_taxonomy_mapping persisted on run row`);
+
+    // Archive all required artifact kinds declared by the taxonomy mapping so
+    // PP-VG-2 (artifact availability gate) doesn't block finalize_run(complete).
+    // The mapping for "add an OAuth login endpoint with new tests" requires:
+    //   4.7 → openapi, 4.8 → diff, 4.9 → threat_model, 4.10 → test_plan, 4.13 → changelog
+    // PP-VG-2 resolves kinds via JOIN on stages, so a stage_id is required.
+    const stage3 = await callTool(client, "start_stage", {
+      run_id: run3.run_id,
+      kind: "code",
+      gate_type: "code_style",
+    });
+    await callTool(client, "archive_artifact", {
+      run_id: run3.run_id, stage_id: stage3.stage_id,
+      taxonomy_section: "4.7", kind: "openapi",
+      relative_path: "plans/openapi-spec.yaml",
+      bytes: "# OpenAPI\nopenapi: '3.0'\ninfo:\n  title: OAuth Login API\n",
+    });
+    await callTool(client, "archive_artifact", {
+      run_id: run3.run_id, stage_id: stage3.stage_id,
+      taxonomy_section: "4.8", kind: "diff",
+      relative_path: "code/phase3-attempt.diff",
+      bytes: "diff --git a/src/auth.ts b/src/auth.ts\n--- a/src/auth.ts\n+++ b/src/auth.ts\n@@ -0,0 +1 @@\n+// OAuth endpoint\n",
+    });
+    await callTool(client, "archive_artifact", {
+      run_id: run3.run_id, stage_id: stage3.stage_id,
+      taxonomy_section: "4.9", kind: "threat_model",
+      relative_path: "plans/threat-model.md",
+      bytes: "# Threat Model\n\nOAuth endpoint security analysis.\n",
+    });
+    await callTool(client, "archive_artifact", {
+      run_id: run3.run_id, stage_id: stage3.stage_id,
+      taxonomy_section: "4.10", kind: "test_plan",
+      relative_path: "plans/test-plan.md",
+      bytes: "# Test Plan\n\nTest plan for OAuth login endpoint.\n",
+    });
+    await callTool(client, "archive_artifact", {
+      run_id: run3.run_id, stage_id: stage3.stage_id,
+      taxonomy_section: "4.13", kind: "changelog",
+      relative_path: "plans/changelog.md",
+      bytes: "# Changelog\n\n- Added OAuth login endpoint with tests.\n",
+    });
+    console.log(`✓ archive_artifact (run3 PP-VG-2 required kinds): openapi, diff, threat_model, test_plan, changelog`);
+
+    // Pre-populate master-plan sections at projectPath so PP-VG-1
+    // (completion-checklist gate) doesn't block finalize_run(complete).
+    // Section "13. Engineering standards..." (4.8) was already populated by
+    // run1's autoPatchMasterPlan; the remaining four responsible sections need
+    // explicit patches before we call finalize — autoPatch only runs on the
+    // SUCCESS path, after the gate, so we must pre-populate here.
+    for (const [mpSection, mpContent] of [
+      ["12. Interfaces and contracts",          "OpenAPI contract for OAuth login endpoint (phase3 mapping test).\n"],
+      ["14. Security, privacy, and compliance", "Threat model for OAuth login endpoint (phase3 mapping test).\n"],
+      ["15. Test and verification strategy",    "Test plan for OAuth login endpoint (phase3 mapping test).\n"],
+      ["Appendices",                            "Changelog for OAuth login endpoint (phase3 mapping test).\n"],
+    ]) {
+      await callTool(client, "apply_master_plan_patch", {
+        run_id: run3.run_id, project_path: projectPath,
+        section: mpSection, kind: "append", content_md: mpContent,
+      });
+    }
+    console.log(`✓ apply_master_plan_patch (run3 PP-VG-1 sections): 12, 14, 15, Appendices`);
+
     await callTool(client, "finalize_run", { run_id: run3.run_id, status: "complete" });
 
     // 13d. Phase 3: master plan ensure + patch + status.
@@ -383,7 +456,36 @@ async function main() {
     const dl = missResult.results.find(r => r.check_id === "decision-logging");
     if (dl?.status !== "pass") throw new Error(`decision-logging should pass on artifact mentioning "Decision log"`);
     console.log(`✓ run_missability_checks: ${missResult.pass_count} pass, ${missResult.fail_count} fail, ${missResult.na_count} n/a`);
-    await callTool(client, "finalize_stage", { stage_id: missStage.stage_id, status: "passed" });
+
+    // PP-VG-5: missStage produced a diff artifact, so the lifecycle requires
+    // (a) an attempt with notes.candidate_index, (b) a passing verdict (LV-4),
+    // and (c) a smoke pass tied to that candidate before finalize(passed).
+    const missAtt = await callTool(client, "record_attempt", {
+      stage_id: missStage.stage_id,
+      producer: "codex",
+      model_id: "gpt-5.5",
+      tokens_in: 100,
+      tokens_out: 50,
+      cost_usd: 0.001,
+      status: "ok",
+      notes: { candidate_index: 1 },
+    });
+    await callTool(client, "record_verdict", {
+      attempt_id: missAtt.attempt_id,
+      judge_producer: "codex",
+      judge_model_id: "gpt-5.4",
+      outcome: "pass",
+      critique_md: "Missability smoke verdict: diff artifact contains decision log and doc ownership evidence; rubric dimensions decision-logging and doc-ownership both satisfied for this synthetic lifecycle.",
+      score_json: { correctness: 0.9, minimality: 0.9 },
+    });
+    await callTool(client, "record_smoke_status", {
+      stage_id:        missStage.stage_id,
+      candidate_index: 1,
+      status:          "pass",
+      reason:          "synthetic-smoke exit=0 (missability test lifecycle)",
+    });
+    console.log(`✓ record_smoke_status -> missStage candidate_index=1 pass (PP-VG-5)`);
+    await callTool(client, "finalize_stage", { stage_id: missStage.stage_id, status: "passed", winner_attempt_id: missAtt.attempt_id });
     await callTool(client, "finalize_run", { run_id: missRun.run_id, status: "complete" });
 
     // 17. Phase 4: loop_ceiling_status reflects the verdict count.
@@ -487,9 +589,9 @@ async function main() {
     //     that path through Client.callTool here — it's defensive code for
     //     raw JSON-RPC clients.
 
-    // 21. Phase 6: rubric registry has 26 rubrics (added supabase-contract-stability@1).
+    // 21. Phase 6: rubric registry has 27 rubrics (added igda-gasig@1).
     const rubricList = await callTool(client, "list_rubrics");
-    if (rubricList.length !== 26) throw new Error(`expected 26 rubrics, got ${rubricList.length}`);
+    if (rubricList.length !== 27) throw new Error(`expected 27 rubrics, got ${rubricList.length}`);
     const wcag = await callTool(client, "get_rubric", { id: "wcag-2.2-aa@1" });
     if (!wcag?.markdown.includes("8-state matrix")) throw new Error(`wcag rubric body missing expected content`);
     const wrv2 = await callTool(client, "get_rubric", { id: "web-runtime-validation@2" });
@@ -575,9 +677,9 @@ async function main() {
     }
     console.log(`✓ detect_profile (bin only): ${detectCli.recommendation}/${detectCli.confidence}`);
 
-    // 24. Phase 7: 15 built-in teams resolve.
+    // 24. Phase 7: 26 built-in teams resolve (newest: deep-reasoning-team).
     const teams = await callTool(client, "team_list", { project_path: projectPath });
-    if (teams.length !== 25) throw new Error(`expected 25 builtin teams, got ${teams.length}: ${teams.map(t => t.name).join(",")}`);
+    if (teams.length !== 26) throw new Error(`expected 26 builtin teams, got ${teams.length}: ${teams.map(t => t.name).join(",")}`);
     console.log(`✓ team_list: ${teams.length} teams`);
     const featureTeam = await callTool(client, "team_get", { name: "feature-team", project_path: projectPath });
     if (!featureTeam?.team || featureTeam.origin !== "builtin") throw new Error(`feature-team should resolve to builtin`);

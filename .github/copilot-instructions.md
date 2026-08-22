@@ -10,7 +10,7 @@ This repository ships a **GitHub Copilot CLI plugin entrypoint** in parallel wit
 
 - `plugin.json` — Copilot CLI plugin manifest.
 - `hooks.json` — generated Copilot plugin hooks, derived from `.claude/settings.template.json`.
-- `.mcp.json` — stdio MCP registrations for `pp_harness`, `pp_codex`, and `pp_gemini`.
+- `.mcp.json` — stdio MCP registrations for `pp_harness`, `pp_codex`, and `pp_agy`.
 - `.claude/agents/pair-programmer-orchestrator.md` — canonical source for the Copilot orchestrator agent.
 - `.github/agents/` — generated Copilot custom agents.
 - `.github/skills/` — generated Copilot skills (`SKILL.md`).

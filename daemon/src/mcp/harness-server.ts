@@ -9,7 +9,7 @@ import { errorContent, jsonContent, zodToJsonSchema } from "./helpers.js";
 import {
   startRun, ensureRun, startStage, recordAttempt, recordVerdict, retractVerdict, finalizeStage,
   finalizeRun, archiveArtifact, listRuns, getRun, budgetStatus, doctor,
-  recordTaxonomyMapping, getStageFinalizeReadiness,
+  recordTaxonomyMapping, getStageFinalizeReadiness, ackRun,
 } from "../orchestrator/runs.js";
 import { evaluateGate, listAllowedJudges, type GateType, type Profile } from "../orchestrator/gates.js";
 import { heuristicTriage, heuristicMapping, TAXONOMY_SECTIONS, COMPLETION_CHECKLIST } from "../orchestrator/taxonomy.js";
@@ -165,6 +165,13 @@ const RecordAttemptSchema = z.object({
   agent_type:         z.string().min(1).optional(),
 });
 
+// RA-4: operator ack tool. Marks a surfaced-run as acknowledged so it no
+// longer appears in the session banner nag.
+const AckRunSchema = z.object({
+  run_id: z.string().min(1),
+  reason: z.string().min(1),
+});
+
 // R3-tail post-mortem Fix 1.3: retract_verdict tool. Marks a prior verdict
 // as wrong with a stable audit-trail reason. Used when a cross-vendor judge
 // returns a false positive (R3-tail final-round Codex bias + Gemini
@@ -192,6 +199,14 @@ const RecordVerdictSchema = z.object({
       try { return JSON.parse(s); } catch { return {}; }
     }),
   ]).optional(),
+  // Client-supplied idempotency token (e.g. Hydra's attended-cursor call_key).
+  // A retried call carrying the same token is a no-op: recordVerdict returns
+  // the original verdict row instead of inserting a duplicate. Deliberately
+  // NOT a natural key on (attempt_id, judge_producer, judge_model_id) — that
+  // would break /pp:gate re-judging the same stage with the same judge, and
+  // the retract-then-rejudge flow, both of which legitimately record more
+  // than one verdict per (attempt, judge) tuple.
+  idempotency_token: z.string().min(1).optional(),
 })
   // Belt-and-suspenders against the "pragmatic pass" loophole. The judge
   // sub-agents already refuse to call this tool on critique-tool failure
@@ -219,7 +234,8 @@ const FinalizeStageSchema = z.object({
 });
 
 const GetStageFinalizeReadinessSchema = z.object({
-  stage_id: z.string().min(1),
+  stage_id:          z.string().min(1),
+  winner_attempt_id: z.string().optional(),
 });
 
 const FinalizeRunSchema = z.object({
@@ -545,7 +561,12 @@ const TOOLS: ToolDef[] = [
   {
     name: "start_run",
     description:
-      "Allocate a run row in the harness DB and create the per-run artifact directory. Returns run_id and absolute artifact_dir path.",
+      "Allocate a run row in the harness DB and create the per-run artifact directory. " +
+      "Returns run_id, absolute artifact_dir path, and started_at. " +
+      "When called with hydra_workflow_id, also returns hydra_context_block — the rendered Hydra " +
+      "context block (## Hydra context heading + YAML fields) for injection into generator prompts. " +
+      "The driver (Hydra host_bridge / squad_node) injects this block; pp never assembles prompts itself. " +
+      "Absent from the result on standalone (non-Hydra) runs.",
     schema: StartRunSchema,
     handler: (args) => startRun(StartRunSchema.parse(args)),
   },
@@ -569,7 +590,11 @@ const TOOLS: ToolDef[] = [
       "Pass project_path + request_text + optional kind (default: 'ad-hoc', stored as the run's `team`); " +
       "if a run is already open on this project_path with that kind, returns its run_id and created=false; " +
       "otherwise allocates a minimal 'single'-mode run, acquires the project lock, and returns the new " +
-      "run_id with created=true. CONTRACT: Hydra dispatchers MUST call ensure_run before spawning any " +
+      "run_id with created=true. When the run (existing or newly-created) was started with a hydra_workflow_id, " +
+      "the result also includes hydra_context_block — the rendered Hydra context block for injection into " +
+      "generator prompts. The driver (Hydra host_bridge / squad_node) injects this block; pp never assembles " +
+      "prompts itself. Absent when the run has no hydra_workflow_id. " +
+      "CONTRACT: Hydra dispatchers MUST call ensure_run before spawning any " +
       "generator sub-agent (architect, data-modeler, security-reviewer, release-planner, …) and pass " +
       "the returned run_id into the sub-agent's prompt. The sub-agent then calls archive_artifact " +
       "and record_attempt with run_id=<that value> as it normally would. Lifecycle: finalize_run closes " +
@@ -594,9 +619,22 @@ const TOOLS: ToolDef[] = [
   {
     name: "record_verdict",
     description:
-      "Log a judge verdict against an attempt. cross_vendor is computed by the daemon based on judge_producer vs attempt's producer. outcome is pass | fail | revise.",
+      "Log a judge verdict against an attempt. cross_vendor is computed by the daemon based on judge_producer vs attempt's producer. outcome is pass | fail | revise. " +
+      "Pass idempotency_token (e.g. the caller's own call/retry key) to make retries safe: a second call with the same token returns the original verdict_id instead of inserting a duplicate row. Recommended for any caller that may retry on transport/timeout errors, since a lock-contention timeout can occur AFTER the write already committed.",
     schema: RecordVerdictSchema,
     handler: (args) => recordVerdict(RecordVerdictSchema.parse(args)),
+  },
+  {
+    name: "ack_run",
+    description:
+      "RA-4: operator-acknowledge a surfaced run that was preserved-and-merged manually. " +
+      "Sets acked_at=now ISO on the run row and stores the operator's reason for the audit trail. " +
+      "Once acked, the run no longer appears in the session banner nag (both surfaced-runs and " +
+      "surfaced-run-reminder hooks filter WHERE acked_at IS NULL). " +
+      "Idempotent: a second call returns already_acked=true with the original timestamp. " +
+      "Throws RunNotFound when run_id is unknown.",
+    schema: AckRunSchema,
+    handler: (args) => ackRun(AckRunSchema.parse(args)),
   },
   {
     name: "retract_verdict",
@@ -608,9 +646,16 @@ const TOOLS: ToolDef[] = [
   {
     name: "get_stage_finalize_readiness",
     description:
-      "Read-only preflight for finalize_stage(status='passed'). Returns {can_pass, recommended_status, next_action, blockers[]} based on the same TDD and artifact-validator gate logic the daemon enforces inside finalize_stage. Call this after judge pass and after any tdd_* / artifact_validate tools to choose the correct branch before attempting finalize_stage. Typical outcomes: next_action='run_tdd_pre_check' | 'run_tdd_post_check' | 'run_artifact_validate' for missing gate rows, 'retry_or_surface' for gate violations, 'surface_stage' for execution_error, or 'finalize_passed' when the stage may be closed as passed.",
+      "Read-only preflight for finalize_stage(status='passed'). Returns {can_pass, recommended_status, next_action, blockers[]} based on the same TDD and artifact-validator gate logic the daemon enforces inside finalize_stage. " +
+      "Pass winner_attempt_id to tie the PP-VG-5 smoke-row check to the chosen winning attempt: the gate resolves the attempt's notes_json.candidate_index and confirms smoke_results[<candidate_index>].status='pass' in the stage notes. " +
+      "Without winner_attempt_id the VG-5 gate falls back to the stage's persisted winner_attempt_id column (which is not set until finalize_stage writes it), so passing it here is required for code/diff-producing stages on the pre-finalize readiness check. " +
+      "Call this after judge pass and after any tdd_* / artifact_validate tools to choose the correct branch before attempting finalize_stage. " +
+      "Typical outcomes: next_action='run_tdd_pre_check' | 'run_tdd_post_check' | 'run_artifact_validate' for missing gate rows, 'retry_or_surface' for gate violations, 'surface_stage' for execution_error, or 'finalize_passed' when the stage may be closed as passed.",
     schema: GetStageFinalizeReadinessSchema,
-    handler: (args) => getStageFinalizeReadiness(GetStageFinalizeReadinessSchema.parse(args).stage_id),
+    handler: (args) => {
+      const p = GetStageFinalizeReadinessSchema.parse(args);
+      return getStageFinalizeReadiness(p.stage_id, p.winner_attempt_id);
+    },
   },
   {
     name: "finalize_stage",
@@ -663,7 +708,7 @@ const TOOLS: ToolDef[] = [
   {
     name: "request_strategic_framing",
     description:
-      "T3 — Phase E. Emit a CSuiteDecisionPacket envelope to the executive squad asking for strategic framing on a major-tier request. When Hydra+TheEights are running, ExecutiveSuite's boardroom picks this up and the reply (a PRD envelope) lands in TheEights' envelope store keyed by workflow_id; poll via hydra_envelope_query. When TheEights is offline, recorded=false but envelope_id is still allocated — the driver may fall back to spawning the local `boardroom` agent directly via Task. Call this BEFORE spec-author on profiles enterprise|ai-agentic|data-product when triage returns scope=major.",
+      "T3 — Phase E. Emit a C_SUITE_DECISION_PACKET envelope to the executive squad asking for strategic framing on a major-tier request. When Hydra+TheEights are running, ExecutiveSuite's boardroom picks this up and the reply (a PRD envelope) lands in TheEights' envelope store keyed by workflow_id; poll via hydra_envelope_query. When TheEights is offline, recorded=false but envelope_id is still allocated — the driver may fall back to spawning the local `boardroom` agent directly via Task. Call this BEFORE spec-author on profiles enterprise|ai-agentic|data-product when triage returns scope=major.",
     schema: RequestStrategicFramingSchema,
     handler: async (args) => {
       const p = RequestStrategicFramingSchema.parse(args);
@@ -682,7 +727,7 @@ const TOOLS: ToolDef[] = [
   {
     name: "request_brand_review",
     description:
-      "T3 — Phase E. Emit a CreativeBrief envelope (brief_kind=brand-voice-check) to the marketing-strategy squad (MarketBliss) reviewing customer-facing copy on a UX surface. Advisory, not gating — the ux-team continues regardless of whether a reply arrives. The reply (a DecisionRecord with brand-narrative notes) lands in TheEights' envelope store keyed by workflow_id. Returns {envelope_id, recorded}.",
+      "T3 — Phase E. Emit a CREATIVE_BRIEF envelope (brief_kind=brand-voice-check) to the marketing-strategy squad (MarketBliss) reviewing customer-facing copy on a UX surface. Advisory, not gating — the ux-team continues regardless of whether a reply arrives. The reply (a DECISION_RECORD with brand-narrative notes) lands in TheEights' envelope store keyed by workflow_id. Returns {envelope_id, recorded}.",
     schema: RequestBrandReviewSchema,
     handler: async (args) => {
       const p = RequestBrandReviewSchema.parse(args);
@@ -703,7 +748,7 @@ const TOOLS: ToolDef[] = [
   {
     name: "request_visual_advisory",
     description:
-      "T3 — Phase E. Emit a CreativeBrief envelope (brief_kind=visual-direction-advisory) to the creative squad (RLM-Creative — Calliope) asking for visual tone notes on a new screen family or significant UI change. Strictly advisory: the ux-team does NOT block on a reply. Returns {envelope_id, recorded}.",
+      "T3 — Phase E. Emit a CREATIVE_BRIEF envelope (brief_kind=visual-direction-advisory) to the creative squad (RLM-Creative — Calliope) asking for visual tone notes on a new screen family or significant UI change. Strictly advisory: the ux-team does NOT block on a reply. Returns {envelope_id, recorded}.",
     schema: RequestVisualAdvisorySchema,
     handler: async (args) => {
       const p = RequestVisualAdvisorySchema.parse(args);
@@ -926,7 +971,7 @@ const TOOLS: ToolDef[] = [
   {
     name: "ensure_agents_md",
     description:
-      "Creates <project>/AGENTS.md (and optionally CLAUDE.md) from the harness template if absent. AGENTS.md is the cross-tool behavioral contract loaded by Claude, Codex, Gemini, Cursor, etc.; CLAUDE.md is a one-line `@AGENTS.md` import plus Claude-specific add-ons. Idempotent. Pass `profile`, `conventions`, `build_commands`, `extra_sections` to seed the template with profile-specific content. Pass `also_claude_md: true` to scaffold CLAUDE.md alongside.",
+      "Creates <project>/AGENTS.md (and optionally CLAUDE.md) from the harness template if absent. AGENTS.md is the cross-tool behavioral contract loaded by Claude, Codex, Antigravity (agy), Cursor, etc.; CLAUDE.md is a one-line `@AGENTS.md` import plus Claude-specific add-ons. Idempotent. Pass `profile`, `conventions`, `build_commands`, `extra_sections` to seed the template with profile-specific content. Pass `also_claude_md: true` to scaffold CLAUDE.md alongside.",
     schema: EnsureAgentsMdSchema,
     handler: (args) => {
       const p = EnsureAgentsMdSchema.parse(args);
@@ -1245,7 +1290,7 @@ const TOOLS: ToolDef[] = [
   {
     name: "gate_eligible_judges",
     description:
-      "Given a gate_type, the generator's producer, optional generator_model, optional prompt keywords, optional profile, optional artifact_kind, and optional rubric_hint, returns the judge tier policy: required_cross_vendor (bool), base_tier, whether it was upgraded by content/profile/capability, the reason, the recommended rubric_id, and the list of allowed judges with preferred providers. rubric_hint lets a team/forum stage declare its intended rubric when that intent cannot be inferred from gate_type alone; unknown hints are ignored. If generator_model is omitted, the daemon infers Codex/Gemini defaults from DEFAULT_MODELS where possible. Driver MUST call this before invoking any judge.",
+      "Given a gate_type, the generator's producer, optional generator_model, optional prompt keywords, optional profile, optional artifact_kind, and optional rubric_hint, returns the judge tier policy: required_cross_vendor (bool), base_tier, whether it was upgraded by content/profile/capability, the reason, the recommended rubric_id, and the list of allowed judges with preferred providers. rubric_hint lets a team/forum stage declare its intended rubric when that intent cannot be inferred from gate_type alone; unknown hints are ignored. If generator_model is omitted, the daemon infers Codex/agy defaults from DEFAULT_MODELS where possible. Driver MUST call this before invoking any judge.",
     schema: GateEligibleJudgesSchema,
     handler: (args) => {
       const parsed = GateEligibleJudgesSchema.parse(args);

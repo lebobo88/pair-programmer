@@ -29,8 +29,24 @@ verification-report*.md
 .harness/runs/
 .harness/run_*/
 
+# Attended-run worktrees: Hydra provisions these under .harness/worktrees/
+# (not the obsolete .claude/worktrees/ below) for host-bridged attended
+# engineering stages. Local, per-machine, and can outlive a single session
+# (a run can pause on HITL for days) — never meant to be tracked.
+.harness/worktrees/
+
+# Judge critique-failure evidence, TDD/browser baseline captures, and smoke
+# check output — all local, per-run artifacts, not source.
+.harness/critique_failures/
+.harness/baseline/
+.harness/smoke/
+
 # Ephemeral best-of-N candidate worktrees
 .claude/worktrees/
 
 # Lock file written by scheduled-task subsystem
 .claude/scheduled_tasks.lock
+
+# Hydra workflow trace/checkpoint state (per-machine, not source)
+.hydra/
+.harness/

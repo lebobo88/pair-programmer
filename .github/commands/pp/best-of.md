@@ -18,7 +18,7 @@ You are about to drive a `/pp:best-of` invocation. Follow the `pair-programmer` 
 
 3. **Taxonomy mapping** — same as `/pp:run`.
 
-4. **Open the best-of stage.** `mcp__pp_harness__start_best_of_stage(run_id, kind="code", gate_type="code_style", n=N)`. Returns `{stage_id, candidates: [{candidate_index, attempt_slot_id, worktree_path, worktree_mode}, ...]}`. The daemon refuses to open the stage unless at least one non-Claude vendor (codex OR gemini) is reachable, since judges need cross-vendor capability when all candidates are Claude.
+4. **Open the best-of stage.** `mcp__pp_harness__start_best_of_stage(run_id, kind="code", gate_type="code_style", n=N)`. Returns `{stage_id, candidates: [{candidate_index, attempt_slot_id, worktree_path, worktree_mode}, ...]}`. The daemon refuses to open the stage unless at least one non-Claude vendor (codex OR agy) is reachable, since judges need cross-vendor capability when all candidates are Claude.
 
 5. **Pre-judge gate decision.** `mcp__pp_harness__gate_eligible_judges` with the request keywords + profile. Capture rubric_id + cross_vendor.
 
@@ -29,7 +29,7 @@ You are about to drive a `/pp:best-of` invocation. Follow the `pair-programmer` 
    - if N>3: cycle adding `claude-opus-4-6` with `seed="terse-diff"`, `claude-sonnet-4-6` with `seed="failing-test-first"`, etc.
    Pass `cwd=<worktree_path[i]>` and `attempt_slot_id` from the per-candidate slot. **Also pass `profile.runtime_smoke_test`** if the active profile sets it — the engineer reads this to decide whether to run the dev-server smoke test before committing. Each engineer authors files DIRECTLY into its worktree using its native edit/execute tools (see engineer.md), runs the verification step (3.5) on UI projects, then `git add -A && git commit -m "<msg>"` inside the worktree before returning. The harness will auto-commit if the engineer forgets, but explicit is preferred.
 
-   Codex and Gemini do NOT generate candidates. Their CLIs are reserved for the judge stage (step 8) when cross-vendor is required.
+   Codex and Antigravity (agy) do NOT generate candidates. Their CLIs are reserved for the judge stage (step 8) when cross-vendor is required.
 
 6.5. **Collect smoke results.** After all N engineer Tasks return, build a smoke summary from each Task's return payload:
    `smoke_summary = { candidate_index → { smoke_status, smoke_reason } }`.

@@ -23,7 +23,7 @@ stages:
     artifact_kind: test_plan
     gate_type: contract
     generator: { agent: technical-artist, primary: claude }
-    judge:     { tier: cross_vendor, rubric: dcc-asset-validation@1, model_pref: gemini }
+    judge:     { tier: cross_vendor, rubric: dcc-asset-validation@1, model_pref: agy }
   - kind: docs
     gate_type: docs_polish
     generator: { agent: docs-author, primary: claude }

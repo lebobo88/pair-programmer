@@ -5,7 +5,7 @@ stages:
   - kind: accessibility_plan
     gate_type: design
     generator: { agent: game-accessibility-specialist, primary: claude }
-    judge:     { tier: cross_vendor, rubric: game-accessibility-guidelines@1, model_pref: gemini }
+    judge:     { tier: cross_vendor, rubric: game-accessibility-guidelines@1, model_pref: agy }
   - kind: gag_audit
     gate_type: design
     generator: { agent: game-accessibility-specialist, primary: claude }

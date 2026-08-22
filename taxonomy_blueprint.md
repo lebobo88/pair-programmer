@@ -246,6 +246,8 @@ The practical implication:
 - Design system
 - Component specs
 - Design tokens
+- Aesthetic direction brief
+- AI-slop / polish review report
 - Content style guide
 - Accessibility checklist
 - Localization plan
@@ -272,6 +274,7 @@ The practical implication:
 - Localization breakage
 - Content debt and support burden
 - UI stubs that never get fully wired to live behavior
+- Generic/templated "AI slop" output — technically correct but visually indistinguishable from a default template, undermining brand and user trust
 
 **Key subdomains**
 - IA and wayfinding

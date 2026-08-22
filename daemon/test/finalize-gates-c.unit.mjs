@@ -116,6 +116,20 @@ async function insertAttempt(stage_id, overrides = {}) {
   return id;
 }
 
+/** Insert a non-retracted verdict for an attempt (satisfies LV-4 zero-verdict gate). */
+async function insertVerdict(attempt_id, { outcome = "pass", retracted = false } = {}) {
+  const db = await getDb();
+  const id = `verdict_fgc_${Math.random().toString(36).slice(2, 12)}`;
+  const ts = new Date().toISOString();
+  const retractedAt = retracted ? ts : null;
+  db().prepare(
+    `INSERT INTO verdicts(id, attempt_id, judge_producer, judge_model_id, outcome,
+       cross_vendor, hallucination_suspected, retracted_at, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+  ).run(id, attempt_id, "codex", "gpt-5.4", outcome, 1, 0, retractedAt, ts);
+  return id;
+}
+
 /** Insert an artifact of kind 'code' or 'diff' to make the stage smoke-required. */
 async function insertCodeArtifact(run_id, stage_id, kind = "code") {
   const db = await getDb();
@@ -696,6 +710,8 @@ describe("VG-5: smoke gate — binds to winning attempt, classifies by produced 
     const attempt_id = await insertAttempt(stage_id, {
       notes_json: JSON.stringify({ candidate_index: 0 }),
     });
+    // Non-retracted pass verdict satisfies the LV-4 zero-verdict gate.
+    await insertVerdict(attempt_id, { outcome: "pass" });
     // Do NOT set winner_attempt_id on the stage row (simulates pre-persist state).
     const db = await getDb();
     db().prepare(`UPDATE stages SET notes_json = ? WHERE id = ?`).run(

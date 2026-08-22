@@ -5,15 +5,32 @@ stages:
   - kind: spec
     gate_type: spec
     generator: { agent: spec-author, primary: claude, fallback: codex }
-    judge:     { tier: cross_vendor, rubric: rfc-2119-normative@1, model_pref: gemini }
+    judge:     { tier: cross_vendor, rubric: rfc-2119-normative@1, model_pref: agy }
   - kind: architecture
     gate_type: design
     generator: { agent: architect, primary: claude }
     judge:     { tier: cross_vendor, rubric: c4-system-context@1, model_pref: codex }
+  - kind: ux_design_pass
+    optional: true
+    profiles_only: [web-ui, mobile]
+    gate_type: design
+    generator: { agent: designer, primary: claude }
+    judge:     { tier: cross_vendor, rubric: wcag-2.2-aa@1, model_pref: agy }
+    notes: |
+      feature-team has no taxonomy_required 4.4 and produces no UX
+      artifacts by default. Driver should trigger this stage when the
+      taxonomy mapper included section 4.4 for this request (UI-shaped
+      keywords, or an explicit UI-touching spec) — otherwise a UI-touching
+      feature routed through the default team silently skips
+      screen-state-matrix/wireframes/a11y-plan entirely. When triggered,
+      the designer agent produces a screen_state_matrix artifact (the
+      taxonomy mapper's default 4.4 artifact) covering the surfaces this
+      feature touches. For deeper UX work (IA maps, full wireframe sets,
+      content guides), route to ux-team instead of relying on this stage.
   - kind: contracts
     gate_type: contract
     generator: { agent: api-designer, primary: codex }
-    judge:     { tier: cross_vendor, rubric: openapi-3.1-stability@1, model_pref: gemini }
+    judge:     { tier: cross_vendor, rubric: openapi-3.1-stability@1, model_pref: agy }
   - kind: code
     gate_type: code_style
     generator: { agent: engineer, primary: codex }
@@ -28,7 +45,7 @@ stages:
     artifact_kind: test_plan
     gate_type: contract
     generator: { agent: test-strategist, primary: codex }
-    judge:     { tier: cross_vendor, model_pref: gemini }
+    judge:     { tier: cross_vendor, model_pref: agy }
   - kind: browser_validation
     artifact_kind: browser_validation_report
     gate_type: contract

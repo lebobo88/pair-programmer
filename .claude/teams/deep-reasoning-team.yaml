@@ -16,7 +16,7 @@
 #     - A prior run exhausted Reflexion and is still revise/fail at opus tier, OR
 #     - An operator explicitly requests Fable capability.
 #
-# Judge contract: JUDGE is ALWAYS cross-vendor (Codex/Gemini). The generator
+# Judge contract: JUDGE is ALWAYS cross-vendor (Codex/Antigravity (agy)). The generator
 # is Fable (Claude), so the judge MUST be a different vendor to satisfy JUDGE-1.
 # Do NOT set judge model_pref to claude or fable — fable-judges-fable is
 # blocked at runs.ts:641 (same-vendor same-model guard).
@@ -34,7 +34,7 @@ stages:
   - kind: spec
     gate_type: spec
     generator: { agent: spec-author, primary: claude, model_tier: fable }
-    judge:     { tier: cross_vendor, rubric: rfc-2119-normative@1, model_pref: gemini }
+    judge:     { tier: cross_vendor, rubric: rfc-2119-normative@1, model_pref: agy }
   - kind: architecture
     gate_type: design
     generator: { agent: architect, primary: claude, model_tier: fable }
@@ -50,6 +50,6 @@ stages:
   - kind: docs
     gate_type: docs_polish
     generator: { agent: docs-author, primary: claude, model_tier: fable }
-    judge:     { tier: cross_vendor, model_pref: gemini }
+    judge:     { tier: cross_vendor, model_pref: agy }
 taxonomy_required: ["4.3", "4.6", "4.9", "4.13"]
 missability_required: ["nfrs-declared", "decision-logging", "security-review-timing"]

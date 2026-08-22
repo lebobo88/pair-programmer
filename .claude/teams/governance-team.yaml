@@ -5,7 +5,7 @@ stages:
   - kind: raci
     gate_type: spec
     generator: { agent: governance-author, primary: claude }
-    judge:     { tier: cross_vendor, rubric: rfc-2119-normative@1, model_pref: gemini }
+    judge:     { tier: cross_vendor, rubric: rfc-2119-normative@1, model_pref: agy }
   - kind: decision_log
     gate_type: docs_polish
     generator: { agent: governance-author, primary: claude }

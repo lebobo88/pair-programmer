@@ -7,8 +7,8 @@ concepts that shape judging (tiered cross-/same-vendor routing, judge
 escalation, and best-of-N + Borda selection).
 
 pair-programmer is a TypeScript daemon (`daemon/`, Node 20) that orchestrates
-code generation across **Claude**, **OpenAI Codex (GPT)**, and **Google Gemini**
-with tiered validation. It runs fully standalone, and also enrolls into the
+code generation across **Claude**, **OpenAI Codex (GPT)**, and **Google** (via
+the **Antigravity CLI**, `agy`) with tiered validation. It runs fully standalone, and also enrolls into the
 sibling AI ecosystem as the **engineering squad** behind Hydra.
 
 > Diagram convention: every Mermaid block below is mirrored by a redundant
@@ -124,7 +124,7 @@ daemon hosts **three MCP servers** over stdio:
 |---|---|---|
 | `pp_harness` | **75** | Orchestration: runs, stages, gates, taxonomy, missability, best-of-N, profiles, teams, rubrics, replay, janitor. |
 | `pp_codex`   | **2** (`generate`, `critique`) | Bridges the external **Codex (GPT)** CLI. |
-| `pp_gemini`  | **2** (`generate`, `critique`) | Bridges the external **Gemini** CLI. |
+| `pp_agy`     | **2** (`generate`, `critique`) | Bridges the external **Antigravity CLI** (`agy`). |
 
 A separate **read-only HTTP control plane** binds `127.0.0.1:7878`
 (`daemon/src/http/server.ts`, idle-shutdown 10 min) for status inspection.
@@ -143,12 +143,12 @@ graph LR
     subgraph Daemon["pp-daemon (Node 20 / TypeScript)"]
         H["pp_harness<br/>75 MCP tools"]
         CX["pp_codex<br/>generate · critique"]
-        GM["pp_gemini<br/>generate · critique"]
+        GM["pp_agy<br/>generate · critique"]
         HTTP["HTTP control plane<br/>127.0.0.1:7878 (read-only)"]
     end
 
     CODEX["Codex (GPT) CLI"]
-    GEMINI["Gemini CLI"]
+    AGY["Antigravity CLI (agy)"]
     DB[("SQLite<br/>~/.pp-harness/")]
     ART[("Per-run artifacts<br/>&lt;run_id&gt;/ + worktrees")]
 
@@ -157,7 +157,7 @@ graph LR
     CC -.-> CX
     CC -.-> GM
     CX --> CODEX
-    GM --> GEMINI
+    GM --> AGY
     H --> DB
     H --> ART
     H --> HTTP
@@ -173,12 +173,12 @@ graph LR
    +--------------------------------------------------+
    |                pp-daemon (Node 20)               |
    |  +-----------+  +----------+  +----------+        |
-   |  | pp_harness|  | pp_codex |  | pp_gemini|        |
+   |  | pp_harness|  | pp_codex |  | pp_agy   |        |
    |  | 75 tools  |  | gen/crit |  | gen/crit |        |
    |  +-----+-----+  +----+-----+  +----+-----+        |
    |        |             |             |              |
    |        |        +----v----+   +----v----+         |
-   |        |        |Codex CLI|   |Gemini CLI|        |
+   |        |        |Codex CLI|   | agy CLI |         |
    |        |        +---------+   +---------+         |
    |   +----v---------------------+                    |
    |   | HTTP control plane       |  127.0.0.1:7878    |
@@ -255,7 +255,7 @@ The daemon source (`daemon/src/`) is organized into the following subsystems
 
 | Subsystem | Path | Responsibility |
 |---|---|---|
-| MCP servers | `mcp/` | `harness-server.ts` (75 tools), `codex-server.ts`, `gemini-server.ts`, the CLI runner, and the critique bridge/schema. |
+| MCP servers | `mcp/` | `harness-server.ts` (75 tools), `codex-server.ts`, `antigravity-server.ts`, the CLI runner, and the critique bridge/schema. |
 | Orchestrator | `orchestrator/` | Runs, stages, gates, taxonomy, missability, best-of-N + diff-entropy, profiles, teams, forums, design templates, master-plan, AGENTS.md sync, TDD gate, replay, janitor, worktrees, `artifact-validators/`. |
 | Ecosystem | `ecosystem/` | TheEights client + writes, Hydra context + envelopes. All null-tolerant / circuit-broken. |
 | Hooks | `hooks/` | Hook dispatcher + bash-safety guard (29 hooks across 5 events). |
@@ -269,7 +269,7 @@ The daemon source (`daemon/src/`) is organized into the following subsystems
 %%{init: {'theme':'dark'}}%%
 flowchart TB
     subgraph daemon_src["daemon/src/"]
-        MCP["mcp/<br/>harness · codex · gemini · cli-runner · critique-bridge"]
+        MCP["mcp/<br/>harness · codex · antigravity · cli-runner · critique-bridge"]
         ORCH["orchestrator/<br/>runs · gates · taxonomy · missability · best-of-n · profiles · teams · forums · master-plan · replay · janitor · artifact-validators/"]
         ECO["ecosystem/<br/>eights-client · eights-writes · hydra-context · hydra-envelopes"]
         HOOKS["hooks/<br/>dispatcher · bash-safety"]
@@ -292,7 +292,7 @@ flowchart TB
 
 ```
    daemon/src/
-   ├── mcp/            harness(75) · codex · gemini · cli-runner · critique-bridge
+   ├── mcp/            harness(75) · codex · antigravity · cli-runner · critique-bridge
    ├── orchestrator/   runs · gates · taxonomy · missability · best-of-n ·
    │                   profiles · teams · forums · master-plan · replay ·
    │                   janitor · tdd-gate · worktree · artifact-validators/
@@ -346,7 +346,7 @@ High-stakes gates (spec, design, security, contracts) require a judge from a
 **different vendor** than the generator. Lower-stakes gates (code style, docs,
 lint) may be judged by a **different model from the same vendor** — with Codex
 same-vendor *upgrading* to cross-vendor when the generator already used
-GPT-5.4, and Gemini falling back to same-model only when no alternative exists.
+GPT-5.4, and agy falling back to same-model only when no alternative exists.
 `gate_eligible_judges` resolves the required tier per gate.
 
 ```mermaid
@@ -357,14 +357,14 @@ flowchart TB
     R -- "no" --> SV["SAME-VENDOR judge<br/>(different model, same vendor)"]
     SV --> U{"Codex gen used GPT-5.4?"}
     U -- "yes" --> CV2["upgrade → cross-vendor"]
-    U -- "no" --> SV2["same-vendor stands<br/>(Gemini: same-model fallback if forced)"]
+    U -- "no" --> SV2["same-vendor stands<br/>(agy: same-model fallback if forced)"]
 ```
 
 ```
    gate ─▶ high-stakes (spec/design/security/contracts) ─▶ CROSS-VENDOR judge
         └▶ low-stakes (code/docs/lint) ─▶ SAME-VENDOR (diff model)
                                            └─ Codex+GPT-5.4 generator ⇒ upgrade to cross-vendor
-                                           └─ Gemini, no alternative   ⇒ same-model fallback
+                                           └─ agy, no alternative      ⇒ same-model fallback
 ```
 
 ### 5.3 Best-of-N fan-out + Borda count

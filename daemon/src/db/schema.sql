@@ -3,7 +3,9 @@
 
 PRAGMA journal_mode = WAL;
 PRAGMA foreign_keys = ON;
-PRAGMA busy_timeout = 5000;
+-- See database.ts::db() for why 15000ms: a fresh daemon process spawns per
+-- tool call, so a write can land mid cold-start of a sibling process.
+PRAGMA busy_timeout = 15000;
 
 CREATE TABLE IF NOT EXISTS runs (
   id                       TEXT PRIMARY KEY,
@@ -42,7 +44,7 @@ CREATE INDEX IF NOT EXISTS idx_stages_run ON stages(run_id);
 CREATE TABLE IF NOT EXISTS attempts (
   id                  TEXT PRIMARY KEY,
   stage_id            TEXT NOT NULL REFERENCES stages(id) ON DELETE CASCADE,
-  producer            TEXT NOT NULL,                       -- codex | gemini | claude | <subagent name>
+  producer            TEXT NOT NULL,                       -- codex | agy | claude | <subagent name> (historical rows may say "gemini" — see normalizeProducer() in config.ts)
   model_id            TEXT NOT NULL,
   prompt_hash         TEXT,
   artifact_path       TEXT,                                 -- relative to project .harness/
@@ -122,7 +124,7 @@ CREATE TABLE IF NOT EXISTS teams (
 
 CREATE TABLE IF NOT EXISTS sub_cli_sessions (
   project_path        TEXT NOT NULL,
-  agent               TEXT NOT NULL,                       -- codex | gemini
+  agent               TEXT NOT NULL,                       -- codex | agy
   session_id          TEXT NOT NULL,
   last_used_at        TEXT NOT NULL,
   PRIMARY KEY(project_path, agent)

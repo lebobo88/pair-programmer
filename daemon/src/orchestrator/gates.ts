@@ -4,7 +4,7 @@
  * selection can also honor explicit stage hints and canonical artifact kinds.
  */
 
-import { DEFAULT_MODELS, geminiEnabled } from "../config.js";
+import { DEFAULT_MODELS, agyEnabled } from "../config.js";
 import type { ProfileName } from "./profiles.js";
 import { getRubric } from "../rubrics/registry.js";
 
@@ -93,7 +93,7 @@ export type JudgeCapabilitySummary = {
 
 export function defaultGeneratorModelForProducer(producer: string): string | null {
   if (producer === "codex") return DEFAULT_MODELS.codex_generate;
-  if (producer === "gemini") return DEFAULT_MODELS.gemini_generate;
+  if (producer === "agy") return DEFAULT_MODELS.agy_generate;
   return null;
 }
 
@@ -131,12 +131,12 @@ export function resolveSameVendorCapability(opts: {
     };
   }
 
-  if (opts.generator_producer === "gemini") {
+  if (opts.generator_producer === "agy") {
     return {
       available: true,
       effective_generator_model: effectiveGeneratorModel,
       inferred_generator_model: inferredGeneratorModel,
-      judge_model_id: DEFAULT_MODELS.gemini_critique,
+      judge_model_id: DEFAULT_MODELS.agy_critique,
       reason: null,
     };
   }
@@ -160,13 +160,13 @@ export function describeJudgeCapabilities(): Record<string, JudgeCapabilitySumma
         `pp_codex.critique is hard-pinned to "${DEFAULT_MODELS.codex_critique}". ` +
         `Same-vendor Codex judging is only available when the generator used a different model id.`,
     },
-    gemini: {
-      critique_model: DEFAULT_MODELS.gemini_critique,
+    agy: {
+      critique_model: DEFAULT_MODELS.agy_critique,
       same_vendor_mode: "degenerate_same_model_allowed",
       unavailable_when_generator_model_is: [],
       notes:
-        `pp_gemini.critique is hard-pinned to "${DEFAULT_MODELS.gemini_critique}". ` +
-        "Only one supported 3.x Gemini critique model is currently served, so same-vendor Gemini judging is degenerate.",
+        `pp_agy.critique is hard-pinned to "${DEFAULT_MODELS.agy_critique}". ` +
+        "Only one supported Gemini 3.x critique model is currently served via agy, so same-vendor agy judging is degenerate.",
     },
     claude: {
       critique_model: null,
@@ -284,12 +284,13 @@ export type AllowedJudge = {
 
 export function listAllowedJudges(decision: GateDecision, generator_producer: string): AllowedJudge[] {
   const generatorVendor = vendorFor(generator_producer);
-  // Honor the global Gemini kill-switch (PP_DISABLE_GEMINI=1). This is the one
-  // judge-selection path that does NOT flow through doctor()'s vendor matrix,
-  // so it must consult geminiEnabled() directly — otherwise the preferred_producers
-  // hint returned by gate_eligible_judges could still point the driver at Gemini,
-  // on EITHER the cross-vendor pool or (for a gemini generator) the same-vendor lane.
-  const pool = geminiEnabled() ? ["codex", "gemini", "claude"] : ["codex", "claude"];
+  // Honor the global Antigravity (agy) kill-switch (PP_DISABLE_AGY=1). This is
+  // the one judge-selection path that does NOT flow through doctor()'s vendor
+  // matrix, so it must consult agyEnabled() directly — otherwise the
+  // preferred_producers hint returned by gate_eligible_judges could still
+  // point the driver at agy, on EITHER the cross-vendor pool or (for an agy
+  // generator) the same-vendor lane.
+  const pool = agyEnabled() ? ["codex", "agy", "claude"] : ["codex", "claude"];
   const otherVendors = pool.filter(p => vendorFor(p) !== generatorVendor);
 
   if (decision.required_cross_vendor) {
@@ -298,11 +299,11 @@ export function listAllowedJudges(decision: GateDecision, generator_producer: st
 
   const judges: AllowedJudge[] = [];
   // Drop the same-vendor lane only when it would point at a disabled vendor
-  // (currently just the gemini lane under PP_DISABLE_GEMINI=1). All other
+  // (currently just the agy lane under PP_DISABLE_AGY=1). All other
   // producers — codex, claude, copilot — keep their existing same-vendor
   // behavior unchanged. The cross-vendor judge below is always offered and is
-  // never empty (a gemini generator still falls back to codex/claude).
-  const sameVendorDisabled = generator_producer === "gemini" && !geminiEnabled();
+  // never empty (an agy generator still falls back to codex/claude).
+  const sameVendorDisabled = generator_producer === "agy" && !agyEnabled();
   if (!sameVendorDisabled) {
     judges.push({ agent: "judge-same-vendor", tier: "same_vendor", preferred_producers: [generator_producer] });
   }
@@ -312,7 +313,7 @@ export function listAllowedJudges(decision: GateDecision, generator_producer: st
 
 function vendorFor(producer: string): string {
   if (producer === "codex")  return "openai";
-  if (producer === "gemini") return "google";
+  if (producer === "agy")    return "google";
   if (producer === "claude") return "anthropic";
   return "unknown";
 }
