@@ -6,7 +6,8 @@
  */
 
 import { execFileSync } from "node:child_process";
-import { rmSync, existsSync, statSync } from "node:fs";
+import { rmSync, existsSync, statSync, readdirSync, readFileSync } from "node:fs";
+import { isAbsolute, join, resolve } from "node:path";
 import { db, txImmediate } from "../db/database.js";
 import { projectLockPath } from "../util/paths.js";
 import { readLockMetadata, isPidAlive } from "../util/lock.js";
@@ -79,7 +80,7 @@ export function runJanitor(): {
         const wtPath = wtMatch[1]!;
         const branch = branchMatch[1]!;
         if (!existsSync(wtPath)) {
-          execFileGit(["worktree", "prune"], project_path);
+          pruneSingleWorktreeAdminDir(project_path, wtPath);
           continue;
         }
         const stat = statSync(wtPath);
@@ -129,6 +130,81 @@ export function runJanitor(): {
   }
 
   return { crashed_runs: crashed, swept_worktrees, swept_branches, swept_locks };
+}
+
+/**
+ * Deregister ONLY the single worktree admin directory for `wtPath`,
+ * WITHOUT a repo-wide `git worktree prune`.
+ *
+ * `git worktree prune` is repo-wide and takes effect immediately with no
+ * grace period (verified empirically on Git 2.55.0.windows.3 in a scratch
+ * repo) -- it deregisters EVERY missing worktree registration in the repo,
+ * not just the `pp/*` candidate this sweep iteration is looking at. This
+ * sweep runs per-project across every project the daemon knows about, and a
+ * Hydra `attended/*` worktree can legitimately live in the same repo,
+ * paused on a HITL gate for days. If that attended worktree's directory
+ * happens to read as transiently absent at the exact moment this sweep
+ * calls a repo-wide prune (slow filesystem, network mount, mid-write), the
+ * prune would collaterally deregister its `git worktree list` entry -- it
+ * can never delete the attended worktree's checkout content or its branch,
+ * but losing the registration is still real, unintended damage a per-entry
+ * `pp/*` cleanup has no business causing to an unrelated worktree.
+ *
+ * This is the identical hazard class removed from Hydra's own worktree
+ * janitor one stage ago (see hydra_core/host_bridge.py's
+ * `_prune_single_worktree_admin_dir`); this mirrors that fix so pp's `pp/*`
+ * cleanup carries the same per-entry scoping discipline instead of reaching
+ * for the repo-wide tool.
+ *
+ * Walks `<git-common-dir>/worktrees/*` directly -- each admin directory
+ * contains a `gitdir` file pointing back at `<wtPath>/.git` -- and removes
+ * only the single admin directory whose `gitdir` matches `wtPath`. Every
+ * other worktree's registration, live or stale, is left completely
+ * untouched: there is no repo-wide operation for a race to reach.
+ *
+ * Best-effort and silent on failure, exactly like the repo-wide
+ * `worktree prune` call this replaces already was -- the caller never
+ * checked that call's result either, so preserving "swallow and move on"
+ * here changes nothing about the surrounding sweep's error-handling
+ * contract, only how narrowly the deregistration is scoped.
+ */
+function pruneSingleWorktreeAdminDir(projectPath: string, wtPath: string): void {
+  try {
+    const commonDirRaw = execFileGit(["rev-parse", "--git-common-dir"], projectPath).trim();
+    if (!commonDirRaw) return;
+    const commonDir = isAbsolute(commonDirRaw) ? commonDirRaw : resolve(projectPath, commonDirRaw);
+    const worktreesDir = join(commonDir, "worktrees");
+    if (!existsSync(worktreesDir)) return;
+    const target = wtPath.replace(/\\/g, "/").replace(/\/+$/, "");
+    for (const name of readdirSync(worktreesDir)) {
+      const adminDir = join(worktreesDir, name);
+      let isDir = false;
+      try {
+        isDir = statSync(adminDir).isDirectory();
+      } catch {
+        continue;
+      }
+      if (!isDir) continue;
+      const gitdirFile = join(adminDir, "gitdir");
+      if (!existsSync(gitdirFile)) continue;
+      let pointed: string;
+      try {
+        pointed = readFileSync(gitdirFile, "utf8").trim();
+      } catch {
+        continue;
+      }
+      let pointedNorm = pointed.replace(/\\/g, "/").replace(/\/+$/, "");
+      if (pointedNorm.endsWith("/.git")) {
+        pointedNorm = pointedNorm.slice(0, -"/.git".length);
+      }
+      if (pointedNorm === target) {
+        rmSync(adminDir, { recursive: true, force: true });
+        return;
+      }
+    }
+  } catch {
+    /* advisory only -- never propagate into the caller's sweep loop */
+  }
 }
 
 /** Synchronous git helper. Returns stdout (empty string on non-zero exit). */
