@@ -133,8 +133,8 @@ export function runJanitor(): {
 }
 
 /**
- * Deregister ONLY the single worktree admin directory for `wtPath`,
- * WITHOUT a repo-wide `git worktree prune`.
+ * Deregister ONLY the worktree admin directory (or directories) for
+ * `wtPath`, WITHOUT a repo-wide `git worktree prune`.
  *
  * `git worktree prune` is repo-wide and takes effect immediately with no
  * grace period (verified empirically on Git 2.55.0.windows.3 in a scratch
@@ -158,9 +158,11 @@ export function runJanitor(): {
  *
  * Walks `<git-common-dir>/worktrees/*` directly -- each admin directory
  * contains a `gitdir` file pointing back at `<wtPath>/.git` -- and removes
- * only the single admin directory whose `gitdir` matches `wtPath`. Every
- * other worktree's registration, live or stale, is left completely
- * untouched: there is no repo-wide operation for a race to reach.
+ * every admin directory whose resolved `gitdir` matches `wtPath` (a
+ * relative `gitdir` is resolved against its containing admin dir before
+ * comparing). Every other worktree's registration, live or stale, is left
+ * completely untouched: there is no repo-wide operation for a race to
+ * reach.
  *
  * Best-effort and silent on failure, exactly like the repo-wide
  * `worktree prune` call this replaces already was -- the caller never
