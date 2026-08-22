@@ -49,3 +49,4 @@ verification-report*.md
 
 # Hydra workflow trace/checkpoint state (per-machine, not source)
 .hydra/
+.harness/
