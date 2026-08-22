@@ -168,7 +168,7 @@ export function runJanitor(): {
  * here changes nothing about the surrounding sweep's error-handling
  * contract, only how narrowly the deregistration is scoped.
  */
-function pruneSingleWorktreeAdminDir(projectPath: string, wtPath: string): void {
+export function pruneSingleWorktreeAdminDir(projectPath: string, wtPath: string): void {
   try {
     const commonDirRaw = execFileGit(["rev-parse", "--git-common-dir"], projectPath).trim();
     if (!commonDirRaw) return;
@@ -193,13 +193,23 @@ function pruneSingleWorktreeAdminDir(projectPath: string, wtPath: string): void 
       } catch {
         continue;
       }
-      let pointedNorm = pointed.replace(/\\/g, "/").replace(/\/+$/, "");
+      // `gitdir` is normally an absolute path, but nothing guarantees that --
+      // resolve a relative entry against the admin directory it lives in
+      // (matching how git itself resolves it) before comparing, or a
+      // relative-`gitdir` admin dir silently never matches and is skipped
+      // forever.
+      const pointedAbs = isAbsolute(pointed) ? pointed : resolve(adminDir, pointed);
+      let pointedNorm = pointedAbs.replace(/\\/g, "/").replace(/\/+$/, "");
       if (pointedNorm.endsWith("/.git")) {
         pointedNorm = pointedNorm.slice(0, -"/.git".length);
       }
+      // Do NOT return on the first match: if more than one admin dir points
+      // at the same wtPath (a stale duplicate registration left behind by
+      // an earlier crash), every one of them must be removed, not just the
+      // first encountered -- otherwise "the single admin directory" is
+      // false and a duplicate registration survives the sweep.
       if (pointedNorm === target) {
         rmSync(adminDir, { recursive: true, force: true });
-        return;
       }
     }
   } catch {
