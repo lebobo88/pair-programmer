@@ -114,7 +114,7 @@ async function insertMissabilityCheck(run_id, check_id, status, offsetMs = 0) {
 }
 
 /** Insert a verdict row directly (hallucination_suspected is not exposed by recordVerdict). */
-async function insertVerdict(attempt_id, { cross_vendor = 0, hallucination_suspected = 0, outcome = "pass", judge_producer = "claude", judge_model_id = "claude-sonnet-4-6", retracted = false, offsetMs = 0 } = {}) {
+async function insertVerdict(attempt_id, { cross_vendor = 0, hallucination_suspected = 0, outcome = "pass", judge_producer = "claude", judge_model_id = "claude-sonnet-5", retracted = false, offsetMs = 0 } = {}) {
   const db = await getDb();
   const id = `verdict_fgb_${Math.random().toString(36).slice(2, 10)}`;
   const ts = new Date(Date.now() + offsetMs).toISOString();
@@ -128,7 +128,7 @@ async function insertVerdict(attempt_id, { cross_vendor = 0, hallucination_suspe
 }
 
 /** Insert an attempt row directly. */
-async function insertAttempt(stage_id, { producer = "claude", model_id = "claude-sonnet-4-6", status = "ok" } = {}) {
+async function insertAttempt(stage_id, { producer = "claude", model_id = "claude-sonnet-5", status = "ok" } = {}) {
   const db = await getDb();
   const id = `attempt_fgb_${Math.random().toString(36).slice(2, 10)}`;
   const now = new Date().toISOString();
@@ -409,7 +409,7 @@ describe("VG-6: hallucination gate", () => {
     // Cross-vendor non-fail verdict AFTER suspect.
     await insertVerdict(attempt_id, {
       hallucination_suspected: 0, cross_vendor: 1, outcome: "pass",
-      judge_producer: "codex", judge_model_id: "gpt-5.4", offsetMs: 500,
+      judge_producer: "codex", judge_model_id: "gpt-5.6-terra", offsetMs: 500,
     });
 
     const readiness = runs.getStageFinalizeReadiness(stage_id);
@@ -428,7 +428,7 @@ describe("VG-6: hallucination gate", () => {
     // Same-vendor clean verdict (cross_vendor=0) does NOT clear.
     await insertVerdict(attempt_id, {
       hallucination_suspected: 0, cross_vendor: 0, outcome: "pass",
-      judge_producer: "claude", judge_model_id: "claude-opus-4-7", offsetMs: 500,
+      judge_producer: "claude", judge_model_id: "claude-opus-5", offsetMs: 500,
     });
 
     const readiness = runs.getStageFinalizeReadiness(stage_id);
@@ -461,7 +461,7 @@ describe("VG-6: hallucination gate", () => {
     // Cross-vendor verdict but outcome=fail.
     await insertVerdict(attempt_id, {
       hallucination_suspected: 0, cross_vendor: 1, outcome: "fail",
-      judge_producer: "codex", judge_model_id: "gpt-5.4", offsetMs: 500,
+      judge_producer: "codex", judge_model_id: "gpt-5.6-terra", offsetMs: 500,
     });
 
     const readiness = runs.getStageFinalizeReadiness(stage_id);
@@ -501,7 +501,7 @@ describe("VG-6: hallucination gate", () => {
       `INSERT INTO verdicts(id, attempt_id, judge_producer, judge_model_id, outcome,
          cross_vendor, hallucination_suspected, created_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
-    ).run(suspectId, attempt_id, "claude", "claude-sonnet-4-6", "pass", 0, 1, samets);
+    ).run(suspectId, attempt_id, "claude", "claude-sonnet-5", "pass", 0, 1, samets);
 
     // Cross-vendor pass inserted AFTER (later rowid) at the same timestamp.
     const cvId = `verdict_sm2_${Math.random().toString(36).slice(2, 10)}`;
@@ -509,7 +509,7 @@ describe("VG-6: hallucination gate", () => {
       `INSERT INTO verdicts(id, attempt_id, judge_producer, judge_model_id, outcome,
          cross_vendor, hallucination_suspected, created_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
-    ).run(cvId, attempt_id, "codex", "gpt-5.4", "pass", 1, 0, samets);
+    ).run(cvId, attempt_id, "codex", "gpt-5.6-terra", "pass", 1, 0, samets);
 
     const readiness = runs.getStageFinalizeReadiness(stage_id);
     const blocker = readiness.blockers.find(b => b.gate === "hallucination");

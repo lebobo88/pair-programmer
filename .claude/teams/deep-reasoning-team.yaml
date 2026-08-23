@@ -19,7 +19,7 @@
 # Judge contract: JUDGE is ALWAYS cross-vendor (Codex/Antigravity (agy)). The generator
 # is Fable (Claude), so the judge MUST be a different vendor to satisfy JUDGE-1.
 # Do NOT set judge model_pref to claude or fable — fable-judges-fable is
-# blocked at runs.ts:641 (same-vendor same-model guard).
+# blocked at runs.ts:857 (same-vendor same-model guard).
 #
 # best_of_n_on_major_scope: kept at 2 (not 3) because Fable-class tokens are
 # very expensive; a 2-way race still provides meaningful diversification.
@@ -43,7 +43,7 @@ stages:
     gate_type: code_style
     generator: { agent: engineer, primary: claude, model_tier: fable }
     # cross_vendor judge (Codex) required: generator is Fable/Claude, judge must be
-    # a different vendor per JUDGE-1. fable-judges-fable is blocked at runs.ts:641.
+    # a different vendor per JUDGE-1. fable-judges-fable is blocked at runs.ts:857.
     judge:     { tier: cross_vendor, model_pref: codex }
     # 2-way race: diversification without burning triple Fable-tier budget.
     best_of_n_on_major_scope: 2

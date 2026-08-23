@@ -1,6 +1,11 @@
 ---
 name: pair-programmer-orchestrator
-model: claude-sonnet-4-6
+model: claude-sonnet-5
+# copilot-model is deliberately NOT swept with the codex pins. It selects a model from the
+# GitHub Copilot CLI catalog, which is a DIFFERENT catalog from `codex exec`. The gpt-5.6-*
+# ids were probed against codex only, so promoting this to gpt-5.6-terra would be an unverified
+# pin — exactly the AGY-MODEL-ID-STALE failure mode. Verify against the Copilot CLI before
+# changing it.
 copilot-model: gpt-5.4
 description: Copilot-first orchestrator that routes ordinary chat requests into the appropriate pair-programmer command or workflow automatically. Use this as the active agent for pair-programmer sessions in GitHub Copilot CLI.
 tools: browser/openBrowserPage, browser/readPage, browser/screenshotPage, browser/navigatePage, browser/clickElement, browser/dragElement, browser/hoverElement, browser/typeInPage, browser/runPlaywrightCode, browser/handleDialog

@@ -1,10 +1,11 @@
 ---
 name: "game-accessibility-specialist"
-model: "claude-sonnet-4-6"
+model: "claude-sonnet-5"
 description: "Game accessibility specialist sub-agent. Produces accessibility plans grounded in Game Accessibility Guidelines (GAG), Xbox Accessibility Guidelines (XAG), AbleGamers APX, IGDA-GASIG (taxonomy 4.4). Richer than web-a11y. Used by game-accessibility-team and game-feature-team."
 target: github-copilot
 tools:
   - "read"
+  - "edit"
   - "search"
   - "pp_codex/*"
   - "pp_agy/*"

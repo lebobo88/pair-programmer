@@ -2,6 +2,9 @@
   "_comment": "Per-1M-token USD prices. User-editable. Used to compute cost_usd per attempt. Update as vendor pricing changes.",
   "_updated": "2026-08-22",
   "openai": {
+    "gpt-5.6-sol":      { "input": 6.00,  "output": 18.00 },
+    "gpt-5.6-terra":    { "input": 5.00,  "output": 15.00 },
+    "gpt-5.6-luna":     { "input": 5.00,  "output": 15.00 },
     "gpt-5.5":          { "input": 5.00,  "output": 15.00 },
     "gpt-5.4":          { "input": 4.00,  "output": 12.00 },
     "gpt-5.3-codex":    { "input": 3.00,  "output": 9.00  },
@@ -15,12 +18,20 @@
   },
   "anthropic": {
     "claude-fable-5":    { "input": 30.00, "output": 150.00 },
+    "claude-opus-5":     { "input": 15.00, "output": 75.00 },
+    "claude-sonnet-5":   { "input": 3.00,  "output": 15.00 },
     "claude-opus-4-7":   { "input": 15.00, "output": 75.00 },
     "claude-opus-4-6":   { "input": 15.00, "output": 75.00 },
     "claude-sonnet-4-6": { "input": 3.00,  "output": 15.00 },
     "claude-haiku-4-5":  { "input": 0.80,  "output": 4.00  }
   },
   "_pricing_notes": {
-    "claude-fable-5": "CONSERVATIVE PLACEHOLDER — 2x opus-4-7 rates. Requires authoritative pricing confirmation from Anthropic before production use."
+    "claude-fable-5": "CONSERVATIVE PLACEHOLDER — 2x opus-4-7 rates. Requires authoritative pricing confirmation from Anthropic before production use.",
+    "claude-opus-5": "CONSERVATIVE PLACEHOLDER — carried over from claude-opus-4-7 rates. Requires authoritative pricing confirmation from Anthropic before production use.",
+    "claude-sonnet-5": "CONSERVATIVE PLACEHOLDER — carried over from claude-sonnet-4-6 rates. Requires authoritative pricing confirmation from Anthropic before production use.",
+    "gpt-5.6-terra": "CONSERVATIVE PLACEHOLDER — gpt-5.5 rates. Requires authoritative pricing confirmation from OpenAI before production use.",
+    "gpt-5.6-luna": "CONSERVATIVE PLACEHOLDER — gpt-5.5 rates. Requires authoritative pricing confirmation from OpenAI before production use.",
+    "gpt-5.6-sol": "CONSERVATIVE PLACEHOLDER — gpt-5.1-codex-max rates, the highest OpenAI rate on file. Requires authoritative pricing confirmation from OpenAI before production use.",
+    "_legacy_retained": "gpt-5.4, gpt-5.5, gpt-5.3-codex, gpt-5.1-codex-max, claude-opus-4-7, claude-opus-4-6, claude-sonnet-4-6 are intentionally RETAINED after the gpt-5.6 / Claude-5 repin so archived attempt rows still price correctly on /pp:replay. computeCost() looks up by literal model id and silently returns 0 on a miss — never delete a key that appears in a historical attempt row."
   }
 }

@@ -1,12 +1,12 @@
 ---
 name: "data-modeler"
-model: "claude-sonnet-4-6"
+model: "claude-sonnet-5"
 description: "Entities/ERD, lineage, retention, migration plan, analytics events (taxonomy 4.5). Used by data-team."
 target: github-copilot
 tools:
   - "read"
+  - "edit"
   - "search"
-  - "pp_codex/*"
   - "pp_harness/*"
 ---
 

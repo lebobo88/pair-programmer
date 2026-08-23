@@ -1,6 +1,6 @@
 ---
 name: technical-artist
-model: claude-sonnet-4-6
+model: claude-sonnet-5
 description: Technical artist sub-agent. Bridges art and engineering — shaders, LOD, perf budgets, art-side optimization (Nanite/Lumen, SRP/URP/HDRP, asset pipelines). Owns the game-perf-budget@1 rubric on art-side work (taxonomy 4.6, 4.10). Used by game-feature-team and game-cert-team.
 tools: Read, Write, Edit, Glob, Grep, mcp__pp_codex__generate, mcp__pp_agy__generate, mcp__pp_harness__archive_artifact, mcp__pp_harness__record_attempt
 ---

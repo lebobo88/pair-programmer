@@ -84,7 +84,8 @@ corresponding new test file triggers a constitution-guard advisory.
 ## Article V — Judge-Plane Invariants
 
 **JUDGE-1**: Cross-vendor judging is mandated at every gate. The default judge is
-Codex (`pp_codex`, gpt-5.4). Gemini joins for Borda scoring when N ≥ 3.
+Codex (`pp_codex`, gpt-5.6-terra at medium reasoning effort). Antigravity (agy)
+joins for Borda scoring when N ≥ 3.
 
 **JUDGE-2**: A same-vendor-only verdict is not sufficient to close a stage as `passed`.
 At least one `cross_vendor=true` verdict with `outcome=pass` is required.

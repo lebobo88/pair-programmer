@@ -24,7 +24,7 @@ async function testAiProvenanceFrontmatter() {
     "---",
     "status: accepted",
     "ai_provenance:",
-    "  generator: claude-opus-4-7",
+    "  generator: claude-opus-5",
     "  judge: gemini-3.1-pro-preview",
     "  borda_rank: 1",
     "---",
@@ -46,7 +46,7 @@ async function testAiProvenanceFrontmatter() {
   // Happy path: inline mapping form.
   const adrInline = [
     "---",
-    'ai_provenance: {generator: "claude-opus-4-7", judge: "gemini-3.1-pro-preview"}',
+    'ai_provenance: {generator: "claude-opus-5", judge: "gemini-3.1-pro-preview"}',
     "---",
     "body",
   ].join("\n");
@@ -56,7 +56,7 @@ async function testAiProvenanceFrontmatter() {
   const missingJudge = [
     "---",
     "ai_provenance:",
-    "  generator: claude-opus-4-7",
+    "  generator: claude-opus-5",
     "---",
     "body",
   ].join("\n");

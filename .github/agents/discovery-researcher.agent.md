@@ -1,10 +1,11 @@
 ---
 name: "discovery-researcher"
-model: "claude-opus-4-6"
+model: "claude-opus-5"
 description: "Writes research briefs, personas, journey maps, workflow maps, glossaries (taxonomy 4.2). Used by discovery-team."
 target: github-copilot
 tools:
   - "read"
+  - "edit"
   - "search"
   - "pp_harness/*"
 ---

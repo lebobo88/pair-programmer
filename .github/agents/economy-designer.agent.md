@@ -1,10 +1,11 @@
 ---
 name: "economy-designer"
-model: "claude-sonnet-4-6"
+model: "claude-sonnet-5"
 description: "Game economy / live-service designer sub-agent. Produces currencies, source/sink tables, gacha math, loot tables, balance matrices, progression curves (taxonomy 4.5). Used by game-live-ops-team and game-feature-team for monetized titles. Invokes loot-box-jurisdiction rubric."
 target: github-copilot
 tools:
   - "read"
+  - "edit"
   - "search"
   - "pp_codex/*"
   - "pp_agy/*"

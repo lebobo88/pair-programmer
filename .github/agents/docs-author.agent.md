@@ -1,6 +1,6 @@
 ---
 name: "docs-author"
-model: "claude-sonnet-4-6"
+model: "claude-sonnet-5"
 description: "Writes changelog entries, release notes, runbooks, user docs, content guides, sunset comms, glossaries (taxonomy 4.13). Used by every team's docs stage."
 target: github-copilot
 tools:

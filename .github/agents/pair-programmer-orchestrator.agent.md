@@ -3,11 +3,6 @@ name: "pair-programmer-orchestrator"
 model: "gpt-5.4"
 description: "Copilot-first orchestrator that routes ordinary chat requests into the appropriate pair-programmer command or workflow automatically. Use this as the active agent for pair-programmer sessions in GitHub Copilot CLI."
 target: github-copilot
-tools:
-  - "read"
-  - "search"
-  - "agent"
-  - "pp_harness/*"
 ---
 
 <!-- Generated from .claude\agents\pair-programmer-orchestrator.md. Edit the .claude source file and rerun node scripts/sync-copilot-assets.mjs. -->

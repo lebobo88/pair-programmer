@@ -73,7 +73,7 @@ For lower-stakes gates (`code_style`, `docs_polish`, `lint_class`) the harness p
 
 ### The 5 invariants
 
-1. **Tiered validator policy** — cross-vendor by default on high-stakes gates; same-vendor different-model OK on style/lint/docs when the vendor can honor it (§6). The agy lane currently only serves one 3.x model, so same-vendor agy critique is a documented **degenerate** case (same model on both sides) until a sibling 3.x id ships. Codex same-vendor is now **conditional** because `pp_codex.critique` is pinned to `gpt-5.4`.
+1. **Tiered validator policy** — cross-vendor by default on high-stakes gates; same-vendor different-model OK on style/lint/docs when the vendor can honor it (§6). The agy lane currently only serves one 3.x model, so same-vendor agy critique is a documented **degenerate** case (same model on both sides) until a sibling 3.x id ships. Codex same-vendor is now **conditional** because `pp_codex.critique` is pinned to `gpt-5.6-terra` (the default Codex generator pin is `gpt-5.6-luna`, so the ordinary Codex→Codex route is legal).
 2. **Taxonomy adherence on every task** — every run is mapped to ≥1 of the 16 sections in `taxonomy_blueprint.md` (§7).
 3. **Reflexion ×1 then surface** — at most one critique-fed retry per failed verdict; after that, the stage is `surfaced` and waits for human direction.
 4. **Anti-runaway loop ceiling** — default 6 validator calls per run. The 7th is rejected.
@@ -368,7 +368,7 @@ For best-of-2, the driver asks the judge for a structured rubric score per candi
 
 ### Self-bias guard
 
-When same-vendor judging is in play, the generator and judge MUST use **different model ids**, except for the documented degenerate agy lane. `pp_codex.critique` is hard-pinned to `gpt-5.4`, so Codex same-vendor is only legal when the generator used a different model id; otherwise `gate_eligible_judges` upgrades to cross-vendor. The daemon's `record_verdict` path now rejects impossible Codex/agy judge metadata so a stale prompt cannot claim a model the wrapper did not actually use.
+When same-vendor judging is in play, the generator and judge MUST use **different model ids**, except for the documented degenerate agy lane. `pp_codex.critique` is hard-pinned to `gpt-5.6-terra`, so Codex same-vendor is only legal when the generator used a different model id (the default generator pin `gpt-5.6-luna` does); otherwise `gate_eligible_judges` upgrades to cross-vendor. The daemon's `record_verdict` path now rejects impossible Codex/agy judge metadata so a stale prompt cannot claim a model the wrapper did not actually use.
 
 > Deep-dive: [`docs/validator-policy.md`](validator-policy.md), [`.claude/skills/judge-policy.md`](../.claude/skills/judge-policy.md), source: [`daemon/src/orchestrator/gates.ts`](../daemon/src/orchestrator/gates.ts).
 
@@ -958,7 +958,7 @@ Best-of-N runs N candidates in parallel through different vendors/models, then j
 ### How it works (the how)
 
 1. `start_best_of_stage(run_id, kind, gate_type, n)` allocates `N` git worktrees (or copy-mode dirs for non-git projects) and shuffles judge positions (Fisher-Yates, seeded for replay).
-2. Driver fans out `N` `engineer` invocations in parallel — pinned to different model IDs (e.g. `gpt-5.4` + `gemini-3.1-pro-preview` + `claude-opus-4-7`).
+2. Driver fans out `N` `engineer` invocations in parallel — pinned to different model IDs (e.g. `gpt-5.6-luna` + `gemini-3.1-pro-high` + `claude-opus-5`).
 3. Each candidate writes its artifact to its own worktree.
 4. `diff_entropy(candidate_texts[])` computes Jaccard similarity. If > 90% similar across all candidates, the result is flagged — the model already converged, which usually means `/pp:run` would have been just as good.
 5. `judge-router` runs all N artifacts against the rubric. For N≥3, optionally a second judge runs and `borda_count(rankings[])` picks the winner from combined rankings.
@@ -1321,8 +1321,8 @@ Schema-level defaults are pinned in [`daemon/src/config.ts`](../daemon/src/confi
 
 | Tool | Purpose |
 |---|---|
-| `generate` | Run `codex exec` headless. Inputs: `prompt`, `cwd`, `model?` (default `gpt-5.4`), `sandbox?`, `output_schema?`, `untrusted_inputs?`. Returns text + tokens + cost. The daemon automatically adds `--skip-git-repo-check` for bridge calls. |
-| `critique` | Use Codex as a judge. Inputs: `artifact_text`, `rubric_md`, `cwd`, `model?` (default `gpt-5.4`). Returns `{ outcome, critique_md, score }`. The daemon automatically adds `--skip-git-repo-check` for bridge calls. |
+| `generate` | Run `codex exec` headless. Inputs: `prompt`, `cwd`, `model?` (default `gpt-5.6-luna`), `sandbox?`, `output_schema?`, `untrusted_inputs?`. Returns text + tokens + cost. The daemon automatically adds `--skip-git-repo-check` for bridge calls. |
+| `critique` | Use Codex as a judge. Inputs: `artifact_text`, `rubric_md`, `cwd`, `model?` (default `gpt-5.6-terra`). Returns `{ outcome, critique_md, score }`. The daemon automatically adds `--skip-git-repo-check` for bridge calls. |
 
 ### `pp_agy` (2 tools)
 
@@ -1463,8 +1463,8 @@ Claude generation runs on a tier ladder resolved by the driver from the tables i
 | Tier | Claude model (entrypoint) | Copilot mirror | Reachable by auto-escalation? |
 |---|---|---|---|
 | `haiku`  | `claude-haiku-4-5-20251001` | same | yes — bottom of `TIER_ORDER` |
-| `sonnet` | `claude-sonnet-4-6` | same | yes — middle |
-| `opus`   | `claude-opus-4-7` | `claude-opus-4-6` | yes — top of `TIER_ORDER`; `shiftTier` clamps here |
+| `sonnet` | `claude-sonnet-5` | same | yes — middle |
+| `opus`   | `claude-opus-5` | same | yes — top of `TIER_ORDER`; `shiftTier` clamps here |
 | **`fable`** | `claude-fable-5` | `claude-fable-5` | **No — capability-gated, off the ladder** |
 
 `shiftTier` walks `TIER_ORDER = [haiku, sonnet, opus]`. **Fable-5 is intentionally absent** from that array, so `shiftTier("opus", +1)` clamps at opus and can **never** auto-escalate to fable. There is no `--tier fable` CLI flag. Fable is selected only by **explicit operator config**, via one of three paths:
@@ -1698,7 +1698,7 @@ You should only need the manual flag when calling the Codex CLI yourself outside
 | **Reflexion ×1** | At most one critique-fed retry per failed attempt. Then surface. |
 | **rubric** | Standard-aligned scoring guide applied at a gate. 25 ship in the registry; project files at `<project>/.claude/rubrics/<bare-id>.md` are loaded only for IDs the registry doesn't have (registry-first). |
 | **run** | One invocation of `/pp:run` / `/pp:best-of` / `/pp:team` / `/pp:review`. Has a `run_id` and a directory. |
-| **same-vendor judge** | Judge whose vendor matches the generator. Usually a different model id; agy is a documented degenerate same-model exception, and Codex is only allowed when the generator model differs from the pinned `gpt-5.4` critique model. |
+| **same-vendor judge** | Judge whose vendor matches the generator. Usually a different model id; agy is a documented degenerate same-model exception, and Codex is only allowed when the generator model differs from the pinned `gpt-5.6-terra` critique model. |
 | **sandbox** | Codex's `read-only | workspace-write | danger-full-access` flag. Mapped per stage kind. |
 | **stage** | One slot in a run's pipeline (e.g. `spec`, `code`, `tests`). |
 | **sub-agent** | Specialized Claude Code agent invoked via the Task tool. 75 ship in `.claude/agents/` — engineering/lifecycle/judging generators plus executive-suite personas, governance authors, and AgentSmith watchers. |

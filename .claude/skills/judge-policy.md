@@ -52,7 +52,7 @@ For best-of-2, the driver should ask the judge for a structured rubric score per
 
 ## Self-bias
 
-- **Codex:** `pp_codex.critique` is hard-pinned to `gpt-5.4`. Same-vendor Codex judging is therefore only legal when the generator used a different model id. If the generator already used `gpt-5.4`, `gate_eligible_judges` upgrades the gate to cross-vendor.
+- **Codex:** `pp_codex.critique` is hard-pinned to `gpt-5.6-terra`. Same-vendor Codex judging is therefore only legal when the generator used a different model id — which the default generator pin (`gpt-5.6-luna`) satisfies, so the ordinary Codex→Codex route is legal. If the generator already used `gpt-5.6-terra`, `gate_eligible_judges` upgrades the gate to cross-vendor.
 - **agy:** `pp_agy.critique` is hard-pinned to `gemini-3.1-pro-preview`. Same-vendor agy judging is a documented degenerate case (same model on both sides) until a second supported 3.x critique model ships.
 - **Claude:** same-vendor Claude judging still requires a different model id from the generator.
 
@@ -74,7 +74,7 @@ unchanged for `shiftTier("fable", ±N)`. Ordinary haiku→sonnet→opus ladder e
 can never reach fable.
 
 Judge contract for Fable-generated stages: the judge MUST be cross-vendor (Codex or
-agy). The same-vendor same-model guard at `runs.ts:641` already blocks fable-judges-fable,
+agy). The same-vendor same-model guard at `runs.ts:857` already blocks fable-judges-fable,
 but the team yaml must not even request it.
 
 Pricing: conservative placeholder at 2× opus rates. Confirm with Anthropic before
@@ -85,9 +85,9 @@ production budget projections.
 The judge MAY set `escalate: true` on `pp_codex.critique` for sanctioned hard gates only:
 
 - **Major-scope security or architecture gates** — e.g. OWASP/ASVS-L2, ArchRFC with PHI or cryptographic scope.
-- **Judge of last resort / final Reflexion retry** — when a stage has exhausted its Reflexion budget and is still `revise`, the driver may escalate to gpt-5.5 for the deciding verdict.
+- **Judge of last resort / final Reflexion retry** — when a stage has exhausted its Reflexion budget and is still `revise`, the driver may escalate to gpt-5.6-sol for the deciding verdict.
 
-When `escalate: true`, the server selects `gpt-5.5` (pinned in `DEFAULT_MODELS.codex_critique_escalated`). The default **remains `gpt-5.4` per JUDGE-1** for all ordinary gates. Arbitrary caller-passed `model` strings are still ignored — escalation is a boolean selecting between two PINNED allow-listed models, never a free-form string.
+When `escalate: true`, the server selects `gpt-5.6-sol` (pinned in `DEFAULT_MODELS.codex_critique_escalated`). The default **remains `gpt-5.6-terra` per JUDGE-1** for all ordinary gates. Arbitrary caller-passed `model` strings are still ignored — escalation is a boolean selecting between two PINNED allow-listed models, never a free-form string.
 
 ## What the driver actually does
 

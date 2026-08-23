@@ -13,8 +13,12 @@ const GENERATED_HOOKS_DIR = join(GITHUB_DIR, "hooks");
 const GENERATED_PLUGIN_HOOKS_PATH = join(ROOT, "hooks.json");
 const GENERATED_REPO_HOOKS_PATH = join(GENERATED_HOOKS_DIR, "pair-programmer.json");
 const GENERATED_SKILLS_DIR = join(GITHUB_DIR, "skills");
+// NOTE: the historical `claude-opus-4-7 -> claude-opus-4-6` model rewrite was
+// removed when the Copilot "one rev lower" Opus divergence was collapsed by
+// operator decision (gpt-5.6 / Claude-5 refresh). COPILOT_CLAUDE_TIER_MODELS is
+// now identical to CLAUDE_TIER_MODELS, so mirrors carry the same model ids
+// verbatim. Re-add a rewrite here if a Copilot-only pin is ever reintroduced.
 const COPILOT_MIRROR_REWRITES = [
-  [/claude-opus-4-7/g, "claude-opus-4-6"],
   [/mcp__pp_harness__get_claude_tier_models/g, "mcp__pp_harness__get_copilot_claude_tier_models"],
   [/\.claude\/skills\/pair-programmer\.md/g, ".github/skills/pair-programmer/SKILL.md"],
   [/\.claude\/commands\/pp\//g, ".github/commands/pp/"],
