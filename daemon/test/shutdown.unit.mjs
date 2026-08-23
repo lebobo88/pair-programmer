@@ -505,7 +505,9 @@ async function main() {
 
   // Run shutdown.  The abort sweep will wait ABORT_TOTAL_CAP_MS (8 s) then
   // give up.  abortAllInFlightChildren returns true → locks must be retained.
+  const t0 = Date.now();
   await shutdownAndExit("cap_hit_test", { exit: false });
+  const shutdownMs = Date.now() - t0;
 
   const lockPresentAfter = existsSync(lockPath);
 
@@ -513,6 +515,7 @@ async function main() {
     lockPresentAfter,
     exitCalled,
     exitCode,
+    shutdownMs,
   }) + "\\n");
   origExit(0);
 }
@@ -528,8 +531,29 @@ async function testCapHitLockRetention() {
   const lockDir = mkdtempSync(join(tmpdir(), "pp-cap-lock-"));
   const script = buildCapHitScript(DIST, lockDir);
 
-  // Allow 15 s: 8 s cap + buffer for module load and child task overhead.
-  const result = runSubprocess(script, 15_000);
+  // Subprocess budget arithmetic (was 15 s, which was too tight and produced
+  // spurious spawnSync ETIMEDOUT on this machine):
+  //
+  //     8 000 ms  ABORT_TOTAL_CAP_MS — the abort sweep waits the full cap
+  //                because the injected fake child's exitPromise never settles
+  //   + 6 000 ms  node boot + ESM load of dist/{util/lock,util/shutdown,
+  //                mcp/cli-runner}.js and their transitive deps (better-sqlite3
+  //                native binding, pino, execa) — cold-cache on Windows this
+  //                alone has been measured at >5 s
+  //   + 2 000 ms  ProjectLock.acquire() + SQLite open/WAL checkpoint during
+  //                shutdown teardown
+  //   + 4 000 ms  spawnSync + antivirus/filesystem margin (Windows Defender
+  //                scans the freshly written temp .mjs before exec)
+  //   ──────────
+  //    20 000 ms  subtotal, ×2 safety factor for a loaded CI box
+  //
+  // 40 s is a CEILING, not an expected duration: the happy path finishes in
+  // ~10-12 s. The test still FAILS if the lock is wrongly released — the
+  // assertions below on lockPresentAfter/exitCalled are unchanged, and a
+  // premature lock release makes the subprocess exit FASTER, not slower, so a
+  // generous timeout cannot mask that regression.
+  const CAP_HIT_SUBPROCESS_TIMEOUT_MS = 40_000;
+  const result = runSubprocess(script, CAP_HIT_SUBPROCESS_TIMEOUT_MS);
 
   try {
     if (result.status !== 0 || result.error) {
@@ -543,6 +567,14 @@ async function testCapHitLockRetention() {
       "lock file RETAINED (not released) when unconfirmed child survives cap");
     assert.equal(data.exitCalled, false,
       "process.exit was NOT called because opts.exit=false was passed");
+
+    // Non-vacuity guard: raising the subprocess budget must not let this test
+    // pass by taking a fast path that never reaches the cap. The abort sweep
+    // has to have actually waited out ABORT_TOTAL_CAP_MS (8 s) on the
+    // never-settling child. 7 s allows for timer coarseness.
+    assert.ok(data.shutdownMs >= 7_000,
+      `abort sweep must have waited out ABORT_TOTAL_CAP_MS; shutdown took only ${data.shutdownMs}ms — ` +
+      "either the cap shrank or the fake child was confirmed gone, so the lock-retention assertion is vacuous");
 
     ok("cap-hit: lock retained when child unconfirmed after ABORT_TOTAL_CAP_MS; shutdown still completes");
   } catch (err) {

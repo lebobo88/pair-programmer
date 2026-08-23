@@ -253,7 +253,7 @@ export const CHECK_DEFINITIONS: Array<{
   },
   {
     id: "browser-validation-evidence",
-    name: "Browser validation evidence (severity clean | warnings)",
+    name: "Browser validation evidence (severity clean | warnings | justified not_applicable)",
     // Triggered when the run's taxonomy includes the QE section (4.10) — the
     // web-ui / mobile profiles also wire this into missability_required so
     // it runs even when 4.10 isn't explicitly mapped.
@@ -282,9 +282,39 @@ export const CHECK_DEFINITIONS: Array<{
         };
       }
       const ok = reports.find(r => /^severity:\s*(clean|warnings)\b/im.test(r.text));
-      return ok
-        ? { status: "pass", evidence: ok.path }
-        : { status: "fail", evidence: `${reports[0]!.path}: severity not parseable` };
+      if (ok) return { status: "pass", evidence: ok.path };
+
+      // severity: not_applicable — the project genuinely has no web UI to
+      // validate (non-ui-cli, sdk, data-product, embedded profiles all appear
+      // in bug-fix-team's profiles_compatible while the team lists this check
+      // in missability_required unconditionally). Before this state existed,
+      // such runs had no honest value to write: "clean" falsely claims
+      // validation ran, "unavailable" means the browser failed on a UI that
+      // WAS relevant, and omitting the line yields "severity not parseable".
+      //
+      // It passes ONLY with a justification, otherwise it degenerates into a
+      // rubber stamp that any run can self-issue. Accepted justifications:
+      //   - a non-empty `reason:` line, or
+      //   - a "## Why this stage does not apply" section with body text.
+      const na = reports.find(r => /^severity:\s*not_applicable\b/im.test(r.text));
+      if (na) {
+        const reasonLine = /^reason:[ \t]*(\S.*)$/im.exec(na.text);
+        const justification = (reasonLine?.[1] ?? sectionBodyAfterHeading(na.text, /^#{2,6}[ \t]*Why this stage does not apply[ \t]*$/im)).trim();
+        if (justification.length > 0) {
+          return {
+            status: "pass",
+            evidence: `${na.path}: severity=not_applicable — ${justification.slice(0, 200)}`,
+          };
+        }
+        return {
+          status: "fail",
+          evidence:
+            `${na.path}: severity=not_applicable with no justification — add a non-empty 'reason:' line ` +
+            `or a '## Why this stage does not apply' section explaining why this project has no web UI`,
+        };
+      }
+
+      return { status: "fail", evidence: `${reports[0]!.path}: severity not parseable` };
     },
   },
   {
@@ -646,6 +676,24 @@ type ArtifactBundle = {
   // null when no candidate yielded content.
   resolved_from?: string | null;
 };
+
+/**
+ * Return the body text under the first markdown heading matching `headingRe`,
+ * stopping at the next heading of any level. "" when the heading is absent or
+ * its body is empty.
+ *
+ * Written as an index walk rather than one regex on purpose: a lookahead of the
+ * form `(?=\n#{1,6}\s|\s*$)` combined with the /m flag matches the zero-width
+ * end-of-FIRST-line, so a lazy body capture always yields "" and every
+ * justification section would read as empty.
+ */
+function sectionBodyAfterHeading(doc: string, headingRe: RegExp): string {
+  const m = headingRe.exec(doc);
+  if (!m) return "";
+  const rest = doc.slice(m.index + m[0].length);
+  const nextHeading = /^#{1,6}[ \t]/m.exec(rest);
+  return nextHeading ? rest.slice(0, nextHeading.index) : rest;
+}
 
 function textPatternCheck(texts: ArtifactBundle[], re: RegExp): { status: "pass" | "fail"; evidence?: string } {
   for (const a of texts) {

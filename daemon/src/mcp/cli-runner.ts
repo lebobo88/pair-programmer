@@ -585,6 +585,86 @@ export function isPersistentStderr(stderr: string): boolean {
   return PERSISTENT_STDERR_PATTERNS.some(re => re.test(stderr));
 }
 
+// ─── stdout classification (codex JSONL vendor faults) ──────────────────────
+//
+// Why this exists: the codex CLI writes API errors as JSONL events on STDOUT,
+// e.g. {"type":"error","message":"400 ... invalid_json_schema ..."}. The
+// classifier historically read only stderr, so a deterministic HTTP 400 was
+// labelled "transient" and burned the whole retry budget re-sending a request
+// the vendor will reject identically every time (~$4.30 wasted in
+// run_WuP005xQIXS4). This is the AGY-MODEL-ID-STALE failure shape in a
+// different stream.
+//
+// The predicate is deliberately NARROW. Blanket-classifying stdout errors as
+// persistent would break genuine transients: 429 rate limits and 5xx server
+// errors MUST keep retrying. So each candidate line must (a) match a
+// deterministic marker and (b) NOT match a transient veto.
+
+/**
+ * Deterministic vendor faults: the request itself is malformed/unacceptable,
+ * so an identical retry produces an identical rejection.
+ */
+const DETERMINISTIC_STDOUT_PATTERNS = [
+  /invalid_json_schema/i,
+  /invalid_request_error/i,
+  // Explicit 4xx client-error status on a JSONL error event. 408 (timeout) and
+  // 429 (rate limit) are excluded here and additionally vetoed below.
+  /\b(?:"?status(?:_code)?"?\s*[:=]\s*"?)(4(?:0[0-79]|1[0-8]|2[0-8]|3[01]|5[01]))\b/i,
+];
+
+/**
+ * Transient veto markers. If a line carries one of these it stays "transient"
+ * even if a deterministic marker also appears on it — retrying a rate limit or
+ * a server-side fault is exactly the right behaviour.
+ */
+const TRANSIENT_STDOUT_VETO = [
+  /\b429\b/,
+  /rate[_ -]?limit/i,
+  /\b5\d{2}\b/,
+  /\b408\b/,
+  /overloaded/i,
+  /server[_ -]?error/i,
+  /service[_ -]?unavailable/i,
+  /\btimeout\b/i,
+  /temporarily unavailable/i,
+  /connection reset/i,
+  /econnreset|epipe|etimedout|econnrefused/i,
+  /socket hang up/i,
+];
+
+/**
+ * True when stdout carries a JSONL error event describing a DETERMINISTIC
+ * vendor API fault (bad schema, malformed request, non-retryable 4xx).
+ *
+ * Only lines that look like an error event are considered — either a JSON
+ * object with `"type":"error"`, or a line already matched by a deterministic
+ * marker. This keeps ordinary model output that merely mentions the word
+ * "error" from short-circuiting the retry.
+ */
+export function isPersistentStdout(stdout: string): boolean {
+  if (!stdout) return false;
+
+  // BUFFER-WIDE VETO, not per-line. An earlier revision applied the veto with
+  // `continue`, which skipped only the offending line -- so a JSONL buffer whose
+  // first line was a deterministic 400 and whose fiftieth line was a 429 returned
+  // `persistent` before the 429 was ever examined. That is the UNSAFE direction:
+  // it stops retrying a genuine rate limit, which is worse than the bug this
+  // function exists to fix. If ANY line anywhere in the buffer looks transient,
+  // the whole buffer is treated as transient and we retry.
+  const lines = stdout.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+  if (lines.some(line => TRANSIENT_STDOUT_VETO.some(re => re.test(line)))) return false;
+
+  for (const line of lines) {
+    // Require STRUCTURED evidence of a vendor error event. Previously this was
+    // `isErrorEvent || namedFault`, so ordinary model output merely quoting the
+    // string "invalid_request_error" -- e.g. a critique discussing this very code
+    // -- classified as persistent. The conjunction means prose cannot trip it.
+    const isErrorEvent = /"type"\s*:\s*"error"/.test(line);
+    if (!isErrorEvent) continue;
+    if (DETERMINISTIC_STDOUT_PATTERNS.some(re => re.test(line))) return true;
+  }
+  return false;
+}
 /**
  * Run the sub-CLI with one server-side retry on transient failure. Each
  * attempt's outcome is captured into `attempts[]`. Persistent failures (per
@@ -594,8 +674,10 @@ export function isPersistentStderr(stderr: string): boolean {
  * <cwd>/.harness/critique_failures/<vendor>_<unix_ms>.txt and returns the
  * path in `failure_archive_path` so callers can include it in their response.
  *
- * Note: this function does not interpret stdout. Callers do their own parsing
- * (Codex JSONL, agy plain text) on the returned stdout.
+ * Note: this function does not interpret stdout for CONTENT — callers do their
+ * own parsing (Codex JSONL, agy plain text). It does scan stdout for
+ * deterministic vendor API faults via `isPersistentStdout`, because codex
+ * emits those as JSONL on stdout rather than stderr.
  */
 export async function runCliWithRetry(opts: CliRunOptions): Promise<CliRunResult> {
   const totalAttempts = 1 + Math.max(0, CRITIQUE_RETRY_ATTEMPTS);
@@ -629,7 +711,9 @@ export async function runCliWithRetry(opts: CliRunOptions): Promise<CliRunResult
       exitCode = (e.exitCode as number | undefined) ?? 1;
     }
     const wall_ms = Date.now() - start;
-    const persistent = exitCode !== 0 && isPersistentStderr(stderr);
+    // Classify on BOTH streams: codex reports API faults as JSONL on stdout,
+    // agy and spawn-level faults land on stderr.
+    const persistent = exitCode !== 0 && (isPersistentStderr(stderr) || isPersistentStdout(stdout));
     attempts.push({
       exit_code: exitCode,
       stderr_tail: stderr.slice(-512),
