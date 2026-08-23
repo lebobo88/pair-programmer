@@ -519,8 +519,15 @@ const PERSISTENT_STDERR_PATTERNS = [
   /model[^\n]{0,80}not found/i,
   /unsupported model/i,
   /no such model/i,
-  // agy deterministic model-id rejection — narrow anchors prevent matching
-  // generic transient phrases like "certificate authority not recognized".
+  // agy deterministic model-id rejection. These are UNANCHORED substring
+  // matches, but each requires its full contiguous phrase, which is what keeps
+  // them narrow: a genuine transient such as "TLS certificate authority not
+  // recognized, retrying handshake" or "upstream proxy not recognized;
+  // connection reset by peer" contains "not recognized" but never "not
+  // recognized as a known model", so it stays transient and is still retried.
+  // Do NOT relax either pattern to a bare /not recognized/i — dedicated guards
+  // in daemon/test/agy-model-id-classification.unit.mjs assert those two
+  // strings remain transient and will go red if you do.
   /invalid model selection/i,
   /not recognized as a known model/i,
 ];

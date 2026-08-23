@@ -295,6 +295,126 @@ await record("provenance citing a missing file with no plausible extension (real
   }
 });
 
+// ---------------------------------------------------------------------------
+// NEW: critique-schema round-trip tests (criteria 12–17, run_jc1UxeCMvyZR)
+// RED PHASE: these tests fail until buildCritiqueOutputSchema gains
+// `findings_provenance` and normalizeCritiqueVerdict passes it through.
+// ---------------------------------------------------------------------------
+
+await record("criterion 12: buildCritiqueOutputSchema exposes findings_provenance as optional array with correct item schema (RED)", async () => {
+  const { buildCritiqueOutputSchema } = await importDist("mcp/critique-schema.js");
+  const schema = buildCritiqueOutputSchema();
+  const fp = schema.properties?.findings_provenance;
+  assert.ok(fp, "findings_provenance must be a property of the schema");
+  assert.equal(fp.type, "array", "findings_provenance must have type: 'array'");
+  const items = fp.items;
+  assert.ok(items, "findings_provenance.items must exist");
+  const required = items.required;
+  assert.ok(Array.isArray(required), "items.required must be an array");
+  const requiredSet = new Set(required);
+  for (const key of ["id", "file", "line", "quoted_text", "claim"]) {
+    assert.ok(requiredSet.has(key), `items.required must include '${key}'`);
+  }
+  assert.equal(requiredSet.size, 5, "items.required must have exactly 5 members");
+  assert.equal(
+    items.properties?.quoted_text?.minLength,
+    8,
+    "quoted_text minLength must be 8"
+  );
+});
+
+await record("criterion 13: findings_provenance is NOT in schema top-level required (RED)", async () => {
+  const { buildCritiqueOutputSchema } = await importDist("mcp/critique-schema.js");
+  const schema = buildCritiqueOutputSchema();
+  const req = schema.required ?? [];
+  assert.ok(
+    !req.includes("findings_provenance"),
+    "findings_provenance must NOT be in schema.required — it is optional"
+  );
+});
+
+await record("criterion 14: validateCritiqueResult round-trips a valid 2-element findings_provenance (RED)", async () => {
+  const { validateCritiqueResult } = await importDist("mcp/critique-schema.js");
+  const provenance = [
+    { id: "F1", file: "src/a.ts", line: 10, quoted_text: "const foo = bar()", claim: "unused variable" },
+    { id: "F2", file: "src/b.ts", line: 22, quoted_text: "throw new Error()", claim: "naked throw" },
+  ];
+  const verdict = {
+    outcome: "fail",
+    critique_md: "two issues found",
+    score_entries: [{ dimension: "correctness", score: 0.3 }],
+    findings_provenance: provenance,
+  };
+  const input = { text: JSON.stringify(verdict) };
+  const result = validateCritiqueResult(input);
+  assert.equal(result.ok, true, `validateCritiqueResult must succeed, got: ${result.ok === false ? result.reason : ''}`);
+  assert.deepEqual(
+    result.verdict.findings_provenance,
+    provenance,
+    "verdict.findings_provenance must deep-equal the input array"
+  );
+});
+
+await record("criterion 15: verdict lacking findings_provenance still validates (RED)", async () => {
+  const { validateCritiqueResult } = await importDist("mcp/critique-schema.js");
+  const verdict = {
+    outcome: "pass",
+    critique_md: "looks good",
+    score_entries: [{ dimension: "correctness", score: 1.0 }],
+  };
+  const result = validateCritiqueResult({ text: JSON.stringify(verdict) });
+  assert.equal(result.ok, true, "verdict without provenance must validate");
+  assert.equal(
+    result.verdict.findings_provenance,
+    undefined,
+    "findings_provenance must be undefined when absent from input"
+  );
+});
+
+await record("criterion 16: normalizeCritiqueResult does NOT strip findings_provenance (RED)", async () => {
+  const { normalizeCritiqueResult } = await importDist("mcp/critique-schema.js");
+  const provenance = [
+    { id: "P1", file: "lib/x.ts", line: 5, quoted_text: "export default null", claim: "null export" },
+  ];
+  const verdict = {
+    outcome: "revise",
+    critique_md: "needs fix",
+    score_entries: [{ dimension: "quality", score: 0.5 }],
+    findings_provenance: provenance,
+  };
+  const input = { text: JSON.stringify(verdict) };
+  const normalized = normalizeCritiqueResult(input);
+  // Both the re-serialized text and the parsed object must carry provenance.
+  assert.deepEqual(
+    JSON.parse(normalized.text).findings_provenance,
+    provenance,
+    "normalizeCritiqueResult text must include findings_provenance"
+  );
+  assert.deepEqual(
+    normalized.parsed?.findings_provenance,
+    provenance,
+    "normalizeCritiqueResult parsed must include findings_provenance"
+  );
+});
+
+await record("criterion 17: short quoted_text entry is DROPPED, verdict still ok (RED)", async () => {
+  const { validateCritiqueResult } = await importDist("mcp/critique-schema.js");
+  const goodEntry = { id: "OK-1", file: "src/ok.ts", line: 1, quoted_text: "const x = 1", claim: "a claim" };
+  const shortEntry = { id: "SHORT-1", file: "src/s.ts", line: 2, quoted_text: "hi", claim: "too short quote" };
+  const verdict = {
+    outcome: "fail",
+    critique_md: "mixed provenance",
+    score_entries: [{ dimension: "quality", score: 0.4 }],
+    findings_provenance: [goodEntry, shortEntry],
+  };
+  const result = validateCritiqueResult({ text: JSON.stringify(verdict) });
+  assert.equal(result.ok, true, "verdict with a bad provenance entry must still be ok");
+  const fp = result.verdict.findings_provenance;
+  assert.ok(Array.isArray(fp), "findings_provenance must be an array");
+  assert.equal(fp.length, 1, "the short-quoted_text entry must be dropped");
+  assert.deepEqual(fp[0], goodEntry, "the remaining entry must be the good one in original order");
+});
+
 console.log();
 console.log(`${passed} passed, ${failed} failed`);
 process.exit(failed === 0 ? 0 : 1);

@@ -6,6 +6,7 @@ tools:
   - "pp_codex/*"
   - "pp_agy/*"
   - "pp_harness/*"
+  - "read"
 ---
 
 <!-- Generated from .claude\agents\judge-cross-vendor.md. Edit the .claude source file and rerun node scripts/sync-copilot-assets.mjs. -->
