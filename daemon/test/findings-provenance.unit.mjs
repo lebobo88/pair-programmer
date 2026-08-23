@@ -306,7 +306,15 @@ await record("criterion 12: buildCritiqueOutputSchema exposes findings_provenanc
   const schema = buildCritiqueOutputSchema();
   const fp = schema.properties?.findings_provenance;
   assert.ok(fp, "findings_provenance must be a property of the schema");
-  assert.equal(fp.type, "array", "findings_provenance must have type: 'array'");
+  // Type is the union ["array","null"], not a bare "array": OpenAI strict mode
+  // forces every property into required[], so optionality is carried by nullability.
+  // See criterion 13 for the full rationale. Assert the union admits "array" rather
+  // than pinning the exact literal, so this does not re-break on a reordering.
+  const fpTypes = Array.isArray(fp.type) ? fp.type : [fp.type];
+  assert.ok(
+    fpTypes.includes("array"),
+    `findings_provenance.type must admit "array"; got ${JSON.stringify(fp.type)}`
+  );
   const items = fp.items;
   assert.ok(items, "findings_provenance.items must exist");
   const required = items.required;
@@ -323,13 +331,65 @@ await record("criterion 12: buildCritiqueOutputSchema exposes findings_provenanc
   );
 });
 
-await record("criterion 13: findings_provenance is NOT in schema top-level required (RED)", async () => {
+// criterion 13 — REPLACED IN PLACE (not deleted; CONSTITUTION.md FORBIDDEN-3).
+//
+// The original assertion required findings_provenance to be ABSENT from
+// schema.required, on the reasoning that the field is optional. That assertion
+// encoded a bug. `codex --output-schema` engages OpenAI strict structured-output
+// mode, which rejects any schema whose `required` does not enumerate every key in
+// `properties` — HTTP 400 invalid_json_schema. Shipping the omission took the whole
+// codex judge lane offline and was caught only by a live round-trip, never by this
+// suite, because these tests inspect the schema object without ever sending it.
+//
+// Under strict mode an optional field is expressed as nullable-AND-required. The
+// "optional" semantics the original criterion was protecting still hold, but they are
+// enforced by the type union plus extractFindingsProvenance(), not by omission — see
+// criterion 15, which is unchanged and still asserts a verdict lacking the field validates.
+await record("criterion 13: findings_provenance is required AND nullable (OpenAI strict mode)", async () => {
   const { buildCritiqueOutputSchema } = await importDist("mcp/critique-schema.js");
   const schema = buildCritiqueOutputSchema();
   const req = schema.required ?? [];
   assert.ok(
-    !req.includes("findings_provenance"),
-    "findings_provenance must NOT be in schema.required — it is optional"
+    req.includes("findings_provenance"),
+    "findings_provenance MUST be in schema.required — OpenAI strict mode rejects a schema " +
+      "whose required[] omits any property key (400 invalid_json_schema), which disables the " +
+      "entire codex judge lane"
+  );
+  const t = schema.properties.findings_provenance.type;
+  const types = Array.isArray(t) ? t : [t];
+  assert.ok(
+    types.includes("array") && types.includes("null"),
+    `findings_provenance.type must admit both "array" and "null" so the field stays ` +
+      `semantically optional while satisfying strict mode; got ${JSON.stringify(t)}`
+  );
+});
+
+// Regression guard for the strict-mode contract itself. No test checked this invariant,
+// which is why the 400 shipped. Strict mode demands required[] == keys(properties) at
+// EVERY object level, so assert it structurally rather than per-field.
+await record("criterion 13b: every object in the schema lists all its properties as required", async () => {
+  const { buildCritiqueOutputSchema } = await importDist("mcp/critique-schema.js");
+  const schema = buildCritiqueOutputSchema();
+  const problems = [];
+  const walk = (node, path) => {
+    if (!node || typeof node !== "object") return;
+    const types = Array.isArray(node.type) ? node.type : [node.type];
+    if (types.includes("object") && node.properties) {
+      const props = Object.keys(node.properties).sort();
+      const req = [...(node.required ?? [])].sort();
+      if (JSON.stringify(props) !== JSON.stringify(req)) {
+        problems.push(`${path}: properties=[${props}] required=[${req}]`);
+      }
+      for (const [k, v] of Object.entries(node.properties)) walk(v, `${path}.${k}`);
+    }
+    if (node.items) walk(node.items, `${path}[]`);
+  };
+  walk(schema, "$");
+  assert.deepEqual(
+    problems,
+    [],
+    "OpenAI strict mode requires required[] to equal keys(properties) for every object " +
+      "level. Mismatches: " + problems.join(" | ")
   );
 });
 
