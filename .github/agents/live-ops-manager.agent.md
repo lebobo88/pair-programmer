@@ -1,10 +1,11 @@
 ---
 name: "live-ops-manager"
-model: "claude-sonnet-4-6"
+model: "claude-sonnet-5"
 description: "Live-ops manager sub-agent. Produces season plans, event cadences, store-page A/B plans, hotfix flow, retention-KPI plans (taxonomy 4.5, 4.11, 4.12). Used by game-live-ops-team for live-service: true projects."
 target: github-copilot
 tools:
   - "read"
+  - "edit"
   - "search"
   - "pp_codex/*"
   - "pp_agy/*"

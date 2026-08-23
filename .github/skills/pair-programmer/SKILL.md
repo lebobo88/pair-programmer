@@ -94,7 +94,7 @@ The driver MUST NOT call any `mcp__pp_codex__*`, `mcp__pp_agy__*`, or `mcp__pp_h
 ## Invariants you MUST uphold
 
 - **Every artifact written to disk goes through `mcp__pp_harness__archive_artifact`.** The daemon scans for secrets, computes the sha256, and refuses to overwrite a file that has been manually edited since the last archive (returns `manual_edit_detected` unless `force_overwrite=true`).
-- **Generator and judge MUST use different model ids and — when the gate requires it — different vendors.** Always call `gate_eligible_judges` first; honor `required_cross_vendor=true`. Codex same-vendor is now conditional because `pp_codex.critique` is hard-pinned to `gpt-5.4`; if the generator also used `gpt-5.4`, the daemon upgrades to cross-vendor.
+- **Generator and judge MUST use different model ids and — when the gate requires it — different vendors.** Always call `gate_eligible_judges` first; honor `required_cross_vendor=true`. Codex same-vendor is now conditional because `pp_codex.critique` is hard-pinned to `gpt-5.6-terra`; if the generator also used `gpt-5.6-terra`, the daemon upgrades to cross-vendor. The default Codex generator pin is `gpt-5.6-luna`, so the ordinary Codex→Codex same-vendor route is legal.
 - **Reflexion is ×1 only.** `retry_with_critique` enforces this server-side; the third call is rejected. Surface the run instead of looping.
 - **Loop ceiling is enforced.** Default 6 validator calls per run; exceeding it blocks further `retry_with_critique` calls. Override only with explicit user consent (`budget_override=true`) and a documented reason.
 - **Run flows are user-explicit only.** Do not start a `/pp:run` flow from a regular conversational request; the user must invoke a `/pp:*` slash command.

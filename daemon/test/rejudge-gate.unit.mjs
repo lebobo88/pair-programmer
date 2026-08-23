@@ -75,7 +75,7 @@ await record("blocker fires when findings_closed claimed without cross-vendor ve
       const att = runs.recordAttempt({
         stage_id: stage.stage_id,
         producer: "claude",
-        model_id: "claude-sonnet-4-6",
+        model_id: "claude-sonnet-5",
         status: "ok",
         notes: {
           findings_closed: [
@@ -103,7 +103,7 @@ await record("blocker fires on anti_pattern_hits even without findings_closed", 
       const att = runs.recordAttempt({
         stage_id: stage.stage_id,
         producer: "claude",
-        model_id: "claude-sonnet-4-6",
+        model_id: "claude-sonnet-5",
         status: "needs_review",
         notes: {
           anti_pattern_hits: [
@@ -126,7 +126,7 @@ await record("blocker clears once a cross-vendor verdict exists on the attempt",
       const att = runs.recordAttempt({
         stage_id: stage.stage_id,
         producer: "claude",
-        model_id: "claude-sonnet-4-6",
+        model_id: "claude-sonnet-5",
         status: "ok",
         notes: {
           findings_closed: [
@@ -139,7 +139,7 @@ await record("blocker clears once a cross-vendor verdict exists on the attempt",
       runs.recordVerdict({
         attempt_id: att.attempt_id,
         judge_producer: "codex",
-        judge_model_id: "gpt-5.4",
+        judge_model_id: "gpt-5.6-terra",
         rubric_id: "code-quality@1",
         outcome: "pass",
         critique_md: "independent cross-vendor read of the diff confirms the claim",
@@ -158,7 +158,7 @@ await record("legacy attempts without notes_json don't trigger the gate", async 
       runs.recordAttempt({
         stage_id: stage.stage_id,
         producer: "codex",
-        model_id: "gpt-5.4",
+        model_id: "gpt-5.6-luna",
         status: "ok",
         // No `notes` — Path B/C non-engineer attempts have no self-claim
         // surface to reconcile. Gate doesn't fire on these.

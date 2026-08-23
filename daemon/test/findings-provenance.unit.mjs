@@ -41,7 +41,7 @@ await record("provenance with quoted_text on disk does NOT flag hallucination", 
     const { db } = await importDist("db/database.js");
     const run = await runs.ensureRun({ request_text: "prov ok", project_path: project, mode: "single" });
     const stage = await runs.startStage({ run_id: run.run_id, kind: "code", gate_type: "code" });
-    const att = runs.recordAttempt({ stage_id: stage.stage_id, producer: "claude", model_id: "claude-sonnet-4-6", status: "ok" });
+    const att = runs.recordAttempt({ stage_id: stage.stage_id, producer: "claude", model_id: "claude-sonnet-5", status: "ok" });
 
     // Write a file the judge will cite.
     mkdirSync(join(project, "supabase", "migrations"), { recursive: true });
@@ -56,7 +56,7 @@ await record("provenance with quoted_text on disk does NOT flag hallucination", 
     const verdict = runs.recordVerdict({
       attempt_id: att.attempt_id,
       judge_producer: "codex",
-      judge_model_id: "gpt-5.4",
+      judge_model_id: "gpt-5.6-terra",
       rubric_id: "rls-correctness@1",
       outcome: "pass",
       critique_md: "policy 007 looks good — soft-delete filter present",
@@ -88,7 +88,7 @@ await record("provenance with NON-matching quoted_text flags hallucination", asy
     const { db } = await importDist("db/database.js");
     const run = await runs.ensureRun({ request_text: "prov hallu", project_path: project, mode: "single" });
     const stage = await runs.startStage({ run_id: run.run_id, kind: "code", gate_type: "code" });
-    const att = runs.recordAttempt({ stage_id: stage.stage_id, producer: "claude", model_id: "claude-sonnet-4-6", status: "ok" });
+    const att = runs.recordAttempt({ stage_id: stage.stage_id, producer: "claude", model_id: "claude-sonnet-5", status: "ok" });
 
     mkdirSync(join(project, "apps", "web"), { recursive: true });
     writeFileSync(
@@ -100,7 +100,7 @@ await record("provenance with NON-matching quoted_text flags hallucination", asy
     const verdict = runs.recordVerdict({
       attempt_id: att.attempt_id,
       judge_producer: "codex",
-      judge_model_id: "gpt-5.4",
+      judge_model_id: "gpt-5.6-terra",
       rubric_id: "code-quality@1",
       outcome: "fail",
       critique_md: "judge claims a bug that isn't there",
@@ -134,11 +134,11 @@ await record("provenance with path-traversal in file is flagged", async () => {
     const { db } = await importDist("db/database.js");
     const run = await runs.ensureRun({ request_text: "traversal", project_path: project, mode: "single" });
     const stage = await runs.startStage({ run_id: run.run_id, kind: "code", gate_type: "code" });
-    const att = runs.recordAttempt({ stage_id: stage.stage_id, producer: "claude", model_id: "claude-sonnet-4-6", status: "ok" });
+    const att = runs.recordAttempt({ stage_id: stage.stage_id, producer: "claude", model_id: "claude-sonnet-5", status: "ok" });
     const verdict = runs.recordVerdict({
       attempt_id: att.attempt_id,
       judge_producer: "codex",
-      judge_model_id: "gpt-5.4",
+      judge_model_id: "gpt-5.6-terra",
       outcome: "fail",
       critique_md: "bad provenance",
       score_json: {
@@ -166,11 +166,11 @@ await record("verdict without findings_provenance is not flagged", async () => {
     const { db } = await importDist("db/database.js");
     const run = await runs.ensureRun({ request_text: "no prov", project_path: project, mode: "single" });
     const stage = await runs.startStage({ run_id: run.run_id, kind: "code", gate_type: "code" });
-    const att = runs.recordAttempt({ stage_id: stage.stage_id, producer: "claude", model_id: "claude-sonnet-4-6", status: "ok" });
+    const att = runs.recordAttempt({ stage_id: stage.stage_id, producer: "claude", model_id: "claude-sonnet-5", status: "ok" });
     const verdict = runs.recordVerdict({
       attempt_id: att.attempt_id,
       judge_producer: "codex",
-      judge_model_id: "gpt-5.4",
+      judge_model_id: "gpt-5.6-terra",
       outcome: "pass",
       critique_md: "ok",
       score_json: { correctness: 1.0 },
@@ -189,7 +189,7 @@ await record("provenance citing a missing-but-plausible path (real parent dir, s
     const { db } = await importDist("db/database.js");
     const run = await runs.ensureRun({ request_text: "unlanded plausible", project_path: project, mode: "single" });
     const stage = await runs.startStage({ run_id: run.run_id, kind: "code", gate_type: "code" });
-    const att = runs.recordAttempt({ stage_id: stage.stage_id, producer: "claude", model_id: "claude-sonnet-4-6", status: "ok" });
+    const att = runs.recordAttempt({ stage_id: stage.stage_id, producer: "claude", model_id: "claude-sonnet-5", status: "ok" });
 
     // The parent directory genuinely exists in the project; only the
     // cited file itself is missing — a plausible unlanded-diff shape.
@@ -198,7 +198,7 @@ await record("provenance citing a missing-but-plausible path (real parent dir, s
     const verdict = runs.recordVerdict({
       attempt_id: att.attempt_id,
       judge_producer: "codex",
-      judge_model_id: "gpt-5.4",
+      judge_model_id: "gpt-5.6-terra",
       outcome: "revise",
       critique_md: "needs a null check",
       score_json: {
@@ -229,12 +229,12 @@ await record("provenance citing a fabricated path (parent dir doesn't exist anyw
     const { db } = await importDist("db/database.js");
     const run = await runs.ensureRun({ request_text: "fabricated missing dir", project_path: project, mode: "single" });
     const stage = await runs.startStage({ run_id: run.run_id, kind: "code", gate_type: "code" });
-    const att = runs.recordAttempt({ stage_id: stage.stage_id, producer: "claude", model_id: "claude-sonnet-4-6", status: "ok" });
+    const att = runs.recordAttempt({ stage_id: stage.stage_id, producer: "claude", model_id: "claude-sonnet-5", status: "ok" });
 
     const verdict = runs.recordVerdict({
       attempt_id: att.attempt_id,
       judge_producer: "codex",
-      judge_model_id: "gpt-5.4",
+      judge_model_id: "gpt-5.6-terra",
       outcome: "fail",
       critique_md: "cites a file that was never part of this project",
       score_json: {
@@ -265,7 +265,7 @@ await record("provenance citing a missing file with no plausible extension (real
     const { db } = await importDist("db/database.js");
     const run = await runs.ensureRun({ request_text: "fabricated no extension", project_path: project, mode: "single" });
     const stage = await runs.startStage({ run_id: run.run_id, kind: "code", gate_type: "code" });
-    const att = runs.recordAttempt({ stage_id: stage.stage_id, producer: "claude", model_id: "claude-sonnet-4-6", status: "ok" });
+    const att = runs.recordAttempt({ stage_id: stage.stage_id, producer: "claude", model_id: "claude-sonnet-5", status: "ok" });
 
     // Parent directory is real, but the cited "file" has no extension at
     // all — not a sane shape for a real source file citation.
@@ -274,7 +274,7 @@ await record("provenance citing a missing file with no plausible extension (real
     const verdict = runs.recordVerdict({
       attempt_id: att.attempt_id,
       judge_producer: "codex",
-      judge_model_id: "gpt-5.4",
+      judge_model_id: "gpt-5.6-terra",
       outcome: "fail",
       critique_md: "cites a made-up extensionless path",
       score_json: {

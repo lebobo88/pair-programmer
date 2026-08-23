@@ -1,10 +1,11 @@
 ---
 name: "governance-author"
-model: "claude-sonnet-4-6"
+model: "claude-sonnet-5"
 description: "RACI, decision logs, review forums, cadence (taxonomy 4.14). Used by governance-team and strategy-team (risk_register)."
 target: github-copilot
 tools:
   - "read"
+  - "edit"
   - "search"
   - "pp_harness/*"
 ---

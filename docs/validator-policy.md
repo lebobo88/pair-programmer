@@ -22,7 +22,7 @@ The driver MUST call `mcp__pp_harness__gate_eligible_judges` before invoking any
 
 - **Content-aware**: regex over the prompt for security / concurrency / data-integrity / auth / migration vocabulary.
 - **Profile-aware**: `enterprise` → all gates cross-vendor; `ai-agentic` → cross-vendor on eval or tool-permission gates.
-- **Capability-aware**: if same-vendor would be impossible for the chosen vendor/model pairing, the daemon upgrades to cross-vendor instead of letting the run discover the contradiction later. Example: Codex same-vendor is unavailable when `generator_model` resolves to `gpt-5.4`, because `pp_codex.critique` is pinned to that same model.
+- **Capability-aware**: if same-vendor would be impossible for the chosen vendor/model pairing, the daemon upgrades to cross-vendor instead of letting the run discover the contradiction later. Example: Codex same-vendor is unavailable when `generator_model` resolves to `gpt-5.6-terra`, because `pp_codex.critique` is pinned to that same model. The default Codex generator pin is `gpt-5.6-luna`, so the ordinary Codex→Codex same-vendor route stays legal.
 
 ## Decision payload
 

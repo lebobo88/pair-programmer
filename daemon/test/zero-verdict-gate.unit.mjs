@@ -103,7 +103,7 @@ async function insertAttempt(stage_id, { offsetMs = 0 } = {}) {
   db().prepare(
     `INSERT INTO attempts(id, stage_id, producer, model_id, status, created_at)
      VALUES (?, ?, ?, ?, ?, ?)`
-  ).run(id, stage_id, "claude", "claude-sonnet-4-6", "ok", ts);
+  ).run(id, stage_id, "claude", "claude-sonnet-5", "ok", ts);
   return id;
 }
 
@@ -117,7 +117,7 @@ async function insertVerdict(attempt_id, { outcome = "pass", retracted = false, 
     `INSERT INTO verdicts(id, attempt_id, judge_producer, judge_model_id, outcome,
        cross_vendor, hallucination_suspected, retracted_at, created_at)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
-  ).run(id, attempt_id, "codex", "gpt-5.4", outcome, 1, 0, retractedAt, ts);
+  ).run(id, attempt_id, "codex", "gpt-5.6-terra", outcome, 1, 0, retractedAt, ts);
   return id;
 }
 
@@ -309,7 +309,7 @@ describe("LV-6 VG-5 smoke-row + winner_attempt_id: getStageFinalizeReadiness", (
     db().prepare(
       `INSERT INTO attempts(id, stage_id, producer, model_id, status, notes_json, created_at)
        VALUES (?, ?, ?, ?, ?, ?, ?)`,
-    ).run(id, stage_id, "claude", "claude-sonnet-4-6", "ok",
+    ).run(id, stage_id, "claude", "claude-sonnet-5", "ok",
       JSON.stringify({ candidate_index: candidateIndex }), ts);
     return id;
   }

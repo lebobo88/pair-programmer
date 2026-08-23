@@ -1,10 +1,11 @@
 ---
 name: "encounter-designer"
-model: "claude-opus-4-6"
+model: "claude-opus-5"
 description: "Game encounter / combat designer sub-agent. Produces enemy archetypes, boss phases, encounter pacing, AI tuning targets (taxonomy 4.4). Used by game-feature-team. Often shares prompt structure with level-designer."
 target: github-copilot
 tools:
   - "read"
+  - "edit"
   - "search"
   - "pp_codex/*"
   - "pp_agy/*"

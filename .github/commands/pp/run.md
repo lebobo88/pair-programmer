@@ -28,8 +28,8 @@ This driver mirrors `.github/agents/*.agent.md` frontmatter `model:` values so t
 
 | agent | tier |
 |-------|------|
-| strategy-author, spec-author, architect, security-reviewer, discovery-researcher, ai-controls-author, narrative-designer, encounter-designer, level-designer, game-ai-programmer, netcode-programmer, game-security | opus (`claude-opus-4-6`) |
-| engineer, api-designer, designer, design-system-curator, test-strategist, docs-author, ops-author, data-modeler, release-planner, retirement-planner, governance-author, economy-designer, live-ops-manager, tech-animator, technical-artist, game-accessibility-specialist | sonnet (`claude-sonnet-4-6`) |
+| strategy-author, spec-author, architect, security-reviewer, discovery-researcher, ai-controls-author, narrative-designer, encounter-designer, level-designer, game-ai-programmer, netcode-programmer, game-security | opus (`claude-opus-5`) |
+| engineer, api-designer, designer, design-system-curator, test-strategist, docs-author, ops-author, data-modeler, release-planner, retirement-planner, governance-author, economy-designer, live-ops-manager, tech-animator, technical-artist, game-accessibility-specialist | sonnet (`claude-sonnet-5`) |
 | triage, taxonomy-mapper, profile-loader, judge-router, missability-inspector, master-plan-patcher, run-finalizer, reflexion-coach, browser-validator, visual-regression-runner | haiku (`claude-haiku-4-5-20251001`) |
 | judge-cross-vendor, judge-same-vendor | — (judges pick their own model from internal rotation; see those agents' Procedure sections) |
 
@@ -77,11 +77,13 @@ The `trace` array records which layer set the final tier ("frontmatter", "team_y
 6. **Stage loop.** Pick the stage set by triage class:
    - `trivial` → just `code` (or `docs` if the request is doc-shaped).
    - `standard` → `spec` → `code` → `tests` → `docs`.
-   - `major` → STOP and tell the user to invoke `/pp:team feature-team` or another team-shaped flow instead. Finalize the run with `status="aborted"` and explain.
+   - `major` →
+     - **If `signals` includes `"doc-only"`** (taxonomy.ts walks `doc-only` back from `major-keyword`/`security-keyword` by −3, but a high-signal stack can still resolve to `major`), continue into a **single doc stage** instead of aborting. Pick the stage kind from the doc-only payload — `docs` is the default; if the request explicitly names an ADR/spec/PRD/RFC, use `spec` (the spec-author agent handles ADR/MADR/spec/PRD/RFC shapes; spec gate_type still applies). Run exactly one stage through the standard `start_stage → generate → judge → finalize` flow with best-of-N=1 (single-stage best-of). Skip Reflexion-escalation past the cap if `cli_flags.tier_cap` is set, but otherwise follow the normal verdict/readiness branches. Then continue to step 7 (Missability).
+     - **Otherwise** (true major scope without `doc-only`), STOP and tell the user to invoke `/pp:team feature-team` or another team-shaped flow instead. Finalize the run with `status="aborted"` and explain.
 
    For each stage:
    - `mcp__pp_harness__start_stage(run_id, kind, gate_type)`. Default `gate_type` per `kind`: `spec→spec`, `code→code_style`, `tests→lint_class`, `tests_pre→contract`, `docs→docs_polish`. Override per profile rubric bindings if the profile names a different gate type for the kind.
-   - `mcp__pp_harness__gate_eligible_judges` with `gate_type`, `generator_producer="codex"` (default for `engineer`), `generator_model=<planned model id when known; otherwise let the daemon infer the Codex default>`, `prompt_keywords=$ARGUMENTS`, `profile=<profile.name or null>`, `artifact_kind` (per-stage canonical kind). Capture `{ required_cross_vendor, rubric_id, allowed_judges, upgraded, reason }`.
+   - `mcp__pp_harness__gate_eligible_judges` with `gate_type`, `generator_producer="claude"` (the `engineer` producer is **Path A / Claude** — see `.github/agents/engineer.agent.md`; Paths B/C codex/agy *generation* are deprecated, external CLIs are critique-only, so cross-vendor judging resolves to codex), `generator_model=<the resolved Claude tier model id from step 6a when known; otherwise let the daemon infer a default>`, `prompt_keywords=$ARGUMENTS`, `profile=<profile.name or null>`, `artifact_kind` (per-stage canonical kind). Capture `{ required_cross_vendor, rubric_id, allowed_judges, upgraded, reason }`.
 
    - **6a. Resolve Claude tier for this stage.** Run the resolver below (highest-precedence wins, layers stack low→high). The resolver only governs Claude generators (Path A inside the `engineer` agent and any agent whose frontmatter pins `model:`). For Codex/Antigravity (agy) producers (engineer Paths B/C, api-designer when delegated to Codex, etc.) skip the resolver and use the vendor's default model id from `daemon/src/config.ts:DEFAULT_MODELS`.
 
@@ -161,6 +163,14 @@ The `trace` array records which layer set the final tier ("frontmatter", "team_y
     - Total tokens and cost from `mcp__pp_harness__budget_status(scope="run:<run_id>")`.
     - A tier-breakdown row: query `budget_status(scope="tier:opus")`, `tier:sonnet`, `tier:haiku` and show their totals so the user sees where spend went.
     - A one-paragraph summary of what changed.
+
+## Windows / PowerShell portability notes
+
+**Subprocess spawn on Windows:** All daemon subprocesses (git, npx, plantuml, judge CLIs) are spawned via `trackedExeca` / `trackedExecaNoRefuse` with `windowsHide: true` and arguments passed as an array (never a shell string, never `shell: true`). `execa` resolves `.cmd` shims via PATHEXT automatically so `npx` works without extra shim handling.
+
+**Binary existence probe:** The `onPath()` helper in `c4-render.ts` spawns the binary directly with a no-op flag rather than calling `which` (POSIX) or `where` (Windows). This avoids platform branching while catching ENOENT on all platforms.
+
+**Parallel subagent spawn on Windows/PowerShell:** Parallel Task dispatch (e.g. multiple engineer candidates or browser-validator + engineer in the same stage) can be unreliable on Windows due to PowerShell process-group limits and pipe contention. If parallel dispatch hangs or produces incomplete results, fall back to sequential dispatch: invoke each sub-agent Task call in series, awaiting each before starting the next. The harness timer still applies to the full sequence.
 
 ## Failure handling
 

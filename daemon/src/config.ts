@@ -33,9 +33,12 @@ export const CRITIQUE_RETRY_BACKOFF_MS = 2000;
  * retried).
  */
 export const DEFAULT_MODELS = {
-  codex_generate:            "gpt-5.4",
-  codex_critique:            "gpt-5.4",   // constitutional default (JUDGE-1) — do NOT change
-  codex_critique_escalated:  "gpt-5.5",   // opt-in escalation for major-scope/last-resort gates
+  codex_generate:            "gpt-5.6-luna",
+  // Constitutional default (JUDGE-1), pinned by CONSTITUTION.md Article V as
+  // amended (SHA 13b4fa18): Codex `gpt-5.6-terra` at medium reasoning effort.
+  // Do NOT change outside the HITL `/pp:constitution amend` path.
+  codex_critique:            "gpt-5.6-terra",
+  codex_critique_escalated:  "gpt-5.6-sol", // opt-in escalation for major-scope/last-resort gates
   agy_generate:              "gemini-3.1-pro-high",
   agy_critique:              "gemini-3.1-pro-high",
 } as const;
@@ -49,8 +52,8 @@ export const DEFAULT_MODELS = {
  * Keep in sync with `daemon/prices.json` when model ids change.
  */
 export const CLAUDE_TIER_MODELS = {
-  opus:   "claude-opus-4-7",
-  sonnet: "claude-sonnet-4-6",
+  opus:   "claude-opus-5",
+  sonnet: "claude-sonnet-5",
   haiku:  "claude-haiku-4-5-20251001",
   // Fable-5: capability-gated, NEVER reached by automatic shiftTier escalation.
   // Selected only via explicit operator config:
@@ -63,13 +66,17 @@ export const CLAUDE_TIER_MODELS = {
 } as const;
 
 /**
- * GitHub Copilot mirrors intentionally pin Opus one rev lower than the shared
- * Claude entrypoint. Keep this divergence explicit so the daemon can expose a
- * Copilot-only tier map without changing the Claude defaults above.
+ * GitHub Copilot tier map. This map is DELIBERATELY IDENTICAL to
+ * CLAUDE_TIER_MODELS above. The historical "Copilot pins Opus one rev lower"
+ * divergence was collapsed by operator decision during the gpt-5.6 / Claude-5
+ * model-id refresh: both entrypoints now serve the same generation, so keeping
+ * a lagging Copilot pin bought nothing and produced two ids to maintain. The
+ * separate export is retained so a future Copilot-only divergence can be
+ * reintroduced by editing one map rather than re-plumbing every call site.
  */
 export const COPILOT_CLAUDE_TIER_MODELS = {
-  opus:   "claude-opus-4-6",
-  sonnet: "claude-sonnet-4-6",
+  opus:   "claude-opus-5",
+  sonnet: "claude-sonnet-5",
   haiku:  "claude-haiku-4-5-20251001",
   // Fable-5: capability-gated. See CLAUDE_TIER_MODELS comment above.
   fable:  "claude-fable-5",

@@ -17,7 +17,7 @@ You are the judge router. You do not judge yourself — you decide which judge a
 
 - `gate_type` — `spec` | `design` | `security` | `contract` | `code_style` | `docs_polish` | `lint_class`
 - `generator_producer` — `"codex"` | `"agy"` | `"claude"`
-- `generator_model` — optional but strongly preferred when known. Pass the actual/planned generator model id so the daemon can catch impossible same-vendor routes (notably Codex `gpt-5.4` → Codex judge).
+- `generator_model` — optional but strongly preferred when known. Pass the actual/planned generator model id so the daemon can catch impossible same-vendor routes (notably a Codex generator that already ran on `gpt-5.6-terra`, since the Codex judge is hard-pinned to that same id; a `gpt-5.6-luna` generator → Codex judge is legal).
 - `prompt_keywords` — the user's request text plus any artifact-relevant keywords (the daemon scans this for escalation triggers)
 - `profile` — optional project profile (one of: web-ui | api-platform | internal-tool | enterprise | ai-agentic | mobile | sdk | data-product | embedded | non-ui-cli)
 - `artifact_kind` — optional, e.g. `"screen_state_matrix"`, `"adr"`, `"openapi"`

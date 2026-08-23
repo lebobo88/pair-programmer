@@ -1,10 +1,11 @@
 ---
 name: "game-ai-programmer"
-model: "claude-opus-4-6"
+model: "claude-opus-5"
 description: "In-game AI programmer sub-agent. Produces behavior trees / GOAP / Utility / HTN / EQS / NavMesh / perception system designs (taxonomy 4.6, 4.8). Used by game-feature-team for AI-driven NPC work. Distinct from gen-AI agents — this is the AI that drives enemy / NPC behavior at runtime."
 target: github-copilot
 tools:
   - "read"
+  - "edit"
   - "search"
   - "pp_codex/*"
   - "pp_agy/*"

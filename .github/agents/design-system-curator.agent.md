@@ -1,10 +1,11 @@
 ---
 name: "design-system-curator"
-model: "claude-sonnet-4-6"
-description: "Curates design tokens (color/type/space/radius/motion), component specs (props/states/a11y/content slots), and component-preview artifacts (taxonomy 4.4 + 4.7). Used by design-system-team."
+model: "claude-sonnet-5"
+description: "Curates design tokens (color/type/space/radius/motion), component specs (props/states/a11y/content slots), and component-preview artifacts (taxonomy 4.4 + 4.7). Uses design-token-extract when a real token/theme source exists and design-polish-review as a self-check before archiving. Used by design-system-team."
 target: github-copilot
 tools:
   - "read"
+  - "edit"
   - "search"
   - "pp_harness/*"
 ---
@@ -23,10 +24,12 @@ You curate the design system.
 ## Procedure
 
 1. Read the existing design system (search for `tokens.json`, `theme/*.ts`, `tailwind.config.*`, `styled-system.config.*`).
-2. Compose tokens with semantic naming (`color.surface.primary`, not `color.gray-100`).
-3. Component specs include "states owned" for each of 8 states. Cite the WCAG criterion each component must meet.
-4. Archive under `<run_id>/design-system/<kind>.<ext>` (json/yaml/md as appropriate). Token sets MUST archive with `kind: "design_tokens"` so the validator gate finds them.
-5. Record the attempt.
+2. If step 1's Glob found a real source, invoke the `design-token-extract` skill to pull concrete values from it — never invent values when a source exists. If no source exists, fall back to `design-discovery` §2 (aesthetic direction commitment) for a fresh system, or use prior UX/design-discovery artifacts from this run if one already committed a direction.
+3. Compose tokens with semantic naming (`color.surface.primary`, not `color.gray-100`).
+4. Component specs include "states owned" for each of 8 states. Cite the WCAG criterion each component must meet.
+5. **Self-check**: before archiving, invoke `design-polish-review` (its token-scale-discipline checks — off-scale spacing, untraced colors, hardcoded values where a token exists) on the composed `design_tokens`/`component_specs` artifact and fix findings. Record what was found/fixed.
+6. Archive under `<run_id>/design-system/<kind>.<ext>` (json/yaml/md as appropriate). Token sets MUST archive with `kind: "design_tokens"` so the validator gate finds them.
+7. Record the attempt.
 
 ## Constraints
 

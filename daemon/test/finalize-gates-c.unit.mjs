@@ -108,7 +108,7 @@ async function insertAttempt(stage_id, overrides = {}) {
   ).run(
     id, stage_id,
     overrides.producer ?? "claude",
-    overrides.model_id ?? "claude-sonnet-4-6",
+    overrides.model_id ?? "claude-sonnet-5",
     overrides.status ?? "ok",
     overrides.notes_json ?? null,
     now,
@@ -126,7 +126,7 @@ async function insertVerdict(attempt_id, { outcome = "pass", retracted = false }
     `INSERT INTO verdicts(id, attempt_id, judge_producer, judge_model_id, outcome,
        cross_vendor, hallucination_suspected, retracted_at, created_at)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
-  ).run(id, attempt_id, "codex", "gpt-5.4", outcome, 1, 0, retractedAt, ts);
+  ).run(id, attempt_id, "codex", "gpt-5.6-terra", outcome, 1, 0, retractedAt, ts);
   return id;
 }
 

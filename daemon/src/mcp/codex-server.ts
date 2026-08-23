@@ -391,7 +391,7 @@ async function codexGenerate(
 
 /**
  * Select the pinned critique model based on the escalate flag.
- * escalate selects a PINNED allow-listed model (gpt-5.5); caller-passed args.model remains ignored (invented-id guard).
+ * escalate selects a PINNED allow-listed model (gpt-5.6-sol); caller-passed args.model remains ignored (invented-id guard).
  *
  * This is a pure exported helper so it can be unit-tested offline without
  * spawning the Codex CLI. codexCritique delegates to it internally.
@@ -406,16 +406,16 @@ export async function codexCritique(
 ): Promise<CodexResult> {
   // Pin the critique model and reasoning effort regardless of what the
   // sub-agent passes. Sub-agent prompts (judge-cross-vendor / judge-same-
-  // vendor) ALSO require gpt-5.4, but Claude Code drivers have repeatedly
-  // invented model ids (gpt-5.5, gpt-5-codex, o1, etc.) which the installed
+  // vendor) ALSO require gpt-5.6-terra, but Claude Code drivers have repeatedly
+  // invented model ids (gpt-5-codex, o1, etc.) which the installed
   // codex CLI does not serve, failing the critique with "model not found"
   // and blowing up the run. Belt-and-suspenders: the wrapper enforces.
-  // escalate selects a PINNED allow-listed model (gpt-5.5); caller-passed args.model remains ignored (invented-id guard).
+  // escalate selects a PINNED allow-listed model (gpt-5.6-sol); caller-passed args.model remains ignored (invented-id guard).
   const pinnedModel = DEFAULT_MODELS.codex_critique;
   const effectiveModel = selectCritiqueModel(args.escalate ?? false);
   if (args.model && args.model !== effectiveModel) {
     process.stderr.write(
-      `[pp_codex.critique] ignoring model="${args.model}" passed by caller; pinning to "${effectiveModel}" (high reasoning). The judge agent contract requires this model.\n`,
+      `[pp_codex.critique] ignoring model="${args.model}" passed by caller; pinning to "${effectiveModel}" (medium reasoning). The judge agent contract requires this model.\n`,
     );
   }
   const wrappedArtifact = wrapUntrusted("artifact-under-review", args.artifact_text);
@@ -431,7 +431,9 @@ export async function codexCritique(
     model: effectiveModel,
     sandbox: "read-only",
     skip_recap: true,
-    reasoning_effort: "high",
+    // CONSTITUTION.md Article V as amended (SHA 13b4fa18) pins JUDGE-1 at
+    // medium reasoning effort. Do not raise without a constitution amendment.
+    reasoning_effort: "medium",
     output_schema: args.output_schema ?? buildCritiqueOutputSchema(),
     timeout_ms: args.timeout_ms,
   };

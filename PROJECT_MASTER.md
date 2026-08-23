@@ -68,6 +68,7 @@ _To be populated by harness runs._
 ## 13. Engineering standards and delivery model
 
 
+
 ### Run run_jc1UxeCMvyZR — 2026-08-22
 
 **Request:** Fix four daemon defects and establish no-secondary-vendor architectural constraint
@@ -84,6 +85,14 @@ _To be populated by harness runs._
 - Model pricing table (`daemon/prices.json`) retains stale keys to preserve historical cost rows; new `gemini-3.1-pro-high` entry added alongside `gemini-3.1-pro-preview`.
 - TDD `mixed` outcome support required adding `parseNodeTest()` parser for `node --test` runner (handles spec reporter `ℹ` and TAP reporter `#` prefixes).
 - All unit tests pass; `npm run build` clean.
+
+### Run `run_4LEN6bjb5gEL` — Repo-wide model-id refresh, following the HITL constitution amendment (CONSTITUT
+
+- Date: 2026-08-23
+- Mode: single
+- Status: complete
+- Artifacts:
+  - `.harness/run_4LEN6bjb5gEL/diff.stat.md` (diff)
 
 
 ## 14. Security, privacy, and compliance
@@ -107,7 +116,7 @@ _To be populated by harness runs._
 - C8 absence enforced by code deletion: no `copilot-runner` exists, no fallback path can execute.
 
 **Outstanding defects (not fixed by this run):**
-- AGENTS.md cites `runs.ts:640` for C1 guard in three places (lines 26, 28, 86); correct citation is `runs.ts:857`.
+- ~~AGENTS.md cited `runs.ts:640` for the C1 guard in three places~~ — RESOLVED in run_4LEN6bjb5gEL: all three sites now cite `runs.ts:857`, as do .claude/skills/judge-policy.md and .claude/teams/deep-reasoning-team.yaml.
 - Provenance verification remains position-blind (Gap 2); line numbers are captured but not validated (runs.ts:718 is substring-only).
 - Shadowing `vendorFor()` in `gates.ts:314-319` returns "unknown" for copilot; `config.ts:164-171` returns "openai" (two functions, same name, divergent answers).
 - findings_provenance fix is unit-tested but NOT proven in live bridge round-trip (MCP server was pre-fix during run).
@@ -138,6 +147,7 @@ _To be populated by harness runs._
 ## 16. Operations and support model
 
 
+
 ### Run run_jc1UxeCMvyZR — 2026-08-22
 
 **Request:** Establish runbook for sub-CLI bridge operations and removal of copilot fallback
@@ -154,6 +164,16 @@ _To be populated by harness runs._
 - When agy is down, do NOT assume silent fallback; inspect failure archive for root cause (auth, network, model pin drift, service outage).
 - `agy models` and probe invocation documented as mandatory verification steps before assuming daemon config or pricing table drift.
 - This is a **breaking change**: availability must not be purchased with provenance. Operator action required for stages previously resilient to vendor outage.
+
+### Run `run_4LEN6bjb5gEL` — Repo-wide model-id refresh, following the HITL constitution amendment (CONSTITUT
+
+- Date: 2026-08-23
+- Mode: single
+- Status: complete
+- Artifacts:
+  - `.harness/run_4LEN6bjb5gEL/runbook.md` (runbook)
+  - `.harness/run_4LEN6bjb5gEL/retry_backoff_doc.md` (retry_backoff_doc)
+  - `.harness/run_4LEN6bjb5gEL/diagnostics.md` (runbook)
 
 
 ## 17. Team operating model and governance
@@ -191,6 +211,7 @@ _To be populated by harness runs._
 ## Appendices
 
 
+
 ### Run run_jc1UxeCMvyZR — 2026-08-22 — Changelog and known issues
 
 **Artifacts:**
@@ -214,5 +235,13 @@ _To be populated by harness runs._
 - `daemon/test/agents-md.unit.mjs`, `fable-tier.unit.mjs`, `finalize-gates-a.unit.mjs`, `shutdown.unit.mjs` — all four proven failing at HEAD~1 before any changes from this run.
 
 **Known documentation defect (not fixed by this run):**
-- AGENTS.md cites `runs.ts:640` for the same-producer + same-model guard in three places (Hard Rule 3 at line 26, Hard Rule 4 at line 28, Security section at line 86). The guard is actually at `runs.ts:857`. Stale coordinates inherited from a previous doc author and now propagate into every artifact that trusts AGENTS.md. Correction is a follow-up for agents-md-author on next finalize.
+- ~~AGENTS.md cited `runs.ts:640` for the same-producer + same-model guard in three places (Hard Rule 3, Hard Rule 4, Security).~~ RESOLVED in run_4LEN6bjb5gEL: corrected to `runs.ts:857` at all three sites, plus two further copies in .claude/skills/judge-policy.md and .claude/teams/deep-reasoning-team.yaml that the original follow-up had missed.
+
+### Run `run_4LEN6bjb5gEL` — Repo-wide model-id refresh, following the HITL constitution amendment (CONSTITUT
+
+- Date: 2026-08-23
+- Mode: single
+- Status: complete
+- Artifacts:
+  - `.harness/run_4LEN6bjb5gEL/summary.md` (run_summary)
 

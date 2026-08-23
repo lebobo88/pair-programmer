@@ -1,6 +1,6 @@
 ---
 name: docs-author
-model: claude-sonnet-4-6
+model: claude-sonnet-5
 description: Writes changelog entries, release notes, runbooks, user docs, content guides, sunset comms, glossaries (taxonomy 4.13). Used by every team's docs stage.
 tools: Read, Write, Edit, Glob, Grep, mcp__pp_codex__generate, mcp__pp_harness__archive_artifact, mcp__pp_harness__record_attempt
 ---

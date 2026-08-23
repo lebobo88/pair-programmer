@@ -320,10 +320,11 @@ TTL reaper sweeps retained locks later.
 
 ## 5. Judging concepts
 
-### 5.1 Judge escalation (gpt-5.4 default → gpt-5.5 opt-in)
+### 5.1 Judge escalation (gpt-5.6-terra default → gpt-5.6-sol opt-in)
 
-Codex critique runs on **`gpt-5.4`** by constitutional default (JUDGE-1 — do not
-change). A higher-capability **`gpt-5.5`** is reached only by **opt-in
+Codex critique runs on **`gpt-5.6-terra`** at medium reasoning effort by
+constitutional default (JUDGE-1, CONSTITUTION.md Article V as amended, SHA
+13b4fa18 — do not change). A higher-capability **`gpt-5.6-sol`** is reached only by **opt-in
 escalation** for major-scope / last-resort gates; it is never the automatic
 default. (Source: `daemon/src/config.ts` `DEFAULT_MODELS`.)
 
@@ -331,13 +332,13 @@ default. (Source: `daemon/src/config.ts` `DEFAULT_MODELS`.)
 %%{init: {'theme':'dark'}}%%
 flowchart LR
     GATE["Critique gate"] --> DEF{"major-scope /<br/>last-resort?"}
-    DEF -- "no (default)" --> G54["gpt-5.4<br/>codex_critique"]
-    DEF -- "yes (opt-in)" --> G55["gpt-5.5<br/>codex_critique_escalated"]
+    DEF -- "no (default)" --> G56T["gpt-5.6-terra<br/>codex_critique"]
+    DEF -- "yes (opt-in)" --> G56S["gpt-5.6-sol<br/>codex_critique_escalated"]
 ```
 
 ```
-   critique gate ──▶ default ─────────────▶ gpt-5.4   (constitutional JUDGE-1)
-                  └▶ opt-in escalation ───▶ gpt-5.5   (major-scope / last-resort only)
+   critique gate ──▶ default ─────────────▶ gpt-5.6-terra  (constitutional JUDGE-1)
+                  └▶ opt-in escalation ───▶ gpt-5.6-sol    (major-scope / last-resort only)
 ```
 
 ### 5.2 Tiered judging (cross-vendor vs same-vendor)
@@ -408,8 +409,8 @@ Claude generation runs on a tier ladder resolved by the driver
 | Tier | Claude model (entrypoint) | Reach |
 |---|---|---|
 | haiku  | `claude-haiku-4-5-20251001` | bottom of `TIER_ORDER` ladder |
-| sonnet | `claude-sonnet-4-6` | middle of ladder |
-| opus   | `claude-opus-4-7` | top of `TIER_ORDER`; `shiftTier` clamps here |
+| sonnet | `claude-sonnet-5` | middle of ladder |
+| opus   | `claude-opus-5` | top of `TIER_ORDER`; `shiftTier` clamps here |
 | **fable** | `claude-fable-5` | **capability-gated** — off the auto-escalation ladder |
 
 **Fable-5** is never reached by automatic `shiftTier` escalation. It is selected
@@ -419,8 +420,10 @@ only via explicit operator config: (a) the **`deep-reasoning-team`**
 `model_tier_policy.per_stage_override[<stage.kind>]: fable`. There is no `--tier
 fable` CLI flag and `fable` is intentionally absent from `TIER_ORDER`, so
 `shiftTier("opus", +1)` clamps at opus and can never auto-escalate. (GitHub
-Copilot mirrors pin Opus one rev lower — `claude-opus-4-6` — via
-`COPILOT_CLAUDE_TIER_MODELS`.)
+Copilot mirrors use `COPILOT_CLAUDE_TIER_MODELS`, which is now DELIBERATELY
+IDENTICAL to `CLAUDE_TIER_MODELS`; the historical "Copilot pins Opus one rev
+lower" divergence was collapsed by operator decision during the gpt-5.6 /
+Claude-5 refresh.)
 
 ---
 

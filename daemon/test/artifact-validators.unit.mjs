@@ -43,6 +43,9 @@ const {
   resolveSameVendorCapability,
   describeJudgeCapabilities,
 } = await import(pathToFileURL(join(__dirname, "..", "dist", "orchestrator", "gates.js")).href);
+const { DEFAULT_MODELS } = await import(
+  pathToFileURL(join(__dirname, "..", "dist", "config.js")).href
+);
 
 let pass = 0;
 let fail = 0;
@@ -495,7 +498,7 @@ it("buildCodexExecArgs includes skip-git-repo-check by default", () => {
   const cliArgs = buildCodexExecArgs({
     cwd: "C:\\proj",
     sandbox: "read-only",
-    model: "gpt-5.4",
+    model: DEFAULT_MODELS.codex_generate,
   });
   assert.ok(cliArgs.includes("--skip-git-repo-check"));
   assert.equal(cliArgs.at(-1), "-");
@@ -505,37 +508,62 @@ it("buildCodexExecArgs omits skip-git-repo-check when explicitly disabled", () =
   const cliArgs = buildCodexExecArgs({
     cwd: "C:\\proj",
     sandbox: "workspace-write",
-    model: "gpt-5.4",
+    model: DEFAULT_MODELS.codex_generate,
     skip_git_repo_check: false,
   });
   assert.equal(cliArgs.includes("--skip-git-repo-check"), false);
 });
 
-it("resolveSameVendorCapability upgrades default Codex same-vendor to cross-vendor", () => {
+// Assertions replaced in place (NOT deleted — CONSTITUTION.md FORBIDDEN-3) by
+// the gpt-5.6 model-id refresh. Before the refresh, codex_generate and
+// codex_critique were BOTH "gpt-5.4", so the inferred default pairing was
+// same-model and had to upgrade to cross-vendor. They are now distinct
+// (gpt-5.6-luna generates, gpt-5.6-terra judges), so the inferred default
+// pairing is a legal same-vendor different-model route. The cross-vendor
+// upgrade path is still covered — see the next test, which drives the
+// generator model onto the critique pin explicitly.
+it("resolveSameVendorCapability allows the inferred default Codex pairing (generate pin != critique pin)", () => {
+  assert.notEqual(
+    DEFAULT_MODELS.codex_generate,
+    DEFAULT_MODELS.codex_critique,
+    "precondition: the default Codex generate and critique pins must differ",
+  );
   const capability = resolveSameVendorCapability({ generator_producer: "codex" });
-  assert.equal(capability.available, false);
-  assert.equal(capability.effective_generator_model, "gpt-5.4");
+  assert.equal(capability.available, true);
+  assert.equal(capability.effective_generator_model, DEFAULT_MODELS.codex_generate);
   assert.equal(capability.inferred_generator_model, true);
-  assert.equal(capability.judge_model_id, "gpt-5.4");
+  assert.equal(capability.judge_model_id, DEFAULT_MODELS.codex_critique);
+  assert.equal(capability.reason, null);
+});
+
+it("resolveSameVendorCapability upgrades Codex same-vendor to cross-vendor when generator_model IS the critique pin", () => {
+  const capability = resolveSameVendorCapability({
+    generator_producer: "codex",
+    generator_model: DEFAULT_MODELS.codex_critique,
+  });
+  assert.equal(capability.available, false);
+  assert.equal(capability.effective_generator_model, DEFAULT_MODELS.codex_critique);
+  assert.equal(capability.inferred_generator_model, false);
+  assert.equal(capability.judge_model_id, DEFAULT_MODELS.codex_critique);
   assert.match(capability.reason, /hard-pinned/);
 });
 
 it("resolveSameVendorCapability allows Codex same-vendor when generator model differs", () => {
   const capability = resolveSameVendorCapability({
     generator_producer: "codex",
-    generator_model: "gpt-5.5",
+    generator_model: DEFAULT_MODELS.codex_critique_escalated,
   });
   assert.equal(capability.available, true);
-  assert.equal(capability.effective_generator_model, "gpt-5.5");
+  assert.equal(capability.effective_generator_model, DEFAULT_MODELS.codex_critique_escalated);
   assert.equal(capability.inferred_generator_model, false);
-  assert.equal(capability.judge_model_id, "gpt-5.4");
+  assert.equal(capability.judge_model_id, DEFAULT_MODELS.codex_critique);
   assert.equal(capability.reason, null);
 });
 
 it("describeJudgeCapabilities reports Codex as conditional and agy as degenerate", () => {
   const caps = describeJudgeCapabilities();
   assert.equal(caps.codex.same_vendor_mode, "conditional_cross_vendor");
-  assert.deepEqual(caps.codex.unavailable_when_generator_model_is, ["gpt-5.4"]);
+  assert.deepEqual(caps.codex.unavailable_when_generator_model_is, [DEFAULT_MODELS.codex_critique]);
   assert.equal(caps.agy.same_vendor_mode, "degenerate_same_model_allowed");
 });
 

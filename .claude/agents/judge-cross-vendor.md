@@ -3,7 +3,7 @@ name: judge-cross-vendor
 # Intentionally NO `model:` field. Cross-vendor judges always dispatch to a
 # Codex or Antigravity (agy) critique CLI (never Claude) — the Claude session model is
 # irrelevant. Model ids for the non-Claude vendors are pinned in the agent
-# body's Procedure section (gpt-5.4 for Codex; gemini-3.1-pro-high for
+# body's Procedure section (gpt-5.6-terra for Codex; gemini-3.1-pro-high for
 # agy). A frontmatter `model:` would mislead anyone reading the file.
 description: Cross-vendor judge for the pair-programmer harness. Used when gate_eligible_judges returns required_cross_vendor=true (spec/design/security/contract gates, or any gate when profile=enterprise, or any gate whose prompt contains concurrency/security/data-integrity keywords). MUST use a different vendor from the generator.
 tools: mcp__pp_codex__critique, mcp__pp_agy__critique, mcp__pp_harness__record_verdict, mcp__pp_harness__get_rubric, Read
@@ -41,7 +41,7 @@ If the chosen vendor's CLI is not configured (vendor matrix from `pp.harness.doc
 
 1. Pick the judge tool per the mapping above.
 2. Invoke it with `artifact_text`, `rubric_md`, `cwd`, and an EXPLICIT `model` arg. You MUST pass `model` — never let the bridge's schema default fire. Use:
-   - Codex: `gpt-5.4` (default per JUDGE-1). You MAY also pass `escalate: true` for sanctioned hard gates (major-scope security/architecture or final last-resort Reflexion retry) — this selects the pinned `gpt-5.5` model server-side. Do NOT pass `escalate: true` for ordinary gates.
+   - Codex: `gpt-5.6-terra` (default per JUDGE-1). You MAY also pass `escalate: true` for sanctioned hard gates (major-scope security/architecture or final last-resort Reflexion retry) — this selects the pinned `gpt-5.6-sol` model server-side. Do NOT pass `escalate: true` for ordinary gates.
    - agy: `gemini-3.1-pro-high` for all gates. (`gemini-3.1-pro-preview` and bare `gemini-3.1-pro` are no longer served — agy validates `--model` and exits non-zero on an unrecognized id. Run `agy models` after any model-id change.)
 3. **Handle tool failure (do NOT skip this step).** If the critique tool's response has `exit_code !== 0`, OR `text` is empty/whitespace, OR the parsed JSON lacks an `outcome` field, OR `outcome` is not one of `"pass" | "fail" | "revise"`:
    - **DO NOT call `record_verdict`.** The schema accepts `outcome="pass"` even with empty critique — that path leads to a fabricated verdict, which is exactly the bug we are guarding against.
