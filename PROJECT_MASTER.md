@@ -69,6 +69,7 @@ _To be populated by harness runs._
 
 
 
+
 ### Run run_jc1UxeCMvyZR — 2026-08-22
 
 **Request:** Fix four daemon defects and establish no-secondary-vendor architectural constraint
@@ -93,6 +94,14 @@ _To be populated by harness runs._
 - Status: complete
 - Artifacts:
   - `.harness/run_4LEN6bjb5gEL/diff.stat.md` (diff)
+
+### Run `run_tYE0v6WrwFWs` — Harness hardening — clear the open follow-ups accumulated across run_jc1UxeCMvyZ
+
+- Date: 2026-08-23
+- Mode: single
+- Status: complete
+- Artifacts:
+  - `.harness/run_tYE0v6WrwFWs/diffstat.md` (diff)
 
 
 ## 14. Security, privacy, and compliance
@@ -148,6 +157,8 @@ _To be populated by harness runs._
 
 
 
+
+
 ### Run run_jc1UxeCMvyZR — 2026-08-22
 
 **Request:** Establish runbook for sub-CLI bridge operations and removal of copilot fallback
@@ -174,6 +185,26 @@ _To be populated by harness runs._
   - `.harness/run_4LEN6bjb5gEL/runbook.md` (runbook)
   - `.harness/run_4LEN6bjb5gEL/retry_backoff_doc.md` (retry_backoff_doc)
   - `.harness/run_4LEN6bjb5gEL/diagnostics.md` (runbook)
+
+### Run `run_WuP005xQIXS4` — HOTFIX — the codex judge plane is DOWN. Regression introduced by fix 3 of run_jc
+
+- Date: 2026-08-23
+- Mode: single
+- Status: complete
+- Artifacts:
+  - `.harness/run_WuP005xQIXS4/runbook.md` (runbook)
+  - `.harness/run_WuP005xQIXS4/retry_backoff_doc.md` (retry_backoff_doc)
+  - `.harness/run_WuP005xQIXS4/diagnostics.md` (runbook)
+
+### Run `run_tYE0v6WrwFWs` — Harness hardening — clear the open follow-ups accumulated across run_jc1UxeCMvyZ
+
+- Date: 2026-08-23
+- Mode: single
+- Status: complete
+- Artifacts:
+  - `.harness/run_tYE0v6WrwFWs/runbook.md` (runbook)
+  - `.harness/run_tYE0v6WrwFWs/retry_backoff_doc.md` (retry_backoff_doc)
+  - `.harness/run_tYE0v6WrwFWs/diagnostics.md` (runbook)
 
 
 ## 17. Team operating model and governance

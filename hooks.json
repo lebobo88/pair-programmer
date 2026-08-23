@@ -31,12 +31,6 @@
         "bash": "node \"daemon/dist/index.js\" hook SessionStart surfaced-runs",
         "powershell": "node \"daemon/dist/index.js\" hook SessionStart surfaced-runs",
         "timeoutSec": 30
-      },
-      {
-        "type": "command",
-        "bash": "node \"daemon/dist/index.js\" hook SessionStart eights-recall-project",
-        "powershell": "node \"daemon/dist/index.js\" hook SessionStart eights-recall-project",
-        "timeoutSec": 15
       }
     ],
     "PreToolUse": [
@@ -88,13 +82,6 @@
         "powershell": "node \"daemon/dist/index.js\" hook PreToolUse enforce-rfc2119-language",
         "timeoutSec": 30,
         "matcher": "create|edit|mcp__pp_harness__archive_artifact"
-      },
-      {
-        "type": "command",
-        "bash": "node \"daemon/dist/index.js\" hook PreToolUse eights-recall-stage",
-        "powershell": "node \"daemon/dist/index.js\" hook PreToolUse eights-recall-stage",
-        "timeoutSec": 15,
-        "matcher": "mcp__pp_harness__start_stage"
       }
     ],
     "PostToolUse": [
@@ -178,12 +165,6 @@
         "bash": "node \"daemon/dist/index.js\" hook UserPromptSubmit profile-aware-nudge",
         "powershell": "node \"daemon/dist/index.js\" hook UserPromptSubmit profile-aware-nudge",
         "timeoutSec": 30
-      },
-      {
-        "type": "command",
-        "bash": "node \"daemon/dist/index.js\" hook UserPromptSubmit eights-recall-request",
-        "powershell": "node \"daemon/dist/index.js\" hook UserPromptSubmit eights-recall-request",
-        "timeoutSec": 15
       }
     ],
     "Stop": [

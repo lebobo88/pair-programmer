@@ -32,17 +32,30 @@ $manifest = if (Test-Path $Manifest) {
     }
 }
 
-# 1. Remove junctions --------------------------------------------------------
+# 1. Remove links and junctions ----------------------------------------------
 
-foreach ($linkPath in @($manifest.junctions)) {
+$linksToRemove = @()
+if ($manifest.PSObject.Properties.Match('links')) {
+    $linksToRemove += @($manifest.links)
+}
+if ($manifest.PSObject.Properties.Match('junctions')) {
+    $linksToRemove += @($manifest.junctions)
+}
+$linksToRemove = $linksToRemove | Where-Object { $_ } | Select-Object -Unique
+
+foreach ($linkPath in $linksToRemove) {
     if (-not (Test-Path $linkPath)) { continue }
     $item = Get-Item $linkPath -Force
-    $isJunction = ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0
-    if ($isJunction) {
-        cmd /c rmdir "`"$linkPath`"" | Out-Null
-        Write-Host ("  remove junction $linkPath") -ForegroundColor Yellow
+    $isReparse = ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0
+    if ($isReparse) {
+        if ($item.PSIsContainer) {
+            cmd /c rmdir "`"$linkPath`"" 2>$null | Out-Null
+        } else {
+            Remove-Item $linkPath -Force
+        }
+        Write-Host ("  remove link $linkPath") -ForegroundColor Yellow
     } else {
-        Write-Warning "  skip $linkPath -- not a junction; will not delete real directory"
+        Write-Warning "  skip $linkPath -- not a link/junction; will not delete real directory/file"
     }
 }
 
