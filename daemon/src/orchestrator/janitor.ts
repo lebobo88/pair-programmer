@@ -12,6 +12,7 @@ import { db, txImmediate } from "../db/database.js";
 import { projectLockPath } from "../util/paths.js";
 import { readLockMetadata, isPidAlive } from "../util/lock.js";
 import { log } from "../util/logger.js";
+import { normalizeProducer } from "../config.js";
 
 const STALE_RUN_HOURS = 6;
 const STALE_LOCK_HOURS = 6;
@@ -21,6 +22,7 @@ export function runJanitor(): {
   swept_worktrees: string[];
   swept_branches: string[];
   swept_locks: string[];
+  untyped_producer_attempts: Array<{ attempt_id: string; run_id: string | null; stage_id: string; producer: string }>;
 } {
   const cutoff = new Date(Date.now() - STALE_RUN_HOURS * 60 * 60 * 1000).toISOString();
 
@@ -129,7 +131,40 @@ export function runJanitor(): {
     } catch { /* ignore */ }
   }
 
-  return { crashed_runs: crashed, swept_worktrees, swept_branches, swept_locks };
+  // 5. READ-ONLY provenance report. Attempts whose `producer` is not a vendor id
+  //    cannot have cross_vendor computed for any verdict against them, so those
+  //    verdicts silently recorded cross_vendor=false before the guard in
+  //    recordVerdict landed. Nothing is mutated here: the vendor that actually
+  //    ran is not recoverable from the row, and guessing it would manufacture
+  //    exactly the provenance the cross-vendor gate exists to prove. Surface the
+  //    blast radius so an operator can decide, then re-record deliberately.
+  const untyped_producer_attempts: Array<{ attempt_id: string; run_id: string | null; stage_id: string; producer: string }> = [];
+  try {
+    const rows = db()
+      .prepare(
+        `SELECT a.id AS attempt_id, a.stage_id AS stage_id, a.producer AS producer, s.run_id AS run_id
+           FROM attempts a LEFT JOIN stages s ON s.id = a.stage_id`,
+      )
+      .all() as Array<{ attempt_id: string; stage_id: string; producer: string; run_id: string | null }>;
+    for (const r of rows) {
+      if (normalizeProducer(r.producer) === null) {
+        untyped_producer_attempts.push({
+          attempt_id: r.attempt_id, run_id: r.run_id, stage_id: r.stage_id, producer: r.producer,
+        });
+      }
+    }
+    if (untyped_producer_attempts.length) {
+      log.warn(
+        { count: untyped_producer_attempts.length },
+        "janitor: attempts with a non-vendor producer — cross_vendor is unprovable for their verdicts",
+      );
+    }
+  } catch (err) {
+    // Report-only: never let this block the janitor's actual sweeping work.
+    log.warn({ err }, "janitor: untyped-producer scan failed");
+  }
+
+  return { crashed_runs: crashed, swept_worktrees, swept_branches, swept_locks, untyped_producer_attempts };
 }
 
 /**

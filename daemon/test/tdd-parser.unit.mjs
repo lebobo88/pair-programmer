@@ -186,5 +186,90 @@ it("pytest: collection/fixture errors surface as 'error', NOT folded into failed
   assert.equal(r.actual, "error");
 });
 
+// ─── skipped / todo accounting (regression: clean red phase read as "mixed") ──
+//
+// A red phase carrying a skipped or todo test is still a CLEAN red: a skipped
+// test is neither a pass nor a failure. Reading it as "mixed" is the exact
+// false negative the TDD gate exists to prevent, so each runner that can emit
+// a skip count is pinned here.
+
+it("vitest: 'Tests  9 failed | 1 skipped (10)' -> all_fail (0/9)", () => {
+  // Regression: the old positional regexes all missed this shape -- onlyFailed's
+  // (?!\s*\|) lookahead rejected the trailing pipe -- leaving both counts null,
+  // so classify() saw the FAIL header lines and returned "mixed".
+  const out = "\n Test Files  2 failed (2)\n      Tests  9 failed | 1 skipped (10)\n";
+  const r = parseTestOutcome("vitest", 1, out, "");
+  assert.equal(r.actual, "all_fail");
+  assert.equal(r.passed, 0);
+  assert.equal(r.failed, 9);
+});
+
+it("vitest: 'Tests  3 passed | 2 failed | 1 skipped (6)' -> mixed (3/2)", () => {
+  const r = parseTestOutcome("vitest", 1, "Tests  3 passed | 2 failed | 1 skipped (6)\n", "");
+  assert.equal(r.actual, "mixed");
+  assert.equal(r.passed, 3);
+  assert.equal(r.failed, 2);
+});
+
+it("vitest: 'Tests  5 passed | 1 todo (6)' -> all_pass (5/0)", () => {
+  // todo must not be folded into failed, or a green phase reads as mixed.
+  const r = parseTestOutcome("vitest", 0, "Tests  5 passed | 1 todo (6)\n", "");
+  assert.equal(r.actual, "all_pass");
+  assert.equal(r.passed, 5);
+  assert.equal(r.failed, 0);
+});
+
+it("vitest: 'Test Files' line never hijacks the Tests summary", () => {
+  // "Test Files  2 failed (2)" must not be read as the count source: it reports
+  // FILES, not tests. Both lines present, differing counts -- the Tests line wins.
+  const out = " Test Files  2 failed (2)\n      Tests  9 failed (9)\n";
+  const r = parseTestOutcome("vitest", 1, out, "");
+  assert.equal(r.actual, "all_fail");
+  assert.equal(r.failed, 9);
+});
+
+it("vitest: a non-summary line starting 'Tests 9 ...' is not selected", () => {
+  // The selector requires passed|failed after the count, so prose or a test name
+  // beginning "Tests 9" cannot be mistaken for the summary line.
+  const out = "Tests 9 through 12 are quarantined\n      Tests  4 passed (4)\n";
+  const r = parseTestOutcome("vitest", 0, out, "");
+  assert.equal(r.actual, "all_pass");
+  assert.equal(r.passed, 4);
+});
+
+// ─── unittest ──────────────────────────────────────────────────────────────
+
+it("unittest: 'FAILED (failures=9, skipped=1)' of 10 ran -> all_fail (0/9)", () => {
+  // Regression: passed was derived as (ran - failed), counting the skipped test
+  // as a pass -> 1 passed / 9 failed -> "mixed" on a clean red phase.
+  const out = "Ran 10 tests in 0.01s\n\nFAILED (failures=9, skipped=1)\n";
+  const r = parseTestOutcome("unittest", 1, out, "");
+  assert.equal(r.actual, "all_fail");
+  assert.equal(r.passed, 0);
+  assert.equal(r.failed, 9);
+});
+
+it("unittest: errors are folded into failed alongside failures", () => {
+  const out = "Ran 10 tests in 0.01s\n\nFAILED (failures=7, errors=3)\n";
+  const r = parseTestOutcome("unittest", 1, out, "");
+  assert.equal(r.actual, "all_fail");
+  assert.equal(r.failed, 10);
+});
+
+it("unittest: 'OK (skipped=2)' of 10 ran -> all_pass (8/0)", () => {
+  const out = "Ran 10 tests in 0.01s\n\nOK (skipped=2)\n";
+  const r = parseTestOutcome("unittest", 0, out, "");
+  assert.equal(r.actual, "all_pass");
+  assert.equal(r.passed, 8);
+  assert.equal(r.failed, 0);
+});
+
+it("unittest: genuine mixed still reads as mixed", () => {
+  const out = "Ran 10 tests in 0.01s\n\nFAILED (failures=3)\n";
+  const r = parseTestOutcome("unittest", 1, out, "");
+  assert.equal(r.actual, "mixed");
+  assert.equal(r.passed, 7);
+  assert.equal(r.failed, 3);
+});
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);
