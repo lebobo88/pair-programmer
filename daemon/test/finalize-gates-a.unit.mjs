@@ -86,6 +86,44 @@ async function bootstrap(project, { stagekind = "code", profile_snapshot_json = 
   return { runs, db, run, stage };
 }
 
+/**
+ * Populate the PROJECT_MASTER.md sections that PP-VG-1 holds responsible for a
+ * given taxonomy mapping.
+ *
+ * Why this helper exists: PP-VG-1 (master-plan coverage) runs BEFORE PP-VG-2
+ * (artifact availability) inside finalizeRun. Every taxonomy section in
+ * taxonomy.ts carries a `master_plan_section`, so any fixture that declares a
+ * taxonomy mapping and then expects finalize(complete) to SUCCEED will trip
+ * VG-1 first and never reach the VG-2 assertion it means to test. Two fixtures
+ * below used taxonomy section 4.4, whose responsible section is
+ * '9. UX/UI/content design', and failed with CompletionChecklistGateViolation
+ * instead of exercising VG-2 at all.
+ *
+ * Populating the section (rather than dropping the taxonomy mapping) keeps the
+ * VG-2 path genuinely exercised: the run still declares required_artifacts, the
+ * gate still resolves them from the snapshot, and the finalize call still runs.
+ */
+async function populateMasterPlanSections(project, runId, sections) {
+  const { applyMasterPlanPatch, masterPlanStatus } = await importDist("orchestrator/master-plan.js");
+  for (const section of sections) {
+    const r = applyMasterPlanPatch({
+      run_id: runId,
+      project_path: project,
+      section,
+      kind: "update",
+      content_md: `Populated by finalize-gates-a fixture so PP-VG-1 is satisfied and PP-VG-2 is reachable.`,
+    });
+    assert.notEqual(r.status, "rejected_unknown_section", `section '${section}' must resolve: ${r.reason ?? ""}`);
+  }
+  // Fail loudly if the population did not take — otherwise a silent VG-1
+  // failure would look like a VG-2 failure again.
+  const status = masterPlanStatus(project);
+  for (const section of sections) {
+    const row = status.sections.find(s => s.section === section);
+    assert.ok(row?.populated, `master-plan section '${section}' must be populated for this fixture`);
+  }
+}
+
 // ─── VG-7 ──────────────────────────────────────────────────────────────────
 console.log("\nVG-7: structured FinalizeRunOutput");
 
@@ -168,6 +206,9 @@ await record("required kind present in a different stage of the run -> NOT block
       missability_required: [],
     });
     const { runs, run, stage } = await bootstrap(project, { taxonomy_mapping_json: taxonomyJson });
+    // Taxonomy 4.4 → responsible master-plan section '9. UX/UI/content design'.
+    // Satisfy PP-VG-1 so the PP-VG-2 assertion below is actually reached.
+    await populateMasterPlanSections(project, run.run_id, ["9. UX/UI/content design"]);
 
     // Archive an 'openapi' artifact on the stage.
     await runs.archiveArtifact({
@@ -666,6 +707,9 @@ await record("#3: valid taxonomy with sections array but no required_artifacts -
         missability_required: [],
       }),
     });
+    // Taxonomy 4.4 → responsible master-plan section '9. UX/UI/content design'.
+    // Satisfy PP-VG-1 so the PP-VG-2 assertion below is actually reached.
+    await populateMasterPlanSections(project, run.run_id, ["9. UX/UI/content design"]);
     // No required_artifacts declared -> no kinds needed -> not blocked.
     const result = runs.finalizeRun({ run_id: run.run_id, status: "complete" });
     assert.equal(result.effective_status, "complete");
