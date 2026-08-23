@@ -31,6 +31,12 @@ const GenerateSchema = z.object({
     text:  z.string(),
   })).optional(),
     skip_recap: z.boolean().optional(),
+  /**
+   * Start a NEW agy conversation instead of resuming this project's prior one.
+   * Set by critique, which must be a stateless adjudication -- see the
+   * `--continue` comment below.
+   */
+  fresh_session: z.boolean().optional(),
 });
 
 const CritiqueSchema = z.object({
@@ -131,8 +137,57 @@ async function agyGenerate(args: z.infer<typeof GenerateSchema>): Promise<Antigr
   // track only "has this project talked to agy before" (see
   // sub-cli-sessions.ts) and pass --continue to resume the most recent
   // conversation for this workspace directory.
-  if (existing) cliArgs.push("--continue");
-  cliArgs.push("-p", prompt);
+  // 2026-08-23. `--continue` resumes THIS PROJECT'S most recent agy
+  // conversation, and the sentinel that triggers it is written on every
+  // exit_code===0 -- so once a project has talked to agy once, every later
+  // call resumes an ever-growing conversation. Two failures follow:
+  //
+  //   CORRECTNESS, and this is the serious one. A cross-vendor critique must
+  //   be an INDEPENDENT adjudication. Resuming means judge N+1 sees judge N's
+  //   conversation, so a verdict is contaminated by whatever artifact was
+  //   judged before it -- the opposite of what cross-vendor judging is for.
+  //
+  //   LIVENESS. Observed today: a resumed conversation came back at
+  //   step_index 15 emitting only step_update events and never reaching a
+  //   `result`, so the bridge saw empty stdout, exited in ~40ms and reported
+  //   the uninformative "empty output". The identical prompt WITHOUT
+  //   `--continue` returned SUCCESS immediately.
+  //
+  // So callers that need a stateless turn pass fresh_session.
+  if (existing && !args.fresh_session) cliArgs.push("--continue");
+
+  // 2026-08-23. The prompt goes over STDIN, not as an argv value.
+  //
+  // The old form was `-p <prompt>`, which puts the entire prompt in one argv
+  // element. Windows caps a process command line at 32,767 characters, so any
+  // critique prompt longer than that died with "Argument list too long" —
+  // surfacing as exit 0 with EMPTY STDOUT in ~46ms, which the bridge reported
+  // as the uninformative "empty output". Reproduced exactly: 30,000 chars
+  // succeeds, 40,000 chars fails. A cross-vendor judge prompt carrying a spec
+  // plus an artifact clears 32k routinely, so the cross-vendor gate lost its
+  // second vendor precisely on the largest and most important reviews.
+  //
+  // agy 1.1.19 supports `--input-format stream-json`, which reads one NDJSON
+  // message per line from stdin and requires `--output-format stream-json`.
+  // That removes the length ceiling entirely. (The previous comment here —
+  // "agy has no stdin/file prompt input" and "there is also no
+  // --output-format json flag" — was true of an older agy and is now stale;
+  // `agy --help` lists both.)
+  //
+  // Wire format, established empirically against 1.1.19: the input line is
+  // {"event":"user","message":{"role":"user","content":"<text>"}} — note
+  // `event`, not `type`, and a plain string `content`. A `type`-keyed message
+  // is rejected with 'stream input message is missing the "event" field'.
+  // `-p ""` is still required: it selects print mode, and the flag demands an
+  // argument even when the prompt arrives on stdin.
+  cliArgs.push(
+    "--input-format", "stream-json",
+    "--output-format", "stream-json",
+    "-p", "",
+  );
+
+  const stdinPayload =
+    JSON.stringify({ event: "user", message: { role: "user", content: prompt } }) + String.fromCharCode(10);
 
   const run = await runCliWithRetry({
     bin: "agy",
@@ -140,17 +195,31 @@ async function agyGenerate(args: z.infer<typeof GenerateSchema>): Promise<Antigr
     cwd: args.cwd,
     vendor: "agy",
     timeout_ms: args.timeout_ms,
+    input: stdinPayload,
   });
 
   const parsed = parseAgyOutput(run.stdout);
   const text = parsed.text ?? run.stdout;
-  // Cost-telemetry fallback. agy's headless print mode surfaces no usage
-  // envelope at all (no --output-format json equivalent exists), so this
-  // char-based estimate (~4 chars/token, OpenAI-style heuristic) is always
-  // used rather than being a fallback of last resort as it was for gemini.
+
+  // An ERROR result exits 0, so the status must be checked explicitly.
+  // Without this, a rejected stream-input message is indistinguishable from a
+  // critique that legitimately had nothing to say — which is exactly the
+  // "structurally valid envelope carrying nothing" failure this campaign has
+  // already been burned by once, on the codex bridge.
+  if (parsed.status === "ERROR") {
+    throw new Error(
+      `agy returned status=ERROR: ${parsed.error ?? "no error message"}. ` +
+      `This is a bridge/CLI failure, not a model verdict — do not record it.`
+    );
+  }
+
+  // Real usage when the stream-json envelope reports it; the char-based
+  // estimate (~4 chars/token) survives only as a fallback for the plain-text
+  // path. Before stream-json there was no usage envelope at all, so every agy
+  // cost figure in the ledger prior to 2026-08-23 is an estimate.
   const estimateTokens = (s: string): number => Math.max(1, Math.ceil((s ?? "").length / 4));
-  const tokens_in  = estimateTokens(prompt);
-  const tokens_out = estimateTokens(text);
+  const tokens_in  = parsed.tokens_in  ?? estimateTokens(prompt);
+  const tokens_out = parsed.tokens_out ?? estimateTokens(text);
   const cost_usd   = computeCost(args.model, tokens_in, tokens_out);
 
   // No session id is recoverable from plain-text stdout; record a sentinel so
@@ -210,6 +279,9 @@ export async function agyCritique(args: z.infer<typeof CritiqueSchema>): Promise
     cwd: args.cwd,
     model: pinnedModel,
     skip_recap: true,
+    // A critique is a stateless adjudication: never resume a prior
+    // conversation, or this verdict inherits the last one's context.
+    fresh_session: true,
     output_schema: args.output_schema ?? buildCritiqueOutputSchema(),
     timeout_ms: args.timeout_ms,
   });
@@ -217,18 +289,61 @@ export async function agyCritique(args: z.infer<typeof CritiqueSchema>): Promise
   return await stabilizeCritiqueResult(invoke, { cwd: args.cwd, vendor: "agy" });
 }
 
+const NEWLINE_SPLIT = new RegExp("\r?\n");
+
 /**
- * agy's headless `-p`/`--print` mode has no `--output-format json` equivalent
- * — stdout IS the model's raw response text, with no wrapping envelope, no
- * usage metadata, and no session id (unlike the old Gemini CLI's
- * `--output-format json`, which emitted a JSON/JSONL envelope this function
- * used to parse). This is intentionally a pass-through, kept as a named
- * function so future agy versions that add structured output have a single
- * place to extend.
+ * Parse agy's `--output-format stream-json` stdout.
+ *
+ * The stream is NDJSON. The line that matters is
+ * `{"event":"result","result":{status,response,error,usage:{input_tokens,output_tokens,...}}}`.
+ * An `init` line precedes it and carries the conversation id and tool list.
+ *
+ * `status` is "SUCCESS" | "ERROR". An ERROR result still exits 0, so the
+ * caller MUST branch on the parsed status rather than on the exit code —
+ * treating exit 0 as success is how a malformed stream-input message
+ * ('stream input message is missing the "event" field') would otherwise be
+ * recorded as an empty but valid critique.
+ *
+ * Falls back to the raw trimmed stdout when no result line is present, so a
+ * plain-text response (an older agy, or `--output-format text`) still works.
  */
-function parseAgyOutput(stdout: string): { text?: string } {
+function parseAgyOutput(stdout: string): {
+  text?: string;
+  status?: string;
+  error?: string;
+  tokens_in?: number;
+  tokens_out?: number;
+} {
   const trimmed = stdout.trim();
-  return trimmed ? { text: trimmed } : {};
+  if (!trimmed) return {};
+
+  for (const line of trimmed.split(NEWLINE_SPLIT)) {
+    const t = line.trim();
+    if (!t.startsWith("{")) continue;
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(t);
+    } catch {
+      continue;
+    }
+    const evt = parsed as { event?: string; result?: Record<string, unknown> };
+    if (evt?.event !== "result" || !evt.result) continue;
+
+    const r = evt.result;
+    const usage = (r.usage ?? {}) as Record<string, unknown>;
+    const num = (v: unknown): number | undefined =>
+      typeof v === "number" && Number.isFinite(v) ? v : undefined;
+
+    return {
+      text: typeof r.response === "string" ? r.response.trim() : undefined,
+      status: typeof r.status === "string" ? r.status : undefined,
+      error: typeof r.error === "string" && r.error ? r.error : undefined,
+      tokens_in: num(usage.input_tokens),
+      tokens_out: num(usage.output_tokens),
+    };
+  }
+
+  return { text: trimmed };
 }
 
 const TOOLS = [

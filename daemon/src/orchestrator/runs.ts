@@ -8,7 +8,7 @@ import { db, txImmediate, txImmediateWithRetry } from "../db/database.js";
 import { projectArtifactDir } from "../util/paths.js";
 import {
   RunMode, RunStatus, StageStatus, AttemptStatus, VerdictOutcome, vendorFor,
-  ClaudeTier, isClaudeTier,
+  ClaudeTier, isClaudeTier, normalizeProducer, PRODUCERS,
 } from "../config.js";
 import { log } from "../util/logger.js";
 import { scanForSecrets, SecretsFoundError } from "../security/secret-scan.js";
@@ -458,6 +458,40 @@ export function recordAttempt(input: RecordAttemptInput): RecordAttemptOutput {
     }
   }
 
+  // 2026-08-23 (FTR-032 run_uPDTBdu4w54Z). `producer` MUST normalize to a
+  // known Producer, because `vendorFor()` is the sole input to the
+  // cross_vendor computation in record_verdict.
+  //
+  // The defect this closes: drivers were writing ROLE names here
+  // ("tests_pre-generator", "tests", "engineer") instead of vendor ids.
+  // `vendorFor()` returns null for those, so `genVendor && judgeVendor &&
+  // genVendor !== judgeVendor` evaluated false and EVERY verdict recorded
+  // cross_vendor=0 - including a run where codex genuinely judged a Claude
+  // attempt and then agy genuinely judged the retry. A gate whose
+  // `required_cross_vendor: true` can never be satisfied is not a strict
+  // gate, it is an absent one, and nothing in the output said so.
+  //
+  // Rejecting at the WRITE side is what makes this stay fixed: a row that
+  // cannot be attributed to a vendor can no longer enter the ledger, so
+  // downstream cross-vendor policy always has something to compare.
+  // PP_STRICT_PRODUCER=0 opts out for exploratory or legacy-replay use.
+  if (
+    normalizeProducer(input.producer) === null &&
+    process.env.PP_STRICT_PRODUCER !== "0"
+  ) {
+    throw new Error(
+      `record_attempt: producer="${input.producer}" is not a known vendor. ` +
+      `Use one of ${PRODUCERS.join(" | ")} - this field names WHICH VENDOR ` +
+      `generated the attempt, not which role or stage it played (the stage ` +
+      `is already on the row via stage_id, and the agent is on agent_type). ` +
+      `vendorFor() is the only input to record_verdict's cross_vendor ` +
+      `computation, so an unrecognized producer silently makes every ` +
+      `verdict on this attempt non-cross-vendor and renders a gate with ` +
+      `required_cross_vendor=true permanently unsatisfiable. ` +
+      `To opt out (exploratory or legacy replay only), set PP_STRICT_PRODUCER=0.`
+    );
+  }
+
   // attempted_tier is opt-in; reject obviously-wrong values rather than
   // silently dropping them, because cost-by-tier analytics depend on it.
   const tier = input.attempted_tier;
@@ -868,6 +902,26 @@ export function recordVerdict(input: RecordVerdictInput): RecordVerdictOutput {
 
   const genVendor = vendorFor(att.producer);
   const judgeVendor = vendorFor(input.judge_producer);
+
+  // Defence in depth for the same defect record_attempt now rejects at the
+  // write side. An unattributable vendor on EITHER side makes `crossVendor`
+  // below evaluate false for a reason that has nothing to do with the two
+  // vendors actually involved, and the verdict then reads as same-vendor
+  // forever. That is a false negative in a safety gate, so it must be loud.
+  // Only reachable now for rows written before the write-side check, or with
+  // PP_STRICT_PRODUCER=0.
+  if ((genVendor === null || judgeVendor === null) && process.env.PP_STRICT_PRODUCER !== "0") {
+    const offender = genVendor === null
+      ? `attempt producer="${att.producer}"`
+      : `judge_producer="${input.judge_producer}"`;
+    throw new Error(
+      `record_verdict: ${offender} does not map to a vendor, so cross_vendor ` +
+      `cannot be computed and would default to false - silently reporting a ` +
+      `genuine cross-vendor judgement as same-vendor. Known producers: ` +
+      `${PRODUCERS.join(" | ")}. Re-record the attempt with a vendor id, or ` +
+      `set PP_STRICT_PRODUCER=0 for legacy replay.`
+    );
+  }
 
   // Refuse rather than record an unprovable verdict. Before this guard, an
   // attempt whose producer named a sub-agent role (legal per the old

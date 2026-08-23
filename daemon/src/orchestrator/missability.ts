@@ -764,6 +764,36 @@ export function runMissabilityChecks(opts: {
   fail_count: number;
   na_count: number;
 } {
+  // 2026-08-23 (FTR-032 run_uPDTBdu4w54Z). An unknown id in
+  // `required_check_ids` used to VANISH: the loop below iterates
+  // CHECK_DEFINITIONS, so a required id with no matching definition was
+  // never evaluated, never reported, and never counted - the requirement
+  // was silently dropped and the tally looked complete.
+  //
+  // The live example: a hand-written `<project>/.harness/profile.yaml`
+  // declared `required_missability_checks: [a11y-states, responsive-matrix]`.
+  // Neither exists (the builtin web-ui profile correctly names
+  // `ui-error-empty-loading` and `accessibility-localization`). Every run
+  // under that profile was therefore structurally unable to satisfy its own
+  // stated requirement, and nothing said so - the two ids simply never
+  // appeared in the output at all.
+  //
+  // A requirement that cannot be evaluated must be an ERROR, not an absence:
+  // silence here reads as coverage.
+  const knownCheckIds = new Set<string>(CHECK_DEFINITIONS.map(d => d.id));
+  const unknownRequired = (opts.required_check_ids ?? []).filter(id => !knownCheckIds.has(id));
+  if (unknownRequired.length > 0) {
+    throw new Error(
+      `run_missability_checks: required_check_ids contains ${unknownRequired.length} ` +
+      `id(s) with no definition in the check library: ${unknownRequired.join(", ")}. ` +
+      `A required check that does not exist can never run and never pass, so the ` +
+      `requirement would be silently dropped from the tally. Fix the source that ` +
+      `declared it (usually a profile's required_missability_checks, a team yaml's ` +
+      `missability_required, or record_taxonomy_mapping) to name a real check. ` +
+      `Known ids: ${[...knownCheckIds].sort().join(", ")}.`
+    );
+  }
+
   const run = db().prepare(`SELECT project_path, taxonomy_mapping_json, constitution_sha FROM runs WHERE id = ?`).get(opts.run_id) as
     | { project_path: string; taxonomy_mapping_json: string | null; constitution_sha: string | null }
     | undefined;
