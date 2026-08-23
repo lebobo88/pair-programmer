@@ -42,8 +42,15 @@ export function buildCritiqueOutputSchema(): JsonObject {
           additionalProperties: false,
         },
       },
+      // OpenAI strict structured-output mode (engaged by `codex --output-schema`)
+      // requires `required` to enumerate EVERY key in `properties`. An optional
+      // field is therefore expressed as nullable-and-required, NOT by omission from
+      // `required`. Removing findings_provenance from `required` below returns a 400
+      // invalid_json_schema and takes the entire codex judge lane offline — that
+      // regression shipped once already (run_jc1UxeCMvyZR) and was caught only by a
+      // live round-trip, because unit tests inspect this object without sending it.
       findings_provenance: {
-        type: "array",
+        type: ["array", "null"],
         items: {
           type: "object",
           properties: {
@@ -58,7 +65,7 @@ export function buildCritiqueOutputSchema(): JsonObject {
         },
       },
     },
-    required: ["outcome", "critique_md", "score_entries"],
+    required: ["outcome", "critique_md", "score_entries", "findings_provenance"],
     additionalProperties: false,
   };
 }
@@ -185,6 +192,57 @@ function extractScoreEntries(value: unknown): Record<string, number> | null {
   return Object.keys(out).length > 0 ? out : null;
 }
 
+/**
+ * Return the LAST balanced JSON value in `text`, not the first.
+ *
+ * WHY THIS EXISTS: with `--output-schema`, the codex CLI emits one
+ * `item.completed` event per assistant turn, and each one is a COMPLETE
+ * schema-conforming object. On any call where the model uses a tool (e.g. a
+ * judge asked to read files) that means two objects: a planning preamble
+ * ("I'll inspect the file...") followed by the real answer.
+ * parseCodexJsonl concatenates event text, producing `{...}{...}`, which
+ * JSON.parse rejects -- so callers fell through to extractJsonValue and got
+ * the FIRST object, i.e. the preamble, recorded as the verdict. The model had
+ * produced the right answer; the bridge discarded it.
+ *
+ * When only one object is present, first and last coincide, so this is safe
+ * for the no-tool-use path too.
+ */
+export function extractLastJsonValue(text: string): ExtractedJson {
+  const trimmed = text.trim();
+  if (!trimmed) return { found: false };
+  const direct = tryParseCandidate(trimmed);
+  if (direct.found) return direct;
+
+  let best: ExtractedJson = { found: false };
+  for (let start = 0; start < trimmed.length; start++) {
+    const ch = trimmed[start];
+    if (ch !== "{" && ch !== "[") continue;
+    const stack: string[] = [ch];
+    let inString = false;
+    let escaped = false;
+    for (let end = start + 1; end < trimmed.length; end++) {
+      const current = trimmed[end];
+      if (inString) {
+        if (escaped) { escaped = false; continue; }
+        if (current === "\\") { escaped = true; continue; }
+        if (current === "\"") inString = false;
+        continue;
+      }
+      if (current === "\"") { inString = true; continue; }
+      if (current === "{" || current === "[") { stack.push(current); continue; }
+      if (current !== "}" && current !== "]") continue;
+      const open = stack[stack.length - 1];
+      if ((open === "{" && current !== "}") || (open === "[" && current !== "]")) break;
+      stack.pop();
+      if (stack.length !== 0) continue;
+      const parsed = tryParseCandidate(trimmed.slice(start, end + 1).trim());
+      if (parsed.found) { best = parsed; start = end; }
+      break;
+    }
+  }
+  return best;
+}
 export function extractJsonValue(text: string): ExtractedJson {
   const trimmed = text.trim();
   if (!trimmed) return { found: false };
