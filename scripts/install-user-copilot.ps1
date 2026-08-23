@@ -97,6 +97,9 @@ if ($LASTEXITCODE -ne 0) {
 }
 
 $refreshMode = 'installed'
+$prevEap = $ErrorActionPreference
+$ErrorActionPreference = 'Continue'
+
 if (($listOutput -join "`n") -match $PluginListPattern) {
     Write-Host "Removing existing pair-programmer plugin..." -ForegroundColor Cyan
     $uninstallOutput = (& copilot plugin uninstall $PluginName 2>&1)
@@ -108,6 +111,7 @@ if (($listOutput -join "`n") -match $PluginListPattern) {
             Sync-InstalledPluginCache -SourceRoot $RepoRoot.Path -DestinationRoot $DirectInstalledPluginPath
             $refreshMode = 'refreshed-in-place'
         } else {
+            $ErrorActionPreference = $prevEap
             throw "Failed to uninstall the existing $PluginName plugin. Exit code: $LASTEXITCODE"
         }
     }
@@ -118,11 +122,14 @@ if ($refreshMode -ne 'refreshed-in-place') {
     $installOutput = (& copilot plugin install $RepoRoot.Path 2>&1)
     $installOutput | Out-Host
     if ($LASTEXITCODE -ne 0) {
+        $ErrorActionPreference = $prevEap
         throw "copilot plugin install failed with exit code $LASTEXITCODE."
     }
 }
 
 $verifyOutput = (& copilot plugin list 2>&1)
+$ErrorActionPreference = $prevEap
+
 if ($LASTEXITCODE -ne 0) {
     throw "Unable to verify Copilot plugin registration. Exit code: $LASTEXITCODE"
 }
