@@ -125,6 +125,48 @@ function maybeInt(v: string | undefined): number | null {
   return Number.isFinite(n) ? n : null;
 }
 
+/**
+ * Normalise runner output before regex matching.
+ *
+ * Test runners colour their summary lines by default on Windows and under CI
+ * regardless of FORCE_COLOR -- tinyrainbow/picocolors test for FORCE_COLOR
+ * *presence*, not value, so `FORCE_COLOR: "0"` actually ENABLES colour. The
+ * escape bytes land between the label and the count ("Tests \x1b[22m
+ * \x1b[1m\x1b[31m9 failed"), which defeats every count regex below and silently
+ * downgrades a clean red phase to "mixed" -- the one bucket the TDD gate exists
+ * to distinguish a clean red from. See
+ * .harness/run_9KKRO08lbJsc/tdd_checks/parser-false-negative.md in the
+ * AutoOrchestrate repo for the run that surfaced this.
+ *
+ * Bare \r progress rewrites are collapsed for the same reason: String.match
+ * returns the FIRST hit, so an intermediate progress frame would otherwise be
+ * read as the final count. CRLF line endings are preserved by the (?!\n) guard.
+ */
+export function normalizeRunnerOutput(s: string): string {
+  const noAnsi = s
+    // CSI sequences (colour, cursor moves, erase-line).
+    // eslint-disable-next-line no-control-regex
+    .replace(/\x1B\[[0-9;]*[A-Za-z]/g, "")
+    // OSC sequences (window title, hyperlinks), BEL- or ST-terminated.
+    // eslint-disable-next-line no-control-regex
+    .replace(/\x1B\][^\x07\x1B]*(?:\x07|\x1B\\)/g, "");
+  return noAnsi.replace(/^.*\r(?!\n)/gm, "");
+}
+
+/** First line of `out` matching `pattern`, or null. */
+function findLine(out: string, pattern: RegExp): string | null {
+  for (const line of out.split(/\r?\n/)) {
+    if (pattern.test(line)) return line;
+  }
+  return null;
+}
+
+/** First capture group of `pattern` in `s` as an int, or null if absent. */
+function matchCount(s: string, pattern: RegExp): number | null {
+  const m = s.match(pattern);
+  return m ? maybeInt(m[1]) : null;
+}
+
 // ─── Manifest lookup ─────────────────────────────────────────────────────
 
 /**
@@ -206,7 +248,7 @@ export type ParsedOutcome = {
  * 'error' when the runner couldn't even start (e.g., module not found).
  */
 export function parseTestOutcome(runner: string, exitCode: number, stdout: string, stderr: string): ParsedOutcome {
-  const combined = stdout + "\n" + stderr;
+  const combined = normalizeRunnerOutput(stdout + "\n" + stderr);
 
   // Common "couldn't start" patterns — translate to 'error' regardless of runner.
   if (/Cannot find module/i.test(combined) ||
@@ -251,15 +293,19 @@ function parseVitest(exitCode: number, out: string): ParsedOutcome {
 
 function parseJest(exitCode: number, out: string): ParsedOutcome {
   // Jest: "Tests:       1 failed, 4 passed, 5 total"
+  //       "Tests:       9 failed, 9 total"        <- all-fail omits the passed segment
+  //       "Tests:       5 passed, 5 total"
+  // Isolate the summary line FIRST, then scan within it. A single all-or-nothing
+  // regex that requires "<n> passed, <n> total" cannot match the all-fail shape,
+  // which left both counts null and fell through to "mixed" -- the same class of
+  // false negative fixed for vitest in 9561c42. Scanning the isolated line (not
+  // the whole output) keeps counts from test NAMES or per-file lines out.
   let passed: number | null = null;
   let failed: number | null = null;
-  const m = out.match(/Tests:\s+(?:(\d+)\s+failed,\s+)?(?:(\d+)\s+skipped,\s+)?(\d+)\s+passed,\s+\d+\s+total/i);
-  if (m) {
-    failed = maybeInt(m[1]) ?? 0;
-    passed = maybeInt(m[3]);
-  } else {
-    const m2 = out.match(/Tests:\s+(\d+)\s+passed,\s+\d+\s+total/i);
-    if (m2) { passed = maybeInt(m2[1]); failed = 0; }
+  const summary = findLine(out, /^\s*Tests:\s+\d+/im);
+  if (summary) {
+    failed = matchCount(summary, /(\d+)\s+failed/i) ?? 0;
+    passed = matchCount(summary, /(\d+)\s+passed/i) ?? 0;
   }
   return classify(exitCode, passed, failed, out, /\bFAIL\b|✕|✗/i);
 }
@@ -281,16 +327,32 @@ function parsePlaywright(exitCode: number, out: string): ParsedOutcome {
 }
 
 function parsePytest(exitCode: number, out: string): ParsedOutcome {
-  // "=== 1 failed, 4 passed in 0.12s ===" or "=== 5 passed in 0.12s ==="
-  const m = out.match(/=+\s+(?:(\d+)\s+failed,\s+)?(?:(\d+)\s+passed)?[^=]*=+/i);
+  // "=== 1 failed, 4 passed in 0.12s ===", "=== 5 passed in 0.12s ===",
+  // "=== 9 failed in 0.12s ==="  <- all-fail omits the passed segment entirely.
+  // The old single regex made `failed` optional only WITH a trailing comma, so
+  // the all-fail shape matched with both groups undefined -> 0/0 -> "error".
+  // Isolate the summary line first, then scan it (same shape as parseJest).
+  const summary = findLine(out, /^=+.*\b\d+\s+(?:failed|passed|error)/im);
   let passed: number | null = null;
   let failed: number | null = null;
-  if (m) {
-    failed = maybeInt(m[1]) ?? 0;
-    passed = maybeInt(m[2]) ?? 0;
+  let errored = 0;
+  if (summary) {
+    failed = matchCount(summary, /(\d+)\s+failed/i) ?? 0;
+    passed = matchCount(summary, /(\d+)\s+passed/i) ?? 0;
+    errored = matchCount(summary, /(\d+)\s+errors?\b/i) ?? 0;
   }
   if (exitCode === 2 || exitCode === 5) {
     return { actual: "error", passed, failed, reason: `pytest exit ${exitCode} (collection or config error)` };
+  }
+  // pytest reports "error" (not "failed") for collection failures, import errors
+  // and fixture-setup exceptions, all of which exit 1. Folding those into the
+  // failed count would let a red phase that cannot even LOAD pass as a valid
+  // red -- the same doctrine parseNodeTest states below.
+  if (errored > 0) {
+    return {
+      actual: "error", passed, failed,
+      reason: `pytest reported ${errored} error(s) (collection/import/fixture), not assertion failures`,
+    };
   }
   return classify(exitCode, passed, failed, out, /=+\s+\d+\s+failed/i);
 }
@@ -459,7 +521,15 @@ export async function runTddCheck(opts: { stage_id: string; phase: "pre" | "post
       windowsHide: true,
       all: false,
       stripFinalNewline: false,
-      env: { ...process.env, CI: "1", FORCE_COLOR: "0" },
+      // NO_COLOR is the only key that actually disables colour: tinyrainbow /
+      // picocolors enable it on `"FORCE_COLOR" in env` (presence, not value),
+      // on `"CI" in env`, and unconditionally on win32. FORCE_COLOR must be
+      // `undefined` rather than "" or "0" -- Node's normalizeSpawnArguments
+      // skips undefined entries, so that is the only value that removes an
+      // inherited key from the child env instead of leaving it present.
+      // The parser strips ANSI regardless (normalizeRunnerOutput); this is
+      // belt-and-braces so the archived log stays readable too.
+      env: { ...process.env, CI: "1", NO_COLOR: "1", FORCE_COLOR: undefined },
     });
     exitCode = result.exitCode ?? null;
     stdout = result.stdout ?? "";
