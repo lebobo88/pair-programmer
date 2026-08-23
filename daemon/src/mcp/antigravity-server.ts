@@ -31,6 +31,12 @@ const GenerateSchema = z.object({
     text:  z.string(),
   })).optional(),
     skip_recap: z.boolean().optional(),
+  /**
+   * Start a NEW agy conversation instead of resuming this project's prior one.
+   * Set by critique, which must be a stateless adjudication -- see the
+   * `--continue` comment below.
+   */
+  fresh_session: z.boolean().optional(),
 });
 
 const CritiqueSchema = z.object({
@@ -131,7 +137,24 @@ async function agyGenerate(args: z.infer<typeof GenerateSchema>): Promise<Antigr
   // track only "has this project talked to agy before" (see
   // sub-cli-sessions.ts) and pass --continue to resume the most recent
   // conversation for this workspace directory.
-  if (existing) cliArgs.push("--continue");
+  // 2026-08-23. `--continue` resumes THIS PROJECT'S most recent agy
+  // conversation, and the sentinel that triggers it is written on every
+  // exit_code===0 -- so once a project has talked to agy once, every later
+  // call resumes an ever-growing conversation. Two failures follow:
+  //
+  //   CORRECTNESS, and this is the serious one. A cross-vendor critique must
+  //   be an INDEPENDENT adjudication. Resuming means judge N+1 sees judge N's
+  //   conversation, so a verdict is contaminated by whatever artifact was
+  //   judged before it -- the opposite of what cross-vendor judging is for.
+  //
+  //   LIVENESS. Observed today: a resumed conversation came back at
+  //   step_index 15 emitting only step_update events and never reaching a
+  //   `result`, so the bridge saw empty stdout, exited in ~40ms and reported
+  //   the uninformative "empty output". The identical prompt WITHOUT
+  //   `--continue` returned SUCCESS immediately.
+  //
+  // So callers that need a stateless turn pass fresh_session.
+  if (existing && !args.fresh_session) cliArgs.push("--continue");
 
   // 2026-08-23. The prompt goes over STDIN, not as an argv value.
   //
@@ -256,6 +279,9 @@ export async function agyCritique(args: z.infer<typeof CritiqueSchema>): Promise
     cwd: args.cwd,
     model: pinnedModel,
     skip_recap: true,
+    // A critique is a stateless adjudication: never resume a prior
+    // conversation, or this verdict inherits the last one's context.
+    fresh_session: true,
     output_schema: args.output_schema ?? buildCritiqueOutputSchema(),
     timeout_ms: args.timeout_ms,
   });
