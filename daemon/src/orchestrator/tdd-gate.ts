@@ -49,8 +49,19 @@ import {
 // ─── Manifest schema ─────────────────────────────────────────────────────
 
 export const TDD_MODES = ["bug-fix", "refactor", "feature-tdd"] as const;
-export const TDD_RUNNERS = ["vitest", "jest", "mocha", "pytest", "go-test", "cargo-test", "unittest", "playwright", "other"] as const;
-export const TDD_OUTCOMES = ["all_pass", "all_fail"] as const;
+export const TDD_RUNNERS = ["vitest", "jest", "mocha", "pytest", "go-test", "cargo-test", "unittest", "playwright", "node-test", "other"] as const;
+/**
+ * Valid outcome expectations.
+ *
+ * "mixed" is accepted for `expected_pre_outcome` ONLY. A bug-fix red phase that
+ * appends failing tests to an existing suite is inherently mixed (the new
+ * assertions fail, the pre-existing tests and regression guards still pass), and
+ * forcing authors to isolate red assertions into an all-failing file to satisfy
+ * the gate produces worse tests. `expected_post_outcome` remains pinned to the
+ * literal "all_pass" in TddManifestSchema below, so widening this enum cannot
+ * weaken the green gate.
+ */
+export const TDD_OUTCOMES = ["all_pass", "all_fail", "mixed"] as const;
 
 export const TddManifestSchema = z.object({
   tdd_mode: z.enum(TDD_MODES),
@@ -217,6 +228,7 @@ export function parseTestOutcome(runner: string, exitCode: number, stdout: strin
     case "go-test":  return parseGoTest(exitCode, combined);
     case "cargo-test": return parseCargoTest(exitCode, combined);
     case "unittest": return parseUnittest(exitCode, combined);
+    case "node-test": return parseNodeTest(exitCode, combined);
     default:         return parseGeneric(exitCode, combined);
   }
 }
@@ -311,6 +323,24 @@ function parseUnittest(exitCode: number, out: string): ParsedOutcome {
   } else if (exitCode === 0) failed = 0;
   const passed = ran !== null && failed !== null ? ran - failed : null;
   return classify(exitCode, passed, failed, out, /FAILED\s+\(/i);
+}
+
+function parseNodeTest(exitCode: number, out: string): ParsedOutcome {
+  // Node's built-in runner (`node --test`) prints a trailing counter block.
+  // The spec reporter (the non-TTY default since Node 20) prefixes each line
+  // with U+2139 INFORMATION SOURCE; the tap reporter prefixes with "#". Both
+  // emit the same "<label> <count>" pairs, so accept either marker:
+  //     ℹ pass 9        |  # pass 9
+  //     ℹ fail 10       |  # fail 10
+  // `fail` counts assertion failures and suite-level failures alike. A file
+  // that throws at import time reports 0 pass / 0 fail, which classify() maps
+  // to "error" rather than "all_fail" -- a red phase that cannot load is not
+  // a valid red phase.
+  const passM = out.match(/^[\sℹ#]*pass\s+(\d+)\s*$/im);
+  const failM = out.match(/^[\sℹ#]*fail\s+(\d+)\s*$/im);
+  const passed = passM ? maybeInt(passM[1]) : null;
+  const failed = failM ? maybeInt(failM[1]) : null;
+  return classify(exitCode, passed, failed, out, /^[\sℹ#]*fail\s+[1-9]/im);
 }
 
 function parseGeneric(exitCode: number, out: string): ParsedOutcome {

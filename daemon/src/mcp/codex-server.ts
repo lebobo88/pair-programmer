@@ -18,7 +18,6 @@ import { SANDBOX_DIR, ensureDirs } from "../util/paths.js";
 import { log } from "../util/logger.js";
 import { DEFAULT_MODELS } from "../config.js";
 import { runCliWithRetry, type CliAttempt } from "./cli-runner.js";
-import { attemptCopilotFallback, parseCopilotJsonl } from "./copilot-runner.js";
 import { shutdownAndExit } from "../util/shutdown.js";
 import { getSession, setSession, synthesizeRecap } from "../orchestrator/sub-cli-sessions.js";
 
@@ -379,39 +378,14 @@ async function codexGenerate(
     failure_archive_path: run.failure_archive_path,
   };
 
-  if (result.exit_code !== 0) {
-    return attemptCopilotFallback(result, {
-      prompt,
-      cwd: args.cwd,
-      model: args.model,
-      mode: "generate",
-      reasoning_effort: reasoningEffort,
-      output_schema: args.output_schema,
-      timeout_ms: args.timeout_ms,
-    }, (fallbackRun) => {
-      const fp = parseCopilotJsonl(fallbackRun.stdout);
-      const fText = fp.text ?? fallbackRun.stdout;
-      const fTokensIn = fp.tokens_in ?? 0;
-      const fTokensOut = fp.tokens_out ?? 0;
-      let fParsedJson: unknown;
-      if (args.output_schema) {
-        const trimmed = fText.trim();
-        if (trimmed) { try { fParsedJson = JSON.parse(trimmed); } catch { /* leave undefined */ } }
-      }
-      return {
-        text: fText,
-        parsed: fParsedJson,
-        tokens_in: fTokensIn,
-        tokens_out: fTokensOut,
-        cost_usd: computeCost(args.model, fTokensIn, fTokensOut),
-        model: fp.model ?? args.model,
-        wall_ms: fallbackRun.wall_ms,
-        exit_code: fallbackRun.exit_code,
-        session_id: fp.session_id,
-      };
-    });
-  }
-
+  // No copilot fallback: a correctly-attributed failure (non-zero exit_code,
+  // preserved attempts and failure_archive_path) is strictly preferable to a
+  // silently mis-attributed success. On the codex lane the mislabel is
+  // critical — vendorFor("copilot") === "openai" makes a copilot critique of a
+  // codex attempt genuinely same-vendor, yet was recorded cross_vendor=1,
+  // falsely satisfying the constitutional cross-vendor gate requirement.
+  // Availability must not be purchased with provenance.
+  // (AGY-SILENT-VENDOR-FALLTHROUGH, run_jc1UxeCMvyZR)
   return result;
 }
 

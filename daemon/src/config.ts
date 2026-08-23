@@ -23,18 +23,21 @@ export const CRITIQUE_RETRY_BACKOFF_MS = 2000;
  * agent prompts), but if the schema default fires it must point at a model the
  * installed CLI version actually serves. Keep in sync with `daemon/prices.json`.
  *
- * NOTE: `agy --model <id>` does NOT validate the id — an unrecognized model
- * string is silently accepted and the CLI falls back to its own default
- * rather than erroring. Run `agy models` after changing agy_generate /
- * agy_critique to confirm the id is still recognized; exit code 0 alone does
- * not prove the intended model actually served the request.
+ * IMPORTANT: `agy --model <id>` DOES validate the id — an unrecognized model
+ * string is rejected and the CLI exits non-zero with "invalid model selection".
+ * Run `agy models` after changing agy_generate / agy_critique to confirm the
+ * id is still served. The 3.x lane exposes effort-suffixed ids only:
+ * `gemini-3.1-pro-high` and `gemini-3.1-pro-low`. There is no bare
+ * `gemini-3.1-pro` — passing an unrecognized id causes agy to exit non-zero,
+ * which PERSISTENT_STDERR_PATTERNS classifies as a persistent failure (not
+ * retried).
  */
 export const DEFAULT_MODELS = {
   codex_generate:            "gpt-5.4",
   codex_critique:            "gpt-5.4",   // constitutional default (JUDGE-1) — do NOT change
   codex_critique_escalated:  "gpt-5.5",   // opt-in escalation for major-scope/last-resort gates
-  agy_generate:              "gemini-3.1-pro-preview",
-  agy_critique:              "gemini-3.1-pro-preview",
+  agy_generate:              "gemini-3.1-pro-high",
+  agy_critique:              "gemini-3.1-pro-high",
 } as const;
 
 /**
@@ -166,10 +169,6 @@ export function vendorFor(producer: string): Vendor | null {
   if (normalized === "copilot") return "openai";
   return null;
 }
-
-/** Set PP_COPILOT_FALLBACK=0 to disable the copilot CLI fallback for codex/agy. */
-export const COPILOT_FALLBACK_ENABLED =
-  (process.env.PP_COPILOT_FALLBACK ?? "1") !== "0";
 
 /**
  * Global Antigravity (agy) kill-switch. Set PP_DISABLE_AGY=1 to disable ALL

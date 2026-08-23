@@ -5,8 +5,8 @@
  *   1. Retry-once on transient subprocess failure (configurable via
  *      CRITIQUE_RETRY_ATTEMPTS / CRITIQUE_RETRY_BACKOFF_MS in config). The
  *      retry is suppressed when stderr matches a "persistent" pattern (model
- *      not found, auth, ENOENT, command-line-too-long) — retrying those just
- *      wastes time.
+ *      not found, invalid model selection, auth, ENOENT, command-line-too-long)
+ *      — retrying those just wastes time.
  *   2. Archive failure context to <cwd>/.harness/critique_failures/ so users
  *      and the judge sub-agent have post-hoc evidence. The path is returned in
  *      the result envelope as `failure_archive_path`.
@@ -519,6 +519,17 @@ const PERSISTENT_STDERR_PATTERNS = [
   /model[^\n]{0,80}not found/i,
   /unsupported model/i,
   /no such model/i,
+  // agy deterministic model-id rejection. These are UNANCHORED substring
+  // matches, but each requires its full contiguous phrase, which is what keeps
+  // them narrow: a genuine transient such as "TLS certificate authority not
+  // recognized, retrying handshake" or "upstream proxy not recognized;
+  // connection reset by peer" contains "not recognized" but never "not
+  // recognized as a known model", so it stays transient and is still retried.
+  // Do NOT relax either pattern to a bare /not recognized/i — dedicated guards
+  // in daemon/test/agy-model-id-classification.unit.mjs assert those two
+  // strings remain transient and will go red if you do.
+  /invalid model selection/i,
+  /not recognized as a known model/i,
 ];
 
 export type CliAttempt = {

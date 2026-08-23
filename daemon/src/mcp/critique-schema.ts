@@ -1,9 +1,19 @@
 type JsonObject = Record<string, unknown>;
 export type CritiqueOutcome = "pass" | "fail" | "revise";
+
+export type FindingProvenance = {
+  id: string;
+  file: string;
+  line: number;
+  quoted_text: string;
+  claim: string;
+};
+
 export type CritiqueVerdict = {
   outcome: CritiqueOutcome;
   critique_md: string;
   score: Record<string, number>;
+  findings_provenance?: FindingProvenance[];
 };
 
 type ExtractedJson =
@@ -29,6 +39,21 @@ export function buildCritiqueOutputSchema(): JsonObject {
             score: { type: "number", minimum: 0, maximum: 1 },
           },
           required: ["dimension", "score"],
+          additionalProperties: false,
+        },
+      },
+      findings_provenance: {
+        type: "array",
+        items: {
+          type: "object",
+          properties: {
+            id:           { type: "string" },
+            file:         { type: "string" },
+            line:         { type: "integer", minimum: 1 },
+            quoted_text:  { type: "string", minLength: 8 },
+            claim:        { type: "string" },
+          },
+          required: ["id", "file", "line", "quoted_text", "claim"],
           additionalProperties: false,
         },
       },
@@ -89,11 +114,46 @@ function normalizeCritiqueVerdict(value: unknown): CritiqueVerdict | null {
   const critique_md = typeof record.critique_md === "string" ? record.critique_md : null;
   if (critique_md === null) return null;
 
-  return {
+  const findings_provenance = extractFindingsProvenance(record.findings_provenance);
+
+  const result: CritiqueVerdict = {
     outcome,
     critique_md,
     score,
   };
+  if (findings_provenance !== undefined) {
+    result.findings_provenance = findings_provenance;
+  }
+  return result;
+}
+
+/**
+ * Extract and validate a findings_provenance array from an unknown value.
+ * Drops malformed entries (missing/blank required key, quoted_text shorter than
+ * 8 chars, non-integer or <1 line) rather than rejecting the whole verdict.
+ * Returns undefined when the field is absent or when every entry is malformed.
+ * Preserves original order of surviving entries.
+ */
+function extractFindingsProvenance(value: unknown): FindingProvenance[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const out: FindingProvenance[] = [];
+  for (const entry of value) {
+    const rec = asObject(entry);
+    if (!rec) continue;
+    const id = typeof rec.id === "string" ? rec.id : null;
+    if (!id) continue;
+    const file = typeof rec.file === "string" ? rec.file : null;
+    if (!file) continue;
+    const line = typeof rec.line === "number" && Number.isInteger(rec.line) && rec.line >= 1
+      ? rec.line : null;
+    if (line === null) continue;
+    const quoted_text = typeof rec.quoted_text === "string" ? rec.quoted_text : null;
+    if (!quoted_text || quoted_text.length < 8) continue;
+    const claim = typeof rec.claim === "string" ? rec.claim : null;
+    if (!claim) continue;
+    out.push({ id, file, line, quoted_text, claim });
+  }
+  return out.length > 0 ? out : undefined;
 }
 
 function extractScoreObject(value: unknown): Record<string, number> | null {
