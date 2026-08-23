@@ -17,7 +17,7 @@ import { applyMasterPlanPatch, ensureMasterPlan, masterPlanStatus } from "./mast
 import { TAXONOMY_BY_ID, MASTER_PLAN_SECTIONS } from "./taxonomy.js";
 import { ProjectLock, ProjectLockBusyError } from "../util/lock.js";
 import { tmpdir } from "node:os";
-import { DEFAULT_MODELS, agyEnabled } from "../config.js";
+import { DEFAULT_MODELS, agyEnabled, assertProducer } from "../config.js";
 import { codexCritique } from "../mcp/codex-server.js";
 import { agyCritique } from "../mcp/antigravity-server.js";
 import { describeJudgeCapabilities } from "./gates.js";
@@ -431,6 +431,11 @@ export type RecordAttemptInput = {
 export type RecordAttemptOutput = { attempt_id: string };
 
 export function recordAttempt(input: RecordAttemptInput): RecordAttemptOutput {
+  // Domain-layer producer guard. RecordAttemptSchema validates the MCP path,
+  // but recordAttempt is exported and reachable without it, and a bad producer
+  // written here silently disables the cross-vendor gate for every verdict on
+  // this attempt (vendorFor -> null -> cross_vendor false, no error).
+  assertProducer(input.producer);
   const stage = db()
     .prepare(`SELECT run_id FROM stages WHERE id = ?`)
     .get(input.stage_id) as { run_id: string } | undefined;
@@ -863,7 +868,24 @@ export function recordVerdict(input: RecordVerdictInput): RecordVerdictOutput {
 
   const genVendor = vendorFor(att.producer);
   const judgeVendor = vendorFor(input.judge_producer);
-  const crossVendor = !!(genVendor && judgeVendor && genVendor !== judgeVendor);
+
+  // Refuse rather than record an unprovable verdict. Before this guard, an
+  // attempt whose producer named a sub-agent role (legal per the old
+  // schema.sql comment) resolved to genVendor=null, so `crossVendor` silently
+  // evaluated to FALSE -- every verdict on that path recorded cross_vendor
+  // false even when a genuine second vendor had judged, and a
+  // required_cross_vendor gate became satisfiable by nothing. Recording a
+  // cross_vendor=false row here would preserve that lie in the audit trail;
+  // there is no trustworthy vendor relationship to record, so we reject.
+  if (!genVendor) {
+    throw new Error(
+      `attempt ${input.attempt_id} has producer="${att.producer}", which maps to no ` +
+      `vendor -- cross_vendor cannot be computed. Re-record the attempt with a valid ` +
+      `producer (the sub-agent role belongs in agent_type).`
+    );
+  }
+
+  const crossVendor = !!(judgeVendor && genVendor !== judgeVendor);
 
   // R3-tail post-mortem Fix 1.4 (2026-05-21): validate findings_provenance.
   // The judge agent emits `findings_provenance: [{id, file, line, quoted_text, claim}]`

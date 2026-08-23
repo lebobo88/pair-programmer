@@ -2,6 +2,8 @@
  * Centralized constants. Avoid spreading magic numbers across the codebase.
  */
 
+import { z } from "zod";
+
 /** Default ceiling on validator (judge) calls per single run. Phase 4 enforces. */
 export const DEFAULT_LOOP_CEILING = 6;
 
@@ -175,6 +177,49 @@ export function vendorFor(producer: string): Vendor | null {
   if (normalized === "claude") return "anthropic";
   if (normalized === "copilot") return "openai";
   return null;
+}
+
+/**
+ * `producer` names the VENDOR that produced an attempt -- never the Claude Code
+ * sub-agent role that drove it. That distinction is load-bearing: the
+ * cross-vendor gate is computed by comparing `vendorFor(attempt.producer)`
+ * against `vendorFor(verdict.judge_producer)` (see recordVerdict in runs.ts),
+ * and `vendorFor` returns null for anything outside PRODUCERS. A role string
+ * such as "tests_pre-generator" therefore resolved to null and silently
+ * collapsed cross_vendor to FALSE -- making a required-cross-vendor gate
+ * satisfiable by nothing, with no error raised anywhere. The sub-agent role has
+ * its own column: pass it as `agent_type`.
+ *
+ * schema.sql previously documented "<subagent name>" as a legal producer value,
+ * which is why such rows exist and were legal-per-contract rather than a rogue
+ * caller. That comment has been corrected alongside this validator; the two
+ * contracts now agree.
+ *
+ * Never coerce an unrecognized producer to a vendor. Guessing manufactures
+ * exactly the provenance the cross-vendor gate exists to prove.
+ */
+export function producerRejectionMessage(value: string, field = "producer"): string {
+  return (
+    `${field} "${value}" is not a vendor id. Expected one of ${PRODUCERS.join(", ")}. ` +
+    `If this is a Claude Code sub-agent role (e.g. "engineer", "tests_pre-generator"), ` +
+    `pass it as agent_type and set ${field} to the vendor that actually ran it.`
+  );
+}
+
+/** Zod schema for a producer literal. Use at every MCP input boundary. */
+export const ProducerSchema = z
+  .string()
+  .min(1)
+  .refine((v) => normalizeProducer(v) !== null, (v) => ({ message: producerRejectionMessage(v) }));
+
+/**
+ * Domain-layer counterpart to ProducerSchema, for call sites reached without
+ * passing through an MCP schema (exported orchestrator functions, direct SQL
+ * writers). Throws rather than returning a result so a bad producer can never
+ * reach the attempts table.
+ */
+export function assertProducer(value: string, field = "producer"): void {
+  if (normalizeProducer(value) === null) throw new Error(producerRejectionMessage(value, field));
 }
 
 /**

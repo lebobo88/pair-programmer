@@ -277,17 +277,34 @@ export function parseTestOutcome(runner: string, exitCode: number, stdout: strin
 
 function parseVitest(exitCode: number, out: string): ParsedOutcome {
   // Vitest: "Tests  3 passed | 2 failed (5)", "Tests  2 failed | 3 passed (5)",
-  // "Tests  5 passed (5)", or "Tests  15 failed (15)" (vitest omits the zero side).
+  // "Tests  5 passed (5)", "Tests  15 failed (15)" (vitest omits the zero side),
+  // and "Tests  9 failed | 1 skipped (10)".
+  //
+  // The old implementation matched the pipe-separated segments POSITIONALLY,
+  // which cannot express a skipped/todo segment: `reverse` required the second
+  // segment to be "passed", and `onlyFailed`'s (?!\s*\|) lookahead explicitly
+  // rejects a trailing pipe. So a clean red phase carrying a single skipped test
+  // left BOTH counts null and fell through classify() to "mixed" -- the one
+  // bucket the TDD gate exists to distinguish a clean red from, and the same
+  // class of false negative fixed for jest/pytest in 33b183b.
+  //
+  // Isolate the summary line first, then scan it for each count independently
+  // (the shape parseJest/parsePytest already use). The selector requires
+  // "passed"/"failed" after the count so an arbitrary output line beginning
+  // "Tests 9 ..." cannot be mistaken for the summary; "Test Files  2 failed (2)"
+  // cannot match either, since "Tests" needs the literal 's' and findLine scans
+  // one line at a time so \s+ can never cross into another line.
+  //
+  // skipped/todo are deliberately folded into NEITHER count: a skipped test is
+  // neither a pass nor a failure, and counting one as a pass would reintroduce
+  // the false "mixed".
   let passed: number | null = null;
   let failed: number | null = null;
-  const both = out.match(/Tests\s+(\d+)\s+passed\s*\|\s*(\d+)\s+failed/i);
-  const reverse = out.match(/Tests\s+(\d+)\s+failed\s*\|\s*(\d+)\s+passed/i);
-  const onlyPassed = out.match(/Tests\s+(\d+)\s+passed\b(?!\s*\|)/i);
-  const onlyFailed = out.match(/Tests\s+(\d+)\s+failed\b(?!\s*\|)/i);
-  if (both)            { passed = maybeInt(both[1]);       failed = maybeInt(both[2]); }
-  else if (reverse)    { failed = maybeInt(reverse[1]);    passed = maybeInt(reverse[2]); }
-  else if (onlyPassed) { passed = maybeInt(onlyPassed[1]); failed = 0; }
-  else if (onlyFailed) { failed = maybeInt(onlyFailed[1]); passed = 0; }
+  const summary = findLine(out, /^\s*Tests\s+\d+\s+(?:passed|failed)\b/im);
+  if (summary) {
+    failed = matchCount(summary, /(\d+)\s+failed/i) ?? 0;
+    passed = matchCount(summary, /(\d+)\s+passed/i) ?? 0;
+  }
   return classify(exitCode, passed, failed, out, /\bFAIL\b|✗|×/i);
 }
 
@@ -374,16 +391,34 @@ function parseCargoTest(exitCode: number, out: string): ParsedOutcome {
 }
 
 function parseUnittest(exitCode: number, out: string): ParsedOutcome {
-  const failedM = out.match(/FAILED\s+\(failures=(\d+)(?:,\s+errors=(\d+))?/i);
-  const ranM = out.match(/Ran\s+(\d+)\s+tests/i);
+  // unittest prints "Ran <n> tests in <t>s" followed by "OK", "OK (skipped=2)",
+  // or "FAILED (failures=9, errors=1, skipped=1)". The keys inside the
+  // parenthetical are order-independent and any subset may be absent, so scan
+  // the isolated summary line for each key rather than matching a fixed
+  // sequence -- the same doctrine parseJest/parsePytest use.
+  //
+  // `passed` is DERIVED (ran - failed - skipped), because unittest never prints
+  // a pass count. Subtracting skipped is load-bearing: the old
+  // `passed = ran - failed` counted every skipped test as a pass, so
+  // "Ran 10 tests" + "FAILED (failures=9, skipped=1)" reported 1 passed and
+  // classified as "mixed" on what is actually a clean red phase -- the same
+  // false negative fixed for vitest above.
+  const summary = findLine(out, /^\s*(?:OK|FAILED)\b/im);
+  const ranM = out.match(/Ran\s+(\d+)\s+tests?/i);
   const ran = ranM ? maybeInt(ranM[1]) : null;
+
   let failed: number | null = null;
-  if (failedM) {
-    const f = maybeInt(failedM[1]) ?? 0;
-    const e = maybeInt(failedM[2]) ?? 0;
-    failed = f + e;
+  let skipped = 0;
+  if (summary) {
+    skipped = matchCount(summary, /skipped=(\d+)/i) ?? 0;
+    failed = /^\s*FAILED\b/i.test(summary)
+      ? (matchCount(summary, /failures=(\d+)/i) ?? 0) + (matchCount(summary, /errors=(\d+)/i) ?? 0)
+      : 0;
   } else if (exitCode === 0) failed = 0;
-  const passed = ran !== null && failed !== null ? ran - failed : null;
+
+  // Math.max guards a malformed summary whose counts exceed the Ran total from
+  // producing a negative pass count (which classify() would read as all_pass).
+  const passed = ran !== null && failed !== null ? Math.max(0, ran - failed - skipped) : null;
   return classify(exitCode, passed, failed, out, /FAILED\s+\(/i);
 }
 
