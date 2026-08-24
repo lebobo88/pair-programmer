@@ -470,6 +470,85 @@ describe("VG-6: hallucination gate", () => {
     assert.ok(blocker, "hallucination blocker must still be present after cross-vendor fail");
   });
 
+
+  // ── PP-VG-6 judge independence ────────────────────────────────────────────
+  // `cross_vendor` is computed generator-vs-judge, NOT suspect-judge-vs-clearing
+  // -judge. Without an explicit judge_producer predicate the SAME vendor that
+  // raised the suspicion could clear it: codex flags a claude-generated attempt,
+  // codex re-judges it clean, and that verdict still carries cross_vendor=1.
+  // The clearing verdict must come from a DIFFERENT judge vendor.
+
+  it("SELF-CLEARING BLOCKED: clearing cross_vendor=1 pass from the SAME judge vendor -> STILL blocked", async () => {
+    const runs = await getRuns();
+    const run_id = await insertRun();
+    const stage_id = await insertStage(run_id);
+    // Generator is claude, so a codex verdict legitimately gets cross_vendor=1.
+    const attempt_id = await insertAttempt(stage_id, { producer: "claude" });
+
+    // codex raises the suspicion...
+    await insertVerdict(attempt_id, {
+      hallucination_suspected: 1, cross_vendor: 1, outcome: "fail",
+      judge_producer: "codex", judge_model_id: "gpt-5.6-terra", offsetMs: 0,
+    });
+    // ...and codex tries to clear its own flag. Still cross_vendor=1 (vs the
+    // claude generator), but it is not an independent second opinion.
+    await insertVerdict(attempt_id, {
+      hallucination_suspected: 0, cross_vendor: 1, outcome: "pass",
+      judge_producer: "codex", judge_model_id: "gpt-5.6-terra", offsetMs: 500,
+    });
+
+    const readiness = runs.getStageFinalizeReadiness(stage_id);
+    assert.equal(readiness.can_pass, false, "a judge must not be able to clear its own hallucination flag");
+    const blocker = readiness.blockers.find(b => b.gate === "hallucination");
+    assert.ok(blocker, "hallucination blocker must survive a same-judge-vendor clearing attempt");
+    assert.equal(blocker.next_action, "dispatch_cross_vendor_rejudge", "next_action must stay the rejudge action");
+    assert.match(blocker.message, /codex/, "the blocker message must name the vendor that may not clear it");
+  });
+
+  it("INDEPENDENT CLEAR: clearing cross_vendor=1 pass from a DIFFERENT judge vendor -> cleared", async () => {
+    const runs = await getRuns();
+    const run_id = await insertRun();
+    const stage_id = await insertStage(run_id);
+    const attempt_id = await insertAttempt(stage_id, { producer: "claude" });
+
+    // codex raises the suspicion...
+    await insertVerdict(attempt_id, {
+      hallucination_suspected: 1, cross_vendor: 1, outcome: "fail",
+      judge_producer: "codex", judge_model_id: "gpt-5.6-terra", offsetMs: 0,
+    });
+    // ...and agy — a genuinely independent judge — clears it.
+    await insertVerdict(attempt_id, {
+      hallucination_suspected: 0, cross_vendor: 1, outcome: "pass",
+      judge_producer: "agy", judge_model_id: "gemini-3.1-pro-high", offsetMs: 500,
+    });
+
+    const readiness = runs.getStageFinalizeReadiness(stage_id);
+    const blocker = readiness.blockers.find(b => b.gate === "hallucination");
+    assert.equal(blocker, undefined, "an independent cross-vendor pass must clear the hallucination gate");
+  });
+
+  it("ORDERING PRESERVED: an independent clearing verdict inserted BEFORE the suspect does not clear it", async () => {
+    const runs = await getRuns();
+    const run_id = await insertRun();
+    const stage_id = await insertStage(run_id);
+    const attempt_id = await insertAttempt(stage_id, { producer: "claude" });
+
+    // agy passes first...
+    await insertVerdict(attempt_id, {
+      hallucination_suspected: 0, cross_vendor: 1, outcome: "pass",
+      judge_producer: "agy", judge_model_id: "gemini-3.1-pro-high", offsetMs: 0,
+    });
+    // ...then codex raises a suspicion. The earlier pass predates the concern.
+    await insertVerdict(attempt_id, {
+      hallucination_suspected: 1, cross_vendor: 1, outcome: "fail",
+      judge_producer: "codex", judge_model_id: "gpt-5.6-terra", offsetMs: 500,
+    });
+
+    const readiness = runs.getStageFinalizeReadiness(stage_id);
+    const blocker = readiness.blockers.find(b => b.gate === "hallucination");
+    assert.ok(blocker, "a clearing verdict must post-date the suspect verdict");
+  });
+
   it("no suspect verdicts at all -> not blocked by hallucination gate", async () => {
     const runs = await getRuns();
     const run_id = await insertRun();

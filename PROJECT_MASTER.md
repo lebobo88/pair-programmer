@@ -159,6 +159,7 @@ _To be populated by harness runs._
 
 
 
+
 ### Run run_jc1UxeCMvyZR — 2026-08-22
 
 **Request:** Establish runbook for sub-CLI bridge operations and removal of copilot fallback
@@ -206,8 +207,19 @@ _To be populated by harness runs._
   - `.harness/run_tYE0v6WrwFWs/retry_backoff_doc.md` (retry_backoff_doc)
   - `.harness/run_tYE0v6WrwFWs/diagnostics.md` (runbook)
 
+### Run `run_kUPtCqHotdYn` — Fix the pair-programmer document-stage delivery stall: (1) make the daemon's dis
+
+- Date: 2026-08-24
+- Mode: single
+- Status: complete
+- Artifacts:
+  - `.harness/run_kUPtCqHotdYn/runbook.md` (runbook)
+  - `.harness/run_kUPtCqHotdYn/retry_backoff_doc.md` (retry_backoff_doc)
+  - `.harness/run_kUPtCqHotdYn/decision_record.md` (decision_record)
+
 
 ## 17. Team operating model and governance
+
 
 
 ### Run run_jc1UxeCMvyZR — 2026-08-22
@@ -225,6 +237,14 @@ _To be populated by harness runs._
 - Best-of-N disabled for standard triage scope; would apply only at scope='major'.
 - No tier caps or floors applied via CLI (`--tier-cap`, `--tier-floor`) or team config.
 - Team policy is `bug-fix-team`; triage scope is `standard`.
+
+### Run `run_kUPtCqHotdYn` — Fix the pair-programmer document-stage delivery stall: (1) make the daemon's dis
+
+- Date: 2026-08-24
+- Mode: single
+- Status: complete
+- Artifacts:
+  - `.harness/run_kUPtCqHotdYn/postmortem.md` (postmortem)
 
 
 ## 18. Risks, assumptions, and open questions

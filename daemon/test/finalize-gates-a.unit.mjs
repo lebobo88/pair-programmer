@@ -224,6 +224,56 @@ await record("required kind present in a different stage of the run -> NOT block
   } finally { rmSync(project, { recursive: true, force: true }); }
 });
 
+await record("RUN-LEVEL artifact (stage_id omitted) satisfies the required kind -> NOT blocked", async () => {
+  // Regression: the gate's query INNER JOINed stages on a.stage_id, so an
+  // artifact archived WITHOUT a stage_id -- a shape archive_artifact supports,
+  // since stage_id is optional -- was invisible to it. The gate then reported
+  // "zero archived rows run-wide" for a kind that HAD been archived, and no
+  // amount of archiving could clear it. "RUN-WIDE" must mean artifacts.run_id.
+  const project = makeProject();
+  try {
+    const profileJson = JSON.stringify({ name: "non-ui-cli", description: "t", required_artifacts: ["runbook"] });
+    const { runs, run } = await bootstrap(project, { profile_snapshot_json: profileJson });
+
+    // Archive at RUN level -- deliberately no stage_id.
+    await runs.archiveArtifact({
+      run_id: run.run_id,
+      kind: "runbook",
+      relative_path: "runbook.md",
+      bytes: "# Runbook\n\nOperate the thing.\n",
+    });
+
+    const result = runs.finalizeRun({ run_id: run.run_id, status: "complete" });
+    assert.equal(result.effective_status, "complete", "a run-level artifact must satisfy PP-VG-2");
+  } finally { rmSync(project, { recursive: true, force: true }); }
+});
+
+await record("PP-VG-2 still blocks when the required kind is archived under a DIFFERENT kind", async () => {
+  // Guard against the fix over-widening: run-wide must not mean kind-blind.
+  const project = makeProject();
+  try {
+    const profileJson = JSON.stringify({ name: "non-ui-cli", description: "t", required_artifacts: ["runbook"] });
+    const { runs, run } = await bootstrap(project, { profile_snapshot_json: profileJson });
+
+    await runs.archiveArtifact({
+      run_id: run.run_id,
+      kind: "postmortem",
+      relative_path: "postmortem.md",
+      bytes: "# Postmortem\n\nNot a runbook.\n",
+    });
+
+    let threw = false;
+    try {
+      runs.finalizeRun({ run_id: run.run_id, status: "complete" });
+    } catch (err) {
+      threw = true;
+      assert.match(err.message, /PP-VG-2/);
+      assert.match(err.message, /runbook/);
+    }
+    assert.ok(threw, "a different kind must not satisfy the requirement");
+  } finally { rmSync(project, { recursive: true, force: true }); }
+});
+
 await record("required kind from profile_snapshot_json, zero artifacts -> blocks", async () => {
   const project = makeProject();
   try {
