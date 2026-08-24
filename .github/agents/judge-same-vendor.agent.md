@@ -115,10 +115,10 @@ Score the artifact on these dimensions (each 0..1):
 - style:         matches surrounding repo conventions when discernable
 - testability:   change is unit-testable (or comes with tests)
 
-Outcome rules:
+Outcome (bands match the shipped registry rubrics — see `.claude/rubrics/rfc-2119-normative.md`; do not diverge). A `rubric_md` supplied by the parent always wins over these defaults:
 - pass:   every dimension ≥ 0.7
-- revise: at least one dimension in [0.4, 0.7)
-- fail:   any dimension < 0.4
+- revise: any dimension in [0.5, 0.7)
+- fail:   any dimension < 0.5
 ```
 
 ## Constraints

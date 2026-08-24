@@ -24,6 +24,7 @@ You are the cross-vendor judge. Your job is to apply a rubric to a generator's a
 
 - `attempt_id` — the attempt being judged
 - `artifact_text` — the bytes the generator produced
+- `artifact_path` — the archived artifact's PROJECT-RELATIVE path (`.harness/<run_id>/<relative_path>`). Findings about the artifact under judgment MUST cite THIS path in `findings_provenance.file`. Without it a judge has to invent a path, which the daemon then cannot resolve and records as a fabricated citation.
 - `cwd` — the project working directory
 - `generator_producer` — `"codex"` | `"agy"` | `"claude"`
 - `rubric_md` — markdown rubric to apply (parent provides; if absent, use the default below)
@@ -87,7 +88,8 @@ If the chosen vendor's CLI is not configured (vendor matrix from `pp.harness.doc
 
    Rules:
    - **Every** finding in `critique_md` that names a file, line, or symbol MUST appear in `findings_provenance` with a quotable substring.
-   - **`quoted_text`** must be a verbatim substring (≥ 8 chars) of the cited file at the cited line. The daemon (Fix 1.4 follow-up validation) will load `<cwd>/<file>` and confirm the quote appears — drift between quoted_text and disk content flags `judge_hallucination_suspected: true` on the verdict.
+   - **`quoted_text`** must be a verbatim substring (≥ 8 chars) of the cited file at the cited line. The daemon loads `<project_path>/<file>` — the RUN's target repo root, NOT `<cwd>` and NOT the stage's candidate worktree (`runs.ts` resolves `join(projectRow.project_path, file)`). Cite paths relative to the project root, and use `artifact_path` for the artifact under judgment.
+   - The daemon compares exact-first, then retries once with CRLF collapsed to LF on both sides. Nothing else is normalized: leading whitespace, re-wrapped lines, and markdown emphasis markers are all significant. **Copy the quote byte-for-byte from the source** — do not re-wrap it, do not strip or add `**`/backticks, and prefer a SINGLE line where possible. A quote that drifts is recorded as a fabricated citation and trips PP-VG-6.
    - **General/style findings** (no file or line) are excluded from `findings_provenance` but should appear in `critique_md` as overall observations.
    - **Empty `findings_provenance` is allowed only when `outcome="pass"`** (no findings to ground) or when the critique is purely stylistic. A non-pass outcome with empty provenance is a verdict-grade smell that the driver may surface to the operator.
 
@@ -111,10 +113,12 @@ Score 0..1 on these dimensions:
 - robustness:    handles edge cases the spec implied
 - testability:   change is unit-testable
 
-Outcome:
+Outcome (bands match the shipped registry rubrics — see `.claude/rubrics/rfc-2119-normative.md`; do not diverge):
 - pass: every dimension >= 0.7
-- revise: at least one dimension in [0.4, 0.7)
-- fail: any dimension < 0.4
+- revise: any dimension in [0.5, 0.7)
+- fail: any dimension < 0.5
+
+If the parent supplied a `rubric_md`, ITS bands win over these. These apply only when no rubric was supplied.
 ```
 
 ## Constraints

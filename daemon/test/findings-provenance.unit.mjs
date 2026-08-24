@@ -475,6 +475,237 @@ await record("criterion 17: short quoted_text entry is DROPPED, verdict still ok
   assert.deepEqual(fp[0], goodEntry, "the remaining entry must be the good one in original order");
 });
 
+
+// ── CRLF fallback (document-stage delivery stall fix) ────────────────────────
+// Source files in this project are checked out CRLF, but a judge emitting
+// quoted_text inside a JSON payload emits "\n" for a line break. The original
+// matcher was a raw text.includes(quoted), so EVERY correct multi-line citation
+// against a CRLF file was recorded as a fabricated citation -> PP-VG-6 ->
+// unrecoverable stall. Single-line code citations were unaffected, which is why
+// code stages passed and document stages died.
+
+await record("CRLF file + LF multi-line quote matches via eol_normalized, does NOT flag", async () => {
+  const project = setupProject();
+  try {
+    const runs = await importDist("orchestrator/runs.js");
+    const { db } = await importDist("db/database.js");
+    const run = await runs.ensureRun({ request_text: "crlf ok", project_path: project, mode: "single" });
+    const stage = await runs.startStage({ run_id: run.run_id, kind: "spec", gate_type: "spec" });
+    const att = runs.recordAttempt({ stage_id: stage.stage_id, producer: "claude", model_id: "claude-opus-5", status: "ok" });
+
+    // Write the cited file with CRLF endings, as a Windows checkout would.
+    mkdirSync(join(project, "docs"), { recursive: true });
+    writeFileSync(
+      join(project, "docs", "spec.md"),
+      "# Spec\r\n\r\nThe system MUST reject an expired token\r\nand MUST log the rejection.\r\n",
+      "utf8",
+    );
+
+    const verdict = runs.recordVerdict({
+      attempt_id: att.attempt_id,
+      judge_producer: "codex",
+      judge_model_id: "gpt-5.6-terra",
+      rubric_id: "rfc-2119-normative@1",
+      outcome: "pass",
+      critique_md: "normative language is clear",
+      score_json: {
+        musts_clear: 0.94,
+        // LF-only, spanning a line break — correct quote, wrong line endings.
+        findings_provenance: [
+          {
+            id: "INFO-1",
+            file: "docs/spec.md",
+            line: 3,
+            quoted_text: "The system MUST reject an expired token\nand MUST log the rejection.",
+            claim: "MUST used for a non-negotiable requirement",
+          },
+        ],
+      },
+    });
+
+    const row = db()
+      .prepare(`SELECT hallucination_suspected, hallucination_details FROM verdicts WHERE id = ?`)
+      .get(verdict.verdict_id);
+    assert.equal(row?.hallucination_suspected, 0, "an LF quote of CRLF content must NOT be treated as fabrication");
+    const details = JSON.parse(row.hallucination_details);
+    assert.equal(details.non_exact_matches.length, 1, "the eol_normalized match must be recorded");
+    assert.equal(details.non_exact_matches[0].match_mode, "eol_normalized", "match mode must be tagged");
+  } finally {
+    rmSync(project, { recursive: true, force: true });
+  }
+});
+
+await record("exact match against a CRLF file is still tagged exact, details_json stays null", async () => {
+  const project = setupProject();
+  try {
+    const runs = await importDist("orchestrator/runs.js");
+    const { db } = await importDist("db/database.js");
+    const run = await runs.ensureRun({ request_text: "crlf exact", project_path: project, mode: "single" });
+    const stage = await runs.startStage({ run_id: run.run_id, kind: "spec", gate_type: "spec" });
+    const att = runs.recordAttempt({ stage_id: stage.stage_id, producer: "claude", model_id: "claude-opus-5", status: "ok" });
+
+    mkdirSync(join(project, "docs"), { recursive: true });
+    writeFileSync(join(project, "docs", "spec.md"), "The system MUST reject an expired token\r\n", "utf8");
+
+    const verdict = runs.recordVerdict({
+      attempt_id: att.attempt_id,
+      judge_producer: "codex",
+      judge_model_id: "gpt-5.6-terra",
+      outcome: "pass",
+      critique_md: "ok",
+      score_json: {
+        findings_provenance: [
+          {
+            id: "INFO-1",
+            file: "docs/spec.md",
+            line: 1,
+            // Single line — no newline involved, so the exact path is taken.
+            quoted_text: "The system MUST reject an expired token",
+            claim: "single-line quote",
+          },
+        ],
+      },
+    });
+
+    const row = db()
+      .prepare(`SELECT hallucination_suspected, hallucination_details FROM verdicts WHERE id = ?`)
+      .get(verdict.verdict_id);
+    assert.equal(row?.hallucination_suspected, 0, "exact single-line quote must not flag");
+    assert.equal(row?.hallucination_details, null, "a fully-exact result must not write details_json");
+  } finally {
+    rmSync(project, { recursive: true, force: true });
+  }
+});
+
+await record("GATE NOT WEAKENED: absent quote against a CRLF file still flags fabrication", async () => {
+  const project = setupProject();
+  try {
+    const runs = await importDist("orchestrator/runs.js");
+    const { db } = await importDist("db/database.js");
+    const run = await runs.ensureRun({ request_text: "crlf fabricated", project_path: project, mode: "single" });
+    const stage = await runs.startStage({ run_id: run.run_id, kind: "spec", gate_type: "spec" });
+    const att = runs.recordAttempt({ stage_id: stage.stage_id, producer: "claude", model_id: "claude-opus-5", status: "ok" });
+
+    mkdirSync(join(project, "docs"), { recursive: true });
+    writeFileSync(join(project, "docs", "spec.md"), "The system MUST reject an expired token\r\n", "utf8");
+
+    const verdict = runs.recordVerdict({
+      attempt_id: att.attempt_id,
+      judge_producer: "codex",
+      judge_model_id: "gpt-5.6-terra",
+      outcome: "fail",
+      critique_md: "judge invented a requirement",
+      score_json: {
+        findings_provenance: [
+          {
+            id: "C1",
+            file: "docs/spec.md",
+            line: 1,
+            quoted_text: "The system MUST rotate the signing key every 24 hours",
+            claim: "key rotation requirement",
+          },
+        ],
+      },
+    });
+
+    const row = db()
+      .prepare(`SELECT hallucination_suspected, hallucination_details FROM verdicts WHERE id = ?`)
+      .get(verdict.verdict_id);
+    assert.equal(row?.hallucination_suspected, 1, "EOL normalization must not let a fabricated quote pass");
+    const details = JSON.parse(row.hallucination_details);
+    assert.equal(details.misses[0].severity, "fabrication", "an absent quote is still fabrication severity");
+  } finally {
+    rmSync(project, { recursive: true, force: true });
+  }
+});
+
+await record("whitespace drift is NOT excused — the fallback is EOL-only", async () => {
+  const project = setupProject();
+  try {
+    const runs = await importDist("orchestrator/runs.js");
+    const { db } = await importDist("db/database.js");
+    const run = await runs.ensureRun({ request_text: "ws drift", project_path: project, mode: "single" });
+    const stage = await runs.startStage({ run_id: run.run_id, kind: "spec", gate_type: "spec" });
+    const att = runs.recordAttempt({ stage_id: stage.stage_id, producer: "claude", model_id: "claude-opus-5", status: "ok" });
+
+    mkdirSync(join(project, "docs"), { recursive: true });
+    writeFileSync(join(project, "docs", "spec.md"), "The  system   MUST reject an expired token\r\n", "utf8");
+
+    const verdict = runs.recordVerdict({
+      attempt_id: att.attempt_id,
+      judge_producer: "codex",
+      judge_model_id: "gpt-5.6-terra",
+      outcome: "revise",
+      critique_md: "re-wrapped quote",
+      score_json: {
+        findings_provenance: [
+          {
+            id: "C1",
+            file: "docs/spec.md",
+            line: 1,
+            // Collapsed the runs of spaces — deliberately NOT excused, because
+            // whitespace collapsing can equate materially different content.
+            quoted_text: "The system MUST reject an expired token",
+            claim: "normative requirement",
+          },
+        ],
+      },
+    });
+
+    const row = db().prepare(`SELECT hallucination_suspected FROM verdicts WHERE id = ?`).get(verdict.verdict_id);
+    assert.equal(row?.hallucination_suspected, 1, "whitespace drift must still flag — the fallback is EOL-only by design");
+  } finally {
+    rmSync(project, { recursive: true, force: true });
+  }
+});
+
+await record("a .harness archived artifact cited by its project-relative path resolves", async () => {
+  const project = setupProject();
+  try {
+    const runs = await importDist("orchestrator/runs.js");
+    const { db } = await importDist("db/database.js");
+    const run = await runs.ensureRun({ request_text: "harness cite", project_path: project, mode: "single" });
+    const stage = await runs.startStage({ run_id: run.run_id, kind: "spec", gate_type: "spec" });
+    const att = runs.recordAttempt({ stage_id: stage.stage_id, producer: "claude", model_id: "claude-opus-5", status: "ok" });
+
+    // This is the shape the driver now hands the judge as `artifact_path`.
+    const rel = join(".harness", run.run_id, "feature_spec");
+    mkdirSync(join(project, rel), { recursive: true });
+    writeFileSync(
+      join(project, rel, "attempt-1.md"),
+      "# Feature spec\r\n\r\nAC-1: the importer MUST reject a malformed row\r\n",
+      "utf8",
+    );
+
+    const citedPath = [".harness", run.run_id, "feature_spec", "attempt-1.md"].join("/");
+    const verdict = runs.recordVerdict({
+      attempt_id: att.attempt_id,
+      judge_producer: "codex",
+      judge_model_id: "gpt-5.6-terra",
+      rubric_id: "rfc-2119-normative@1",
+      outcome: "pass",
+      critique_md: "acceptance criteria are testable",
+      score_json: {
+        acceptance_testable: 0.9,
+        findings_provenance: [
+          {
+            id: "INFO-1",
+            file: citedPath,
+            line: 3,
+            quoted_text: "AC-1: the importer MUST reject a malformed row",
+            claim: "every MUST has an acceptance criterion",
+          },
+        ],
+      },
+    });
+
+    const row = db().prepare(`SELECT hallucination_suspected FROM verdicts WHERE id = ?`).get(verdict.verdict_id);
+    assert.equal(row?.hallucination_suspected, 0, "a correctly-cited .harness artifact must resolve, not flag");
+  } finally {
+    rmSync(project, { recursive: true, force: true });
+  }
+});
+
 console.log();
 console.log(`${passed} passed, ${failed} failed`);
 process.exit(failed === 0 ? 0 : 1);
