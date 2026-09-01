@@ -10,11 +10,12 @@ import { rmSync, existsSync, statSync, readdirSync, readFileSync } from "node:fs
 import { isAbsolute, join, resolve } from "node:path";
 import { db, txImmediate } from "../db/database.js";
 import { projectLockPath } from "../util/paths.js";
-import { readLockMetadata, isPidAlive } from "../util/lock.js";
+import { readLockMetadata, isPidAlive, STALE_LOCK_HOURS } from "../util/lock.js";
 import { log } from "../util/logger.js";
 
 const STALE_RUN_HOURS = 6;
-const STALE_LOCK_HOURS = 6;
+// STALE_LOCK_HOURS is owned by util/lock.ts so force_unlock and this sweep
+// can never disagree about whether the same .harness/.lock is stale (E2-6).
 
 export function runJanitor(): {
   crashed_runs: string[];
