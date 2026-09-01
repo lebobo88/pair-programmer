@@ -27,14 +27,24 @@ export const CRITIQUE_RETRY_BACKOFF_MS = 2000;
  * string is silently accepted and the CLI falls back to its own default
  * rather than erroring. Run `agy models` after changing agy_generate /
  * agy_critique to confirm the id is still recognized; exit code 0 alone does
- * not prove the intended model actually served the request.
+ * not prove the intended model actually served the request. `doctor()` now
+ * runs that check automatically and reports `agy_pin_served` — see
+ * `orchestrator/agy-pin.ts`.
+ *
+ * agy ids served by the installed Antigravity CLI as of 2026-09-01 (agy
+ * 1.1.23): gemini-3.7-flash-high, gemini-3.7-flash-medium,
+ * gemini-3.7-flash-low, gemini-3.6-flash-high, gemini-3.6-flash-medium,
+ * gemini-3.6-flash-low, gemini-3.1-pro-high, gemini-3.1-pro-low,
+ * claude-sonnet-4-6, claude-opus-4-6-thinking, gpt-oss-120b-medium.
+ * `gemini-3.1-pro-preview` is NO LONGER served — it was silently falling back
+ * to the CLI default while the ledger recorded the pinned id (finding E2-1).
  */
 export const DEFAULT_MODELS = {
   codex_generate:            "gpt-5.4",
   codex_critique:            "gpt-5.4",   // constitutional default (JUDGE-1) — do NOT change
   codex_critique_escalated:  "gpt-5.5",   // opt-in escalation for major-scope/last-resort gates
-  agy_generate:              "gemini-3.1-pro-preview",
-  agy_critique:              "gemini-3.1-pro-preview",
+  agy_generate:              "gemini-3.7-flash-medium",
+  agy_critique:              "gemini-3.7-flash-medium",
 } as const;
 
 /**
