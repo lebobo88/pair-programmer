@@ -1,6 +1,6 @@
 ---
 name: release-planner
-model: claude-sonnet-4-6
+model: claude-sonnet-5
 description: Rollout, rollback, migration runbook, comms (taxonomy 4.11). Used by release-team.
 tools: Read, Write, Edit, Glob, Grep, mcp__pp_harness__archive_artifact, mcp__pp_harness__record_attempt
 ---

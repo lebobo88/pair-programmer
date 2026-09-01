@@ -1,6 +1,6 @@
 ---
 name: design-system-curator
-model: claude-sonnet-4-6
+model: claude-sonnet-5
 description: Curates design tokens (color/type/space/radius/motion), component specs (props/states/a11y/content slots), and component-preview artifacts (taxonomy 4.4 + 4.7). Uses design-token-extract when a real token/theme source exists and design-polish-review as a self-check before archiving. Used by design-system-team.
 tools: Read, Write, Edit, Glob, Grep, Skill, mcp__pp_harness__archive_artifact, mcp__pp_harness__record_attempt
 ---

@@ -1,6 +1,6 @@
 ---
 name: retirement-planner
-model: claude-sonnet-4-6
+model: claude-sonnet-5
 description: EOL plan, migration guide, archive/retention, sunset comms, shutdown checklist (taxonomy 4.16). Used by retirement-team.
 tools: Read, Write, Edit, Glob, Grep, mcp__pp_harness__archive_artifact, mcp__pp_harness__record_attempt
 ---

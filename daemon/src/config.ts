@@ -2,6 +2,8 @@
  * Centralized constants. Avoid spreading magic numbers across the codebase.
  */
 
+import { z } from "zod";
+
 /** Default ceiling on validator (judge) calls per single run. Phase 4 enforces. */
 export const DEFAULT_LOOP_CEILING = 6;
 
@@ -23,26 +25,33 @@ export const CRITIQUE_RETRY_BACKOFF_MS = 2000;
  * agent prompts), but if the schema default fires it must point at a model the
  * installed CLI version actually serves. Keep in sync with `daemon/prices.json`.
  *
- * NOTE: `agy --model <id>` does NOT validate the id — an unrecognized model
- * string is silently accepted and the CLI falls back to its own default
- * rather than erroring. Run `agy models` after changing agy_generate /
- * agy_critique to confirm the id is still recognized; exit code 0 alone does
- * not prove the intended model actually served the request. `doctor()` now
- * runs that check automatically and reports `agy_pin_served` — see
- * `orchestrator/agy-pin.ts`.
+ * IMPORTANT: `agy --model <id>` validates the id — an unrecognized model
+ * string is rejected and the CLI exits non-zero with "invalid model
+ * selection", which PERSISTENT_STDERR_PATTERNS classifies as a persistent
+ * failure (not retried). A retired-but-still-parsed id can nonetheless fall
+ * back to the CLI default while the ledger records the pinned id, so exit
+ * code 0 alone does not prove the intended model actually served the request
+ * (finding E2-1). Run `agy models` after changing agy_generate /
+ * agy_critique; `doctor()` now runs that check automatically and reports
+ * `agy_pin_served` — see `orchestrator/agy-pin.ts`.
  *
  * agy ids served by the installed Antigravity CLI as of 2026-09-01 (agy
  * 1.1.23): gemini-3.7-flash-high, gemini-3.7-flash-medium,
  * gemini-3.7-flash-low, gemini-3.6-flash-high, gemini-3.6-flash-medium,
  * gemini-3.6-flash-low, gemini-3.1-pro-high, gemini-3.1-pro-low,
- * claude-sonnet-4-6, claude-opus-4-6-thinking, gpt-oss-120b-medium.
- * `gemini-3.1-pro-preview` is NO LONGER served — it was silently falling back
- * to the CLI default while the ledger recorded the pinned id (finding E2-1).
+ * claude-sonnet-4-6, claude-opus-4-6-thinking, gpt-oss-120b-medium. The 3.1
+ * lane exposes effort-suffixed ids only — there is no bare `gemini-3.1-pro`,
+ * and `gemini-3.1-pro-preview` is NO LONGER served (finding E2-1).
  */
 export const DEFAULT_MODELS = {
-  codex_generate:            "gpt-5.4",
-  codex_critique:            "gpt-5.4",   // constitutional default (JUDGE-1) — do NOT change
-  codex_critique_escalated:  "gpt-5.5",   // opt-in escalation for major-scope/last-resort gates
+  codex_generate:            "gpt-5.6-luna",
+  // Constitutional default (JUDGE-1), pinned by CONSTITUTION.md Article V as
+  // amended (SHA 13b4fa18): Codex `gpt-5.6-terra` at medium reasoning effort.
+  // Do NOT change outside the HITL `/pp:constitution amend` path.
+  codex_critique:            "gpt-5.6-terra",
+  codex_critique_escalated:  "gpt-5.6-sol", // opt-in escalation for major-scope/last-resort gates
+  // E2-1 re-pin: operator policy makes 3.7 flash medium the cross-vendor
+  // verifier model. Verified served by agy 1.1.23 on 2026-09-01.
   agy_generate:              "gemini-3.7-flash-medium",
   agy_critique:              "gemini-3.7-flash-medium",
 } as const;
@@ -56,8 +65,8 @@ export const DEFAULT_MODELS = {
  * Keep in sync with `daemon/prices.json` when model ids change.
  */
 export const CLAUDE_TIER_MODELS = {
-  opus:   "claude-opus-4-7",
-  sonnet: "claude-sonnet-4-6",
+  opus:   "claude-opus-5",
+  sonnet: "claude-sonnet-5",
   haiku:  "claude-haiku-4-5-20251001",
   // Fable-5: capability-gated, NEVER reached by automatic shiftTier escalation.
   // Selected only via explicit operator config:
@@ -70,13 +79,17 @@ export const CLAUDE_TIER_MODELS = {
 } as const;
 
 /**
- * GitHub Copilot mirrors intentionally pin Opus one rev lower than the shared
- * Claude entrypoint. Keep this divergence explicit so the daemon can expose a
- * Copilot-only tier map without changing the Claude defaults above.
+ * GitHub Copilot tier map. This map is DELIBERATELY IDENTICAL to
+ * CLAUDE_TIER_MODELS above. The historical "Copilot pins Opus one rev lower"
+ * divergence was collapsed by operator decision during the gpt-5.6 / Claude-5
+ * model-id refresh: both entrypoints now serve the same generation, so keeping
+ * a lagging Copilot pin bought nothing and produced two ids to maintain. The
+ * separate export is retained so a future Copilot-only divergence can be
+ * reintroduced by editing one map rather than re-plumbing every call site.
  */
 export const COPILOT_CLAUDE_TIER_MODELS = {
-  opus:   "claude-opus-4-6",
-  sonnet: "claude-sonnet-4-6",
+  opus:   "claude-opus-5",
+  sonnet: "claude-sonnet-5",
   haiku:  "claude-haiku-4-5-20251001",
   // Fable-5: capability-gated. See CLAUDE_TIER_MODELS comment above.
   fable:  "claude-fable-5",
@@ -177,9 +190,48 @@ export function vendorFor(producer: string): Vendor | null {
   return null;
 }
 
-/** Set PP_COPILOT_FALLBACK=0 to disable the copilot CLI fallback for codex/agy. */
-export const COPILOT_FALLBACK_ENABLED =
-  (process.env.PP_COPILOT_FALLBACK ?? "1") !== "0";
+/**
+ * `producer` names the VENDOR that produced an attempt -- never the Claude Code
+ * sub-agent role that drove it. That distinction is load-bearing: the
+ * cross-vendor gate is computed by comparing `vendorFor(attempt.producer)`
+ * against `vendorFor(verdict.judge_producer)` (see recordVerdict in runs.ts),
+ * and `vendorFor` returns null for anything outside PRODUCERS. A role string
+ * such as "tests_pre-generator" therefore resolved to null and silently
+ * collapsed cross_vendor to FALSE -- making a required-cross-vendor gate
+ * satisfiable by nothing, with no error raised anywhere. The sub-agent role has
+ * its own column: pass it as `agent_type`.
+ *
+ * schema.sql previously documented "<subagent name>" as a legal producer value,
+ * which is why such rows exist and were legal-per-contract rather than a rogue
+ * caller. That comment has been corrected alongside this validator; the two
+ * contracts now agree.
+ *
+ * Never coerce an unrecognized producer to a vendor. Guessing manufactures
+ * exactly the provenance the cross-vendor gate exists to prove.
+ */
+export function producerRejectionMessage(value: string, field = "producer"): string {
+  return (
+    `${field} "${value}" is not a vendor id. Expected one of ${PRODUCERS.join(", ")}. ` +
+    `If this is a Claude Code sub-agent role (e.g. "engineer", "tests_pre-generator"), ` +
+    `pass it as agent_type and set ${field} to the vendor that actually ran it.`
+  );
+}
+
+/** Zod schema for a producer literal. Use at every MCP input boundary. */
+export const ProducerSchema = z
+  .string()
+  .min(1)
+  .refine((v) => normalizeProducer(v) !== null, (v) => ({ message: producerRejectionMessage(v) }));
+
+/**
+ * Domain-layer counterpart to ProducerSchema, for call sites reached without
+ * passing through an MCP schema (exported orchestrator functions, direct SQL
+ * writers). Throws rather than returning a result so a bad producer can never
+ * reach the attempts table.
+ */
+export function assertProducer(value: string, field = "producer"): void {
+  if (normalizeProducer(value) === null) throw new Error(producerRejectionMessage(value, field));
+}
 
 /**
  * Global Antigravity (agy) kill-switch. Set PP_DISABLE_AGY=1 to disable ALL

@@ -1,10 +1,11 @@
 ---
 name: "ai-controls-author"
-model: "claude-opus-4-6"
+model: "claude-opus-5"
 description: "AI system spec, eval suite, tool permission matrix, HITL workflow (taxonomy 4.15). Used by ai-controls-team."
 target: github-copilot
 tools:
   - "read"
+  - "edit"
   - "search"
   - "pp_harness/*"
 ---

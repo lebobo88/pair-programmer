@@ -96,7 +96,7 @@ await record("buildCodexExecArgs omits --add-dir when linkedWorktreeCommonDir is
   const args = buildCodexExecArgs({
     cwd: "/some/project",
     sandbox: "read-only",
-    model: "gpt-5.4",
+    model: "gpt-5.6-luna",
     // linkedWorktreeCommonDir omitted
   });
   assert.ok(!args.includes("--add-dir"), "--add-dir must NOT appear for non-linked-worktree");
@@ -116,7 +116,7 @@ await record("buildCodexExecArgs includes --add-dir <mainRepoRoot> for read-only
   const args = buildCodexExecArgs({
     cwd: "/some/worktree",
     sandbox: "read-only",
-    model: "gpt-5.4",
+    model: "gpt-5.6-luna",
     linkedWorktreeCommonDir: fakeCommonDir,
   });
 
@@ -131,7 +131,7 @@ await record("buildCodexExecArgs omits --add-dir when linkedWorktreeCommonDir=nu
   const args = buildCodexExecArgs({
     cwd: "/some/project",
     sandbox: "read-only",
-    model: "gpt-5.4",
+    model: "gpt-5.6-luna",
     linkedWorktreeCommonDir: null,
   });
   assert.ok(!args.includes("--add-dir"), "--add-dir must NOT appear when linkedWorktreeCommonDir=null");
@@ -148,7 +148,7 @@ await record("buildCodexExecArgs omits --add-dir for workspace-write even when l
   const args = buildCodexExecArgs({
     cwd: "/some/worktree",
     sandbox: "workspace-write",
-    model: "gpt-5.4",
+    model: "gpt-5.6-luna",
     linkedWorktreeCommonDir: fakeCommonDir,
   });
 
@@ -166,7 +166,7 @@ await record("buildCodexExecArgs includes --add-dir only for read-only sandbox w
   const args = buildCodexExecArgs({
     cwd: "/some/worktree",
     sandbox: "read-only",
-    model: "gpt-5.4",
+    model: "gpt-5.6-luna",
     linkedWorktreeCommonDir: fakeCommonDir,
   });
 

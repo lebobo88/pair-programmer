@@ -7,12 +7,29 @@
 
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { dirname, join } from "node:path";
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const DAEMON = join(__dirname, "..", "dist", "index.js");
+
+// De-hardcoded model ids (model-id refresh, 2026-08-22). These fixtures only
+// need "a Claude generator model" and "a DIFFERENT Claude judge model" so the
+// same-producer + same-model-id guard (runs.ts:857) is satisfied. Deriving them
+// from the shipped tier map means a future repin cannot silently desync this
+// suite from daemon/src/config.ts.
+const { CLAUDE_TIER_MODELS } = await import(
+  pathToFileURL(join(__dirname, "..", "dist", "config.js")).href
+);
+const GENERATOR_MODEL = CLAUDE_TIER_MODELS.opus;
+const JUDGE_MODEL = CLAUDE_TIER_MODELS.sonnet;
+if (GENERATOR_MODEL === JUDGE_MODEL) {
+  throw new Error(
+    "artifact-validators.smoke fixture invariant broken: CLAUDE_TIER_MODELS.opus " +
+    "and .sonnet must be distinct ids for the same-vendor different-model guard",
+  );
+}
 
 function pretty(json) { return JSON.stringify(json, null, 2); }
 
@@ -132,7 +149,7 @@ async function main() {
       const run = await callTool(client, "start_run", { request_text: "av-smoke happy", project_path: projectPath, mode: "single" });
       const stage = await callTool(client, "start_stage", { run_id: run.run_id, kind: "architecture", gate_type: "design" });
       const att = await callTool(client, "record_attempt", {
-        stage_id: stage.stage_id, producer: "claude", model_id: "claude-opus-4-7",
+        stage_id: stage.stage_id, producer: "claude", model_id: GENERATOR_MODEL,
         tokens_in: 1, tokens_out: 1, cost_usd: 0.0001, status: "ok",
       });
       const archived = await callTool(client, "archive_artifact", {
@@ -147,7 +164,7 @@ async function main() {
       // will refuse without one because of the anti-vacuous-pass rules — except
       // that's only on record_verdict. We need a verdict to mark passed cleanly.
       await callTool(client, "record_verdict", {
-        attempt_id: att.attempt_id, judge_producer: "claude", judge_model_id: "claude-sonnet-4-6",
+        attempt_id: att.attempt_id, judge_producer: "claude", judge_model_id: JUDGE_MODEL,
         outcome: "pass",
         critique_md: "Smoke verdict: ADR shape looks reasonable; structure check is delegated to the validator gate. This critique exists to satisfy the anti-vacuous-pass refine on record_verdict.",
         score_json: { structure: 0.9, decision_clarity: 0.85 },
@@ -172,7 +189,7 @@ async function main() {
       const run = await callTool(client, "start_run", { request_text: "av-smoke explicit older adr", project_path: projectPath, mode: "single" });
       const stage = await callTool(client, "start_stage", { run_id: run.run_id, kind: "architecture", gate_type: "design" });
       const att = await callTool(client, "record_attempt", {
-        stage_id: stage.stage_id, producer: "claude", model_id: "claude-opus-4-7",
+        stage_id: stage.stage_id, producer: "claude", model_id: GENERATOR_MODEL,
         tokens_in: 1, tokens_out: 1, cost_usd: 0.0001, status: "ok",
       });
       const older = await callTool(client, "archive_artifact", {
@@ -191,7 +208,7 @@ async function main() {
         throw new Error(`expected both ADR archives to succeed: ${pretty({ older, newer })}`);
       }
       await callTool(client, "record_verdict", {
-        attempt_id: att.attempt_id, judge_producer: "claude", judge_model_id: "claude-sonnet-4-6",
+        attempt_id: att.attempt_id, judge_producer: "claude", judge_model_id: JUDGE_MODEL,
         outcome: "pass",
         critique_md: "Two ADRs were archived on the same stage. The older one will be validated by explicit path and must still bind back to its artifacts row so finalize_stage can see both validations.",
         score_json: { structure: 0.9, linkage: 0.9 },
@@ -225,7 +242,7 @@ async function main() {
       const run = await callTool(client, "start_run", { request_text: "av-smoke negative", project_path: projectPath, mode: "single" });
       const stage = await callTool(client, "start_stage", { run_id: run.run_id, kind: "architecture", gate_type: "design" });
       const att = await callTool(client, "record_attempt", {
-        stage_id: stage.stage_id, producer: "claude", model_id: "claude-opus-4-7",
+        stage_id: stage.stage_id, producer: "claude", model_id: GENERATOR_MODEL,
         tokens_in: 1, tokens_out: 1, cost_usd: 0.0001, status: "ok",
       });
       await callTool(client, "archive_artifact", {
@@ -235,7 +252,7 @@ async function main() {
         bytes: BAD_ADR_NO_DECISION,
       });
       await callTool(client, "record_verdict", {
-        attempt_id: att.attempt_id, judge_producer: "claude", judge_model_id: "claude-sonnet-4-6",
+        attempt_id: att.attempt_id, judge_producer: "claude", judge_model_id: JUDGE_MODEL,
         outcome: "pass",
         critique_md: "Anti-vacuous-pass placeholder; the validator gate is the real check here, and it should fire because Decision section is missing.",
         score_json: { structure: 0.5 },
@@ -270,7 +287,7 @@ async function main() {
       const run = await callTool(client, "start_run", { request_text: "av-smoke missing-call", project_path: projectPath, mode: "single" });
       const stage = await callTool(client, "start_stage", { run_id: run.run_id, kind: "architecture", gate_type: "design" });
       const att = await callTool(client, "record_attempt", {
-        stage_id: stage.stage_id, producer: "claude", model_id: "claude-opus-4-7",
+        stage_id: stage.stage_id, producer: "claude", model_id: GENERATOR_MODEL,
         tokens_in: 1, tokens_out: 1, cost_usd: 0.0001, status: "ok",
       });
       await callTool(client, "archive_artifact", {
@@ -280,7 +297,7 @@ async function main() {
         bytes: VALID_ADR,
       });
       await callTool(client, "record_verdict", {
-        attempt_id: att.attempt_id, judge_producer: "claude", judge_model_id: "claude-sonnet-4-6",
+        attempt_id: att.attempt_id, judge_producer: "claude", judge_model_id: JUDGE_MODEL,
         outcome: "pass",
         critique_md: "Critique long enough to satisfy the anti-vacuous-pass refine. The validator was intentionally not called to exercise the missing-row branch of the validator gate.",
         score_json: { structure: 0.9 },
@@ -306,7 +323,7 @@ async function main() {
       const run = await callTool(client, "start_run", { request_text: "av-smoke unrelated", project_path: projectPath, mode: "single" });
       const stage = await callTool(client, "start_stage", { run_id: run.run_id, kind: "code", gate_type: "code_style" });
       const att = await callTool(client, "record_attempt", {
-        stage_id: stage.stage_id, producer: "claude", model_id: "claude-opus-4-7",
+        stage_id: stage.stage_id, producer: "claude", model_id: GENERATOR_MODEL,
         tokens_in: 1, tokens_out: 1, cost_usd: 0.0001, status: "ok",
       });
       await callTool(client, "archive_artifact", {
@@ -316,7 +333,7 @@ async function main() {
         bytes: "diff --git a/foo b/foo\n--- a/foo\n+++ b/foo\n@@ -1 +1 @@\n-old\n+new\n",
       });
       await callTool(client, "record_verdict", {
-        attempt_id: att.attempt_id, judge_producer: "claude", judge_model_id: "claude-sonnet-4-6",
+        attempt_id: att.attempt_id, judge_producer: "claude", judge_model_id: JUDGE_MODEL,
         outcome: "pass",
         critique_md: "Diff-only artifact that does NOT bind to any validator. finalize_stage(passed) should succeed without any validator calls. Anti-vacuous-pass guard text continues here to clear the 80-char floor.",
         score_json: { correctness: 0.9 },
@@ -355,7 +372,7 @@ paths:
         const run = await callTool(client, "start_run", { request_text: "av-smoke contracts ok", project_path: projectPath, mode: "single" });
         const stage = await callTool(client, "start_stage", { run_id: run.run_id, kind: "contracts", gate_type: "contract" });
         const att = await callTool(client, "record_attempt", {
-          stage_id: stage.stage_id, producer: "claude", model_id: "claude-opus-4-7",
+          stage_id: stage.stage_id, producer: "claude", model_id: GENERATOR_MODEL,
           tokens_in: 1, tokens_out: 1, cost_usd: 0.0001, status: "ok",
         });
         await callTool(client, "archive_artifact", {
@@ -363,7 +380,7 @@ paths:
           relative_path: "contracts/openapi.yaml", bytes: VALID_OPENAPI,
         });
         await callTool(client, "record_verdict", {
-          attempt_id: att.attempt_id, judge_producer: "claude", judge_model_id: "claude-sonnet-4-6",
+          attempt_id: att.attempt_id, judge_producer: "claude", judge_model_id: JUDGE_MODEL,
           outcome: "pass",
           critique_md: "OpenAPI smoke artifact looks structurally fine; the contracts_lint validator is the real gate. Anti-vacuous-pass guard text continues here to clear the 80-char floor.",
           score_json: { schema_validity: 0.95 },
@@ -398,7 +415,7 @@ paths:
         const run = await callTool(client, "start_run", { request_text: "av-smoke contracts bad", project_path: projectPath, mode: "single" });
         const stage = await callTool(client, "start_stage", { run_id: run.run_id, kind: "contracts", gate_type: "contract" });
         const att = await callTool(client, "record_attempt", {
-          stage_id: stage.stage_id, producer: "claude", model_id: "claude-opus-4-7",
+          stage_id: stage.stage_id, producer: "claude", model_id: GENERATOR_MODEL,
           tokens_in: 1, tokens_out: 1, cost_usd: 0.0001, status: "ok",
         });
         await callTool(client, "archive_artifact", {
@@ -406,7 +423,7 @@ paths:
           relative_path: "contracts/openapi-bad.yaml", bytes: BAD_OPENAPI,
         });
         await callTool(client, "record_verdict", {
-          attempt_id: att.attempt_id, judge_producer: "claude", judge_model_id: "claude-sonnet-4-6",
+          attempt_id: att.attempt_id, judge_producer: "claude", judge_model_id: JUDGE_MODEL,
           outcome: "pass",
           critique_md: "Bad OpenAPI artifact (missing info.version). The judge passed it but the validator should catch it. Anti-vacuous-pass guard text continues here to clear the 80-char floor.",
           score_json: { schema_validity: 0.4 },
@@ -451,7 +468,7 @@ operations:
         const run = await callTool(client, "start_run", { request_text: "av-smoke asyncapi", project_path: projectPath, mode: "single" });
         const stage = await callTool(client, "start_stage", { run_id: run.run_id, kind: "contracts", gate_type: "contract" });
         const att = await callTool(client, "record_attempt", {
-          stage_id: stage.stage_id, producer: "claude", model_id: "claude-opus-4-7",
+          stage_id: stage.stage_id, producer: "claude", model_id: GENERATOR_MODEL,
           tokens_in: 1, tokens_out: 1, cost_usd: 0.0001, status: "ok",
         });
         await callTool(client, "archive_artifact", {
@@ -459,7 +476,7 @@ operations:
           relative_path: "contracts/asyncapi.yaml", bytes: VALID_ASYNC,
         });
         await callTool(client, "record_verdict", {
-          attempt_id: att.attempt_id, judge_producer: "claude", judge_model_id: "claude-sonnet-4-6",
+          attempt_id: att.attempt_id, judge_producer: "claude", judge_model_id: JUDGE_MODEL,
           outcome: "pass",
           critique_md: "AsyncAPI 3 spec validates structurally with channels and operations populated. Anti-vacuous-pass guard text continues here to clear the 80-char floor.",
           score_json: { schema_validity: 0.95 },
@@ -496,7 +513,7 @@ operations:
         const run = await callTool(client, "start_run", { request_text: "av-smoke tokens ok", project_path: projectPath, mode: "single" });
         const stage = await callTool(client, "start_stage", { run_id: run.run_id, kind: "design_system", gate_type: "design" });
         const att = await callTool(client, "record_attempt", {
-          stage_id: stage.stage_id, producer: "claude", model_id: "claude-opus-4-7",
+          stage_id: stage.stage_id, producer: "claude", model_id: GENERATOR_MODEL,
           tokens_in: 1, tokens_out: 1, cost_usd: 0.0001, status: "ok",
         });
         await callTool(client, "archive_artifact", {
@@ -504,7 +521,7 @@ operations:
           relative_path: "design_system/tokens.json", bytes: VALID_TOKENS,
         });
         await callTool(client, "record_verdict", {
-          attempt_id: att.attempt_id, judge_producer: "claude", judge_model_id: "claude-sonnet-4-6",
+          attempt_id: att.attempt_id, judge_producer: "claude", judge_model_id: JUDGE_MODEL,
           outcome: "pass",
           critique_md: "Tokens appear well-shaped (DTCG/Style Dictionary). The tokens_build validator handles the structural assertion. Anti-vacuous-pass guard text continues here to clear the 80-char floor.",
           score_json: { tokenization: 0.9 },
@@ -532,7 +549,7 @@ operations:
         const run = await callTool(client, "start_run", { request_text: "av-smoke tokens bad", project_path: projectPath, mode: "single" });
         const stage = await callTool(client, "start_stage", { run_id: run.run_id, kind: "design_system", gate_type: "design" });
         const att = await callTool(client, "record_attempt", {
-          stage_id: stage.stage_id, producer: "claude", model_id: "claude-opus-4-7",
+          stage_id: stage.stage_id, producer: "claude", model_id: GENERATOR_MODEL,
           tokens_in: 1, tokens_out: 1, cost_usd: 0.0001, status: "ok",
         });
         await callTool(client, "archive_artifact", {
@@ -540,7 +557,7 @@ operations:
           relative_path: "design_system/tokens-bad.json", bytes: BAD_TOKENS,
         });
         await callTool(client, "record_verdict", {
-          attempt_id: att.attempt_id, judge_producer: "claude", judge_model_id: "claude-sonnet-4-6",
+          attempt_id: att.attempt_id, judge_producer: "claude", judge_model_id: JUDGE_MODEL,
           outcome: "pass",
           critique_md: "Bad tokens (raw scalar at non-leaf position). Validator should catch the missing { value: ... } wrap. Anti-vacuous-pass guard text continues here to clear the 80-char floor.",
           score_json: { tokenization: 0.4 },
@@ -574,7 +591,7 @@ operations:
         const run = await callTool(client, "start_run", { request_text: "av-smoke tokens ref", project_path: projectPath, mode: "single" });
         const stage = await callTool(client, "start_stage", { run_id: run.run_id, kind: "design_system", gate_type: "design" });
         const att = await callTool(client, "record_attempt", {
-          stage_id: stage.stage_id, producer: "claude", model_id: "claude-opus-4-7",
+          stage_id: stage.stage_id, producer: "claude", model_id: GENERATOR_MODEL,
           tokens_in: 1, tokens_out: 1, cost_usd: 0.0001, status: "ok",
         });
         await callTool(client, "archive_artifact", {
@@ -582,7 +599,7 @@ operations:
           relative_path: "design_system/tokens-ref.json", bytes: UNRESOLVED,
         });
         await callTool(client, "record_verdict", {
-          attempt_id: att.attempt_id, judge_producer: "claude", judge_model_id: "claude-sonnet-4-6",
+          attempt_id: att.attempt_id, judge_producer: "claude", judge_model_id: JUDGE_MODEL,
           outcome: "pass",
           critique_md: "Tokens with an unresolved {ref}. Validator should catch the dangling alias. Anti-vacuous-pass guard text continues here to clear the 80-char floor.",
           score_json: { tokenization: 0.5 },
@@ -607,7 +624,7 @@ operations:
         const run = await callTool(client, "start_run", { request_text: "av-smoke mermaid empty", project_path: projectPath, mode: "single" });
         const stage = await callTool(client, "start_stage", { run_id: run.run_id, kind: "architecture", gate_type: "design" });
         const att = await callTool(client, "record_attempt", {
-          stage_id: stage.stage_id, producer: "claude", model_id: "claude-opus-4-7",
+          stage_id: stage.stage_id, producer: "claude", model_id: GENERATOR_MODEL,
           tokens_in: 1, tokens_out: 1, cost_usd: 0.0001, status: "ok",
         });
         await callTool(client, "archive_artifact", {
@@ -616,7 +633,7 @@ operations:
           bytes: "# C4 placeholder\n\nNo diagram yet.\n",
         });
         await callTool(client, "record_verdict", {
-          attempt_id: att.attempt_id, judge_producer: "claude", judge_model_id: "claude-sonnet-4-6",
+          attempt_id: att.attempt_id, judge_producer: "claude", judge_model_id: JUDGE_MODEL,
           outcome: "pass",
           critique_md: "Placeholder C4 with no diagram block — validator should accept (nothing to render). Anti-vacuous-pass guard text continues here to clear the 80-char floor.",
           score_json: { coverage: 0.5 },
@@ -640,7 +657,7 @@ operations:
         const run = await callTool(client, "start_run", { request_text: "av-smoke mermaid empty fence", project_path: projectPath, mode: "single" });
         const stage = await callTool(client, "start_stage", { run_id: run.run_id, kind: "architecture", gate_type: "design" });
         const att = await callTool(client, "record_attempt", {
-          stage_id: stage.stage_id, producer: "claude", model_id: "claude-opus-4-7",
+          stage_id: stage.stage_id, producer: "claude", model_id: GENERATOR_MODEL,
           tokens_in: 1, tokens_out: 1, cost_usd: 0.0001, status: "ok",
         });
         await callTool(client, "archive_artifact", {
@@ -649,7 +666,7 @@ operations:
           bytes: "# C4 with empty fence\n\n```mermaid\n   \n```\n",
         });
         await callTool(client, "record_verdict", {
-          attempt_id: att.attempt_id, judge_producer: "claude", judge_model_id: "claude-sonnet-4-6",
+          attempt_id: att.attempt_id, judge_producer: "claude", judge_model_id: JUDGE_MODEL,
           outcome: "pass",
           critique_md: "Mermaid fence is opened but contains only whitespace. Validator must catch this. Anti-vacuous-pass guard text continues here to clear the 80-char floor.",
           score_json: { coverage: 0.4 },
@@ -673,7 +690,7 @@ operations:
         const run = await callTool(client, "start_run", { request_text: "av-smoke mermaid valid", project_path: projectPath, mode: "single" });
         const stage = await callTool(client, "start_stage", { run_id: run.run_id, kind: "architecture", gate_type: "design" });
         const att = await callTool(client, "record_attempt", {
-          stage_id: stage.stage_id, producer: "claude", model_id: "claude-opus-4-7",
+          stage_id: stage.stage_id, producer: "claude", model_id: GENERATOR_MODEL,
           tokens_in: 1, tokens_out: 1, cost_usd: 0.0001, status: "ok",
         });
         await callTool(client, "archive_artifact", {
@@ -682,7 +699,7 @@ operations:
           bytes: "# C4\n\n```mermaid\nflowchart LR\n  A --> B\n```\n",
         });
         await callTool(client, "record_verdict", {
-          attempt_id: att.attempt_id, judge_producer: "claude", judge_model_id: "claude-sonnet-4-6",
+          attempt_id: att.attempt_id, judge_producer: "claude", judge_model_id: JUDGE_MODEL,
           outcome: "pass",
           critique_md: "Mermaid block has plausible content; with mmdc disabled the validator falls back to in-process structural acceptance. Anti-vacuous-pass guard text continues here to clear the floor.",
           score_json: { coverage: 0.85 },
@@ -703,7 +720,7 @@ operations:
       const run = await callTool(client, "start_run", { request_text: "av-smoke c4 deferred", project_path: projectPath, mode: "single" });
       const stage = await callTool(client, "start_stage", { run_id: run.run_id, kind: "architecture", gate_type: "design" });
       const att = await callTool(client, "record_attempt", {
-        stage_id: stage.stage_id, producer: "claude", model_id: "claude-opus-4-7",
+        stage_id: stage.stage_id, producer: "claude", model_id: GENERATOR_MODEL,
         tokens_in: 1, tokens_out: 1, cost_usd: 0.0001, status: "ok",
       });
       await callTool(client, "archive_artifact", {
@@ -712,7 +729,7 @@ operations:
         bytes: "# C4\n\n```mermaid\nC4Context\n  Person(u, \"User\")\n  System(s, \"Service\")\n  Rel(u, s, \"uses\")\n```\n",
       });
       await callTool(client, "record_verdict", {
-        attempt_id: att.attempt_id, judge_producer: "claude", judge_model_id: "claude-sonnet-4-6",
+        attempt_id: att.attempt_id, judge_producer: "claude", judge_model_id: JUDGE_MODEL,
         outcome: "pass",
         critique_md: "C4 diagram in Mermaid form; PlantUML validator should defer to mermaid_render coverage. Anti-vacuous-pass guard text continues here to clear the 80-char floor.",
         score_json: { coverage: 0.9 },
@@ -732,7 +749,7 @@ operations:
       const run = await callTool(client, "start_run", { request_text: "av-smoke c4 puml skip", project_path: projectPath, mode: "single" });
       const stage = await callTool(client, "start_stage", { run_id: run.run_id, kind: "architecture", gate_type: "design" });
       const att = await callTool(client, "record_attempt", {
-        stage_id: stage.stage_id, producer: "claude", model_id: "claude-opus-4-7",
+        stage_id: stage.stage_id, producer: "claude", model_id: GENERATOR_MODEL,
         tokens_in: 1, tokens_out: 1, cost_usd: 0.0001, status: "ok",
       });
       await callTool(client, "archive_artifact", {
@@ -741,7 +758,7 @@ operations:
         bytes: "@startuml\nactor User as u\nrectangle Service as s\nu --> s : uses\n@enduml\n",
       });
       await callTool(client, "record_verdict", {
-        attempt_id: att.attempt_id, judge_producer: "claude", judge_model_id: "claude-sonnet-4-6",
+        attempt_id: att.attempt_id, judge_producer: "claude", judge_model_id: JUDGE_MODEL,
         outcome: "pass",
         critique_md: "PlantUML form of the same diagram. On a box without java+PLANTUML_JAR the validator should skip (non-blocking). Anti-vacuous-pass guard text continues here to clear the floor.",
         score_json: { coverage: 0.9 },
@@ -782,7 +799,7 @@ operations:
       const run = await callTool(client, "start_run", { request_text: "av-smoke c4 strict", project_path: strictProj, mode: "single" });
       const stage = await callTool(client, "start_stage", { run_id: run.run_id, kind: "architecture", gate_type: "design" });
       const att = await callTool(client, "record_attempt", {
-        stage_id: stage.stage_id, producer: "claude", model_id: "claude-opus-4-7",
+        stage_id: stage.stage_id, producer: "claude", model_id: GENERATOR_MODEL,
         tokens_in: 1, tokens_out: 1, cost_usd: 0.0001, status: "ok",
       });
       await callTool(client, "archive_artifact", {
@@ -791,7 +808,7 @@ operations:
         bytes: "@startuml\nactor U\nrectangle S\nU --> S\n@enduml\n",
       });
       await callTool(client, "record_verdict", {
-        attempt_id: att.attempt_id, judge_producer: "claude", judge_model_id: "claude-sonnet-4-6",
+        attempt_id: att.attempt_id, judge_producer: "claude", judge_model_id: JUDGE_MODEL,
         outcome: "pass",
         critique_md: "Strict-opt-in test: validator skipped should be promoted to execution_error and block finalize. Anti-vacuous-pass guard text continues here to clear the floor.",
         score_json: { coverage: 0.9 },

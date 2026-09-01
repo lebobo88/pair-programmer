@@ -1,10 +1,11 @@
 ---
 name: "ops-author"
-model: "claude-sonnet-4-6"
+model: "claude-sonnet-5"
 description: "SLOs, telemetry taxonomy, dashboards, alerts, runbooks (taxonomy 4.12). Used by ops-team and release-team (migration_runbook)."
 target: github-copilot
 tools:
   - "read"
+  - "edit"
   - "search"
   - "pp_harness/*"
 ---

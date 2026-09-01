@@ -1,10 +1,11 @@
 ---
 name: "release-planner"
-model: "claude-sonnet-4-6"
+model: "claude-sonnet-5"
 description: "Rollout, rollback, migration runbook, comms (taxonomy 4.11). Used by release-team."
 target: github-copilot
 tools:
   - "read"
+  - "edit"
   - "search"
   - "pp_harness/*"
 ---

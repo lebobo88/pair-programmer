@@ -64,7 +64,7 @@ When the driver calls `gate_eligible_judges(gate_type, generator_producer, gener
 3. Apply **profile-aware upgrade**:
    - `enterprise` → cross-vendor on every gate.
    - `ai-agentic` → cross-vendor on any gate touching evals or tool permissions.
-4. Apply any **vendor capability upgrade**. Example: same-vendor Codex is impossible when `generator_model` resolves to `gpt-5.4`, because `pp_codex.critique` is pinned to that same model; the daemon upgrades that path to cross-vendor automatically.
+4. Apply any **vendor capability upgrade**. Example: same-vendor Codex is impossible when `generator_model` resolves to `gpt-5.6-terra`, because `pp_codex.critique` is pinned to that same model (the default generator pin `gpt-5.6-luna` differs, so the ordinary route is fine); the daemon upgrades that path to cross-vendor automatically.
 5. Pick the **rubric** in this priority order: explicit `rubric_hint` (when it names a real rubric) → artifact-kind-specific mapping (including explicit null overrides for test-plan/test-strategy-style artifacts) → built-in default for the gate (WCAG for design, ASVS for security, OpenAPI for contract, RFC 2119 for spec).
 
 The decision payload returned to the driver carries `upgraded`, `reason`, and `rubric_id`, so the user can see *why* a gate was tightened.

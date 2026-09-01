@@ -155,6 +155,93 @@ await record("PP-BV-ISO: browser_validation_report severity=unavailable -> evide
   }
 });
 
+// ─── severity: not_applicable (justified) ──────────────────────────────────
+//
+// Regression guards for the "no honest value to write" gap: bug-fix-team lists
+// browser-validation-evidence in missability_required unconditionally, while
+// its profiles_compatible includes non-ui-cli / sdk / data-product / embedded.
+// not_applicable is the honest state — but it must carry a justification or it
+// is a rubber stamp any run can self-issue.
+
+/** Archive one browser_validation_report and run the BV missability check. */
+async function bvCheck(label, reportBody) {
+  const project = setupProject();
+  try {
+    const m = await importDist("orchestrator/missability.js");
+    const r = await importDist("orchestrator/runs.js");
+    const run = await r.ensureRun({ request_text: label, project_path: project, mode: "single" });
+    const stage = await r.startStage({ run_id: run.run_id, kind: "browser_validation", gate_type: "contract" });
+    await r.archiveArtifact({
+      run_id: run.run_id,
+      stage_id: stage.stage_id,
+      kind: "browser_validation_report",
+      relative_path: `browser-validation/report-${Math.random().toString(36).slice(2)}.md`,
+      bytes: reportBody,
+    });
+    const result = m.runMissabilityChecks({
+      run_id: run.run_id,
+      required_check_ids: ["browser-validation-evidence"],
+    });
+    return result.results.find(x => x.check_id === "browser-validation-evidence");
+  } finally {
+    rmSync(project, { recursive: true, force: true });
+  }
+}
+
+await record("severity=not_applicable with a reason: line -> pass", async () => {
+  const bv = await bvCheck(
+    "bv-na-reason",
+    "# Browser validation report\n\nseverity: not_applicable\nreason: this is a non-ui-cli project; there is no web surface to exercise\n",
+  );
+  assert.equal(bv?.status, "pass", `justified not_applicable must pass; got ${bv?.status} (${bv?.evidence})`);
+  assert.match(bv.evidence, /not_applicable/);
+});
+
+await record("severity=not_applicable with a '## Why this stage does not apply' section -> pass", async () => {
+  const bv = await bvCheck(
+    "bv-na-section",
+    "# Browser validation report\n\nseverity: not_applicable\n\n## Why this stage does not apply\n\nThe deliverable is an npm SDK. No HTTP server or DOM is produced by the build.\n",
+  );
+  assert.equal(bv?.status, "pass", `justified not_applicable must pass; got ${bv?.status} (${bv?.evidence})`);
+});
+
+await record("bare severity=not_applicable (no justification) -> FAIL (no rubber stamp)", async () => {
+  const bv = await bvCheck("bv-na-bare", "# Browser validation report\n\nseverity: not_applicable\n");
+  assert.equal(bv?.status, "fail", `bare not_applicable must NOT pass; got ${bv?.status} (${bv?.evidence})`);
+  assert.match(bv.evidence, /no justification/i);
+});
+
+await record("severity=not_applicable with an EMPTY reason: line -> FAIL", async () => {
+  const bv = await bvCheck("bv-na-empty", "# Browser validation report\n\nseverity: not_applicable\nreason:   \n");
+  assert.equal(bv?.status, "fail", `empty reason must NOT pass; got ${bv?.status} (${bv?.evidence})`);
+});
+
+await record("severity=not_applicable with an EMPTY justification section -> FAIL", async () => {
+  const bv = await bvCheck(
+    "bv-na-empty-section",
+    "# Browser validation report\n\nseverity: not_applicable\n\n## Why this stage does not apply\n\n## Next\n\nnothing\n",
+  );
+  assert.equal(bv?.status, "fail", `empty justification section must NOT pass; got ${bv?.status} (${bv?.evidence})`);
+});
+
+await record("severity=errors still fails even with a reason: line", async () => {
+  const bv = await bvCheck(
+    "bv-errors-reason",
+    "# Browser validation report\n\nseverity: errors\nreason: we would rather not fix this\n",
+  );
+  assert.equal(bv?.status, "fail", "errors must remain a hard fail regardless of justification");
+  assert.match(bv.evidence, /errors/);
+});
+
+await record("severity=unavailable still fails even with a reason: line", async () => {
+  const bv = await bvCheck(
+    "bv-unavail-reason",
+    "# Browser validation report\n\nseverity: unavailable\nreason: playwright missing\n",
+  );
+  assert.equal(bv?.status, "fail", "unavailable must remain a gap regardless of justification");
+  assert.match(bv.evidence, /unavailable/);
+});
+
 console.log();
 console.log(`${passed} passed, ${failed} failed`);
 process.exit(failed === 0 ? 0 : 1);

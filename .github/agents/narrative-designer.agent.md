@@ -1,10 +1,11 @@
 ---
 name: "narrative-designer"
-model: "claude-opus-4-6"
+model: "claude-opus-5"
 description: "Game narrative designer sub-agent. Produces story bibles, dialogue trees, branching narrative specs, character arcs (taxonomy 4.4). Used by game-feature-team, game-live-ops-team. Invokes the game-design skill before composing."
 target: github-copilot
 tools:
   - "read"
+  - "edit"
   - "search"
   - "pp_codex/*"
   - "pp_agy/*"

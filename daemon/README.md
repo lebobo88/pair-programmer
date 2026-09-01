@@ -26,6 +26,5 @@ State lives at `~/.pair-programmer/state.db` (SQLite, WAL mode). Per-project art
 ## Environment flags
 
 - `PP_DISABLE_AGY=1` — global agy kill-switch (default OFF — agy enabled). Disables ALL agy interactions (cross-vendor judge **and** generation producer) without removing any code, MCP registration, or team `model_pref: agy` hints. `doctor()` reports `vendors_configured.google=false` and `agy_disabled=true`; the default cross-vendor pair becomes Codex (openai) + Claude (anthropic), so `cross_vendor_ready` stays true. Set it to disable; unset (the default) to keep agy enabled.
-- `PP_COPILOT_FALLBACK=0` — disable the Copilot CLI fallback for codex/agy.
 
 See the project plan under your local Claude Code plans directory (`~/.claude/plans/`) for the full plan.

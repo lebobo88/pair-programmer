@@ -44,7 +44,7 @@ CREATE INDEX IF NOT EXISTS idx_stages_run ON stages(run_id);
 CREATE TABLE IF NOT EXISTS attempts (
   id                  TEXT PRIMARY KEY,
   stage_id            TEXT NOT NULL REFERENCES stages(id) ON DELETE CASCADE,
-  producer            TEXT NOT NULL,                       -- codex | agy | claude | <subagent name> (historical rows may say "gemini" — see normalizeProducer() in config.ts)
+  producer            TEXT NOT NULL,                       -- VENDOR id only: codex | agy | claude | copilot (historical rows may say "gemini" — see normalizeProducer() in config.ts). NOT the sub-agent role — that goes in agent_type. The cross-vendor gate is computed from this column, so a role string here silently disables it; assertProducer()/ProducerSchema now reject one.
   model_id            TEXT NOT NULL,
   prompt_hash         TEXT,
   artifact_path       TEXT,                                 -- relative to project .harness/

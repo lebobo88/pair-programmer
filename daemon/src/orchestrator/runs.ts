@@ -8,7 +8,7 @@ import { db, txImmediate, txImmediateWithRetry } from "../db/database.js";
 import { projectArtifactDir } from "../util/paths.js";
 import {
   RunMode, RunStatus, StageStatus, AttemptStatus, VerdictOutcome, vendorFor,
-  ClaudeTier, isClaudeTier,
+  ClaudeTier, isClaudeTier, normalizeProducer, PRODUCERS,
 } from "../config.js";
 import { log } from "../util/logger.js";
 import { scanForSecrets, SecretsFoundError } from "../security/secret-scan.js";
@@ -17,7 +17,7 @@ import { applyMasterPlanPatch, ensureMasterPlan, masterPlanStatus } from "./mast
 import { TAXONOMY_BY_ID, MASTER_PLAN_SECTIONS } from "./taxonomy.js";
 import { ProjectLock, ProjectLockBusyError } from "../util/lock.js";
 import { tmpdir } from "node:os";
-import { DEFAULT_MODELS, agyEnabled } from "../config.js";
+import { DEFAULT_MODELS, agyEnabled, assertProducer } from "../config.js";
 import { checkAgyPinServed, type AgyPinCheck } from "./agy-pin.js";
 import { codexCritique } from "../mcp/codex-server.js";
 import { agyCritique } from "../mcp/antigravity-server.js";
@@ -432,6 +432,11 @@ export type RecordAttemptInput = {
 export type RecordAttemptOutput = { attempt_id: string };
 
 export function recordAttempt(input: RecordAttemptInput): RecordAttemptOutput {
+  // Domain-layer producer guard. RecordAttemptSchema validates the MCP path,
+  // but recordAttempt is exported and reachable without it, and a bad producer
+  // written here silently disables the cross-vendor gate for every verdict on
+  // this attempt (vendorFor -> null -> cross_vendor false, no error).
+  assertProducer(input.producer);
   const stage = db()
     .prepare(`SELECT run_id FROM stages WHERE id = ?`)
     .get(input.stage_id) as { run_id: string } | undefined;
@@ -452,6 +457,40 @@ export function recordAttempt(input: RecordAttemptInput): RecordAttemptOutput {
       log.debug({ attempt_slot_id: id }, "record_attempt idempotent re-call on existing slot");
       return { attempt_id: existing.id };
     }
+  }
+
+  // 2026-08-23 (FTR-032 run_uPDTBdu4w54Z). `producer` MUST normalize to a
+  // known Producer, because `vendorFor()` is the sole input to the
+  // cross_vendor computation in record_verdict.
+  //
+  // The defect this closes: drivers were writing ROLE names here
+  // ("tests_pre-generator", "tests", "engineer") instead of vendor ids.
+  // `vendorFor()` returns null for those, so `genVendor && judgeVendor &&
+  // genVendor !== judgeVendor` evaluated false and EVERY verdict recorded
+  // cross_vendor=0 - including a run where codex genuinely judged a Claude
+  // attempt and then agy genuinely judged the retry. A gate whose
+  // `required_cross_vendor: true` can never be satisfied is not a strict
+  // gate, it is an absent one, and nothing in the output said so.
+  //
+  // Rejecting at the WRITE side is what makes this stay fixed: a row that
+  // cannot be attributed to a vendor can no longer enter the ledger, so
+  // downstream cross-vendor policy always has something to compare.
+  // PP_STRICT_PRODUCER=0 opts out for exploratory or legacy-replay use.
+  if (
+    normalizeProducer(input.producer) === null &&
+    process.env.PP_STRICT_PRODUCER !== "0"
+  ) {
+    throw new Error(
+      `record_attempt: producer="${input.producer}" is not a known vendor. ` +
+      `Use one of ${PRODUCERS.join(" | ")} - this field names WHICH VENDOR ` +
+      `generated the attempt, not which role or stage it played (the stage ` +
+      `is already on the row via stage_id, and the agent is on agent_type). ` +
+      `vendorFor() is the only input to record_verdict's cross_vendor ` +
+      `computation, so an unrecognized producer silently makes every ` +
+      `verdict on this attempt non-cross-vendor and renders a gate with ` +
+      `required_cross_vendor=true permanently unsatisfiable. ` +
+      `To opt out (exploratory or legacy replay only), set PP_STRICT_PRODUCER=0.`
+    );
   }
 
   // attempted_tier is opt-in; reject obviously-wrong values rather than
@@ -576,6 +615,35 @@ function looksLikePlausibleUnlandedPath(file: string, projectPath: string): bool
   }
 }
 
+type MatchMode = "exact" | "eol_normalized";
+
+/**
+ * Locate `quoted` inside `text`, exact-first.
+ *
+ * The exact comparison stays PRIMARY and authoritative. Only when it misses do
+ * we retry once with CRLF collapsed to LF on BOTH sides, and nothing else.
+ *
+ * Why the fallback exists: source files in this project are checked out with
+ * CRLF, but a judge emitting `quoted_text` inside a JSON payload emits "\n" for
+ * a line break. Any correct multi-line citation therefore failed the raw
+ * substring test and was recorded as a FABRICATED citation, which trips PP-VG-6.
+ * Single-line code citations were unaffected, which is why code stages passed
+ * and document stages (multi-line prose) stalled.
+ *
+ * Why the fallback is deliberately this narrow: collapsing arbitrary whitespace
+ * or stripping markdown/backtick delimiters would equate materially different
+ * content and give a genuinely fabricated quote room to pass. Line-ending
+ * normalization changes no visible character, so it cannot make two different
+ * texts compare equal. Returns null when the quote is absent under both modes.
+ */
+function matchQuote(text: string, quoted: string): MatchMode | null {
+  if (text.includes(quoted)) return "exact";
+  const nText = text.replace(/\r\n/g, "\n");
+  const nQuoted = quoted.replace(/\r\n/g, "\n");
+  if (nText.includes(nQuoted)) return "eol_normalized";
+  return null;
+}
+
 /**
  * R3-tail post-mortem Fix 1.4 (2026-05-21): validate that every finding the
  * judge cited in `score_json.findings_provenance` quotes text that ACTUALLY
@@ -639,6 +707,9 @@ function validateFindingsProvenance(args: {
     reason: string;
     severity: "fabrication" | "unlanded_diff";
   }> = [];
+  // Per-entry record of HOW each citation matched, so a rising rate of
+  // non-exact matches is visible in details_json rather than silent.
+  const matches: Array<{ id: string; file: string; match_mode: MatchMode }> = [];
 
   for (const entry of provenance) {
     if (!entry || typeof entry !== "object") continue;
@@ -716,19 +787,35 @@ function validateFindingsProvenance(args: {
       misses.push({ id, file, line, quoted_text: quoted, reason: "file exists but could not be read", severity: "fabrication" });
       continue;
     }
-    if (!text.includes(quoted)) {
+    const mode = matchQuote(text, quoted);
+    if (mode === null) {
       // The file exists — the judge had something real to quote — and the
-      // quoted text still isn't in it. This is the genuine fabrication case.
+      // quoted text still isn't in it under either the exact or the
+      // EOL-normalized comparison. This is the genuine fabrication case.
       misses.push({
         id, file, line, quoted_text: quoted,
         reason: "file exists but quoted_text not found in it (substring miss) — fabricated citation",
         severity: "fabrication",
       });
+    } else {
+      matches.push({ id, file, match_mode: mode });
     }
   }
 
+  // Surface non-exact matches even on a fully clean result: an
+  // `eol_normalized` match is legitimate but worth being able to count.
+  const nonExact = matches.filter(m => m.match_mode !== "exact");
   if (misses.length === 0) {
-    return { hallucination_suspected: false, details_json: null };
+    return {
+      hallucination_suspected: false,
+      details_json: nonExact.length > 0
+        ? JSON.stringify({
+            total_provenance_entries: provenance.length,
+            misses: [],
+            non_exact_matches: nonExact,
+          })
+        : null,
+    };
   }
   const fabricationMisses = misses.filter(m => m.severity === "fabrication");
   return {
@@ -739,6 +826,7 @@ function validateFindingsProvenance(args: {
     details_json: JSON.stringify({
       total_provenance_entries: provenance.length,
       misses,
+      non_exact_matches: nonExact,
     }),
   };
 }
@@ -864,7 +952,44 @@ export function recordVerdict(input: RecordVerdictInput): RecordVerdictOutput {
 
   const genVendor = vendorFor(att.producer);
   const judgeVendor = vendorFor(input.judge_producer);
-  const crossVendor = !!(genVendor && judgeVendor && genVendor !== judgeVendor);
+
+  // Defence in depth for the same defect record_attempt now rejects at the
+  // write side. An unattributable vendor on EITHER side makes `crossVendor`
+  // below evaluate false for a reason that has nothing to do with the two
+  // vendors actually involved, and the verdict then reads as same-vendor
+  // forever. That is a false negative in a safety gate, so it must be loud.
+  // Only reachable now for rows written before the write-side check, or with
+  // PP_STRICT_PRODUCER=0.
+  if ((genVendor === null || judgeVendor === null) && process.env.PP_STRICT_PRODUCER !== "0") {
+    const offender = genVendor === null
+      ? `attempt producer="${att.producer}"`
+      : `judge_producer="${input.judge_producer}"`;
+    throw new Error(
+      `record_verdict: ${offender} does not map to a vendor, so cross_vendor ` +
+      `cannot be computed and would default to false - silently reporting a ` +
+      `genuine cross-vendor judgement as same-vendor. Known producers: ` +
+      `${PRODUCERS.join(" | ")}. Re-record the attempt with a vendor id, or ` +
+      `set PP_STRICT_PRODUCER=0 for legacy replay.`
+    );
+  }
+
+  // Refuse rather than record an unprovable verdict. Before this guard, an
+  // attempt whose producer named a sub-agent role (legal per the old
+  // schema.sql comment) resolved to genVendor=null, so `crossVendor` silently
+  // evaluated to FALSE -- every verdict on that path recorded cross_vendor
+  // false even when a genuine second vendor had judged, and a
+  // required_cross_vendor gate became satisfiable by nothing. Recording a
+  // cross_vendor=false row here would preserve that lie in the audit trail;
+  // there is no trustworthy vendor relationship to record, so we reject.
+  if (!genVendor) {
+    throw new Error(
+      `attempt ${input.attempt_id} has producer="${att.producer}", which maps to no ` +
+      `vendor -- cross_vendor cannot be computed. Re-record the attempt with a valid ` +
+      `producer (the sub-agent role belongs in agent_type).`
+    );
+  }
+
+  const crossVendor = !!(judgeVendor && genVendor !== judgeVendor);
 
   // R3-tail post-mortem Fix 1.4 (2026-05-21): validate findings_provenance.
   // The judge agent emits `findings_provenance: [{id, file, line, quoted_text, claim}]`
@@ -1455,6 +1580,7 @@ export function getStageFinalizeReadiness(stage_id: string, winner_attempt_id?: 
     const suspectVerdicts = db()
       .prepare(
         `SELECT v.id AS verdict_id, v.attempt_id AS attempt_id,
+                v.judge_producer AS judge_producer,
                 v.created_at AS created_at, v.rowid AS row_id
            FROM verdicts v
            JOIN attempts a ON a.id = v.attempt_id
@@ -1463,7 +1589,7 @@ export function getStageFinalizeReadiness(stage_id: string, winner_attempt_id?: 
             AND v.retracted_at IS NULL
           ORDER BY v.created_at ASC, v.rowid ASC`,
       )
-      .all(stage_id) as Array<{ verdict_id: string; attempt_id: string; created_at: string; row_id: number }>;
+      .all(stage_id) as Array<{ verdict_id: string; attempt_id: string; judge_producer: string; created_at: string; row_id: number }>;
 
     for (const suspect of suspectVerdicts) {
       // Check for a cross-vendor resolution: a verdict on the SAME attempt with
@@ -1471,6 +1597,15 @@ export function getStageFinalizeReadiness(stage_id: string, winner_attempt_id?: 
       // "After" is determined by rowid (insertion order) as the primary ordering
       // within the same millisecond — created_at alone fails on same-ms ties.
       // A verdict at the same rowid is the suspect itself; we want strictly later.
+      //
+      // JUDGE INDEPENDENCE (PP-VG-6 hardening): `cross_vendor` is computed
+      // generator-vs-judge (see recordVerdict: `genVendor !== judgeVendor`), NOT
+      // suspect-judge-vs-clearing-judge. Without the `judge_producer != ?`
+      // predicate below, the SAME vendor that raised the suspicion could clear
+      // it -- e.g. codex flags a claude-generated attempt, then codex re-judges
+      // it clean and that verdict still carries cross_vendor=1. That is
+      // self-clearing and defeats the gate. The clearing verdict MUST come from
+      // a different judge vendor than the one that raised the suspicion.
       const cvResolution = db()
         .prepare(
           `SELECT id FROM verdicts
@@ -1478,12 +1613,13 @@ export function getStageFinalizeReadiness(stage_id: string, winner_attempt_id?: 
               AND cross_vendor = 1
               AND outcome != 'fail'
               AND retracted_at IS NULL
+              AND judge_producer != ?
               AND rowid > ?
             LIMIT 1`,
         )
-        .get(suspect.attempt_id, suspect.row_id) as { id: string } | undefined;
+        .get(suspect.attempt_id, suspect.judge_producer, suspect.row_id) as { id: string } | undefined;
 
-      if (cvResolution) continue; // cleared by a cross-vendor pass
+      if (cvResolution) continue; // cleared by an INDEPENDENT cross-vendor pass
 
       // No cross-vendor resolution exists — block finalize(passed).
       blockers.push({
@@ -1497,6 +1633,8 @@ export function getStageFinalizeReadiness(stage_id: string, winner_attempt_id?: 
           `PP-VG-6 requires either: (a) retracting the suspect verdict via retract_verdict, or ` +
           `(b) recording a new cross_vendor=1 non-fail verdict on the same attempt (dispatch_cross_vendor_rejudge). ` +
           `A same-vendor clean verdict does NOT clear hallucination suspicion. ` +
+          `The clearing verdict MUST come from a judge vendor OTHER than "${suspect.judge_producer}" ` +
+          `(the vendor that raised the suspicion) -- a re-judge by "${suspect.judge_producer}" cannot clear its own flag. ` +
           `Alternatively, finalize with status='surfaced' to accept the unresolved suspicion.`,
       } satisfies StageFinalizeHallucinationBlocker);
       break; // surface the first unresolved suspect; one is enough to block
@@ -2119,9 +2257,17 @@ export function finalizeRun(input: FinalizeRunInput): FinalizeRunOutput {
       const archivedKinds = new Set<string>(
         (db()
           .prepare(
+            // RUN-WIDE means run-wide: select on artifacts.run_id directly.
+            // The previous form INNER JOINed stages on a.stage_id, which
+            // silently excluded every RUN-LEVEL artifact (stage_id IS NULL) --
+            // a shape archive_artifact explicitly supports, since stage_id is
+            // optional. The gate would then report "zero archived rows
+            // run-wide" for a kind that had in fact been archived, and no
+            // amount of archiving could satisfy it. artifacts.run_id is
+            // NOT NULL, so this is a strict superset of the old query: every
+            // stage-attached artifact is still counted.
             `SELECT DISTINCT a.kind FROM artifacts a
-               JOIN stages s ON s.id = a.stage_id
-              WHERE s.run_id = ? AND a.kind IS NOT NULL`
+              WHERE a.run_id = ? AND a.kind IS NOT NULL`
           )
           .all(input.run_id) as Array<{ kind: string }>)
           .map(r => r.kind),

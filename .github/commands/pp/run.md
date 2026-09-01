@@ -28,8 +28,8 @@ This driver mirrors `.github/agents/*.agent.md` frontmatter `model:` values so t
 
 | agent | tier |
 |-------|------|
-| strategy-author, spec-author, architect, security-reviewer, discovery-researcher, ai-controls-author, narrative-designer, encounter-designer, level-designer, game-ai-programmer, netcode-programmer, game-security | opus (`claude-opus-4-6`) |
-| engineer, api-designer, designer, design-system-curator, test-strategist, docs-author, ops-author, data-modeler, release-planner, retirement-planner, governance-author, economy-designer, live-ops-manager, tech-animator, technical-artist, game-accessibility-specialist | sonnet (`claude-sonnet-4-6`) |
+| strategy-author, spec-author, architect, security-reviewer, discovery-researcher, ai-controls-author, narrative-designer, encounter-designer, level-designer, game-ai-programmer, netcode-programmer, game-security | opus (`claude-opus-5`) |
+| engineer, api-designer, designer, design-system-curator, test-strategist, docs-author, ops-author, data-modeler, release-planner, retirement-planner, governance-author, economy-designer, live-ops-manager, tech-animator, technical-artist, game-accessibility-specialist | sonnet (`claude-sonnet-5`) |
 | triage, taxonomy-mapper, profile-loader, judge-router, missability-inspector, master-plan-patcher, run-finalizer, reflexion-coach, browser-validator, visual-regression-runner | haiku (`claude-haiku-4-5-20251001`) |
 | judge-cross-vendor, judge-same-vendor | — (judges pick their own model from internal rotation; see those agents' Procedure sections) |
 
@@ -77,11 +77,13 @@ The `trace` array records which layer set the final tier ("frontmatter", "team_y
 6. **Stage loop.** Pick the stage set by triage class:
    - `trivial` → just `code` (or `docs` if the request is doc-shaped).
    - `standard` → `spec` → `code` → `tests` → `docs`.
-   - `major` → STOP and tell the user to invoke `/pp:team feature-team` or another team-shaped flow instead. Finalize the run with `status="aborted"` and explain.
+   - `major` →
+     - **If `signals` includes `"doc-only"`** (taxonomy.ts walks `doc-only` back from `major-keyword`/`security-keyword` by −3, but a high-signal stack can still resolve to `major`), continue into a **single doc stage** instead of aborting. Pick the stage kind from the doc-only payload — `docs` is the default; if the request explicitly names an ADR/spec/PRD/RFC, use `spec` (the spec-author agent handles ADR/MADR/spec/PRD/RFC shapes; spec gate_type still applies). Run exactly one stage through the standard `start_stage → generate → judge → finalize` flow with best-of-N=1 (single-stage best-of). Skip Reflexion-escalation past the cap if `cli_flags.tier_cap` is set, but otherwise follow the normal verdict/readiness branches. Then continue to step 7 (Missability).
+     - **Otherwise** (true major scope without `doc-only`), STOP and tell the user to invoke `/pp:team feature-team` or another team-shaped flow instead. Finalize the run with `status="aborted"` and explain.
 
    For each stage:
    - `mcp__pp_harness__start_stage(run_id, kind, gate_type)`. Default `gate_type` per `kind`: `spec→spec`, `code→code_style`, `tests→lint_class`, `tests_pre→contract`, `docs→docs_polish`. Override per profile rubric bindings if the profile names a different gate type for the kind.
-   - `mcp__pp_harness__gate_eligible_judges` with `gate_type`, `generator_producer="codex"` (default for `engineer`), `generator_model=<planned model id when known; otherwise let the daemon infer the Codex default>`, `prompt_keywords=$ARGUMENTS`, `profile=<profile.name or null>`, `artifact_kind` (per-stage canonical kind). Capture `{ required_cross_vendor, rubric_id, allowed_judges, upgraded, reason }`.
+   - `mcp__pp_harness__gate_eligible_judges` with `gate_type`, `generator_producer="claude"` (the `engineer` producer is **Path A / Claude** — see `.github/agents/engineer.agent.md`; Paths B/C codex/agy *generation* are deprecated, external CLIs are critique-only, so cross-vendor judging resolves to codex), `generator_model=<the resolved Claude tier model id from step 6a when known; otherwise let the daemon infer a default>`, `prompt_keywords=$ARGUMENTS`, `profile=<profile.name or null>`, `artifact_kind` (per-stage canonical kind). Capture `{ required_cross_vendor, rubric_id, allowed_judges, upgraded, reason }`.
 
    - **6a. Resolve Claude tier for this stage.** Run the resolver below (highest-precedence wins, layers stack low→high). The resolver only governs Claude generators (Path A inside the `engineer` agent and any agent whose frontmatter pins `model:`). For Codex/Antigravity (agy) producers (engineer Paths B/C, api-designer when delegated to Codex, etc.) skip the resolver and use the vendor's default model id from `daemon/src/config.ts:DEFAULT_MODELS`.
 
@@ -132,6 +134,7 @@ The `trace` array records which layer set the final tier ("frontmatter", "team_y
    - Generator: use the Task tool to invoke the matching agent (`spec-author` for spec, `engineer` for code, `test-strategist` for tests, `docs-author` for docs). Pass `run_id`, `stage_id`, `cwd`, `request_text`, `artifact_dir`, `attempted_tier=<initial_tier>`, and (when known) `profile`. **For Claude generators, also pass `model: <model_id>` on the Task invocation** so the Agent tool's per-call model override wins over the agent's frontmatter default. The agent calls the appropriate `pp_<vendor>__generate`, archives via `archive_artifact`, and records via `record_attempt` (passing `attempted_tier` through so cost-by-tier analytics work). Capture `attempt_id`.
    - Judge routing: use the Task tool to invoke `judge-router` with `gate_type`, `generator_producer`, `generator_model=<attempt.model_id or planned model id>`, `prompt_keywords`, `profile`, `artifact_kind`. Capture `{ judge_agent, preferred_producers, rubric_id, decision_reason }`.
    - Judge execution: use the Task tool to invoke the chosen judge agent (`judge-cross-vendor` or `judge-same-vendor`) with the attempt / artifact context plus `rubric_id` (or `rubric_md` if already resolved). The chosen judge fetches the rubric if needed, runs `pp_<other>__critique` (or in-process Claude judging on the same-vendor Claude lane), and records the verdict. Capture `verdict.outcome` and `cross_vendor`.
+   - **Assert the recorded provenance.** `record_verdict` returns the daemon-computed `cross_vendor` flag. If judge routing said `required_cross_vendor=true` and the returned `cross_vendor` is `false`, the gate was NOT satisfied, whatever the outcome says: STOP, print the attempt's `producer` and the verdict's `judge_producer`, and `finalize_run(status="aborted")`. Do NOT `finalize_stage(status="passed")`. Capturing the requirement from `gate_eligible_judges` and never checking the result is what let every verdict in a real run record `cross_vendor: false` while codex and agy were genuinely judging.
    - **If the judge sub-agent returns `judge_tool_failed=true`** (instead of a verdict): the underlying critique CLI failed persistently. Archive the failure context via `mcp__pp_harness__archive_artifact` with `relative_path: "critique_failures/<stage_id>.json"`, `kind: "critique_failure"`, and `bytes` = the JSON payload `{ judge_tool_failed, reason, vendor, model, exit_code, stderr_tail, attempts, failure_archive_path }`. Then call `mcp__pp_harness__finalize_stage(stage_id, status="surfaced")` and `mcp__pp_harness__finalize_run(status="aborted", summary_md=<judge tool failure context including failure_archive_path>)`. STOP. Do NOT advance to the next stage. Do NOT invoke Reflexion (Reflexion fixes generators, not broken judge environments). Do NOT fabricate a passing verdict to "unblock the pipeline" — halting is correct.
    - On `outcome="pass"`: call `mcp__pp_harness__get_stage_finalize_readiness(stage_id)` **before** any `finalize_stage(status="passed")`.
      - If it returns `next_action="run_tdd_pre_check" | "run_tdd_post_check" | "run_artifact_validate"`, call that tool immediately, then re-call `get_stage_finalize_readiness(stage_id)`.
@@ -162,10 +165,20 @@ The `trace` array records which layer set the final tier ("frontmatter", "team_y
     - A tier-breakdown row: query `budget_status(scope="tier:opus")`, `tier:sonnet`, `tier:haiku` and show their totals so the user sees where spend went.
     - A one-paragraph summary of what changed.
 
+## Windows / PowerShell portability notes
+
+**Subprocess spawn on Windows:** All daemon subprocesses (git, npx, plantuml, judge CLIs) are spawned via `trackedExeca` / `trackedExecaNoRefuse` with `windowsHide: true` and arguments passed as an array (never a shell string, never `shell: true`). `execa` resolves `.cmd` shims via PATHEXT automatically so `npx` works without extra shim handling.
+
+**Binary existence probe:** The `onPath()` helper in `c4-render.ts` spawns the binary directly with a no-op flag rather than calling `which` (POSIX) or `where` (Windows). This avoids platform branching while catching ENOENT on all platforms.
+
+**Parallel subagent spawn on Windows/PowerShell:** Parallel Task dispatch (e.g. multiple engineer candidates or browser-validator + engineer in the same stage) can be unreliable on Windows due to PowerShell process-group limits and pipe contention. If parallel dispatch hangs or produces incomplete results, fall back to sequential dispatch: invoke each sub-agent Task call in series, awaiting each before starting the next. The harness timer still applies to the full sequence.
+
 ## Failure handling
 
 - Any harness MCP call error → print verbatim, then `mcp__pp_harness__finalize_run(status="aborted", summary_md=<error context>)` and STOP.
 - `cross_vendor_required` but `vendor-matrix` reports the matrix is incomplete → STOP, print remediation steps, and `finalize_run(status="aborted")`.
+- `required_cross_vendor=true` but the `cross_vendor` returned by `record_verdict` is `false` → STOP, print the attempt `producer` + verdict `judge_producer`, and `finalize_run(status="aborted")`. The vendor-matrix probe above checks *readiness*; this checks what was actually *recorded*. Both are required — a ready matrix does not prove the verdict that landed was cross-vendor.
+- `record_attempt` / `record_verdict` rejects a producer ("is not a vendor id") → the driver passed a sub-agent role where a vendor id belongs. Re-record with the vendor (`claude` | `codex` | `agy` | `copilot`) and put the role in `agent_type`. Do NOT work around it by inventing a vendor.
 - Loop ceiling reached → finalize as `surfaced` with the evidence in the summary.
 - Missability fail → finalize as `surfaced` with the evidence path.
 - Judge tool failed (`judge_tool_failed=true`) → archive the failure context, finalize stage `surfaced` + run `aborted`, STOP. Do NOT Reflexion. Do NOT fabricate a verdict.

@@ -48,11 +48,11 @@ await record("retract_verdict happy path", async () => {
     const runs = await importDist("orchestrator/runs.js");
     const run = await runs.ensureRun({ request_text: "retract test", project_path: project, mode: "single" });
     const stage = await runs.startStage({ run_id: run.run_id, kind: "code", gate_type: "code" });
-    const att = runs.recordAttempt({ stage_id: stage.stage_id, producer: "claude", model_id: "claude-sonnet-4-6", status: "ok" });
+    const att = runs.recordAttempt({ stage_id: stage.stage_id, producer: "claude", model_id: "claude-sonnet-5", status: "ok" });
     const verdict = runs.recordVerdict({
       attempt_id: att.attempt_id,
       judge_producer: "codex",
-      judge_model_id: "gpt-5.4",
+      judge_model_id: "gpt-5.6-terra",
       rubric_id: "code-quality@1",
       outcome: "fail",
       critique_md: "flagged optional Idempotency-Key as wrong — actually HTTP industry standard",
@@ -74,11 +74,11 @@ await record("retract_verdict refuses short reason", async () => {
     const runs = await importDist("orchestrator/runs.js");
     const run = await runs.ensureRun({ request_text: "short reason", project_path: project, mode: "single" });
     const stage = await runs.startStage({ run_id: run.run_id, kind: "code", gate_type: "code" });
-    const att = runs.recordAttempt({ stage_id: stage.stage_id, producer: "claude", model_id: "claude-sonnet-4-6", status: "ok" });
+    const att = runs.recordAttempt({ stage_id: stage.stage_id, producer: "claude", model_id: "claude-sonnet-5", status: "ok" });
     const verdict = runs.recordVerdict({
       attempt_id: att.attempt_id,
       judge_producer: "codex",
-      judge_model_id: "gpt-5.4",
+      judge_model_id: "gpt-5.6-terra",
       rubric_id: "code-quality@1",
       outcome: "fail",
       critique_md: "spurious flag",
@@ -96,11 +96,11 @@ await record("retract_verdict is idempotent on same reason", async () => {
     const runs = await importDist("orchestrator/runs.js");
     const run = await runs.ensureRun({ request_text: "idempotent", project_path: project, mode: "single" });
     const stage = await runs.startStage({ run_id: run.run_id, kind: "code", gate_type: "code" });
-    const att = runs.recordAttempt({ stage_id: stage.stage_id, producer: "claude", model_id: "claude-sonnet-4-6", status: "ok" });
+    const att = runs.recordAttempt({ stage_id: stage.stage_id, producer: "claude", model_id: "claude-sonnet-5", status: "ok" });
     const verdict = runs.recordVerdict({
       attempt_id: att.attempt_id,
       judge_producer: "codex",
-      judge_model_id: "gpt-5.4",
+      judge_model_id: "gpt-5.6-terra",
       rubric_id: "code-quality@1",
       outcome: "fail",
       critique_md: "the same reason both times will be 8 chars",
@@ -120,11 +120,11 @@ await record("retract_verdict rejects different-reason overwrite", async () => {
     const runs = await importDist("orchestrator/runs.js");
     const run = await runs.ensureRun({ request_text: "different reason", project_path: project, mode: "single" });
     const stage = await runs.startStage({ run_id: run.run_id, kind: "code", gate_type: "code" });
-    const att = runs.recordAttempt({ stage_id: stage.stage_id, producer: "claude", model_id: "claude-sonnet-4-6", status: "ok" });
+    const att = runs.recordAttempt({ stage_id: stage.stage_id, producer: "claude", model_id: "claude-sonnet-5", status: "ok" });
     const verdict = runs.recordVerdict({
       attempt_id: att.attempt_id,
       judge_producer: "codex",
-      judge_model_id: "gpt-5.4",
+      judge_model_id: "gpt-5.6-terra",
       rubric_id: "code-quality@1",
       outcome: "fail",
       critique_md: "filler",
@@ -146,11 +146,11 @@ await record("retracted fail verdict no longer blocks finalize", async () => {
     const runs = await importDist("orchestrator/runs.js");
     const run = await runs.ensureRun({ request_text: "unblock", project_path: project, mode: "single" });
     const stage = await runs.startStage({ run_id: run.run_id, kind: "code", gate_type: "code" });
-    const att = runs.recordAttempt({ stage_id: stage.stage_id, producer: "claude", model_id: "claude-sonnet-4-6", status: "ok" });
+    const att = runs.recordAttempt({ stage_id: stage.stage_id, producer: "claude", model_id: "claude-sonnet-5", status: "ok" });
     const verdict = runs.recordVerdict({
       attempt_id: att.attempt_id,
       judge_producer: "codex",
-      judge_model_id: "gpt-5.4",
+      judge_model_id: "gpt-5.6-terra",
       rubric_id: "code-quality@1",
       outcome: "fail",
       critique_md: "fail verdict that will be retracted in this test",

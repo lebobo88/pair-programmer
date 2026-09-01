@@ -43,8 +43,8 @@ async function main() {
     if (health.judge_capabilities?.codex?.same_vendor_mode !== "conditional_cross_vendor") {
       throw new Error(`expected codex judge capability summary, got: ${pretty(health.judge_capabilities)}`);
     }
-    if (health.judge_capabilities?.codex?.critique_model !== "gpt-5.4") {
-      throw new Error(`expected codex critique model gpt-5.4, got: ${pretty(health.judge_capabilities?.codex)}`);
+    if (health.judge_capabilities?.codex?.critique_model !== "gpt-5.6-terra") {
+      throw new Error(`expected codex critique model gpt-5.6-terra, got: ${pretty(health.judge_capabilities?.codex)}`);
     }
     console.log(`✓ doctor judge_capabilities: codex=${health.judge_capabilities.codex.same_vendor_mode}, agy=${health.judge_capabilities.agy.same_vendor_mode}`);
 
@@ -75,7 +75,7 @@ async function main() {
     const att = await callTool(client, "record_attempt", {
       stage_id: stage.stage_id,
       producer: "codex",
-      model_id: "gpt-5.5",
+      model_id: "gpt-5.6-luna",
       tokens_in: 1234,
       tokens_out: 567,
       cost_usd: 0.012,
@@ -96,13 +96,13 @@ async function main() {
     });
     console.log(`✓ archive_artifact -> ${artifact.artifact_id} (${artifact.sha256.slice(0, 12)}…)`);
 
-    // 6. Record a verdict — judge uses gpt-5.4 (different model, same vendor).
+    // 6. Record a verdict — judge uses gpt-5.6-terra (different model, same vendor).
     //    critique_md must be ≥80 non-whitespace chars to satisfy the
     //    anti-vacuous-pass refine on RecordVerdictSchema.
     const verdict = await callTool(client, "record_verdict", {
       attempt_id: att.attempt_id,
       judge_producer: "codex",
-      judge_model_id: "gpt-5.4",
+      judge_model_id: "gpt-5.6-terra",
       outcome: "pass",
       critique_md: "Smoke verdict: synthetic attempt accepted. Diff is single-line, no logic risk, and rubric dimensions correctness/minimality both satisfied for this no-op artifact.",
       score_json: { correctness: 0.9, minimality: 0.95 },
@@ -196,32 +196,38 @@ async function main() {
     if (!budget || budget.cost_usd !== 0.012) throw new Error(`budget mismatch: ${pretty(budget)}`);
     console.log(`✓ budget_status: $${budget.cost_usd} for ${budget.tokens_in} in / ${budget.tokens_out} out`);
 
-    // 11. Phase 2: gate_eligible_judges — plain Codex code_style upgrades to
-    // cross-vendor because the default codex generator model equals the pinned
-    // codex critique model (gpt-5.4), so same-vendor different-model is
-    // impossible on that path.
+    // 11. Phase 2: gate_eligible_judges — plain Codex code_style.
+    // ASSERTION REPLACED IN PLACE (not deleted — CONSTITUTION.md FORBIDDEN-3)
+    // by the gpt-5.6 model-id refresh. Previously codex_generate and
+    // codex_critique were BOTH "gpt-5.4", so the inferred default pairing was
+    // same-model and this gate had to upgrade to cross-vendor. The pins are
+    // now distinct (gpt-5.6-luna generates, gpt-5.6-terra judges), so the
+    // inferred default pairing is a legal same-vendor different-model route
+    // and NO upgrade is expected. Step 11a below still covers the upgrade
+    // path by driving generator_model onto the critique pin explicitly.
     const gate1 = await callTool(client, "gate_eligible_judges", {
       gate_type: "code_style",
       generator_producer: "codex",
       prompt_keywords: "rename a variable from foo to bar",
     });
-    if (!gate1.required_cross_vendor) throw new Error(`expected cross-vendor for default codex code_style, got: ${pretty(gate1)}`);
-    if (!gate1.upgraded) throw new Error(`expected upgraded=true for default codex code_style, got: ${pretty(gate1)}`);
-    if (gate1.allowed_judges[0].agent !== "judge-cross-vendor") throw new Error(`expected judge-cross-vendor first`);
-    if (!/hard-pinned/.test(gate1.reason)) throw new Error(`expected codex pin reason, got: ${gate1.reason}`);
-    console.log(`✓ gate_eligible_judges (code_style/plain codex default) -> upgraded cross-vendor, reason="${gate1.reason}"`);
+    if (gate1.required_cross_vendor) throw new Error(`expected same-vendor for default codex code_style (generate pin != critique pin), got: ${pretty(gate1)}`);
+    if (gate1.allowed_judges[0].agent !== "judge-same-vendor") throw new Error(`expected judge-same-vendor first for default codex code_style, got: ${pretty(gate1)}`);
+    console.log(`✓ gate_eligible_judges (code_style/plain codex default gpt-5.6-luna) -> same-vendor`);
 
-    // 11a. Explicit non-default Codex generator models can still use
-    // same-vendor, because the pinned critique model differs.
+    // 11a. A Codex generator that already ran on the pinned critique model
+    // (gpt-5.6-terra) CANNOT be judged same-vendor — the different-model half
+    // of the invariant is unsatisfiable — so the gate upgrades to cross-vendor.
     const gate1b = await callTool(client, "gate_eligible_judges", {
       gate_type: "code_style",
       generator_producer: "codex",
-      generator_model: "gpt-5.5",
+      generator_model: "gpt-5.6-terra",
       prompt_keywords: "rename a variable from foo to bar",
     });
-    if (gate1b.required_cross_vendor) throw new Error(`expected same-vendor when codex generator_model differs, got: ${pretty(gate1b)}`);
-    if (gate1b.allowed_judges[0].agent !== "judge-same-vendor") throw new Error(`expected judge-same-vendor first when codex models differ`);
-    console.log(`✓ gate_eligible_judges (code_style/plain codex gpt-5.5) -> same-vendor`);
+    if (!gate1b.required_cross_vendor) throw new Error(`expected cross-vendor when codex generator_model IS the critique pin, got: ${pretty(gate1b)}`);
+    if (!gate1b.upgraded) throw new Error(`expected upgraded=true when codex generator_model IS the critique pin, got: ${pretty(gate1b)}`);
+    if (gate1b.allowed_judges[0].agent !== "judge-cross-vendor") throw new Error(`expected judge-cross-vendor first`);
+    if (!/hard-pinned/.test(gate1b.reason)) throw new Error(`expected codex pin reason, got: ${gate1b.reason}`);
+    console.log(`✓ gate_eligible_judges (code_style/codex gpt-5.6-terra) -> upgraded cross-vendor, reason="${gate1b.reason}"`);
 
     // 12. Phase 2: cross-vendor required when prompt mentions security keywords.
     const gate2 = await callTool(client, "gate_eligible_judges", {
@@ -415,7 +421,7 @@ async function main() {
     console.log(`✓ gate_eligible_judges artifact/rubric overrides: test_plan→null, browser_validation_report→${gate6.rubric_id}, rubric_hint→${gate7.rubric_id}`);
 
     // 15a. record_verdict refuses an arbitrary (non-pinned) codex judge_model_id.
-    // gpt-5.4 and gpt-5.5 are now both accepted (default and escalated pins).
+    // gpt-5.6-terra and gpt-5.6-sol are both accepted (default and escalated pins).
     // Any other id (e.g. gpt-5-bogus) must still be rejected.
     let sameModelRejected = false;
     try {
@@ -424,7 +430,7 @@ async function main() {
         judge_producer: "codex",
         judge_model_id: "gpt-5-bogus",
         outcome: "pass",
-        critique_md: "This should fail because Codex critique is pinned to gpt-5.4/gpt-5.5 and an arbitrary model id must never be recorded by the daemon.",
+        critique_md: "This should fail because Codex critique is pinned to gpt-5.6-terra/gpt-5.6-sol and an arbitrary model id must never be recorded by the daemon.",
         score_json: { correctness: 0.9, minimality: 0.95 },
       });
     } catch (err) {
@@ -463,7 +469,7 @@ async function main() {
     const missAtt = await callTool(client, "record_attempt", {
       stage_id: missStage.stage_id,
       producer: "codex",
-      model_id: "gpt-5.5",
+      model_id: "gpt-5.6-luna",
       tokens_in: 100,
       tokens_out: 50,
       cost_usd: 0.001,
@@ -473,7 +479,7 @@ async function main() {
     await callTool(client, "record_verdict", {
       attempt_id: missAtt.attempt_id,
       judge_producer: "codex",
-      judge_model_id: "gpt-5.4",
+      judge_model_id: "gpt-5.6-terra",
       outcome: "pass",
       critique_md: "Missability smoke verdict: diff artifact contains decision log and doc ownership evidence; rubric dimensions decision-logging and doc-ownership both satisfied for this synthetic lifecycle.",
       score_json: { correctness: 0.9, minimality: 0.9 },
@@ -507,7 +513,7 @@ async function main() {
     const retryAtt = await callTool(client, "record_attempt", {
       stage_id: stage.stage_id,
       producer: "codex",
-      model_id: "gpt-5.5",
+      model_id: "gpt-5.6-luna",
       tokens_in: 100, tokens_out: 50, cost_usd: 0.001,
       retry_index: 1,
       parent_attempt_id: att.attempt_id,
@@ -564,12 +570,12 @@ async function main() {
     const serialStage = await callTool(client, "start_stage", { run_id: serialRun.run_id, kind: "code", gate_type: "code_style" });
     const serialAtt = await callTool(client, "record_attempt", {
       stage_id: serialStage.stage_id,
-      producer: "codex", model_id: "gpt-5.5",
+      producer: "codex", model_id: "gpt-5.6-luna",
       tokens_in: 1, tokens_out: 1, cost_usd: 0.0001, status: "ok",
     });
     const serialVerdict = await callTool(client, "record_verdict", {
       attempt_id: serialAtt.attempt_id,
-      judge_producer: "codex", judge_model_id: "gpt-5.4",
+      judge_producer: "codex", judge_model_id: "gpt-5.6-terra",
       outcome: "pass",
       critique_md: "Serialization regression: score_json arrived as a JSON-encoded string from a non-typed MCP client and the per-field defensive parse converted it back to an object before the refine ran. " +
                    "This locks down the precedent the dispatch-layer defensive parse mirrors.",

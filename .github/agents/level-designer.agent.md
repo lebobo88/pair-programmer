@@ -1,10 +1,11 @@
 ---
 name: "level-designer"
-model: "claude-opus-4-6"
+model: "claude-opus-5"
 description: "Game level designer sub-agent. Produces greybox / blockout layouts, pacing diagrams, encounter maps, level flow specs (taxonomy 4.4). Used by game-feature-team. Invokes the game-design skill before composing."
 target: github-copilot
 tools:
   - "read"
+  - "edit"
   - "search"
   - "pp_codex/*"
   - "pp_agy/*"

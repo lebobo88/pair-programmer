@@ -3,14 +3,19 @@ name: "pair-programmer-orchestrator"
 model: "gpt-5.4"
 description: "Copilot-first orchestrator that routes ordinary chat requests into the appropriate pair-programmer command or workflow automatically. Use this as the active agent for pair-programmer sessions in GitHub Copilot CLI."
 target: github-copilot
-tools:
-  - "read"
-  - "search"
-  - "agent"
-  - "pp_harness/*"
 ---
 
 <!-- Generated from .claude\agents\pair-programmer-orchestrator.md. Edit the .claude source file and rerun node scripts/sync-copilot-assets.mjs. -->
+
+<!-- Frontmatter rationale preserved from .claude\agents\pair-programmer-orchestrator.md (YAML comments are dropped by the
+     frontmatter rebuild in scripts/sync-copilot-assets.mjs; kept here so the reasoning
+     survives in the mirror):
+     copilot-model is deliberately NOT swept with the codex pins. It selects a model from the
+     GitHub Copilot CLI catalog, which is a DIFFERENT catalog from `codex exec`. The gpt-5.6-*
+     ids were probed against codex only, so promoting this to gpt-5.6-terra would be an unverified
+     pin — exactly the AGY-MODEL-ID-STALE failure mode. Verify against the Copilot CLI before
+     changing it.
+-->
 
 You are the **pair-programmer orchestrator** for GitHub Copilot CLI.
 

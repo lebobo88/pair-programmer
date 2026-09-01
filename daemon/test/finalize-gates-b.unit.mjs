@@ -114,7 +114,7 @@ async function insertMissabilityCheck(run_id, check_id, status, offsetMs = 0) {
 }
 
 /** Insert a verdict row directly (hallucination_suspected is not exposed by recordVerdict). */
-async function insertVerdict(attempt_id, { cross_vendor = 0, hallucination_suspected = 0, outcome = "pass", judge_producer = "claude", judge_model_id = "claude-sonnet-4-6", retracted = false, offsetMs = 0 } = {}) {
+async function insertVerdict(attempt_id, { cross_vendor = 0, hallucination_suspected = 0, outcome = "pass", judge_producer = "claude", judge_model_id = "claude-sonnet-5", retracted = false, offsetMs = 0 } = {}) {
   const db = await getDb();
   const id = `verdict_fgb_${Math.random().toString(36).slice(2, 10)}`;
   const ts = new Date(Date.now() + offsetMs).toISOString();
@@ -128,7 +128,7 @@ async function insertVerdict(attempt_id, { cross_vendor = 0, hallucination_suspe
 }
 
 /** Insert an attempt row directly. */
-async function insertAttempt(stage_id, { producer = "claude", model_id = "claude-sonnet-4-6", status = "ok" } = {}) {
+async function insertAttempt(stage_id, { producer = "claude", model_id = "claude-sonnet-5", status = "ok" } = {}) {
   const db = await getDb();
   const id = `attempt_fgb_${Math.random().toString(36).slice(2, 10)}`;
   const now = new Date().toISOString();
@@ -409,7 +409,7 @@ describe("VG-6: hallucination gate", () => {
     // Cross-vendor non-fail verdict AFTER suspect.
     await insertVerdict(attempt_id, {
       hallucination_suspected: 0, cross_vendor: 1, outcome: "pass",
-      judge_producer: "codex", judge_model_id: "gpt-5.4", offsetMs: 500,
+      judge_producer: "codex", judge_model_id: "gpt-5.6-terra", offsetMs: 500,
     });
 
     const readiness = runs.getStageFinalizeReadiness(stage_id);
@@ -428,7 +428,7 @@ describe("VG-6: hallucination gate", () => {
     // Same-vendor clean verdict (cross_vendor=0) does NOT clear.
     await insertVerdict(attempt_id, {
       hallucination_suspected: 0, cross_vendor: 0, outcome: "pass",
-      judge_producer: "claude", judge_model_id: "claude-opus-4-7", offsetMs: 500,
+      judge_producer: "claude", judge_model_id: "claude-opus-5", offsetMs: 500,
     });
 
     const readiness = runs.getStageFinalizeReadiness(stage_id);
@@ -461,13 +461,92 @@ describe("VG-6: hallucination gate", () => {
     // Cross-vendor verdict but outcome=fail.
     await insertVerdict(attempt_id, {
       hallucination_suspected: 0, cross_vendor: 1, outcome: "fail",
-      judge_producer: "codex", judge_model_id: "gpt-5.4", offsetMs: 500,
+      judge_producer: "codex", judge_model_id: "gpt-5.6-terra", offsetMs: 500,
     });
 
     const readiness = runs.getStageFinalizeReadiness(stage_id);
     assert.equal(readiness.can_pass, false, "cross-vendor fail must NOT clear hallucination");
     const blocker = readiness.blockers.find(b => b.gate === "hallucination");
     assert.ok(blocker, "hallucination blocker must still be present after cross-vendor fail");
+  });
+
+
+  // ── PP-VG-6 judge independence ────────────────────────────────────────────
+  // `cross_vendor` is computed generator-vs-judge, NOT suspect-judge-vs-clearing
+  // -judge. Without an explicit judge_producer predicate the SAME vendor that
+  // raised the suspicion could clear it: codex flags a claude-generated attempt,
+  // codex re-judges it clean, and that verdict still carries cross_vendor=1.
+  // The clearing verdict must come from a DIFFERENT judge vendor.
+
+  it("SELF-CLEARING BLOCKED: clearing cross_vendor=1 pass from the SAME judge vendor -> STILL blocked", async () => {
+    const runs = await getRuns();
+    const run_id = await insertRun();
+    const stage_id = await insertStage(run_id);
+    // Generator is claude, so a codex verdict legitimately gets cross_vendor=1.
+    const attempt_id = await insertAttempt(stage_id, { producer: "claude" });
+
+    // codex raises the suspicion...
+    await insertVerdict(attempt_id, {
+      hallucination_suspected: 1, cross_vendor: 1, outcome: "fail",
+      judge_producer: "codex", judge_model_id: "gpt-5.6-terra", offsetMs: 0,
+    });
+    // ...and codex tries to clear its own flag. Still cross_vendor=1 (vs the
+    // claude generator), but it is not an independent second opinion.
+    await insertVerdict(attempt_id, {
+      hallucination_suspected: 0, cross_vendor: 1, outcome: "pass",
+      judge_producer: "codex", judge_model_id: "gpt-5.6-terra", offsetMs: 500,
+    });
+
+    const readiness = runs.getStageFinalizeReadiness(stage_id);
+    assert.equal(readiness.can_pass, false, "a judge must not be able to clear its own hallucination flag");
+    const blocker = readiness.blockers.find(b => b.gate === "hallucination");
+    assert.ok(blocker, "hallucination blocker must survive a same-judge-vendor clearing attempt");
+    assert.equal(blocker.next_action, "dispatch_cross_vendor_rejudge", "next_action must stay the rejudge action");
+    assert.match(blocker.message, /codex/, "the blocker message must name the vendor that may not clear it");
+  });
+
+  it("INDEPENDENT CLEAR: clearing cross_vendor=1 pass from a DIFFERENT judge vendor -> cleared", async () => {
+    const runs = await getRuns();
+    const run_id = await insertRun();
+    const stage_id = await insertStage(run_id);
+    const attempt_id = await insertAttempt(stage_id, { producer: "claude" });
+
+    // codex raises the suspicion...
+    await insertVerdict(attempt_id, {
+      hallucination_suspected: 1, cross_vendor: 1, outcome: "fail",
+      judge_producer: "codex", judge_model_id: "gpt-5.6-terra", offsetMs: 0,
+    });
+    // ...and agy — a genuinely independent judge — clears it.
+    await insertVerdict(attempt_id, {
+      hallucination_suspected: 0, cross_vendor: 1, outcome: "pass",
+      judge_producer: "agy", judge_model_id: "gemini-3.1-pro-high", offsetMs: 500,
+    });
+
+    const readiness = runs.getStageFinalizeReadiness(stage_id);
+    const blocker = readiness.blockers.find(b => b.gate === "hallucination");
+    assert.equal(blocker, undefined, "an independent cross-vendor pass must clear the hallucination gate");
+  });
+
+  it("ORDERING PRESERVED: an independent clearing verdict inserted BEFORE the suspect does not clear it", async () => {
+    const runs = await getRuns();
+    const run_id = await insertRun();
+    const stage_id = await insertStage(run_id);
+    const attempt_id = await insertAttempt(stage_id, { producer: "claude" });
+
+    // agy passes first...
+    await insertVerdict(attempt_id, {
+      hallucination_suspected: 0, cross_vendor: 1, outcome: "pass",
+      judge_producer: "agy", judge_model_id: "gemini-3.1-pro-high", offsetMs: 0,
+    });
+    // ...then codex raises a suspicion. The earlier pass predates the concern.
+    await insertVerdict(attempt_id, {
+      hallucination_suspected: 1, cross_vendor: 1, outcome: "fail",
+      judge_producer: "codex", judge_model_id: "gpt-5.6-terra", offsetMs: 500,
+    });
+
+    const readiness = runs.getStageFinalizeReadiness(stage_id);
+    const blocker = readiness.blockers.find(b => b.gate === "hallucination");
+    assert.ok(blocker, "a clearing verdict must post-date the suspect verdict");
   });
 
   it("no suspect verdicts at all -> not blocked by hallucination gate", async () => {
@@ -501,7 +580,7 @@ describe("VG-6: hallucination gate", () => {
       `INSERT INTO verdicts(id, attempt_id, judge_producer, judge_model_id, outcome,
          cross_vendor, hallucination_suspected, created_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
-    ).run(suspectId, attempt_id, "claude", "claude-sonnet-4-6", "pass", 0, 1, samets);
+    ).run(suspectId, attempt_id, "claude", "claude-sonnet-5", "pass", 0, 1, samets);
 
     // Cross-vendor pass inserted AFTER (later rowid) at the same timestamp.
     const cvId = `verdict_sm2_${Math.random().toString(36).slice(2, 10)}`;
@@ -509,7 +588,7 @@ describe("VG-6: hallucination gate", () => {
       `INSERT INTO verdicts(id, attempt_id, judge_producer, judge_model_id, outcome,
          cross_vendor, hallucination_suspected, created_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
-    ).run(cvId, attempt_id, "codex", "gpt-5.4", "pass", 1, 0, samets);
+    ).run(cvId, attempt_id, "codex", "gpt-5.6-terra", "pass", 1, 0, samets);
 
     const readiness = runs.getStageFinalizeReadiness(stage_id);
     const blocker = readiness.blockers.find(b => b.gate === "hallucination");

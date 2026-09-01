@@ -1,18 +1,26 @@
-// Unit tests for gpt-5.5 opt-in escalation in pp_codex.critique.
+// Unit tests for the opt-in escalated Codex critique model in pp_codex.critique.
 // Asserts:
-//   1. DEFAULT_MODELS.codex_critique is unchanged at "gpt-5.4" (JUDGE-1).
-//   2. DEFAULT_MODELS.codex_critique_escalated is "gpt-5.5".
-//   3. selectCritiqueModel(false) returns "gpt-5.4".
-//   4. selectCritiqueModel(true) returns "gpt-5.5".
+//   1. DEFAULT_MODELS.codex_critique matches the constitutional JUDGE-1 pin.
+//   2. DEFAULT_MODELS.codex_critique_escalated matches the escalation pin.
+//   3. selectCritiqueModel(false) returns the default pin.
+//   4. selectCritiqueModel(true) returns the escalated pin.
 //   5. Caller-passed args.model is ignored — selection depends only on escalate.
-//   6. recordVerdict accepts judge_model_id=gpt-5.5 (escalated pin).
+//   6. recordVerdict accepts judge_model_id=<escalated pin>.
 //   7. recordVerdict still rejects arbitrary (non-pinned) codex judge_model_id.
-//   8. codexCritique e2e: escalate:true → invoked with model "gpt-5.5" (DI seam).
-//   9. codexCritique e2e: escalate:false → invoked with model "gpt-5.4" (DI seam).
-//  10. codexCritique e2e: escalate:false + args.model:"gpt-5-bogus" → still "gpt-5.4".
+//   8. codexCritique e2e: escalate:true → invoked with the escalated pin (DI seam).
+//   9. codexCritique e2e: escalate:false → invoked with the default pin (DI seam).
+//  10. codexCritique e2e: escalate:false + args.model:"gpt-5-bogus" → still default.
 // Items 1-5 are pure/offline. Items 6-7 exercise runs.recordVerdict against
 // a temp SQLite DB — no subprocess, no MCP server. Items 8-10 use the _invoke
 // DI seam to capture genArgs without spawning the Codex CLI.
+//
+// DE-HARDCODING POLICY (model-id refresh, 2026-08-22): every assertion below
+// derives its expected model id from DEFAULT_MODELS / CLAUDE_TIER_MODELS in
+// ../dist/config.js rather than duplicating the pin. The ONLY literals retained
+// are (a) EXPECTED_JUDGE1_PIN / EXPECTED_ESCALATED_PIN below — the deliberate
+// tripwire that catches a silent constitutional-pin drift, which a derived
+// assertion would be tautologically blind to — and (b) "gpt-5-bogus", an id
+// that must always be REJECTED and therefore must never track the config.
 
 import { strict as assert } from "node:assert";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -29,9 +37,20 @@ mkdirSync(join(SUITE_DIR, ".pair-programmer"), { recursive: true });
 process.env.PP_HOME = SUITE_DIR;
 process.env.EIGHTS_SKIP_AUDIT_CHECK = "1";
 
-const { DEFAULT_MODELS } = await import(
+const { DEFAULT_MODELS, CLAUDE_TIER_MODELS } = await import(
   pathToFileURL(join(DIST, "config.js")).href
 );
+
+// Tripwire literals — intentionally NOT derived. CONSTITUTION.md Article V (as
+// amended, SHA 13b4fa18) pins JUDGE-1 to gpt-5.6-terra at medium reasoning
+// effort; the escalated lane is gpt-5.6-sol. Changing DEFAULT_MODELS without a
+// constitution amendment must break this file loudly, which a self-referential
+// assertion could never do.
+const EXPECTED_JUDGE1_PIN = "gpt-5.6-terra";
+const EXPECTED_ESCALATED_PIN = "gpt-5.6-sol";
+// Generator model for the recordVerdict fixtures — derived so a tier repin
+// cannot silently desync the fixture from the shipped tier map.
+const GENERATOR_MODEL = CLAUDE_TIER_MODELS.sonnet;
 const { selectCritiqueModel, codexCritique } = await import(
   pathToFileURL(join(DIST, "mcp", "codex-server.js")).href
 );
@@ -65,39 +84,39 @@ async function itAsync(label, fn) {
 
 // ─── 1. Constitutional default unchanged ─────────────────────────────────
 
-it("DEFAULT_MODELS.codex_critique is gpt-5.4 (JUDGE-1 constitutional default unchanged)", () => {
+it(`DEFAULT_MODELS.codex_critique is ${EXPECTED_JUDGE1_PIN} (JUDGE-1 constitutional default)`, () => {
   assert.equal(
     DEFAULT_MODELS.codex_critique,
-    "gpt-5.4",
-    "codex_critique default must not change — JUDGE-1 pins it",
+    EXPECTED_JUDGE1_PIN,
+    "codex_critique default must not change without a HITL constitution amendment — JUDGE-1 pins it",
   );
 });
 
 // ─── 2. Escalation entry present ─────────────────────────────────────────
 
-it("DEFAULT_MODELS.codex_critique_escalated is gpt-5.5", () => {
+it(`DEFAULT_MODELS.codex_critique_escalated is ${EXPECTED_ESCALATED_PIN}`, () => {
   assert.equal(
     DEFAULT_MODELS.codex_critique_escalated,
-    "gpt-5.5",
-    "escalated entry must point at gpt-5.5",
+    EXPECTED_ESCALATED_PIN,
+    `escalated entry must point at ${EXPECTED_ESCALATED_PIN}`,
   );
 });
 
 // ─── 3. selectCritiqueModel without escalation → default ─────────────────
 
-it("selectCritiqueModel(false) returns gpt-5.4", () => {
-  assert.equal(selectCritiqueModel(false), "gpt-5.4");
+it("selectCritiqueModel(false) returns DEFAULT_MODELS.codex_critique", () => {
+  assert.equal(selectCritiqueModel(false), DEFAULT_MODELS.codex_critique);
 });
 
-it("selectCritiqueModel(undefined-coerced-false) returns gpt-5.4", () => {
+it("selectCritiqueModel(undefined-coerced-false) returns DEFAULT_MODELS.codex_critique", () => {
   // Simulates args.escalate being absent (falsy via ?? false in codexCritique).
-  assert.equal(selectCritiqueModel(false), "gpt-5.4");
+  assert.equal(selectCritiqueModel(false), DEFAULT_MODELS.codex_critique);
 });
 
-// ─── 4. selectCritiqueModel with escalation → gpt-5.5 ────────────────────
+// ─── 4. selectCritiqueModel with escalation → escalated pin ──────────────
 
-it("selectCritiqueModel(true) returns gpt-5.5", () => {
-  assert.equal(selectCritiqueModel(true), "gpt-5.5");
+it("selectCritiqueModel(true) returns DEFAULT_MODELS.codex_critique_escalated", () => {
+  assert.equal(selectCritiqueModel(true), DEFAULT_MODELS.codex_critique_escalated);
 });
 
 // ─── 5. Caller-passed model is ignored — only escalate matters ────────────
@@ -128,9 +147,9 @@ it("model selection is determined solely by the escalate boolean, not a caller-p
   assert.equal(selectCritiqueModel.length, 1, "selectCritiqueModel takes exactly 1 param (boolean)");
 });
 
-// ─── 6. recordVerdict accepts gpt-5.5 escalated verdicts ─────────────────
+// ─── 6. recordVerdict accepts escalated-pin verdicts ─────────────────────
 
-await itAsync("recordVerdict accepts judge_model_id=gpt-5.5 (escalated codex pin)", async () => {
+await itAsync("recordVerdict accepts judge_model_id=<escalated codex pin>", async () => {
   const project = mkdtempSync(join(tmpdir(), "pp-codex-esc-proj-"));
   mkdirSync(join(project, ".harness"), { recursive: true });
   writeFileSync(join(project, "AGENTS.md"), "# AGENTS\n", "utf8");
@@ -142,15 +161,15 @@ await itAsync("recordVerdict accepts judge_model_id=gpt-5.5 (escalated codex pin
   const att = runs.recordAttempt({
     stage_id: stage.stage_id,
     producer: "claude",
-    model_id: "claude-sonnet-4-6",
+    model_id: GENERATOR_MODEL,
     status: "ok",
   });
 
-  // Must NOT throw — gpt-5.5 is the escalated pinned model.
+  // Must NOT throw — this is the escalated pinned model.
   const verdict = runs.recordVerdict({
     attempt_id: att.attempt_id,
     judge_producer: "codex",
-    judge_model_id: "gpt-5.5",
+    judge_model_id: DEFAULT_MODELS.codex_critique_escalated,
     rubric_id: "owasp-asvs-l2@1",
     outcome: "pass",
     critique_md: "Escalated security gate review: all ASVS-L2 controls verified present. No credential leakage, injection surface contained, auth flows correctly scoped.",
@@ -173,7 +192,7 @@ await itAsync("recordVerdict rejects arbitrary (non-pinned) codex judge_model_id
   const att = runs.recordAttempt({
     stage_id: stage.stage_id,
     producer: "claude",
-    model_id: "claude-sonnet-4-6",
+    model_id: GENERATOR_MODEL,
     status: "ok",
   });
 
@@ -217,14 +236,14 @@ function makeStubResult(capturedModel) {
   };
 }
 
-await itAsync("codexCritique e2e: escalate:true → invoked with model gpt-5.5", async () => {
+await itAsync("codexCritique e2e: escalate:true → invoked with the escalated pin", async () => {
   let capturedModel;
   await codexCritique(
     {
       artifact_text: "fn foo() {}",
       rubric_md: "check it",
       cwd: STUB_CWD,
-      model: "gpt-5.4",           // caller-passed model — must be ignored
+      model: DEFAULT_MODELS.codex_critique, // caller-passed model — must be ignored
       escalate: true,
       output_schema: { type: "object" }, // skip stabilize path
     },
@@ -235,17 +254,21 @@ await itAsync("codexCritique e2e: escalate:true → invoked with model gpt-5.5",
       },
     },
   );
-  assert.equal(capturedModel, "gpt-5.5", "escalate:true must invoke with gpt-5.5");
+  assert.equal(
+    capturedModel,
+    DEFAULT_MODELS.codex_critique_escalated,
+    "escalate:true must invoke with DEFAULT_MODELS.codex_critique_escalated",
+  );
 });
 
-await itAsync("codexCritique e2e: escalate:false → invoked with model gpt-5.4", async () => {
+await itAsync("codexCritique e2e: escalate:false → invoked with the default pin", async () => {
   let capturedModel;
   await codexCritique(
     {
       artifact_text: "fn foo() {}",
       rubric_md: "check it",
       cwd: STUB_CWD,
-      model: "gpt-5.4",
+      model: DEFAULT_MODELS.codex_critique_escalated, // caller-passed — must be ignored
       escalate: false,
       output_schema: { type: "object" },
     },
@@ -256,10 +279,14 @@ await itAsync("codexCritique e2e: escalate:false → invoked with model gpt-5.4"
       },
     },
   );
-  assert.equal(capturedModel, "gpt-5.4", "escalate:false must invoke with gpt-5.4");
+  assert.equal(
+    capturedModel,
+    DEFAULT_MODELS.codex_critique,
+    "escalate:false must invoke with DEFAULT_MODELS.codex_critique",
+  );
 });
 
-await itAsync("codexCritique e2e: escalate:false + args.model:gpt-5-bogus → still gpt-5.4 (arbitrary model ignored)", async () => {
+await itAsync("codexCritique e2e: escalate:false + args.model:gpt-5-bogus → still the default pin (arbitrary model ignored)", async () => {
   let capturedModel;
   await codexCritique(
     {
@@ -279,7 +306,7 @@ await itAsync("codexCritique e2e: escalate:false + args.model:gpt-5-bogus → st
   );
   assert.equal(
     capturedModel,
-    "gpt-5.4",
+    DEFAULT_MODELS.codex_critique,
     "arbitrary caller model must never reach the invoker — only escalate determines the model",
   );
 });

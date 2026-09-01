@@ -25,6 +25,22 @@ mkdirSync(join(SUITE_DIR, ".pair-programmer"), { recursive: true });
 process.env.PP_HOME = SUITE_DIR;
 process.env.EIGHTS_SKIP_AUDIT_CHECK = "1";
 
+// HERMETICITY: teams.ts computes USER_TEAMS_DIR = join(homedir(), ".claude",
+// "teams") at module-load time, and resolution order is project → user →
+// builtin. On any machine with a pp user-scope install (~/.claude/teams/) the
+// deep-reasoning-team assertion below resolved 'user', so this suite only
+// passed where pp was NOT installed — exactly backwards.
+//
+// Point homedir() at an empty temp dir BEFORE teams.js is imported. Node's
+// os.homedir() reads USERPROFILE on Windows and HOME on POSIX, so setting both
+// makes user scope provably empty on every platform and lets the builtin copy
+// win deterministically. All importDist() calls are lazy (inside record()), so
+// this assignment lands before the module-level const is evaluated.
+const FAKE_HOME = join(SUITE_DIR, "fake-home");
+mkdirSync(join(FAKE_HOME, ".claude", "teams"), { recursive: true });
+process.env.HOME = FAKE_HOME;
+process.env.USERPROFILE = FAKE_HOME;
+
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const DIST = join(__dirname, "..", "dist");
 const importDist = (relPath) => import(pathToFileURL(join(DIST, relPath)).href);
@@ -177,7 +193,14 @@ await record("deep-reasoning-team.yaml parses, generator tier is fable, judge is
   try {
     const result = getTeam({ name: "deep-reasoning-team", project_path: project });
     assert.ok(result !== null, "deep-reasoning-team.yaml must resolve");
-    assert.equal(result.origin, "builtin", "must resolve as builtin");
+    // Hermetic: HOME/USERPROFILE were redirected to an empty temp dir at the
+    // top of this file, so neither project nor user scope can supply a copy.
+    assert.equal(
+      result.origin,
+      "builtin",
+      `must resolve as builtin (user scope is a temp empty dir); got '${result.origin}' — ` +
+        "if this fails, os.homedir() is not honouring the redirected HOME/USERPROFILE",
+    );
     // name field must match filename stem exactly — required for resolution + listing consistency.
     assert.equal(result.team.name, "deep-reasoning-team",
       `team name field must be 'deep-reasoning-team' (filename stem), got '${result.team.name}'`);

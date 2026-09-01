@@ -50,6 +50,7 @@ import {
   CLAUDE_TIER_MODELS,
   COPILOT_CLAUDE_TIER_MODELS,
   TIER_ORDER,
+  ProducerSchema,
 } from "../config.js";
 import { log } from "../util/logger.js";
 import { listPriorCritiques, verifyAuditChain } from "../ecosystem/eights-writes.js";
@@ -133,7 +134,9 @@ const AttemptNotesSchema = z.object({
 
 const RecordAttemptSchema = z.object({
   stage_id:           z.string().min(1),
-  producer:           z.string().min(1),
+  // Vendor id, NOT the sub-agent role -- the cross-vendor gate is computed from
+  // it. The role belongs in `agent_type` below. See ProducerSchema in config.ts.
+  producer:           ProducerSchema,
   model_id:           z.string().min(1),
   prompt_hash:        z.string().optional(),
   artifact_path:      z.string().optional(),
@@ -184,7 +187,7 @@ const RetractVerdictSchema = z.object({
 
 const RecordVerdictSchema = z.object({
   attempt_id:     z.string().min(1),
-  judge_producer: z.string().min(1),
+  judge_producer: ProducerSchema,
   judge_model_id: z.string().min(1),
   rubric_id:      z.string().optional(),
   outcome:        z.enum(VERDICT_OUTCOME),
@@ -1238,7 +1241,7 @@ const TOOLS: ToolDef[] = [
   },
   {
     name: "janitor",
-    description: "Run the janitor: marks runs running for >6h as 'crashed', sweeps stale candidate worktrees and branches. Returns {crashed_runs, swept_worktrees, swept_branches}. Idempotent.",
+    description: "Run the janitor: marks runs running for >6h as 'crashed', sweeps stale candidate worktrees and branches. Returns {crashed_runs, swept_worktrees, swept_branches, swept_locks, untyped_producer_attempts}. untyped_producer_attempts is a READ-ONLY report of attempts whose producer is not a vendor id (a sub-agent role was stored there): cross_vendor cannot be computed for any verdict against them, so those verdicts recorded cross_vendor=false regardless of who judged. Nothing is mutated — the true vendor is not recoverable from the row and guessing it would manufacture provenance. Idempotent.",
     schema: JanitorSchema,
     handler: () => runJanitor(),
   },

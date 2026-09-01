@@ -10,7 +10,7 @@ import { join, dirname, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { nanoid } from "nanoid";
 import { errorContent, jsonContent, zodToJsonSchema } from "./helpers.js";
-import { buildCritiqueOutputSchema } from "./critique-schema.js";
+import { extractLastJsonValue, buildCritiqueOutputSchema } from "./critique-schema.js";
 import { stabilizeCritiqueResult } from "./critique-bridge.js";
 import { wrapUntrusted } from "../security/untrusted-envelope.js";
 import { computeCost } from "../util/prices.js";
@@ -18,7 +18,6 @@ import { SANDBOX_DIR, ensureDirs } from "../util/paths.js";
 import { log } from "../util/logger.js";
 import { DEFAULT_MODELS } from "../config.js";
 import { runCliWithRetry, type CliAttempt } from "./cli-runner.js";
-import { attemptCopilotFallback, parseCopilotJsonl } from "./copilot-runner.js";
 import { shutdownAndExit } from "../util/shutdown.js";
 import { getSession, setSession, synthesizeRecap } from "../orchestrator/sub-cli-sessions.js";
 
@@ -307,12 +306,6 @@ async function codexGenerate(
     const schemaPath = join(tmpDir, "schema.json");
     const schemaJson = JSON.stringify(schemaObj, null, 2);
     writeFileSync(schemaPath, schemaJson, "utf8");
-    // Driver-debug aid: this exact line lets the operator confirm we wrote a
-    // canonical JSON object (not a double-encoded string) to the schema path
-    // that the codex CLI will hand to the OpenAI API.
-    process.stderr.write(
-      `[pp_codex.generate] wrote output_schema to ${schemaPath} (first 200 chars): ${schemaJson.slice(0, 200)}\n`,
-    );
     outputSchemaPath = schemaPath;
   }
   // Detect linked worktree so buildCodexExecArgs can inject --add-dir for the
@@ -348,7 +341,7 @@ async function codexGenerate(
   const tokens_in  = parsed.tokens_in  ?? 0;
   const tokens_out = parsed.tokens_out ?? 0;
   const cost_usd   = computeCost(args.model, tokens_in, tokens_out);
-  const text       = parsed.text ?? run.stdout;
+  let text         = parsed.text ?? run.stdout;
 
   // Capture session id for continuity. Codex emits this in the session_start
   // event; if we got one, store it under (project_path, "codex").
@@ -360,10 +353,38 @@ async function codexGenerate(
   if (args.output_schema) {
     const trimmed = text.trim();
     if (trimmed) {
-      try { parsedJson = JSON.parse(trimmed); } catch { /* leave undefined */ }
+      // Under --output-schema the codex CLI emits ONE `item.completed` per
+      // assistant turn, and each is a COMPLETE schema-conforming object. A
+      // tool-using call therefore produces a planning preamble FIRST and the real
+      // answer SECOND. Selecting by event boundary is the correct fix: walk the
+      // complete items backwards and take the last one that parses. Scanning the
+      // concatenated blob (below) cannot distinguish an answer from brace-bearing
+      // prose in a later item, so it is only a fallback.
+      const items = parsed.items ?? [];
+      for (let i = items.length - 1; i >= 0 && parsedJson === undefined; i--) {
+        const candidate = (items[i] ?? "").trim();
+        if (!candidate) continue;
+        try { parsedJson = JSON.parse(candidate); text = candidate; } catch { /* keep walking */ }
+      }
+      if (parsedJson === undefined) {
+        try {
+          parsedJson = JSON.parse(trimmed);
+        } catch {
+          const last = extractLastJsonValue(trimmed);
+          if (last.found) parsedJson = last.value;
+        }
+      }
+      if (parsedJson === undefined) {
+        // An output_schema was requested and NOTHING parsed. Do not let this pass
+        // as a quiet success -- a malformed exit-0 response silently becoming an
+        // undefined verdict is the same failure shape as the preamble bug above.
+        log.warn(
+          { cwd: args.cwd, model: args.model, items: items.length, text_len: trimmed.length },
+          "codex returned output_schema mode but no item parsed as JSON; parsed left undefined",
+        );
+      }
     }
   }
-
   const result: CodexResult = {
     text,
     parsed: parsedJson,
@@ -379,45 +400,20 @@ async function codexGenerate(
     failure_archive_path: run.failure_archive_path,
   };
 
-  if (result.exit_code !== 0) {
-    return attemptCopilotFallback(result, {
-      prompt,
-      cwd: args.cwd,
-      model: args.model,
-      mode: "generate",
-      reasoning_effort: reasoningEffort,
-      output_schema: args.output_schema,
-      timeout_ms: args.timeout_ms,
-    }, (fallbackRun) => {
-      const fp = parseCopilotJsonl(fallbackRun.stdout);
-      const fText = fp.text ?? fallbackRun.stdout;
-      const fTokensIn = fp.tokens_in ?? 0;
-      const fTokensOut = fp.tokens_out ?? 0;
-      let fParsedJson: unknown;
-      if (args.output_schema) {
-        const trimmed = fText.trim();
-        if (trimmed) { try { fParsedJson = JSON.parse(trimmed); } catch { /* leave undefined */ } }
-      }
-      return {
-        text: fText,
-        parsed: fParsedJson,
-        tokens_in: fTokensIn,
-        tokens_out: fTokensOut,
-        cost_usd: computeCost(args.model, fTokensIn, fTokensOut),
-        model: fp.model ?? args.model,
-        wall_ms: fallbackRun.wall_ms,
-        exit_code: fallbackRun.exit_code,
-        session_id: fp.session_id,
-      };
-    });
-  }
-
+  // No copilot fallback: a correctly-attributed failure (non-zero exit_code,
+  // preserved attempts and failure_archive_path) is strictly preferable to a
+  // silently mis-attributed success. On the codex lane the mislabel is
+  // critical — vendorFor("copilot") === "openai" makes a copilot critique of a
+  // codex attempt genuinely same-vendor, yet was recorded cross_vendor=1,
+  // falsely satisfying the constitutional cross-vendor gate requirement.
+  // Availability must not be purchased with provenance.
+  // (AGY-SILENT-VENDOR-FALLTHROUGH, run_jc1UxeCMvyZR)
   return result;
 }
 
 /**
  * Select the pinned critique model based on the escalate flag.
- * escalate selects a PINNED allow-listed model (gpt-5.5); caller-passed args.model remains ignored (invented-id guard).
+ * escalate selects a PINNED allow-listed model (gpt-5.6-sol); caller-passed args.model remains ignored (invented-id guard).
  *
  * This is a pure exported helper so it can be unit-tested offline without
  * spawning the Codex CLI. codexCritique delegates to it internally.
@@ -432,16 +428,16 @@ export async function codexCritique(
 ): Promise<CodexResult> {
   // Pin the critique model and reasoning effort regardless of what the
   // sub-agent passes. Sub-agent prompts (judge-cross-vendor / judge-same-
-  // vendor) ALSO require gpt-5.4, but Claude Code drivers have repeatedly
-  // invented model ids (gpt-5.5, gpt-5-codex, o1, etc.) which the installed
+  // vendor) ALSO require gpt-5.6-terra, but Claude Code drivers have repeatedly
+  // invented model ids (gpt-5-codex, o1, etc.) which the installed
   // codex CLI does not serve, failing the critique with "model not found"
   // and blowing up the run. Belt-and-suspenders: the wrapper enforces.
-  // escalate selects a PINNED allow-listed model (gpt-5.5); caller-passed args.model remains ignored (invented-id guard).
+  // escalate selects a PINNED allow-listed model (gpt-5.6-sol); caller-passed args.model remains ignored (invented-id guard).
   const pinnedModel = DEFAULT_MODELS.codex_critique;
   const effectiveModel = selectCritiqueModel(args.escalate ?? false);
   if (args.model && args.model !== effectiveModel) {
     process.stderr.write(
-      `[pp_codex.critique] ignoring model="${args.model}" passed by caller; pinning to "${effectiveModel}" (high reasoning). The judge agent contract requires this model.\n`,
+      `[pp_codex.critique] ignoring model="${args.model}" passed by caller; pinning to "${effectiveModel}" (medium reasoning). The judge agent contract requires this model.\n`,
     );
   }
   const wrappedArtifact = wrapUntrusted("artifact-under-review", args.artifact_text);
@@ -457,7 +453,9 @@ export async function codexCritique(
     model: effectiveModel,
     sandbox: "read-only",
     skip_recap: true,
-    reasoning_effort: "high",
+    // CONSTITUTION.md Article V as amended (SHA 13b4fa18) pins JUDGE-1 at
+    // medium reasoning effort. Do not raise without a constitution amendment.
+    reasoning_effort: "medium",
     output_schema: args.output_schema ?? buildCritiqueOutputSchema(),
     timeout_ms: args.timeout_ms,
   };
@@ -476,13 +474,22 @@ export async function codexCritique(
 
 export function parseCodexJsonl(stdout: string): {
   text?: string;
+  /**
+   * Text of each COMPLETE emitted item, in order, with event boundaries intact.
+   * `text` above is these concatenated, which is lossy: under --output-schema the
+   * codex CLI emits one item per assistant turn and each is a whole
+   * schema-conforming object, so concatenation yields `{...}{...}` and destroys
+   * the boundary a caller needs to pick the final answer over the preamble.
+   */
+  items?: string[];
   tokens_in?: number;
   tokens_out?: number;
   model?: string;
   session_id?: string;
 } {
-  const out: { text: string; tokens_in: number; tokens_out: number; model: string | undefined; session_id: string | undefined } = {
+  const out: { text: string; items: string[]; tokens_in: number; tokens_out: number; model: string | undefined; session_id: string | undefined } = {
     text: "",
+    items: [],
     tokens_in: 0,
     tokens_out: 0,
     model: undefined,
@@ -505,6 +512,7 @@ export function parseCodexJsonl(stdout: string): {
       t === ""
     )) {
       out.text += text;
+      out.items.push(text);
     }
 
     // Capture a session id from any event that carries one. Codex versions

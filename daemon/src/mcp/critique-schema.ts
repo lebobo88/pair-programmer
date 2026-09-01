@@ -1,9 +1,19 @@
 type JsonObject = Record<string, unknown>;
 export type CritiqueOutcome = "pass" | "fail" | "revise";
+
+export type FindingProvenance = {
+  id: string;
+  file: string;
+  line: number;
+  quoted_text: string;
+  claim: string;
+};
+
 export type CritiqueVerdict = {
   outcome: CritiqueOutcome;
   critique_md: string;
   score: Record<string, number>;
+  findings_provenance?: FindingProvenance[];
 };
 
 type ExtractedJson =
@@ -32,8 +42,30 @@ export function buildCritiqueOutputSchema(): JsonObject {
           additionalProperties: false,
         },
       },
+      // OpenAI strict structured-output mode (engaged by `codex --output-schema`)
+      // requires `required` to enumerate EVERY key in `properties`. An optional
+      // field is therefore expressed as nullable-and-required, NOT by omission from
+      // `required`. Removing findings_provenance from `required` below returns a 400
+      // invalid_json_schema and takes the entire codex judge lane offline — that
+      // regression shipped once already (run_jc1UxeCMvyZR) and was caught only by a
+      // live round-trip, because unit tests inspect this object without sending it.
+      findings_provenance: {
+        type: ["array", "null"],
+        items: {
+          type: "object",
+          properties: {
+            id:           { type: "string" },
+            file:         { type: "string" },
+            line:         { type: "integer", minimum: 1 },
+            quoted_text:  { type: "string", minLength: 8 },
+            claim:        { type: "string" },
+          },
+          required: ["id", "file", "line", "quoted_text", "claim"],
+          additionalProperties: false,
+        },
+      },
     },
-    required: ["outcome", "critique_md", "score_entries"],
+    required: ["outcome", "critique_md", "score_entries", "findings_provenance"],
     additionalProperties: false,
   };
 }
@@ -89,11 +121,46 @@ function normalizeCritiqueVerdict(value: unknown): CritiqueVerdict | null {
   const critique_md = typeof record.critique_md === "string" ? record.critique_md : null;
   if (critique_md === null) return null;
 
-  return {
+  const findings_provenance = extractFindingsProvenance(record.findings_provenance);
+
+  const result: CritiqueVerdict = {
     outcome,
     critique_md,
     score,
   };
+  if (findings_provenance !== undefined) {
+    result.findings_provenance = findings_provenance;
+  }
+  return result;
+}
+
+/**
+ * Extract and validate a findings_provenance array from an unknown value.
+ * Drops malformed entries (missing/blank required key, quoted_text shorter than
+ * 8 chars, non-integer or <1 line) rather than rejecting the whole verdict.
+ * Returns undefined when the field is absent or when every entry is malformed.
+ * Preserves original order of surviving entries.
+ */
+function extractFindingsProvenance(value: unknown): FindingProvenance[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const out: FindingProvenance[] = [];
+  for (const entry of value) {
+    const rec = asObject(entry);
+    if (!rec) continue;
+    const id = typeof rec.id === "string" ? rec.id : null;
+    if (!id) continue;
+    const file = typeof rec.file === "string" ? rec.file : null;
+    if (!file) continue;
+    const line = typeof rec.line === "number" && Number.isInteger(rec.line) && rec.line >= 1
+      ? rec.line : null;
+    if (line === null) continue;
+    const quoted_text = typeof rec.quoted_text === "string" ? rec.quoted_text : null;
+    if (!quoted_text || quoted_text.length < 8) continue;
+    const claim = typeof rec.claim === "string" ? rec.claim : null;
+    if (!claim) continue;
+    out.push({ id, file, line, quoted_text, claim });
+  }
+  return out.length > 0 ? out : undefined;
 }
 
 function extractScoreObject(value: unknown): Record<string, number> | null {
@@ -125,6 +192,57 @@ function extractScoreEntries(value: unknown): Record<string, number> | null {
   return Object.keys(out).length > 0 ? out : null;
 }
 
+/**
+ * Return the LAST balanced JSON value in `text`, not the first.
+ *
+ * WHY THIS EXISTS: with `--output-schema`, the codex CLI emits one
+ * `item.completed` event per assistant turn, and each one is a COMPLETE
+ * schema-conforming object. On any call where the model uses a tool (e.g. a
+ * judge asked to read files) that means two objects: a planning preamble
+ * ("I'll inspect the file...") followed by the real answer.
+ * parseCodexJsonl concatenates event text, producing `{...}{...}`, which
+ * JSON.parse rejects -- so callers fell through to extractJsonValue and got
+ * the FIRST object, i.e. the preamble, recorded as the verdict. The model had
+ * produced the right answer; the bridge discarded it.
+ *
+ * When only one object is present, first and last coincide, so this is safe
+ * for the no-tool-use path too.
+ */
+export function extractLastJsonValue(text: string): ExtractedJson {
+  const trimmed = text.trim();
+  if (!trimmed) return { found: false };
+  const direct = tryParseCandidate(trimmed);
+  if (direct.found) return direct;
+
+  let best: ExtractedJson = { found: false };
+  for (let start = 0; start < trimmed.length; start++) {
+    const ch = trimmed[start];
+    if (ch !== "{" && ch !== "[") continue;
+    const stack: string[] = [ch];
+    let inString = false;
+    let escaped = false;
+    for (let end = start + 1; end < trimmed.length; end++) {
+      const current = trimmed[end];
+      if (inString) {
+        if (escaped) { escaped = false; continue; }
+        if (current === "\\") { escaped = true; continue; }
+        if (current === "\"") inString = false;
+        continue;
+      }
+      if (current === "\"") { inString = true; continue; }
+      if (current === "{" || current === "[") { stack.push(current); continue; }
+      if (current !== "}" && current !== "]") continue;
+      const open = stack[stack.length - 1];
+      if ((open === "{" && current !== "}") || (open === "[" && current !== "]")) break;
+      stack.pop();
+      if (stack.length !== 0) continue;
+      const parsed = tryParseCandidate(trimmed.slice(start, end + 1).trim());
+      if (parsed.found) { best = parsed; start = end; }
+      break;
+    }
+  }
+  return best;
+}
 export function extractJsonValue(text: string): ExtractedJson {
   const trimmed = text.trim();
   if (!trimmed) return { found: false };
