@@ -53,7 +53,7 @@ For best-of-2, the driver should ask the judge for a structured rubric score per
 ## Self-bias
 
 - **Codex:** `pp_codex.critique` is hard-pinned to `gpt-5.6-terra`. Same-vendor Codex judging is therefore only legal when the generator used a different model id — which the default generator pin (`gpt-5.6-luna`) satisfies, so the ordinary Codex→Codex route is legal. If the generator already used `gpt-5.6-terra`, `gate_eligible_judges` upgrades the gate to cross-vendor.
-- **agy:** `pp_agy.critique` is hard-pinned to `gemini-3.1-pro-preview`. Same-vendor agy judging is a documented degenerate case (same model on both sides) until a second supported 3.x critique model ships.
+- **agy:** `pp_agy.critique` is hard-pinned to `gemini-3.7-flash-medium` (operator policy: 3.7 flash medium is the cross-vendor verifier model; the retired `gemini-3.1-pro-preview` pin is no longer served — finding E2-1). Same-vendor agy judging is a documented degenerate case (same model on both sides) for as long as the pin names a single critique id. `doctor()` verifies the pin against `agy models` and reports `agy_pin_served`; a false value marks google `vendor_degraded`.
 - **Claude:** same-vendor Claude judging still requires a different model id from the generator.
 
 ## Fable-5 tier (capability-gated)

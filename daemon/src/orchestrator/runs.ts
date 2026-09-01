@@ -18,6 +18,7 @@ import { TAXONOMY_BY_ID, MASTER_PLAN_SECTIONS } from "./taxonomy.js";
 import { ProjectLock, ProjectLockBusyError } from "../util/lock.js";
 import { tmpdir } from "node:os";
 import { DEFAULT_MODELS, agyEnabled, assertProducer } from "../config.js";
+import { checkAgyPinServed, type AgyPinCheck } from "./agy-pin.js";
 import { codexCritique } from "../mcp/codex-server.js";
 import { agyCritique } from "../mcp/antigravity-server.js";
 import { describeJudgeCapabilities } from "./gates.js";
@@ -3447,12 +3448,29 @@ export async function doctor(opts: DoctorOptions = {}): Promise<unknown> {
     if (vendors.google)  critique_smoke.agy   = await agyCritiqueSmoke();
   }
 
-  // Degraded = creds say "configured" but smoke reveals broken bridge.
+  // Pinned-model verification (E2-1). Always runs when the agy CLI is present,
+  // smoke or not: it is a ~1s list call, and a stale pin is invisible to the
+  // smoke test (agy exits 0 on an unknown --model and falls back silently).
+  const agy_pin: AgyPinCheck = cliVersions.agy !== null
+    ? await checkAgyPinServed()
+    : {
+        agy_pin_served: null,
+        pinned_model: DEFAULT_MODELS.agy_critique,
+        served_models: null,
+        note: "agy CLI not installed; pinned-model check skipped.",
+      };
+
+  // Degraded = creds say "configured" but smoke reveals a broken bridge, OR
+  // the pinned critique model is provably not served by the installed CLI.
   const vendor_degraded: Record<string, boolean> = {
     openai:    !!vendors.openai && critique_smoke.codex?.status === "fail",
-    google:    !!vendors.google && critique_smoke.agy?.status   === "fail",
+    google:    (!!vendors.google && critique_smoke.agy?.status === "fail")
+               || agy_pin.agy_pin_served === false,
     anthropic: false, // no smoke for in-process Claude judge
   };
+
+  const notes: string[] = [];
+  if (agy_pin.note) notes.push(agy_pin.note);
 
   const browser_engines = await probeBrowserEngines();
 
@@ -3463,6 +3481,9 @@ export async function doctor(opts: DoctorOptions = {}): Promise<unknown> {
     vendor_credentials,
     judge_capabilities: describeJudgeCapabilities(),
     vendor_degraded,
+    agy_pin_served: agy_pin.agy_pin_served,
+    agy_pin_check: agy_pin,
+    notes,
     agy_disabled: !agyEnabled(),
     cross_vendor_ready: vendorCount >= 2,
     critique_smoke,

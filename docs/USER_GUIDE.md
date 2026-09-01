@@ -958,7 +958,7 @@ Best-of-N runs N candidates in parallel through different vendors/models, then j
 ### How it works (the how)
 
 1. `start_best_of_stage(run_id, kind, gate_type, n)` allocates `N` git worktrees (or copy-mode dirs for non-git projects) and shuffles judge positions (Fisher-Yates, seeded for replay).
-2. Driver fans out `N` `engineer` invocations in parallel — pinned to different model IDs (e.g. `gpt-5.6-luna` + `gemini-3.1-pro-high` + `claude-opus-5`).
+2. Driver fans out `N` `engineer` invocations in parallel — pinned to different model IDs (e.g. `gpt-5.6-luna` + `gemini-3.7-flash-medium` + `claude-opus-5`).
 3. Each candidate writes its artifact to its own worktree.
 4. `diff_entropy(candidate_texts[])` computes Jaccard similarity. If > 90% similar across all candidates, the result is flagged — the model already converged, which usually means `/pp:run` would have been just as good.
 5. `judge-router` runs all N artifacts against the rubric. For N≥3, optionally a second judge runs and `borda_count(rankings[])` picks the winner from combined rankings.
@@ -1328,8 +1328,8 @@ Schema-level defaults are pinned in [`daemon/src/config.ts`](../daemon/src/confi
 
 | Tool | Purpose |
 |---|---|
-| `generate` | Run the Antigravity CLI (agy) in headless (`-p`) mode. Inputs: `prompt`, `cwd`, `model?` (default `gemini-3.1-pro-preview`), `output_schema?` (asks for structured JSON via the prompt; agy's raw headless output is plain text, not a JSON envelope), `untrusted_inputs?`. |
-| `critique` | Use agy as a cross-vendor judge. Inputs: `artifact_text`, `rubric_md`, `cwd`, `model?` (default `gemini-3.1-pro-preview`). |
+| `generate` | Run the Antigravity CLI (agy) in headless (`-p`) mode. Inputs: `prompt`, `cwd`, `model?` (default `gemini-3.7-flash-medium`), `output_schema?` (asks for structured JSON via the prompt; agy's raw headless output is plain text, not a JSON envelope), `untrusted_inputs?`. |
+| `critique` | Use agy as a cross-vendor judge. Inputs: `artifact_text`, `rubric_md`, `cwd`, `model?` (default `gemini-3.7-flash-medium`). |
 
 > Source: [`daemon/src/mcp/harness-server.ts`](../daemon/src/mcp/harness-server.ts), [`daemon/src/mcp/codex-server.ts`](../daemon/src/mcp/codex-server.ts), [`daemon/src/mcp/antigravity-server.ts`](../daemon/src/mcp/antigravity-server.ts).
 

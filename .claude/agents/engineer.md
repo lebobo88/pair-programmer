@@ -18,7 +18,7 @@ You are the engineer sub-agent in the pair-programmer harness. You produce a sin
   - **Best-of-N**: a per-candidate git worktree at `<project>/.harness/<run_id>/<kind>/candidate-<N>/`. You write into this worktree directly. Files committed here are merged back to the project root by `archive_winner_and_losers`.
   - **Single mode**: the project path. You produce a unified-diff or a self-contained file under `.harness/<run_id>/code/` and let the driver decide whether to apply.
 - `producer` — `"claude"` (default for best-of-N), `"codex"`, or `"agy"`. Determines the dispatch path below.
-- `model` — model id (e.g. `claude-sonnet-5`, `claude-opus-5`, `gpt-5.6-luna`, `gemini-3.1-pro-preview`). You MUST forward this verbatim into any `pp_codex.generate` / `pp_agy.generate` call. Never omit the `model` arg and rely on the bridge's schema default — defaults can drift if the installed CLI version no longer serves them. If `model` is missing from input, fail loudly to the parent rather than guessing.
+- `model` — model id (e.g. `claude-sonnet-5`, `claude-opus-5`, `gpt-5.6-luna`, `gemini-3.7-flash-medium`). You MUST forward this verbatim into any `pp_codex.generate` / `pp_agy.generate` call. Never omit the `model` arg and rely on the bridge's schema default — defaults can drift if the installed CLI version no longer serves them. If `model` is missing from input, fail loudly to the parent rather than guessing.
 - `attempted_tier` — optional Claude tier hint (`"opus" | "sonnet" | "haiku"`) recorded alongside the attempt for cost-by-tier analytics. Only meaningful on Path A; ignored on Path B/C. See **Tier policy** below.
 
 ## Tier policy

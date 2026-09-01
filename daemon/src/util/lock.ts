@@ -7,8 +7,19 @@ import {
   readFileSync,
   writeFileSync,
 } from "node:fs";
+import { statSync } from "node:fs";
 import { dirname } from "node:path";
 import { projectLockPath } from "./paths.js";
+
+/**
+ * Staleness threshold for a per-project advisory lock, shared by the
+ * startup janitor's `swept_locks` sweep and by `forceUnlock`. Both must
+ * use the SAME number: E2-6 was two tools in one daemon disagreeing about
+ * whether the same `.harness/.lock` was stale — `force_unlock` refused a
+ * 10-day-old lock that the janitor then swept moments later.
+ */
+export const STALE_LOCK_HOURS = 6;
+export const STALE_LOCK_MS = STALE_LOCK_HOURS * 60 * 60 * 1000;
 
 /**
  * Per-project advisory file lock with PID + timestamp metadata.
@@ -129,13 +140,45 @@ export type ForceUnlockResult =
   | { released: false; was_stale: false; holder: LockMetadata | null };
 
 /**
- * Force-unlock a project lock. Validates the holder PID is dead via the
- * standard `process.kill(pid, 0)` probe before removing the sentinel —
- * refusing to break a live daemon's lock. If no lock file exists, returns
- * released:true with holder:null (idempotent). If the holder is alive,
- * returns released:false so the operator knows another live daemon owns
- * it. P3: paired with the SIGTERM/SIGINT handler in src/index.ts which
- * proactively releases everything held by this process on shutdown.
+ * Age of a lock file in ms, measured as the MOST pessimistic of the
+ * recorded `started_at` and the file's mtime. The janitor sweeps on mtime;
+ * `started_at` catches a lock whose file was touched after acquisition.
+ * Returns null when neither source yields a usable timestamp.
+ */
+export function lockAgeMs(path: string, holder: LockMetadata | null, now = Date.now()): number | null {
+  const ages: number[] = [];
+  if (holder) {
+    const parsed = Date.parse(holder.started_at);
+    if (Number.isFinite(parsed)) ages.push(now - parsed);
+  }
+  try {
+    ages.push(now - statSync(path).mtime.getTime());
+  } catch { /* file vanished or unreadable — fall back to metadata only */ }
+  const finite = ages.filter((a) => Number.isFinite(a));
+  if (!finite.length) return null;
+  return Math.max(...finite);
+}
+
+/**
+ * Force-unlock a project lock.
+ *
+ * A lock is stale — and therefore released with `was_stale: true` — when
+ * ANY of the janitor's own conditions hold:
+ *   - the recorded holder PID is not alive (`process.kill(pid, 0)` probe),
+ *   - the lock is older than STALE_LOCK_MS (the janitor's `swept_locks`
+ *     threshold), regardless of PID liveness — a PID can be recycled by an
+ *     unrelated process, which is exactly how E2-6 manifested,
+ *   - the metadata is unparseable (no holder to protect).
+ *
+ * Only a lock held by a LIVE holder that is younger than the staleness
+ * threshold is refused: `released:false`, with the holder metadata so the
+ * operator knows another live daemon owns it. If no lock file exists,
+ * returns released:true with holder:null (idempotent).
+ *
+ * The threshold is shared with orchestrator/janitor.ts so the two can
+ * never disagree about the same file again (E2-6). P3: paired with the
+ * SIGTERM/SIGINT handler in src/index.ts which proactively releases
+ * everything held by this process on shutdown.
  */
 export function forceUnlock(projectPath: string): ForceUnlockResult {
   const path = projectLockPath(projectPath);
@@ -144,9 +187,15 @@ export function forceUnlock(projectPath: string): ForceUnlockResult {
   }
   const holder = readLockMetadata(path);
   if (holder && isPidAlive(holder.pid)) {
-    return { released: false, was_stale: false, holder };
+    const ageMs = lockAgeMs(path, holder);
+    if (ageMs === null || ageMs <= STALE_LOCK_MS) {
+      return { released: false, was_stale: false, holder };
+    }
+    // Live PID but the lock outlived the janitor's threshold: the janitor
+    // would sweep this file on its next pass, so force_unlock must not
+    // refuse it.
   }
-  // Either no parseable metadata or PID is dead — safe to remove.
+  // Dead PID, expired lock, or unparseable metadata — safe to remove.
   try { rmSync(path, { force: true }); } catch { /* ignore */ }
   return { released: true, was_stale: true, holder };
 }

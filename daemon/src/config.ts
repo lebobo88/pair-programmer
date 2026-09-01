@@ -25,14 +25,23 @@ export const CRITIQUE_RETRY_BACKOFF_MS = 2000;
  * agent prompts), but if the schema default fires it must point at a model the
  * installed CLI version actually serves. Keep in sync with `daemon/prices.json`.
  *
- * IMPORTANT: `agy --model <id>` DOES validate the id — an unrecognized model
- * string is rejected and the CLI exits non-zero with "invalid model selection".
- * Run `agy models` after changing agy_generate / agy_critique to confirm the
- * id is still served. The 3.x lane exposes effort-suffixed ids only:
- * `gemini-3.1-pro-high` and `gemini-3.1-pro-low`. There is no bare
- * `gemini-3.1-pro` — passing an unrecognized id causes agy to exit non-zero,
- * which PERSISTENT_STDERR_PATTERNS classifies as a persistent failure (not
- * retried).
+ * IMPORTANT: `agy --model <id>` validates the id — an unrecognized model
+ * string is rejected and the CLI exits non-zero with "invalid model
+ * selection", which PERSISTENT_STDERR_PATTERNS classifies as a persistent
+ * failure (not retried). A retired-but-still-parsed id can nonetheless fall
+ * back to the CLI default while the ledger records the pinned id, so exit
+ * code 0 alone does not prove the intended model actually served the request
+ * (finding E2-1). Run `agy models` after changing agy_generate /
+ * agy_critique; `doctor()` now runs that check automatically and reports
+ * `agy_pin_served` — see `orchestrator/agy-pin.ts`.
+ *
+ * agy ids served by the installed Antigravity CLI as of 2026-09-01 (agy
+ * 1.1.23): gemini-3.7-flash-high, gemini-3.7-flash-medium,
+ * gemini-3.7-flash-low, gemini-3.6-flash-high, gemini-3.6-flash-medium,
+ * gemini-3.6-flash-low, gemini-3.1-pro-high, gemini-3.1-pro-low,
+ * claude-sonnet-4-6, claude-opus-4-6-thinking, gpt-oss-120b-medium. The 3.1
+ * lane exposes effort-suffixed ids only — there is no bare `gemini-3.1-pro`,
+ * and `gemini-3.1-pro-preview` is NO LONGER served (finding E2-1).
  */
 export const DEFAULT_MODELS = {
   codex_generate:            "gpt-5.6-luna",
@@ -41,8 +50,10 @@ export const DEFAULT_MODELS = {
   // Do NOT change outside the HITL `/pp:constitution amend` path.
   codex_critique:            "gpt-5.6-terra",
   codex_critique_escalated:  "gpt-5.6-sol", // opt-in escalation for major-scope/last-resort gates
-  agy_generate:              "gemini-3.1-pro-high",
-  agy_critique:              "gemini-3.1-pro-high",
+  // E2-1 re-pin: operator policy makes 3.7 flash medium the cross-vendor
+  // verifier model. Verified served by agy 1.1.23 on 2026-09-01.
+  agy_generate:              "gemini-3.7-flash-medium",
+  agy_critique:              "gemini-3.7-flash-medium",
 } as const;
 
 /**
