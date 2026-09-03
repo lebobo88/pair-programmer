@@ -197,22 +197,53 @@ async function main() {
     console.log(`✓ budget_status: $${budget.cost_usd} for ${budget.tokens_in} in / ${budget.tokens_out} out`);
 
     // 11. Phase 2: gate_eligible_judges — plain Codex code_style.
-    // ASSERTION REPLACED IN PLACE (not deleted — CONSTITUTION.md FORBIDDEN-3)
-    // by the gpt-5.6 model-id refresh. Previously codex_generate and
-    // codex_critique were BOTH "gpt-5.4", so the inferred default pairing was
-    // same-model and this gate had to upgrade to cross-vendor. The pins are
-    // now distinct (gpt-5.6-luna generates, gpt-5.6-terra judges), so the
-    // inferred default pairing is a legal same-vendor different-model route
-    // and NO upgrade is expected. Step 11a below still covers the upgrade
-    // path by driving generator_model onto the critique pin explicitly.
+    // ASSERTIONS REPLACED IN PLACE (not deleted — CONSTITUTION.md FORBIDDEN-3),
+    // twice now. (a) The gpt-5.6 model-id refresh made codex_generate and
+    // codex_critique distinct. (b) J6: JUDGE-1 as amended 2026-09-03 mandates
+    // cross-vendor at EVERY gate, so code_style is cross-vendor too — the
+    // closing lane is always judge-cross-vendor and the same-vendor lane
+    // survives only as a supplementary (closing:false) extra opinion (JUDGE-2).
     const gate1 = await callTool(client, "gate_eligible_judges", {
       gate_type: "code_style",
       generator_producer: "codex",
       prompt_keywords: "rename a variable from foo to bar",
     });
-    if (gate1.required_cross_vendor) throw new Error(`expected same-vendor for default codex code_style (generate pin != critique pin), got: ${pretty(gate1)}`);
-    if (gate1.allowed_judges[0].agent !== "judge-same-vendor") throw new Error(`expected judge-same-vendor first for default codex code_style, got: ${pretty(gate1)}`);
-    console.log(`✓ gate_eligible_judges (code_style/plain codex default gpt-5.6-luna) -> same-vendor`);
+    if (!gate1.required_cross_vendor) throw new Error(`expected cross-vendor at every gate per JUDGE-1, got: ${pretty(gate1)}`);
+    if (gate1.base_tier !== "cross_vendor") throw new Error(`expected base_tier=cross_vendor for code_style, got: ${pretty(gate1)}`);
+    if (!/JUDGE-1/.test(gate1.reason)) throw new Error(`expected the reason to cite JUDGE-1, got: ${gate1.reason}`);
+    if (gate1.allowed_judges[0].agent !== "judge-cross-vendor") throw new Error(`expected judge-cross-vendor first, got: ${pretty(gate1)}`);
+    const closing1 = gate1.allowed_judges.filter((j) => j.closing);
+    if (closing1.length !== 1 || closing1[0].agent !== "judge-cross-vendor") {
+      throw new Error(`expected exactly one closing lane and it must be cross-vendor, got: ${pretty(gate1.allowed_judges)}`);
+    }
+    if (!Array.isArray(closing1[0].preferred_models) || !closing1[0].preferred_models.length) {
+      throw new Error(`expected preferred_models on the closing lane, got: ${pretty(closing1[0])}`);
+    }
+    const same1 = gate1.allowed_judges.find((j) => j.agent === "judge-same-vendor");
+    if (same1 && same1.closing !== false) throw new Error(`same-vendor lane must be closing:false, got: ${pretty(same1)}`);
+    if (same1 && same1.preferred_models.includes("gpt-5.6-luna")) {
+      throw new Error(`same-vendor lane must not offer the generator's own model, got: ${pretty(same1)}`);
+    }
+    if (gate1.judge_capabilities?.codex?.allowed_critique_models?.indexOf("gpt-5.6-terra") < 0) {
+      throw new Error(`expected judge_capabilities allow-list in the response, got: ${pretty(gate1.judge_capabilities)}`);
+    }
+    console.log(`✓ gate_eligible_judges (code_style/plain codex default gpt-5.6-luna) -> cross-vendor closing lane + supplementary same-vendor`);
+
+    // 11-b. An operator override is validated against the daemon allow-list.
+    const gateOverride = await callTool(client, "gate_eligible_judges", {
+      gate_type: "code_style",
+      generator_producer: "claude",
+      requested_judge_model: "gpt-5.6-sol",
+      requested_judge_effort: "high",
+    });
+    const closingOverride = gateOverride.allowed_judges.find((j) => j.closing);
+    if (closingOverride.preferred_models[0] !== "gpt-5.6-sol") {
+      throw new Error(`expected the requested model promoted to the front, got: ${pretty(closingOverride)}`);
+    }
+    if (closingOverride.preferred_producers.includes("agy")) {
+      throw new Error(`agy cannot serve a codex model id, got: ${pretty(closingOverride)}`);
+    }
+    console.log(`✓ gate_eligible_judges (requested_judge_model=gpt-5.6-sol) -> narrowed to codex`);
 
     // 11a. A Codex generator that already ran on the pinned critique model
     // (gpt-5.6-terra) CANNOT be judged same-vendor — the different-model half

@@ -11,7 +11,7 @@ import {
   finalizeRun, archiveArtifact, listRuns, getRun, budgetStatus, doctor,
   recordTaxonomyMapping, getStageFinalizeReadiness, ackRun,
 } from "../orchestrator/runs.js";
-import { evaluateGate, listAllowedJudges, type GateType, type Profile } from "../orchestrator/gates.js";
+import { evaluateGate, listAllowedJudges, describeJudgeCapabilities, type GateType, type Profile } from "../orchestrator/gates.js";
 import { heuristicTriage, heuristicMapping, TAXONOMY_SECTIONS, COMPLETION_CHECKLIST } from "../orchestrator/taxonomy.js";
 import { applyMasterPlanPatch, masterPlanStatus, ensureMasterPlan } from "../orchestrator/master-plan.js";
 import {
@@ -356,6 +356,10 @@ const GateEligibleJudgesSchema = z.object({
   profile:             z.enum(BUILTIN_PROFILE_NAMES).optional(),
   artifact_kind:       z.string().optional(),
   rubric_hint:         z.string().min(1).optional(),
+  // JUDGE-1a operator override, forwarded by judge-router so the allow-list
+  // check happens in the daemon rather than in the driver's prompt.
+  requested_judge_model:  z.string().min(1).optional(),
+  requested_judge_effort: z.string().min(1).optional(),
 });
 
 const TriageRequestSchema = z.object({
@@ -1309,7 +1313,7 @@ const TOOLS: ToolDef[] = [
   {
     name: "gate_eligible_judges",
     description:
-      "Given a gate_type, the generator's producer, optional generator_model, optional prompt keywords, optional profile, optional artifact_kind, and optional rubric_hint, returns the judge tier policy: required_cross_vendor (bool), base_tier, whether it was upgraded by content/profile/capability, the reason, the recommended rubric_id, and the list of allowed judges with preferred providers. rubric_hint lets a team/forum stage declare its intended rubric when that intent cannot be inferred from gate_type alone; unknown hints are ignored. If generator_model is omitted, the daemon infers Codex/agy defaults from DEFAULT_MODELS where possible. Driver MUST call this before invoking any judge.",
+      "Given a gate_type, the generator's producer, optional generator_model, optional prompt keywords, optional profile, optional artifact_kind, optional rubric_hint, and an optional requested_judge_model / requested_judge_effort override, returns the judge tier policy: required_cross_vendor (always true — JUDGE-1 mandates cross-vendor judging at every gate), base_tier, whether an independent content/profile/capability signal also forced it (upgraded), the reason, the recommended rubric_id, the list of allowed judges (each with preferred_producers, preferred_models — allow-listed ids with the generator's own model removed, best first — and closing, where exactly one lane is closing:true and it is always judge-cross-vendor), and judge_capabilities (the per-vendor critique model allow-list, so callers never hard-code pins). rubric_hint lets a team/forum stage declare its intended rubric when that intent cannot be inferred from gate_type alone; unknown hints are ignored. If generator_model is omitted, the daemon infers Codex/agy defaults from DEFAULT_MODELS where possible. Driver MUST call this before invoking any judge.",
     schema: GateEligibleJudgesSchema,
     handler: (args) => {
       const parsed = GateEligibleJudgesSchema.parse(args);
@@ -1322,8 +1326,16 @@ const TOOLS: ToolDef[] = [
         artifact_kind:   parsed.artifact_kind,
         rubric_hint:     parsed.rubric_hint,
       });
-      const judges = listAllowedJudges(decision, parsed.generator_producer);
-      return { ...decision, allowed_judges: judges };
+      const judges = listAllowedJudges(decision, parsed.generator_producer, {
+        generator_model:        parsed.generator_model,
+        requested_judge_model:  parsed.requested_judge_model,
+        requested_judge_effort: parsed.requested_judge_effort,
+      });
+      return {
+        ...decision,
+        allowed_judges: judges,
+        judge_capabilities: describeJudgeCapabilities(),
+      };
     },
   },
 ];
