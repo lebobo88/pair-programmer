@@ -15,7 +15,15 @@ import { wrapUntrusted } from "../security/untrusted-envelope.js";
 import { computeCost } from "../util/prices.js";
 import { SANDBOX_DIR, ensureDirs } from "../util/paths.js";
 import { log } from "../util/logger.js";
-import { DEFAULT_MODELS } from "../config.js";
+import {
+  DEFAULT_MODELS,
+  JUDGE_REASONING_EFFORTS,
+  JUDGE_OVERRIDE_SOURCES,
+  resolveJudgeSelection,
+  type JudgeReasoningEffort,
+  type JudgeOverrideSource,
+} from "../config.js";
+import { resolveAgyInvocation } from "./agy-model.js";
 import { runCliWithRetry, type CliAttempt } from "./cli-runner.js";
 import { shutdownAndExit } from "../util/shutdown.js";
 import { getSession, setSession, synthesizeRecap } from "../orchestrator/sub-cli-sessions.js";
@@ -32,6 +40,13 @@ const GenerateSchema = z.object({
   })).optional(),
     skip_recap: z.boolean().optional(),
   /**
+   * Reasoning effort, for parity with pp_codex.generate. agy encodes effort in
+   * the model id itself, so this is folded into the canonical id by
+   * `resolveAgyInvocation` — `--effort` is NEVER passed on the command line
+   * (a suffixed id plus `--effort` is a hard CLI error).
+   */
+  reasoning_effort: z.enum(JUDGE_REASONING_EFFORTS).optional(),
+  /**
    * Start a NEW agy conversation instead of resuming this project's prior one.
    * Set by critique, which must be a stateless adjudication -- see the
    * `--continue` comment below.
@@ -39,13 +54,27 @@ const GenerateSchema = z.object({
   fresh_session: z.boolean().optional(),
 });
 
+/**
+ * Shared critique option surface (J5) — IDENTICAL to `pp_codex.critique`'s.
+ * A judge call must read the same way whichever vendor serves it.
+ *
+ * `model` is optional with NO default: omitting it takes agy's pinned default
+ * via `resolveJudgeSelection`. A model or effort outside the vendor allow-list
+ * is REJECTED LOUDLY (throws) rather than silently discarded, and any selection
+ * deviating from the pin requires both `override_source` and a non-empty
+ * `override_reason`.
+ */
 const CritiqueSchema = z.object({
-  artifact_text: z.string().min(1),
-  rubric_md:     z.string().min(1),
-  cwd:           z.string().min(1),
-  model:         z.string().default(DEFAULT_MODELS.agy_critique),
-  output_schema: z.unknown().optional(),
-  timeout_ms:    z.number().int().positive().optional(),
+  artifact_text:    z.string().min(1),
+  rubric_md:        z.string().min(1),
+  cwd:              z.string().min(1),
+  model:            z.string().optional(),
+  reasoning_effort: z.enum(JUDGE_REASONING_EFFORTS).optional(),
+  escalate:         z.boolean().optional(),
+  override_source:  z.enum(JUDGE_OVERRIDE_SOURCES).optional(),
+  override_reason:  z.string().optional(),
+  output_schema:    z.unknown().optional(),
+  timeout_ms:       z.number().int().positive().optional(),
 });
 
 type AntigravityResult = {
@@ -65,6 +94,30 @@ type AntigravityResult = {
   failure_archive_path?: string;
   /** Present when the bridge converted an exit-0 malformed payload into a hard failure. */
   reason?: string;
+  /**
+   * Resolved judge reasoning effort (critique path). agy encodes effort in the
+   * model id, so this mirrors the suffix of `model`.
+   */
+  reasoning_effort?: JudgeReasoningEffort;
+  /** Provenance of the resolved judge selection (critique path only). */
+  override_source?: JudgeOverrideSource;
+  /** Operator justification carried alongside a non-default selection. */
+  override_reason?: string;
+  /**
+   * agy's headless stream-json envelope reports no served model id, so unlike
+   * the codex lane there is nothing to compare the pin against. Left undefined.
+   */
+  model_reported_by_cli?: string;
+};
+
+/**
+ * Test-only DI seam for `agyCritique`, mirroring `CodexGenerateInternalOptions`
+ * (codex-server.ts). When provided, `_invoke` replaces the real `agyGenerate`
+ * call so tests can capture the resolved `genArgs` without spawning the agy
+ * CLI. Production code never sets this.
+ */
+export type AgyCritiqueInternalOptions = {
+  _invoke?: (genArgs: z.infer<typeof GenerateSchema>) => Promise<AntigravityResult>;
 };
 
 /**
@@ -127,8 +180,21 @@ async function agyGenerate(args: z.infer<typeof GenerateSchema>): Promise<Antigr
   // context (bounded only by --print-timeout). `--sandbox` restricts
   // terminal command execution as defense-in-depth for critique calls,
   // where the prompt embeds untrusted artifact_text via wrapUntrusted().
+  //
+  // agy serves EFFORT-SUFFIXED model ids and rejects a suffixed id combined
+  // with `--effort`. `resolveAgyInvocation` collapses (model, reasoning_effort)
+  // into ONE canonical served id, so a bare family or a family+effort pair is
+  // canonicalized here and `--effort` is never emitted. An unserved id throws
+  // rather than being guessed at — a wrong guess lands in the cost ledger as
+  // provenance.
+  const invocation = resolveAgyInvocation({
+    model: args.model,
+    reasoning_effort: args.reasoning_effort,
+  });
+  const effectiveModel = invocation.model_id;
+
   const cliArgs = [
-    "--model", args.model,
+    "--model", effectiveModel,
     "--sandbox",
     "--dangerously-skip-permissions",
     "--print-timeout", `${Math.max(1, Math.ceil((args.timeout_ms ?? 300_000) / 1000))}s`,
@@ -220,7 +286,7 @@ async function agyGenerate(args: z.infer<typeof GenerateSchema>): Promise<Antigr
   const estimateTokens = (s: string): number => Math.max(1, Math.ceil((s ?? "").length / 4));
   const tokens_in  = parsed.tokens_in  ?? estimateTokens(prompt);
   const tokens_out = parsed.tokens_out ?? estimateTokens(text);
-  const cost_usd   = computeCost(args.model, tokens_in, tokens_out);
+  const cost_usd   = computeCost(effectiveModel, tokens_in, tokens_out);
 
   // No session id is recoverable from plain-text stdout; record a sentinel so
   // future calls for this project know a prior turn happened and pass
@@ -241,7 +307,7 @@ async function agyGenerate(args: z.infer<typeof GenerateSchema>): Promise<Antigr
     tokens_in,
     tokens_out,
     cost_usd,
-    model: args.model,
+    model: effectiveModel,
     wall_ms: run.wall_ms,
     exit_code: run.exit_code,
     session_id: run.exit_code === 0 ? "continue" : undefined,
@@ -260,13 +326,17 @@ async function agyGenerate(args: z.infer<typeof GenerateSchema>): Promise<Antigr
   return result;
 }
 
-export async function agyCritique(args: z.infer<typeof CritiqueSchema>): Promise<AntigravityResult> {
-  const pinnedModel = DEFAULT_MODELS.agy_critique;
-  if (args.model && args.model !== pinnedModel) {
-    process.stderr.write(
-      `[pp_agy.critique] ignoring model="${args.model}" passed by caller; pinning to "${pinnedModel}". The judge agent contract requires this model.\n`,
-    );
-  }
+export async function agyCritique(
+  args: z.infer<typeof CritiqueSchema>,
+  opts: AgyCritiqueInternalOptions = {},
+): Promise<AntigravityResult> {
+  // Resolve against JUDGE_MODEL_POLICY.agy. `resolveJudgeSelection` routes the
+  // agy branch through `resolveAgyInvocation`, so a bare family, a suffixed id,
+  // and a family+effort pair all canonicalize to one served id — and an
+  // unserved id or a suffix/effort conflict THROWS instead of being silently
+  // replaced by the pin, which used to hide caller bugs.
+  const selection = resolveJudgeSelection({ producer: "agy", ...args });
+  const effectiveModel = selection.model;
   const wrappedArtifact = wrapUntrusted("artifact-under-review", args.artifact_text);
   const judgePrompt =
     `You are an impartial cross-vendor judge for the pair-programmer harness. Apply the rubric below to the artifact.\n` +
@@ -274,19 +344,32 @@ export async function agyCritique(args: z.infer<typeof CritiqueSchema>): Promise
     `## Rubric\n${args.rubric_md}\n\n` +
     `## Artifact\n${wrappedArtifact}\n`;
   const useDefaultSchema = !args.output_schema;
-  const invoke = async () => await agyGenerate({
+  const genArgs: z.infer<typeof GenerateSchema> = {
     prompt: judgePrompt,
     cwd: args.cwd,
-    model: pinnedModel,
+    model: effectiveModel,
+    reasoning_effort: selection.reasoning_effort,
     skip_recap: true,
     // A critique is a stateless adjudication: never resume a prior
     // conversation, or this verdict inherits the last one's context.
     fresh_session: true,
     output_schema: args.output_schema ?? buildCritiqueOutputSchema(),
     timeout_ms: args.timeout_ms,
-  });
-  if (!useDefaultSchema) return await invoke();
-  return await stabilizeCritiqueResult(invoke, { cwd: args.cwd, vendor: "agy" });
+  };
+  // Injected invoker when provided (test DI seam); the real agyGenerate
+  // otherwise. Mirrors CodexGenerateInternalOptions._invoke.
+  const invoker = opts._invoke ?? agyGenerate;
+  const invoke = async () => await invoker(genArgs);
+  const result = useDefaultSchema
+    ? await stabilizeCritiqueResult(invoke, { cwd: args.cwd, vendor: "agy" })
+    : await invoke();
+
+  // Annotate the envelope so the effective model and effort are readable by
+  // the caller without re-deriving them.
+  result.reasoning_effort = selection.reasoning_effort;
+  result.override_source  = selection.source;
+  if (args.override_reason) result.override_reason = args.override_reason;
+  return result;
 }
 
 const NEWLINE_SPLIT = new RegExp("\r?\n");
@@ -357,7 +440,10 @@ const TOOLS = [
   {
     name: "critique",
     description:
-      "Use Antigravity (agy) as a cross-vendor judge. Wraps the artifact in an untrusted envelope and applies the rubric_md. Returns a structured verdict (outcome | critique_md | score).",
+      "Use Antigravity (agy) as a cross-vendor judge. Wraps the artifact in an untrusted envelope and applies the rubric_md. Returns a structured verdict (outcome | critique_md | score). " +
+      "Shares an IDENTICAL option surface with pp_codex.critique: artifact_text, rubric_md, cwd, model? (optional - omit to take the pinned agy default), reasoning_effort?, escalate?, override_source?, override_reason?, output_schema?, timeout_ms?. " +
+      "model and reasoning_effort must be allow-listed for this vendor (JUDGE_MODEL_POLICY.agy) - a non-allow-listed value is REJECTED with an error, never silently replaced. agy encodes effort in the model id, so a bare family plus reasoning_effort is canonicalized to the served suffixed id, and a suffixed id that contradicts reasoning_effort is an error. Passing model together with escalate is an error. Any selection that differs from the pinned default requires both override_source and a non-empty override_reason. " +
+      "The result carries the effective model, reasoning_effort, override_source and override_reason; agy reports no served model id, so model_reported_by_cli is always undefined on this lane.",
     schema: CritiqueSchema,
     handler: (args: unknown) => agyCritique(CritiqueSchema.parse(args)),
   },
