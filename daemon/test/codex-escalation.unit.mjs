@@ -54,7 +54,7 @@ const { DEFAULT_MODELS, CLAUDE_TIER_MODELS } = await import(
 );
 
 // Tripwire literals — intentionally NOT derived. CONSTITUTION.md Article V (as
-// amended, SHA 13b4fa18) pins JUDGE-1 to gpt-5.6-terra at medium reasoning
+// amended 2026-09-03, SHA 5df284cb, previously 13b4fa18) pins JUDGE-1 to gpt-5.6-terra at medium reasoning
 // effort; the escalated lane is gpt-5.6-sol. Changing DEFAULT_MODELS without a
 // constitution amendment must break this file loudly, which a self-referential
 // assertion could never do.

@@ -514,7 +514,7 @@ ${wrappedArtifact}
     model: effectiveModel,
     sandbox: "read-only",
     skip_recap: true,
-    // CONSTITUTION.md Article V as amended (SHA 13b4fa18) pins JUDGE-1 at
+    // CONSTITUTION.md Article V as amended 2026-09-03 (SHA 5df284cb, previously 13b4fa18) pins JUDGE-1 at
     // medium reasoning effort. The default path still resolves to medium; a
     // different effort only arrives through the escalated pin or a justified
     // override. Do not raise the DEFAULT without a constitution amendment.
