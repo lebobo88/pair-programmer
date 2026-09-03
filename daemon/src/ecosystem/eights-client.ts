@@ -72,7 +72,14 @@ export type MemoryAddInput = {
   type: EightsMemoryType;
   summary?: string;
   scopes?: string[];
-  provenance: { run_id?: string; actor: string; model?: string; source_uri?: string };
+  // v10 (J4): judge_model_source / judge_reasoning_effort carry which channel
+  // selected the judge model and at what effort, so a memory written from a
+  // non-default judge selection is distinguishable from the vendor pin.
+  provenance: {
+    run_id?: string; actor: string; model?: string; source_uri?: string;
+    judge_model_source?: string | null;
+    judge_reasoning_effort?: string | null;
+  };
   cell?: EightCell;
   handle?: string;
   supersedes?: string[];

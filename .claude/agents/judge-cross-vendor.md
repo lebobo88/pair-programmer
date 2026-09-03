@@ -98,6 +98,9 @@ If the chosen vendor's CLI is not configured (vendor matrix from `pp.harness.doc
 5. Call `mcp__pp_harness__record_verdict` with:
    - `attempt_id`
    - `judge_producer`: the vendor you used (codex or agy)
+   - `judge_model_id`: MUST be on that vendor's `JUDGE_MODEL_POLICY.allowed_models` list (`daemon/src/config.ts`) — the daemon refuses anything else, and it refuses an id identical to the generator's `model_id` for every producer (the agy exemption was removed in J4).
+   - `judge_model_source` (optional, defaults to `"default"`): `default` | `escalated` | `cli` | `team_yaml` | `hydra`. `default` and `escalated` ASSERT you ran that vendor's pinned model and are refused if the id does not match; the other three are operator override channels and REQUIRE a `judge_override_reason` of at least 8 characters.
+   - `judge_reasoning_effort` (optional): must be in the vendor's `allowed_efforts`.
    - `judge_model_id`: the actual model you used
    - `rubric_id`: from input if provided
    - `outcome`, `critique_md`, `score_json` (include `findings_provenance` inside this object)
