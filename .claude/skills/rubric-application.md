@@ -49,7 +49,7 @@ Then call `mcp__pp_harness__record_verdict`:
 {
   "attempt_id":     "attempt_xxx",
   "judge_producer": "agy",
-  "judge_model_id": "gemini-2.5-pro",
+  "judge_model_id": "gemini-3.8-flash-medium",
   "rubric_id":      "wcag-2.2-aa@1",
   "outcome":        "revise",
   "critique_md":    "Missing focus-visible state; states 4/8 named.",
