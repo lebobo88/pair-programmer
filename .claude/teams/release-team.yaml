@@ -13,10 +13,10 @@ stages:
   - kind: migration_runbook
     gate_type: docs_polish
     generator: { agent: ops-author, primary: claude }
-    judge:     { tier: same_vendor }
+    judge:     { tier: cross_vendor }
   - kind: comms
     gate_type: docs_polish
     generator: { agent: docs-author, primary: claude }
-    judge:     { tier: same_vendor }
+    judge:     { tier: cross_vendor }
 taxonomy_required: ["4.11", "4.13"]
 missability_required: ["rollout-reversibility", "feature-flag-lifecycle"]

@@ -21,6 +21,6 @@ stages:
   - kind: glossary
     gate_type: docs_polish
     generator: { agent: docs-author, primary: claude }
-    judge:     { tier: same_vendor }
+    judge:     { tier: cross_vendor }
 taxonomy_required: ["4.2"]
 missability_required: ["workflow-exceptions"]

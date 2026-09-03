@@ -21,6 +21,6 @@ stages:
   - kind: docs
     gate_type: docs_polish
     generator: { agent: docs-author, primary: claude }
-    judge:     { tier: same_vendor }
+    judge:     { tier: cross_vendor }
 taxonomy_required: ["4.3", "4.9", "4.10", "4.13", "4.15"]
 missability_required: ["ai-evals-hitl", "decision-logging"]

@@ -13,7 +13,7 @@ stages:
   - kind: dashboards
     gate_type: design
     generator: { agent: ops-author, primary: claude }
-    judge:     { tier: same_vendor }
+    judge:     { tier: cross_vendor }
   - kind: alerts
     gate_type: contract
     generator: { agent: ops-author, primary: claude }
@@ -21,6 +21,6 @@ stages:
   - kind: runbooks
     gate_type: docs_polish
     generator: { agent: ops-author, primary: claude }
-    judge:     { tier: same_vendor }
+    judge:     { tier: cross_vendor }
 taxonomy_required: ["4.12", "4.13"]
 missability_required: ["operational-ownership", "supportability"]

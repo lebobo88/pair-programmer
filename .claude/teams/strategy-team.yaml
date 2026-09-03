@@ -21,6 +21,6 @@ stages:
   - kind: risk_register
     gate_type: spec
     generator: { agent: governance-author, primary: claude }
-    judge:     { tier: same_vendor, model_pref: claude_alt_model }
+    judge:     { tier: cross_vendor, model_pref: claude_alt_model }
 taxonomy_required: ["4.1"]
 missability_required: ["decision-logging"]
