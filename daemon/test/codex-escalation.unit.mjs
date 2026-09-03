@@ -5,7 +5,8 @@
 //   3. selectCritiqueModel(false) returns the default pin.
 //   4. selectCritiqueModel(true) returns the escalated pin.
 //   5. selectCritiqueModel has no model parameter — escalate alone drives it.
-//   6. recordVerdict accepts judge_model_id=<escalated pin>.
+//   6. recordVerdict accepts judge_model_id=<escalated pin> (with
+//      judge_model_source:"escalated" -- J4 requires the source to match the pin).
 //   7. recordVerdict still rejects arbitrary (non-pinned) codex judge_model_id.
 //   8. codexCritique e2e: escalate:true → invoked with the escalated pin (DI seam).
 //   9. codexCritique e2e: no model → invoked with the default pin at medium.
@@ -191,6 +192,11 @@ await itAsync("recordVerdict accepts judge_model_id=<escalated codex pin>", asyn
     judge_producer: "codex",
     judge_model_id: DEFAULT_MODELS.codex_critique_escalated,
     rubric_id: "owasp-asvs-l2@1",
+    // J4: judge_model_source defaults to "default", which ASSERTS the vendor
+    // pin was used. Taking the escalated lane must now say so explicitly --
+    // otherwise recordVerdict rejects the row rather than let an escalation
+    // be laundered into the ledger as the constitutional default.
+    judge_model_source: "escalated",
     outcome: "pass",
     critique_md: "Escalated security gate review: all ASVS-L2 controls verified present. No credential leakage, injection surface contained, auth flows correctly scoped.",
     score_json: { correctness: 0.95, safety: 0.9 },
@@ -225,7 +231,9 @@ await itAsync("recordVerdict rejects arbitrary (non-pinned) codex judge_model_id
       critique_md: "This should be rejected — gpt-5-bogus is not a pinned codex critique model.",
       score_json: { correctness: 0.9 },
     }),
-    (err) => /pinned to those models/i.test(err.message),
+    // J4 rewrote this guard to read JUDGE_MODEL_POLICY instead of a
+    // hard-coded literal set; the message now names the allow-list.
+    (err) => /JUDGE_MODEL_POLICY allow-list/.test(err.message),
     "arbitrary model id must be rejected by recordVerdict",
   );
 });

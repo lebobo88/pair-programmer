@@ -3,7 +3,19 @@
  * doesn't need a separate copy of the SQL file. Mirror this with
  * `daemon/src/db/schema.sql` for human-readable reference.
  */
-export const SCHEMA_VERSION = 7;
+/**
+ * v10 (J4): reconciles a versioning gap. `database.ts` already carried
+ * migration blocks labelled "v8" (attempts.notes_json, artifacts.evidence_ref,
+ * verdict retraction + hallucination columns) and "v9" (attempts.agent_type,
+ * verdicts.idempotency_token) that were never accompanied by a bump of this
+ * constant — it sat at 7 while two migration generations shipped. v10 adds the
+ * judge-override provenance columns on `verdicts` AND absorbs those two
+ * unbumped generations, so a DB stamped 7 is not necessarily pre-v8/v9. The
+ * meta row is written with INSERT OR REPLACE (database.ts::db), so an existing
+ * DB at 7 restamps to 10 in place after applyMigrations has added any missing
+ * columns; no destructive step is involved.
+ */
+export const SCHEMA_VERSION = 10;
 
 export const SCHEMA_SQL = `
 PRAGMA journal_mode = WAL;
@@ -100,6 +112,13 @@ CREATE TABLE IF NOT EXISTS verdicts (
   cross_vendor        INTEGER NOT NULL DEFAULT 0,
   -- v7: TheEights memory linkage for this verdict.
   eights_memory_id    TEXT,
+  -- v10: judge-selection provenance. reasoning_effort the judge ran at,
+  -- which channel chose the model (JUDGE_OVERRIDE_SOURCES: default |
+  -- escalated | cli | team_yaml | hydra), and the operator justification
+  -- required for the three override channels. NULL on legacy rows.
+  judge_reasoning_effort TEXT,
+  judge_model_source     TEXT,
+  judge_override_reason  TEXT,
   created_at          TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_verdicts_attempt ON verdicts(attempt_id);

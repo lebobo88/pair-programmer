@@ -17,7 +17,11 @@ import { applyMasterPlanPatch, ensureMasterPlan, masterPlanStatus } from "./mast
 import { TAXONOMY_BY_ID, MASTER_PLAN_SECTIONS } from "./taxonomy.js";
 import { ProjectLock, ProjectLockBusyError } from "../util/lock.js";
 import { tmpdir } from "node:os";
-import { DEFAULT_MODELS, agyEnabled, assertProducer } from "../config.js";
+import {
+  DEFAULT_MODELS, agyEnabled, assertProducer,
+  judgePolicyFor, isAllowedJudgeModel,
+  JUDGE_OVERRIDE_SOURCES, type JudgeOverrideSource,
+} from "../config.js";
 import { checkAgyPinServed, type AgyPinCheck } from "./agy-pin.js";
 import { codexCritique } from "../mcp/codex-server.js";
 import { agyCritique } from "../mcp/antigravity-server.js";
@@ -840,8 +844,27 @@ export type RecordVerdictInput = {
   critique_md?: string;
   score_json?: unknown;
   idempotency_token?: string;
+  /**
+   * v10 judge-selection provenance. All three are optional for backward
+   * compatibility with callers that only ever run the constitutional pin;
+   * `judge_model_source` defaults to "default" when absent, which in turn
+   * requires `judge_model_id` to BE the vendor default.
+   */
+  judge_reasoning_effort?: string;
+  judge_model_source?: JudgeOverrideSource;
+  judge_override_reason?: string;
 };
-export type RecordVerdictOutput = { verdict_id: string; cross_vendor: boolean };
+export type RecordVerdictOutput = {
+  verdict_id: string;
+  cross_vendor: boolean;
+  judge_reasoning_effort: string | null;
+  judge_model_source: JudgeOverrideSource | null;
+  judge_override_reason: string | null;
+};
+
+/** Override channels that must name a reason. "default"/"escalated" are pins. */
+const JUDGE_SOURCES_REQUIRING_REASON: readonly JudgeOverrideSource[] = ["cli", "team_yaml", "hydra"];
+const JUDGE_OVERRIDE_REASON_MIN_CHARS = 8;
 
 /**
  * LV-8 (defense in depth): the unique index on idempotency_token is global —
@@ -859,10 +882,28 @@ function findVerdictByIdempotencyToken(
   token: string
 ): (RecordVerdictOutput & { attempt_id: string }) | undefined {
   const row = db()
-    .prepare(`SELECT id, cross_vendor, attempt_id FROM verdicts WHERE idempotency_token = ?`)
-    .get(token) as { id: string; cross_vendor: number; attempt_id: string } | undefined;
+    .prepare(
+      `SELECT id, cross_vendor, attempt_id,
+              judge_reasoning_effort, judge_model_source, judge_override_reason
+         FROM verdicts WHERE idempotency_token = ?`
+    )
+    .get(token) as
+      | {
+          id: string; cross_vendor: number; attempt_id: string;
+          judge_reasoning_effort: string | null;
+          judge_model_source: string | null;
+          judge_override_reason: string | null;
+        }
+      | undefined;
   return row
-    ? { verdict_id: row.id, cross_vendor: !!row.cross_vendor, attempt_id: row.attempt_id }
+    ? {
+        verdict_id: row.id,
+        cross_vendor: !!row.cross_vendor,
+        attempt_id: row.attempt_id,
+        judge_reasoning_effort: row.judge_reasoning_effort,
+        judge_model_source: (row.judge_model_source as JudgeOverrideSource | null),
+        judge_override_reason: row.judge_override_reason,
+      }
     : undefined;
 }
 
@@ -890,7 +931,13 @@ function resolveIdempotentVerdict(
   if (existing.attempt_id !== attemptId) {
     throw new IdempotencyTokenAttemptMismatchError(token, existing.attempt_id, attemptId);
   }
-  return { verdict_id: existing.verdict_id, cross_vendor: existing.cross_vendor };
+  return {
+    verdict_id: existing.verdict_id,
+    cross_vendor: existing.cross_vendor,
+    judge_reasoning_effort: existing.judge_reasoning_effort,
+    judge_model_source: existing.judge_model_source,
+    judge_override_reason: existing.judge_override_reason,
+  };
 }
 
 /**
@@ -926,26 +973,80 @@ export function recordVerdict(input: RecordVerdictInput): RecordVerdictOutput {
     .get(input.attempt_id) as { producer: string; model_id: string } | undefined;
   if (!att) throw new Error(`attempt ${input.attempt_id} not found`);
 
-  const CODEX_CRITIQUE_ALLOWED = new Set<string>([
-    DEFAULT_MODELS.codex_critique,
-    DEFAULT_MODELS.codex_critique_escalated,
-  ]);
-  if (input.judge_producer === "codex" && !CODEX_CRITIQUE_ALLOWED.has(input.judge_model_id)) {
+  // -- v10 (J4): judge allow-list + override provenance --------------------
+  //
+  // The allow-list is now driven entirely by JUDGE_MODEL_POLICY rather than
+  // two hard-coded literal sets, and it keys on `judgePolicyFor` -- which
+  // routes through `normalizeProducer` -- so the legacy "gemini" alias is
+  // held to agy's allow-list instead of slipping past a
+  // `judge_producer === "agy"` string compare and recording an arbitrary
+  // model. Producers with no policy (claude, copilot) judge through the
+  // Task() sub-agent path and carry no CLI model pin, so they are unchecked.
+  const judgePolicy = judgePolicyFor(input.judge_producer);
+  if (judgePolicy) {
+    if (!isAllowedJudgeModel(input.judge_producer, input.judge_model_id)) {
+      throw new Error(
+        `judge_producer=${input.judge_producer} must record judge_model_id in ` +
+        `{${judgePolicy.allowed_models.join(", ")}} ` +
+        `(JUDGE_MODEL_POLICY allow-list); got "${input.judge_model_id}"`
+      );
+    }
+
+    if (input.judge_reasoning_effort !== undefined &&
+        !(judgePolicy.allowed_efforts as readonly string[]).includes(input.judge_reasoning_effort)) {
+      throw new Error(
+        `judge_producer=${input.judge_producer} must record judge_reasoning_effort in ` +
+        `{${judgePolicy.allowed_efforts.join(", ")}}; got "${input.judge_reasoning_effort}"`
+      );
+    }
+  }
+
+  // Source defaults to "default", which is itself a claim: it asserts the
+  // judge ran the vendor's constitutional pin. Recording a non-default model
+  // while claiming "default" would launder an override into the audit trail,
+  // so it is rejected rather than silently reclassified.
+  const judgeSource: JudgeOverrideSource = input.judge_model_source ?? "default";
+  if (!(JUDGE_OVERRIDE_SOURCES as readonly string[]).includes(judgeSource)) {
     throw new Error(
-      `judge_producer=codex must record judge_model_id in ` +
-      `{${[...CODEX_CRITIQUE_ALLOWED].join(", ")}} ` +
-      `because pp_codex.critique is pinned to those models (default or escalated)`
+      `judge_model_source must be one of {${JUDGE_OVERRIDE_SOURCES.join(", ")}}; ` +
+      `got "${String(input.judge_model_source)}"`
     );
   }
-  if (input.judge_producer === "agy" && input.judge_model_id !== DEFAULT_MODELS.agy_critique) {
-    throw new Error(
-      `judge_producer=agy must record judge_model_id="${DEFAULT_MODELS.agy_critique}" ` +
-      `because pp_agy.critique is hard-pinned to that model`
-    );
+  const judgeReason = input.judge_override_reason?.trim() ?? "";
+  if (JUDGE_SOURCES_REQUIRING_REASON.includes(judgeSource)) {
+    if (judgeReason.length < JUDGE_OVERRIDE_REASON_MIN_CHARS) {
+      throw new Error(
+        `judge_model_source="${judgeSource}" is an operator override channel and requires ` +
+        `judge_override_reason of at least ${JUDGE_OVERRIDE_REASON_MIN_CHARS} non-whitespace ` +
+        `chars explaining why the vendor pin was not used`
+      );
+    }
+  } else if (judgePolicy) {
+    const expected = judgeSource === "escalated"
+      ? judgePolicy.escalated.model
+      : judgePolicy.default.model;
+    if (input.judge_model_id !== expected) {
+      throw new Error(
+        `judge_model_source="${judgeSource}" for judge_producer=${input.judge_producer} pins ` +
+        `judge_model_id="${expected}", but "${input.judge_model_id}" was recorded. ` +
+        `Pass judge_model_source in {${JUDGE_SOURCES_REQUIRING_REASON.join(", ")}} with a ` +
+        `judge_override_reason to record a deliberate override.`
+      );
+    }
   }
-  if (att.producer === input.judge_producer && att.model_id === input.judge_model_id && att.producer !== "agy") {
+
+  // The agy exemption that used to sit on this guard is GONE (J4). It existed
+  // only because agy had a single pinned judge id, making generator==judge
+  // unavoidable for agy-on-agy stages; a distinct escalated agy id now exists,
+  // so identical generator and judge model ids are an unprovable self-judge
+  // for agy exactly as for every other producer. Producers are compared after
+  // normalizeProducer on BOTH sides so the "gemini" alias cannot evade it by
+  // spelling itself differently from the attempt's recorded producer.
+  const attProducerNorm = normalizeProducer(att.producer) ?? att.producer;
+  const judgeProducerNorm = normalizeProducer(input.judge_producer) ?? input.judge_producer;
+  if (attProducerNorm === judgeProducerNorm && att.model_id === input.judge_model_id) {
     throw new Error(
-      `same-vendor verdict requires different model ids for producer=${att.producer}: ` +
+      `same-vendor verdict requires different model ids for producer=${attProducerNorm}: ` +
       `generator=${att.model_id}, judge=${input.judge_model_id}`
     );
   }
@@ -1021,8 +1122,9 @@ export function recordVerdict(input: RecordVerdictInput): RecordVerdictOutput {
             outcome, critique_md, score_json, cross_vendor,
             hallucination_suspected, hallucination_details,
             idempotency_token,
+            judge_reasoning_effort, judge_model_source, judge_override_reason,
             created_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
         )
         .run(
           id,
@@ -1037,6 +1139,9 @@ export function recordVerdict(input: RecordVerdictInput): RecordVerdictOutput {
           provenanceCheck.hallucination_suspected ? 1 : 0,
           provenanceCheck.details_json,
           input.idempotency_token ?? null,
+          input.judge_reasoning_effort ?? null,
+          judgeSource,
+          judgeReason !== "" ? judgeReason : null,
           now()
         );
     });
@@ -1081,10 +1186,19 @@ export function recordVerdict(input: RecordVerdictInput): RecordVerdictOutput {
       outcome: input.outcome,
       critique_md: input.critique_md ?? null,
       cross_vendor: crossVendor,
+      judge_reasoning_effort: input.judge_reasoning_effort ?? null,
+      judge_model_source: judgeSource,
+      judge_override_reason: judgeReason !== "" ? judgeReason : null,
     });
   }
 
-  return { verdict_id: id, cross_vendor: crossVendor };
+  return {
+    verdict_id: id,
+    cross_vendor: crossVendor,
+    judge_reasoning_effort: input.judge_reasoning_effort ?? null,
+    judge_model_source: judgeSource,
+    judge_override_reason: judgeReason !== "" ? judgeReason : null,
+  };
 }
 
 /**

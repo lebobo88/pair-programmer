@@ -53,6 +53,15 @@ export type ReplayBundle = {
         rubric_id: string | null;
         outcome: string;
         cross_vendor: boolean;
+        /**
+         * v10 judge-selection provenance. A replay is only faithful if it
+         * re-runs the judge at the SAME model and effort the original ran at,
+         * so an override has to travel with the bundle. null on legacy
+         * (pre-v10) rows -- there is no backfill.
+         */
+        judge_reasoning_effort: string | null;
+        judge_model_source: string | null;
+        judge_override_reason: string | null;
       }>;
     }>;
   }>;
@@ -97,8 +106,9 @@ export function buildReplayBundle(run_id: string): ReplayBundle | null {
       tokens_in: number | null; tokens_out: number | null; cost_usd: number | null;
     }>;
     const attemptBundles = attempts.map(a => {
-      const verdicts = db().prepare(`SELECT judge_producer, judge_model_id, rubric_id, outcome, cross_vendor FROM verdicts WHERE attempt_id = ? ORDER BY created_at ASC`).all(a.id) as Array<{
+      const verdicts = db().prepare(`SELECT judge_producer, judge_model_id, rubric_id, outcome, cross_vendor, judge_reasoning_effort, judge_model_source, judge_override_reason FROM verdicts WHERE attempt_id = ? ORDER BY created_at ASC`).all(a.id) as Array<{
         judge_producer: string; judge_model_id: string; rubric_id: string | null; outcome: string; cross_vendor: number;
+        judge_reasoning_effort: string | null; judge_model_source: string | null; judge_override_reason: string | null;
       }>;
       return {
         id: a.id, producer: a.producer, model_id: a.model_id,
@@ -110,6 +120,20 @@ export function buildReplayBundle(run_id: string): ReplayBundle | null {
     });
     return { id: s.id, kind: s.kind, gate_type: s.gate_type, status: s.status, attempts: attemptBundles };
   });
+
+  // A judge that did NOT run its vendor's constitutional pin is the single
+  // most replay-relevant deviation in the bundle, so it is called out in the
+  // notes rather than left for the reader to spot in the per-verdict rows.
+  const overriddenJudges = stageBundles.flatMap(st =>
+    st.attempts.flatMap(a =>
+      a.verdicts
+        .filter(v => v.judge_model_source !== null && v.judge_model_source !== "default")
+        .map(v => `${st.kind}: ${v.judge_producer}/${v.judge_model_id}` +
+          `${v.judge_reasoning_effort ? `@${v.judge_reasoning_effort}` : ""} ` +
+          `(source=${v.judge_model_source}` +
+          `${v.judge_override_reason ? `, reason: ${v.judge_override_reason}` : ""})`)
+    )
+  );
 
   const artifacts = db().prepare(`SELECT kind, path, sha256 FROM artifacts WHERE run_id = ? ORDER BY created_at ASC`).all(run_id) as Array<{
     kind: string | null; path: string; sha256: string;
@@ -156,7 +180,12 @@ export function buildReplayBundle(run_id: string): ReplayBundle | null {
       `2) verify CLI versions match cli_versions; ` +
       `3) reissue the request via /pp:run with the original request_text, any team/forum, ` +
       `and re-pass cli_flags (--tier-cap/--tier-floor) verbatim; ` +
-      `4) compare new artifact sha256s against artifacts[].sha256.`,
+      `4) compare new artifact sha256s against artifacts[].sha256.` +
+      (overriddenJudges.length > 0
+        ? ` NOTE: ${overriddenJudges.length} verdict(s) used a non-default judge ` +
+          `selection and must be re-issued at the same model/effort to replay ` +
+          `faithfully -- ${overriddenJudges.join("; ")}.`
+        : ``),
   };
 }
 

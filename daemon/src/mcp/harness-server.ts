@@ -51,6 +51,8 @@ import {
   COPILOT_CLAUDE_TIER_MODELS,
   TIER_ORDER,
   ProducerSchema,
+  JUDGE_OVERRIDE_SOURCES,
+  JUDGE_REASONING_EFFORTS,
 } from "../config.js";
 import { log } from "../util/logger.js";
 import { listPriorCritiques, verifyAuditChain } from "../ecosystem/eights-writes.js";
@@ -210,6 +212,14 @@ const RecordVerdictSchema = z.object({
   // the retract-then-rejudge flow, both of which legitimately record more
   // than one verdict per (attempt, judge) tuple.
   idempotency_token: z.string().min(1).optional(),
+  // v10 judge-selection provenance. The daemon (recordVerdict) owns the
+  // semantic rules -- allow-listed model per producer, effort within the
+  // vendor's allowed_efforts, and a mandatory reason on the cli/team_yaml/
+  // hydra override channels. These schemas only fix the vocabularies so a
+  // typo is rejected at the MCP boundary rather than persisted.
+  judge_reasoning_effort: z.enum(JUDGE_REASONING_EFFORTS).optional(),
+  judge_model_source:     z.enum(JUDGE_OVERRIDE_SOURCES).optional(),
+  judge_override_reason:  z.string().optional(),
 })
   // Belt-and-suspenders against the "pragmatic pass" loophole. The judge
   // sub-agents already refuse to call this tool on critique-tool failure
