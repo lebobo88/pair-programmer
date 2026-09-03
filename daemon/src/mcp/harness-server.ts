@@ -89,6 +89,10 @@ const StartRunSchema = z.object({
   hydra_envelope_id:   z.string().optional(),
   hydra_origin_squad:  z.string().optional(),
   hydra_envelope_type: z.string().optional(),
+  // Driver-parsed CLI flags (--tier-*, --judge-*). Persisted on the run row
+  // as cli_flags_json for /pp:replay. Free-form record: the driver owns the
+  // vocabulary; the daemon only stores and echoes it.
+  cli_flags:           z.record(z.unknown()).optional(),
 });
 
 const EnsureRunSchema = z.object({

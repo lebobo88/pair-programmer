@@ -79,6 +79,13 @@ export type ReplayBundle = {
    * on legacy rows or runs that passed no recognized flags.
    */
   cli_flags: unknown;
+  /**
+   * Parsed contents of `<run_id>/judge_decisions.json` if the driver archived
+   * one (judge-parity work, 2026-09-03): per-stage judge resolution
+   * {vendor, model, reasoning_effort, escalate, source, reason, trace[]} plus
+   * the judge-related cli_flags. null if absent (legacy runs).
+   */
+  judge_resolution: unknown;
   reproduction_notes: string;
 };
 
@@ -155,6 +162,16 @@ export function buildReplayBundle(run_id: string): ReplayBundle | null {
     }
   } catch { /* ignore */ }
 
+  // Judge-decision plan archived per stage by the driver (step 6c). Same
+  // best-effort contract as tier_decisions.json.
+  let judgeResolution: unknown = null;
+  try {
+    const judgePath = join(projectArtifactDir(run.project_path, run.id), "judge_decisions.json");
+    if (existsSync(judgePath)) {
+      judgeResolution = safeJson(readFileSync(judgePath, "utf8"));
+    }
+  } catch { /* ignore */ }
+
   return {
     run_id: run.id,
     request_text: run.request_text,
@@ -175,11 +192,12 @@ export function buildReplayBundle(run_id: string): ReplayBundle | null {
     artifacts,
     tier_resolution: tierResolution,
     cli_flags: cliFlags,
+    judge_resolution: judgeResolution,
     reproduction_notes:
       `To replay: 1) git checkout ${run.head_sha ?? "<head_sha unknown>"}; ` +
       `2) verify CLI versions match cli_versions; ` +
       `3) reissue the request via /pp:run with the original request_text, any team/forum, ` +
-      `and re-pass cli_flags (--tier-cap/--tier-floor) verbatim; ` +
+      `and re-pass cli_flags (--tier-cap/--tier-floor and any --judge-* flags, including --judge-reason) verbatim; ` +
       `4) compare new artifact sha256s against artifacts[].sha256.` +
       (overriddenJudges.length > 0
         ? ` NOTE: ${overriddenJudges.length} verdict(s) used a non-default judge ` +

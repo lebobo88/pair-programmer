@@ -69,6 +69,13 @@ export type StartRunInput = {
   hydra_envelope_id?: string;
   hydra_origin_squad?: string;
   hydra_envelope_type?: string;
+  /**
+   * Per-run CLI flags parsed by the driver (tier flags and, since the
+   * 2026-09-03 judge-parity work, the --judge-* override flags). Persisted
+   * verbatim as runs.cli_flags_json so /pp:replay can re-issue them; the
+   * column existed since v9 but nothing wrote it before this field.
+   */
+  cli_flags?: Record<string, unknown>;
 };
 
 export type StartRunOutput = {
@@ -180,8 +187,8 @@ export async function startRun(input: StartRunInput): Promise<StartRunOutput> {
             status, profile_snapshot_json, taxonomy_mapping_json,
             head_sha, tree_dirty_hash, cli_versions_json, started_at,
             hydra_workflow_id, hydra_envelope_id, hydra_origin_squad, hydra_envelope_type,
-            constitution_sha
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+            constitution_sha, cli_flags_json
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
         )
         .run(
           id,
@@ -204,6 +211,9 @@ export async function startRun(input: StartRunInput): Promise<StartRunOutput> {
           hydraCtx?.origin_squad ?? null,
           hydraCtx?.envelope_type ?? null,
           constitutionShaAtStart,
+          input.cli_flags && Object.keys(input.cli_flags).length > 0
+            ? JSON.stringify(input.cli_flags)
+            : null,
         );
     });
   } catch (err) {
