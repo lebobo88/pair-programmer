@@ -16,7 +16,14 @@ import { wrapUntrusted } from "../security/untrusted-envelope.js";
 import { computeCost } from "../util/prices.js";
 import { SANDBOX_DIR, ensureDirs } from "../util/paths.js";
 import { log } from "../util/logger.js";
-import { DEFAULT_MODELS } from "../config.js";
+import {
+  DEFAULT_MODELS,
+  JUDGE_REASONING_EFFORTS,
+  JUDGE_OVERRIDE_SOURCES,
+  resolveJudgeSelection,
+  type JudgeReasoningEffort,
+  type JudgeOverrideSource,
+} from "../config.js";
 import { runCliWithRetry, type CliAttempt } from "./cli-runner.js";
 import { shutdownAndExit } from "../util/shutdown.js";
 import { getSession, setSession, synthesizeRecap } from "../orchestrator/sub-cli-sessions.js";
@@ -64,14 +71,27 @@ const GenerateSchema = z.object({
     reasoning_effort: z.enum(["minimal", "low", "medium", "high", "xhigh"]).optional(),
 });
 
+/**
+ * Shared critique option surface (J5). `pp_agy.critique` carries an IDENTICAL
+ * set — a judge call must read the same way whichever vendor serves it.
+ *
+ * `model` is optional with NO default: omitting it takes the vendor's pinned
+ * default via `resolveJudgeSelection`. A model or effort outside the vendor's
+ * allow-list is REJECTED LOUDLY (throws) rather than silently discarded, and
+ * any selection that deviates from the pin requires both an `override_source`
+ * and a non-empty `override_reason`.
+ */
 const CritiqueSchema = z.object({
-  artifact_text: z.string().min(1),
-  rubric_md:     z.string().min(1),
-  cwd:           z.string().min(1),
-  model:         z.string().default(DEFAULT_MODELS.codex_critique),
-  escalate:      z.boolean().optional(),
-  output_schema: z.unknown().optional(),
-  timeout_ms:    z.number().int().positive().optional(),
+  artifact_text:    z.string().min(1),
+  rubric_md:        z.string().min(1),
+  cwd:              z.string().min(1),
+  model:            z.string().optional(),
+  reasoning_effort: z.enum(JUDGE_REASONING_EFFORTS).optional(),
+  escalate:         z.boolean().optional(),
+  override_source:  z.enum(JUDGE_OVERRIDE_SOURCES).optional(),
+  override_reason:  z.string().optional(),
+  output_schema:    z.unknown().optional(),
+  timeout_ms:       z.number().int().positive().optional(),
 });
 
 // ─── Tool implementations ────────────────────────────────────────────────
@@ -93,6 +113,24 @@ type CodexResult = {
   failure_archive_path?: string;
   /** Present when the bridge converted an exit-0 malformed payload into a hard failure. */
   reason?: string;
+  /**
+   * The model id the Codex CLI itself reported serving, when the JSONL carried
+   * one. Kept SEPARATE from `model` (the requested id) so a served-vs-requested
+   * pin drift stays visible instead of collapsing into the request.
+   */
+  model_reported_by_cli?: string;
+  /** Resolved judge reasoning effort (critique path only). */
+  reasoning_effort?: JudgeReasoningEffort;
+  /** Provenance of the resolved judge selection (critique path only). */
+  override_source?: JudgeOverrideSource;
+  /** Operator justification carried alongside a non-default selection. */
+  override_reason?: string;
+  /**
+   * True when the CLI reported serving a different model than the one resolved
+   * for this critique. Reported, never thrown — a mismatch is a provenance
+   * signal, and discarding an otherwise valid verdict over it is worse.
+   */
+  pin_mismatch?: boolean;
 };
 
 type CodexGenerateInternalOptions = {
@@ -391,7 +429,10 @@ async function codexGenerate(
     tokens_in,
     tokens_out,
     cost_usd,
-    model: parsed.model ?? args.model,
+    // The REQUESTED id stays in `model`; what the CLI said it served is kept
+    // beside it so a pin mismatch is detectable rather than collapsed away.
+    model: args.model,
+    model_reported_by_cli: parsed.model,
     wall_ms: run.wall_ms,
     exit_code: run.exit_code,
     session_id: parsed.session_id,
@@ -422,30 +463,50 @@ export function selectCritiqueModel(escalate: boolean): string {
   return escalate ? DEFAULT_MODELS.codex_critique_escalated : DEFAULT_MODELS.codex_critique;
 }
 
+/**
+ * Resolve the concrete (model, reasoning_effort, source) a codex critique will
+ * run at, from the shared critique option surface. Pure — exported so the
+ * resolution can be unit-tested without spawning the Codex CLI.
+ *
+ * Throws (loudly) when the caller names a model or effort outside
+ * JUDGE_MODEL_POLICY.codex, combines `model` with `escalate`, or deviates from
+ * the pin without an override_source + override_reason.
+ */
+export function selectCritiqueInvocation(args: {
+  model?: string;
+  reasoning_effort?: string;
+  escalate?: boolean;
+  override_source?: string;
+  override_reason?: string;
+}): { model: string; reasoning_effort: JudgeReasoningEffort; source: JudgeOverrideSource } {
+  return resolveJudgeSelection({ producer: "codex", ...args });
+}
+
 export async function codexCritique(
   args: z.infer<typeof CritiqueSchema>,
   opts: CodexGenerateInternalOptions = {}
 ): Promise<CodexResult> {
-  // Pin the critique model and reasoning effort regardless of what the
-  // sub-agent passes. Sub-agent prompts (judge-cross-vendor / judge-same-
-  // vendor) ALSO require gpt-5.6-terra, but Claude Code drivers have repeatedly
-  // invented model ids (gpt-5-codex, o1, etc.) which the installed
-  // codex CLI does not serve, failing the critique with "model not found"
-  // and blowing up the run. Belt-and-suspenders: the wrapper enforces.
-  // escalate selects a PINNED allow-listed model (gpt-5.6-sol); caller-passed args.model remains ignored (invented-id guard).
-  const pinnedModel = DEFAULT_MODELS.codex_critique;
-  const effectiveModel = selectCritiqueModel(args.escalate ?? false);
-  if (args.model && args.model !== effectiveModel) {
-    process.stderr.write(
-      `[pp_codex.critique] ignoring model="${args.model}" passed by caller; pinning to "${effectiveModel}" (medium reasoning). The judge agent contract requires this model.\n`,
-    );
-  }
+  // Resolve the judge selection against JUDGE_MODEL_POLICY.codex. Claude Code
+  // drivers have repeatedly invented model ids (gpt-5-codex, o1, ...) which the
+  // installed codex CLI does not serve; those used to be silently discarded,
+  // which hid the driver bug. They now THROW — a caller that asked for a model
+  // it will not get must be told, not quietly overridden.
+  const selection = selectCritiqueInvocation(args);
+  const effectiveModel = selection.model;
   const wrappedArtifact = wrapUntrusted("artifact-under-review", args.artifact_text);
   const judgePrompt =
-    `You are an impartial code/spec/design judge. Apply the rubric below to the artifact.\n` +
-    `Return a JSON object with fields: outcome ("pass" | "fail" | "revise"), critique_md, and score_entries (an array of { dimension, score } entries where score is numeric 0..1).\n\n` +
-    `## Rubric\n${args.rubric_md}\n\n` +
-    `## Artifact\n${wrappedArtifact}\n`;
+    `You are an impartial code/spec/design judge. Apply the rubric below to the artifact.
+` +
+    `Return a JSON object with fields: outcome ("pass" | "fail" | "revise"), critique_md, and score_entries (an array of { dimension, score } entries where score is numeric 0..1).
+
+` +
+    `## Rubric
+${args.rubric_md}
+
+` +
+    `## Artifact
+${wrappedArtifact}
+`;
   const useDefaultSchema = !args.output_schema;
   const genArgs: z.infer<typeof GenerateSchema> = {
     prompt: judgePrompt,
@@ -454,8 +515,10 @@ export async function codexCritique(
     sandbox: "read-only",
     skip_recap: true,
     // CONSTITUTION.md Article V as amended (SHA 13b4fa18) pins JUDGE-1 at
-    // medium reasoning effort. Do not raise without a constitution amendment.
-    reasoning_effort: "medium",
+    // medium reasoning effort. The default path still resolves to medium; a
+    // different effort only arrives through the escalated pin or a justified
+    // override. Do not raise the DEFAULT without a constitution amendment.
+    reasoning_effort: selection.reasoning_effort,
     output_schema: args.output_schema ?? buildCritiqueOutputSchema(),
     timeout_ms: args.timeout_ms,
   };
@@ -463,8 +526,27 @@ export async function codexCritique(
   // real codexGenerate for all production paths.
   const invoker = opts._invoke ?? ((ga) => codexGenerate(ga, opts));
   const invoke = async () => invoker(genArgs);
-  if (!useDefaultSchema) return await invoke();
-  return await stabilizeCritiqueResult(invoke, { cwd: args.cwd, vendor: "codex" });
+  const result = useDefaultSchema
+    ? await stabilizeCritiqueResult(invoke, { cwd: args.cwd, vendor: "codex" })
+    : await invoke();
+
+  // Annotate the envelope with the resolved selection so the effective model
+  // and effort are readable by the caller without re-deriving them.
+  result.reasoning_effort = selection.reasoning_effort;
+  result.override_source  = selection.source;
+  if (args.override_reason) result.override_reason = args.override_reason;
+
+  // Pin mismatch is REPORTED, never thrown: the verdict itself is still a real
+  // adjudication, and the provenance signal belongs in the ledger.
+  const served = result.model_reported_by_cli;
+  if (served && served !== effectiveModel) {
+    result.pin_mismatch = true;
+    log.warn(
+      { requested: effectiveModel, served, cwd: args.cwd },
+      "codex critique pin mismatch: the CLI reported serving a different model than the one resolved",
+    );
+  }
+  return result;
 }
 
 // ─── JSONL parsing ───────────────────────────────────────────────────────
@@ -574,7 +656,10 @@ const TOOLS = [
   {
     name: "critique",
     description:
-      "Use Codex as a judge. Wraps the artifact in an untrusted envelope and applies the rubric_md. Returns a structured verdict (outcome | critique_md | score).",
+      "Use Codex as a judge. Wraps the artifact in an untrusted envelope and applies the rubric_md. Returns a structured verdict (outcome | critique_md | score). " +
+      "Shares an IDENTICAL option surface with pp_agy.critique: artifact_text, rubric_md, cwd, model? (optional — omit to take the pinned JUDGE-1 default), reasoning_effort?, escalate?, override_source?, override_reason?, output_schema?, timeout_ms?. " +
+      "model and reasoning_effort must be allow-listed for this vendor (JUDGE_MODEL_POLICY.codex) — a non-allow-listed value is REJECTED with an error, never silently replaced. Passing model together with escalate is an error. Any selection that differs from the pinned default requires both override_source and a non-empty override_reason. " +
+      "The result carries the effective model, reasoning_effort, override_source, override_reason, plus model_reported_by_cli and pin_mismatch when the CLI reports serving a different model.",
     schema: CritiqueSchema,
     handler: (args: unknown) => codexCritique(CritiqueSchema.parse(args)),
   },
