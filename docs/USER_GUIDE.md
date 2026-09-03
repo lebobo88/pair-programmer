@@ -1447,7 +1447,7 @@ Costs are computed at `record_attempt` time using `prices.json`. Update prices w
 The harness tracks but does not enforce budgets. To keep spend sensible:
 
 - **Default to `/pp:run`, escalate to `/pp:best-of` only when the cost is justified.** A best-of-3 spends ≈3× generator tokens + ≈3× judge tokens versus a single run. Use it for design decisions, public contracts, and security-critical changes — not for typo fixes.
-- **Pin cheaper models for low-stakes stages.** When authoring a custom team, set `generator.primary` to a smaller model (e.g. `claude-haiku-4-5`, `gemini-2.5-flash`) for `docs_polish` / `lint_class` stages. The cross-vendor judge still anchors quality on the high-stakes gates.
+- **Pin cheaper models for low-stakes stages.** When authoring a custom team, set `generator.primary` to a smaller model (e.g. `claude-haiku-4-5-20251001`, `gemini-3.8-flash-medium`) for `docs_polish` / `lint_class` stages. The cross-vendor judge still anchors quality on the high-stakes gates.
 - **Watch the loop ceiling.** Every `/pp:gate` and `/pp:retry` increments the validator-call counter. If you hit the ceiling, the run can't finalize until you raise the cap or aborted it.
 - **Read `/pp:budget day:<today>` daily during heavy use.** A surprise spike usually traces to one model + one stage; `/pp:budget model:<id>` locates which model.
 - **Update `prices.json` when vendor pricing changes** so cost reports stay accurate. The file is at `~/.pair-programmer/prices.json` (and `daemon/prices.json` is the upstream default copied on first run).
