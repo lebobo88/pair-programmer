@@ -906,7 +906,7 @@ const TOOLS: ToolDef[] = [
   {
     name: "doctor",
     description:
-      "Health-check: reports CLI versions, DB reachability, configured vendors, judge capability summaries, and whether cross_vendor is satisfied. Pass `smoke: true` to also exercise each vendor's critique CLI end-to-end (catches model-not-served / auth / command-line-too-long failures); adds 10–60s per configured vendor. Use this at session start.",
+      "Health-check: reports CLI versions, DB reachability, configured vendors, judge capability summaries, and whether cross_vendor is satisfied. Also reports pin freshness for both judge vendors — `agy_pin_served` + `agy_pin_check` (per-lane `per_pin` for the default/escalated critique and generate pins, plus `unserved_allowlist` drift) and `unpriced_models` (allow-listed judge ids that price at 0). Pass `smoke: true` to also exercise each vendor's critique CLI end-to-end (catches model-not-served / auth / command-line-too-long failures) and to populate `codex_pin_served` / `codex_pin_check` from the model the Codex CLI reports serving; adds 10–60s per configured vendor. Use this at session start.",
     schema: z.object({ smoke: z.boolean().optional() }),
     handler: async (args) => await doctor({ smoke: !!(args as { smoke?: boolean }).smoke }),
   },

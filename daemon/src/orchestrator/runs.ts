@@ -19,10 +19,11 @@ import { ProjectLock, ProjectLockBusyError } from "../util/lock.js";
 import { tmpdir } from "node:os";
 import {
   DEFAULT_MODELS, agyEnabled, assertProducer,
-  judgePolicyFor, isAllowedJudgeModel,
+  judgePolicyFor, isAllowedJudgeModel, JUDGE_MODEL_POLICY,
   JUDGE_OVERRIDE_SOURCES, type JudgeOverrideSource,
 } from "../config.js";
-import { checkAgyPinServed, type AgyPinCheck } from "./agy-pin.js";
+import { computeCost } from "../util/prices.js";
+import { checkAgyPinServed, defaultAgyPins, type AgyPinCheck } from "./agy-pin.js";
 import { codexCritique } from "../mcp/codex-server.js";
 import { agyCritique } from "../mcp/antigravity-server.js";
 import { describeJudgeCapabilities } from "./gates.js";
@@ -3552,6 +3553,7 @@ export async function doctor(opts: DoctorOptions = {}): Promise<unknown> {
     stderr_tail?: string;
     wall_ms?: number;
     reason?: string;
+    pin_check?: CodexPinCheck;
   };
   const critique_smoke: Record<string, SmokeResult> = {
     codex: { status: "skipped", model: DEFAULT_MODELS.codex_critique },
@@ -3562,29 +3564,59 @@ export async function doctor(opts: DoctorOptions = {}): Promise<unknown> {
     if (vendors.google)  critique_smoke.agy   = await agyCritiqueSmoke();
   }
 
-  // Pinned-model verification (E2-1). Always runs when the agy CLI is present,
-  // smoke or not: it is a ~1s list call, and a stale pin is invisible to the
-  // smoke test (agy exits 0 on an unknown --model and falls back silently).
+  // Pinned-model verification (E2-1, widened to every lane by J7). Always runs
+  // when the agy CLI is present, smoke or not: it is a ~1s list call and it
+  // covers lanes the smoke test never exercises (the escalated critique pin and
+  // the generate pin). agy REJECTS an unknown or retired --model — exit 1,
+  // "invalid model selection", no silent fallback — so a stale pin does not run
+  // the wrong model; it fails hard at the gate, mid-run, after generation cost
+  // is already sunk. The probe moves that discovery here, and additionally
+  // reports allow-list drift (allowed_models must stay a subset of served).
   const agy_pin: AgyPinCheck = cliVersions.agy !== null
     ? await checkAgyPinServed()
     : {
         agy_pin_served: null,
         pinned_model: DEFAULT_MODELS.agy_critique,
+        pinned_models: defaultAgyPins(),
+        per_pin: Object.fromEntries(Object.keys(defaultAgyPins()).map((k) => [k, null])),
         served_models: null,
+        unserved_allowlist: [],
         note: "agy CLI not installed; pinned-model check skipped.",
       };
 
+  // Codex pin freshness (J7). Smoke-only: the served id is reported by the CLI
+  // in the critique JSONL, so there is nothing to compare without a call.
+  const codex_pin: CodexPinCheck = critique_smoke.codex?.pin_check ?? {
+    codex_pin_served: null,
+    pinned_model: DEFAULT_MODELS.codex_critique,
+    reported_model: null,
+    note: "Codex pin check requires the critique smoke test; re-run /pp:doctor with smoke: true.",
+  };
+
   // Degraded = creds say "configured" but smoke reveals a broken bridge, OR
-  // the pinned critique model is provably not served by the installed CLI.
+  // the pinned critique model is provably not served / not honoured.
   const vendor_degraded: Record<string, boolean> = {
-    openai:    !!vendors.openai && critique_smoke.codex?.status === "fail",
+    openai:    (!!vendors.openai && critique_smoke.codex?.status === "fail")
+               || codex_pin.codex_pin_served === false,
     google:    (!!vendors.google && critique_smoke.agy?.status === "fail")
                || agy_pin.agy_pin_served === false,
     anthropic: false, // no smoke for in-process Claude judge
   };
 
+  // Judge ids that price at zero. computeCost falls back to 0 on a table miss,
+  // so an unpriced pin bills nothing and no budget scope ever moves.
+  const unpriced_models = unpricedJudgeModels();
+
   const notes: string[] = [];
   if (agy_pin.note) notes.push(agy_pin.note);
+  if (codex_pin.codex_pin_served === false && codex_pin.note) notes.push(codex_pin.note);
+  if (unpriced_models.length) {
+    notes.push(
+      `Unpriced judge model(s): ${unpriced_models.join(", ")}. computeCost() ` +
+      `returns 0 for these, so every call bills nothing and budget scopes stay ` +
+      `flat. Add input/output rates to daemon/prices.json (and ~/.pair-programmer/prices.json).`,
+    );
+  }
 
   const browser_engines = await probeBrowserEngines();
 
@@ -3597,6 +3629,13 @@ export async function doctor(opts: DoctorOptions = {}): Promise<unknown> {
     vendor_degraded,
     agy_pin_served: agy_pin.agy_pin_served,
     agy_pin_check: agy_pin,
+    codex_pin_served: codex_pin.codex_pin_served,
+    codex_pin_check: {
+      pinned_model:   codex_pin.pinned_model,
+      reported_model: codex_pin.reported_model,
+      note:           codex_pin.note,
+    },
+    unpriced_models,
     notes,
     agy_disabled: !agyEnabled(),
     cross_vendor_ready: vendorCount >= 2,
@@ -3661,6 +3700,87 @@ async function probeBrowserEngines(): Promise<{
   };
 }
 
+/**
+ * Codex served-vs-requested pin comparison (J7).
+ *
+ * The Codex CLI reports the model it actually served in its JSONL envelope
+ * (`CodexResult.model_reported_by_cli`). Before J7 that value was captured and
+ * then dropped on the floor, so a silent server-side substitution — the exact
+ * failure class agy CANNOT have, because agy rejects a bad id outright — was
+ * invisible to `/pp:doctor`.
+ *
+ * Tri-state, deliberately: `null` is "the CLI did not tell us", which is a
+ * known unknown across CLI versions and must never be reported as a failure.
+ */
+export type CodexPinCheck = {
+  /** true = served id matches the request; false = mismatch; null = unknown. */
+  codex_pin_served: boolean | null;
+  /** The model id the critique asked for. */
+  pinned_model: string;
+  /** What the CLI said it served, or null when it reported nothing. */
+  reported_model: string | null;
+  /** Operator-facing warning, or null when there is nothing to say. */
+  note: string | null;
+};
+
+/** Pure decision function for the Codex pin check. No I/O; unit-testable. */
+export function evaluateCodexPin(
+  pinnedModel: string,
+  reportedModel: string | null | undefined,
+): CodexPinCheck {
+  const reported = reportedModel && reportedModel.trim() ? reportedModel.trim() : null;
+  if (reported === null) {
+    return {
+      codex_pin_served: null,
+      pinned_model: pinnedModel,
+      reported_model: null,
+      note:
+        `Codex pin check inconclusive: the installed CLI did not report a served ` +
+        `model for the smoke critique, so "${pinnedModel}" could not be confirmed. ` +
+        `This is a known unknown on CLI versions that omit the model from JSONL, ` +
+        `not a failure.`,
+    };
+  }
+  if (reported === pinnedModel) {
+    return {
+      codex_pin_served: true,
+      pinned_model: pinnedModel,
+      reported_model: reported,
+      note: null,
+    };
+  }
+  return {
+    codex_pin_served: false,
+    pinned_model: pinnedModel,
+    reported_model: reported,
+    note:
+      `Codex pin mismatch: the critique requested "${pinnedModel}" but the CLI ` +
+      `reported serving "${reported}". Verdicts would be attributed to the pin in ` +
+      `the ledger while a different model adjudicated them. Check the installed ` +
+      `Codex CLI version and JUDGE_MODEL_POLICY.codex in daemon/src/config.ts.`,
+  };
+}
+
+/**
+ * Every judge-allow-listed model id that prices at zero (J7).
+ *
+ * `computeCost` falls back to 0 on a table miss, so a newly pinned id costs
+ * nothing forever and no budget line ever moves. Probing with 1M/1M tokens
+ * makes a genuine free model indistinguishable from a missing row — which is
+ * fine: a truly free judge model does not exist on either vendor today, so a
+ * zero here always means "add the rate to daemon/prices.json".
+ */
+export function unpricedJudgeModels(): string[] {
+  const ids: string[] = [];
+  for (const vendor of Object.keys(JUDGE_MODEL_POLICY) as Array<keyof typeof JUDGE_MODEL_POLICY>) {
+    for (const id of JUDGE_MODEL_POLICY[vendor].allowed_models) {
+      if (ids.includes(id)) continue;
+      if (computeCost(id, 1_000_000, 1_000_000) === 0) ids.push(id);
+    }
+  }
+  return ids;
+}
+
 const SMOKE_TIMEOUT_MS = 90 * 1000;
 const SMOKE_ARTIFACT = "Smoke artifact: a tiny placeholder used to confirm the critique bridge returns a structured verdict.";
 const SMOKE_RUBRIC =
@@ -3674,6 +3794,8 @@ async function codexCritiqueSmoke(): Promise<{
   stderr_tail?: string;
   wall_ms?: number;
   reason?: string;
+  /** Served-vs-requested pin comparison; only the smoke path can produce it. */
+  pin_check?: CodexPinCheck;
 }> {
   const cwd = tmpdir();
   try {
@@ -3686,8 +3808,11 @@ async function codexCritiqueSmoke(): Promise<{
     }, {
       skip_git_repo_check: true,
     });
+    // The requested pin is what we asked for, NOT run.model (which the bridge
+    // may have re-resolved); compare the CLI's report against the request.
+    const pin_check = evaluateCodexPin(DEFAULT_MODELS.codex_critique, run.model_reported_by_cli);
     if (run.exit_code === 0) {
-      return { status: "ok", model: run.model, exit_code: 0, wall_ms: run.wall_ms };
+      return { status: "ok", model: run.model, exit_code: 0, wall_ms: run.wall_ms, pin_check };
     }
     const stderr_tail = run.attempts?.[run.attempts.length - 1]?.stderr_tail;
     return {
@@ -3697,6 +3822,7 @@ async function codexCritiqueSmoke(): Promise<{
       stderr_tail,
       wall_ms: run.wall_ms,
       reason: run.reason ?? classifySmokeFailure(stderr_tail ?? ""),
+      pin_check,
     };
   } catch (err) {
     return {
