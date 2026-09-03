@@ -74,7 +74,7 @@ export type VendorJudgePolicy = {
 export const JUDGE_MODEL_POLICY = {
   codex: {
     // Constitutional default (JUDGE-1), pinned by CONSTITUTION.md Article V as
-    // amended (SHA 13b4fa18): Codex `gpt-5.6-terra` at medium reasoning effort.
+    // amended 2026-09-03 (SHA 5df284cb, previously 13b4fa18): Codex `gpt-5.6-terra` at medium reasoning effort.
     // Do NOT change outside the HITL `/pp:constitution amend` path.
     default:   { model: "gpt-5.6-terra", reasoning_effort: "medium" },
     // Opt-in escalation for major-scope / last-resort gates.

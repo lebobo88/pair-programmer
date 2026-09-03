@@ -324,7 +324,7 @@ TTL reaper sweeps retained locks later.
 
 Codex critique runs on **`gpt-5.6-terra`** at medium reasoning effort by
 constitutional default (JUDGE-1, CONSTITUTION.md Article V as amended, SHA
-13b4fa18 — do not change). A higher-capability **`gpt-5.6-sol`** is reached only by **opt-in
+5df284cb (amended 2026-09-03; previously 13b4fa18) — do not change). A higher-capability **`gpt-5.6-sol`** is reached only by **opt-in
 escalation** for major-scope / last-resort gates; it is never the automatic
 default. (Source: `daemon/src/config.ts` `DEFAULT_MODELS`.)
 

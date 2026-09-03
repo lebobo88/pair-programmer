@@ -84,8 +84,21 @@ corresponding new test file triggers a constitution-guard advisory.
 ## Article V — Judge-Plane Invariants
 
 **JUDGE-1**: Cross-vendor judging is mandated at every gate. The default judge is
-Codex (`pp_codex`, gpt-5.6-terra at medium reasoning effort). Antigravity (agy)
-joins for Borda scoring when N ≥ 3.
+Codex (`pp_codex`, gpt-5.6-terra at medium reasoning effort). The default
+Antigravity (agy) judge is `gemini-3.8-flash-medium`. Escalated lanes,
+selectable only by an explicit `escalate` request, are Codex `gpt-5.6-sol`
+(medium) and agy `gemini-3.1-pro-high`. Antigravity (agy) joins for Borda
+scoring when N ≥ 3 whenever agy is enabled; when agy is disabled
+(`PP_DISABLE_AGY=1`) the second Borda judge is the other eligible cross-vendor
+lane and the run summary MUST state the substitution.
+
+**JUDGE-1a**: An explicit operator override of the judge vendor, model, or
+reasoning effort is permitted only when (a) the model id and effort are in the
+daemon's per-vendor allow-list (`JUDGE_MODEL_POLICY` in `daemon/src/config.ts`),
+(b) the override source (`cli` | `team_yaml` | `hydra`) and a reason of ≥ 8
+characters are recorded on the verdict, (c) the override never downgrades a
+cross-vendor gate to same-vendor, and (d) the defaults in JUDGE-1 apply whenever
+no override is given. Overrides are never inferred from request prose.
 
 **JUDGE-2**: A same-vendor-only verdict is not sufficient to close a stage as `passed`.
 At least one `cross_vendor=true` verdict with `outcome=pass` is required.
