@@ -4,8 +4,10 @@
  *
  * WHY THIS FILE EXISTS
  * --------------------
- * `copilot-fallback-removed.unit.mjs` only asserts STATIC repo state
- * (criterion 8: the file is gone; criterion 9: the symbols are grepped away).
+ * The now-deleted `copilot-fallback-removed.unit.mjs` only asserted STATIC
+ * repo state (criterion 8: the file is gone; criterion 9: the symbols are
+ * grepped away); its judge-pin assertions were replaced by
+ * `agy-pin.unit.mjs` and `agy-escalation.unit.mjs`.
  * A future re-introduction of a silent secondary-vendor fallback under a
  * DIFFERENT name would pass every one of those assertions. Criteria 10 and 11
  * are the behavioural heart of the defect and need a runtime assertion:

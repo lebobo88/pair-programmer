@@ -473,7 +473,9 @@ async function main() {
 
     // 15. Phase 4: missability library is the right size.
     const checks = await callTool(client, "list_missability_checks");
-    if (checks.length !== 56) throw new Error(`expected 56 missability checks, got ${checks.length}`);
+    // 57 since `constitution-attestation` was added; the literal here has
+    // historically lagged CHECK_DEFINITIONS (54 → 56 → 57).
+    if (checks.length !== 57) throw new Error(`expected 57 missability checks, got ${checks.length}`);
     console.log(`✓ list_missability_checks: ${checks.length} checks`);
 
     // 16. Phase 4: run_missability_checks runs and returns results.
@@ -490,7 +492,7 @@ async function main() {
       run_id: missRun.run_id,
       required_check_ids: ["decision-logging", "doc-ownership", "nfrs-declared"],
     });
-    if (missResult.results.length !== 56) throw new Error(`expected 56 results, got ${missResult.results.length}`);
+    if (missResult.results.length !== 57) throw new Error(`expected 57 results, got ${missResult.results.length}`);
     const dl = missResult.results.find(r => r.check_id === "decision-logging");
     if (dl?.status !== "pass") throw new Error(`decision-logging should pass on artifact mentioning "Decision log"`);
     console.log(`✓ run_missability_checks: ${missResult.pass_count} pass, ${missResult.fail_count} fail, ${missResult.na_count} n/a`);
@@ -629,7 +631,7 @@ async function main() {
 
     // 21. Phase 6: rubric registry has 27 rubrics (added igda-gasig@1).
     const rubricList = await callTool(client, "list_rubrics");
-    if (rubricList.length !== 27) throw new Error(`expected 27 rubrics, got ${rubricList.length}`);
+    if (rubricList.length !== 29) throw new Error(`expected 29 rubrics, got ${rubricList.length}`);
     const wcag = await callTool(client, "get_rubric", { id: "wcag-2.2-aa@1" });
     if (!wcag?.markdown.includes("8-state matrix")) throw new Error(`wcag rubric body missing expected content`);
     const wrv2 = await callTool(client, "get_rubric", { id: "web-runtime-validation@2" });
@@ -721,7 +723,7 @@ async function main() {
     console.log(`✓ team_list: ${teams.length} teams`);
     const featureTeam = await callTool(client, "team_get", { name: "feature-team", project_path: projectPath });
     if (!featureTeam?.team || featureTeam.origin !== "builtin") throw new Error(`feature-team should resolve to builtin`);
-    if (featureTeam.team.stages.length !== 7) throw new Error(`feature-team should have 7 stages, got ${featureTeam.team.stages.length}`);
+    if (featureTeam.team.stages.length !== 8) throw new Error(`feature-team should have 8 stages, got ${featureTeam.team.stages.length}`);
     const featureTests = featureTeam.team.stages.find(s => s.kind === "tests");
     const featureBrowser = featureTeam.team.stages.find(s => s.kind === "browser_validation");
     if (featureTests?.artifact_kind !== "test_plan") throw new Error(`feature-team tests stage should declare artifact_kind=test_plan`);
