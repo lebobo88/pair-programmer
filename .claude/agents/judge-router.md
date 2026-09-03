@@ -38,9 +38,9 @@ You are the judge router. You do not judge yourself — you decide which judge a
    | `override_rejection_reason` | Condition | Remediation to return |
    |---|---|---|
    | `reason_missing` | `source` ∈ {`cli`, `team_yaml`, `hydra`} and `reason` is absent or shorter than 8 characters | "JUDGE-1a(b) requires an override reason of ≥ 8 characters. Pass `--judge-reason=\"<why>\"` (or set it in the team yaml judge block)." |
-   | `cross_vendor_impossible` | `judge_override.vendor === generator_producer` | "The override names the generator's own vendor; a same-vendor verdict cannot close a gate (JUDGE-1/JUDGE-2). Choose the other cross-vendor lane." |
+   | `cross_vendor_impossible` | `judge_override.vendor` is NOT in the `closing: true` entry's `preferred_producers` (the daemon already excludes every producer of the generator's VENDOR, so a `copilot` generator with a `codex` override is caught here even though the producer strings differ) | "The override names the generator's own vendor; a same-vendor verdict cannot close a gate (JUDGE-1/JUDGE-2). Choose the other cross-vendor lane." |
    | `agy_disabled` | `judge_override.vendor === "agy"` and agy is absent from every `allowed_judges[].preferred_producers` (the daemon filters it out under `PP_DISABLE_AGY=1`) | "agy is disabled by the `PP_DISABLE_AGY=1` kill-switch. Unset it in `.claude/settings.local.json` and re-authenticate the agy CLI, or use `--judge-vendor=codex`." |
-   | `model_not_allowed` | `judge_override.model` is set and is not in the chosen vendor's `preferred_models` / `doctor().judge_capabilities[<vendor>].allowed_critique_models` | "That model id is not on the vendor's critique allow-list. Legal ids: <list>." (A non-allow-listed id also THROWS at the bridge — rejecting here is the cheap catch.) |
+   | `model_not_allowed` | `judge_override.model` is set and is not in the chosen vendor's `preferred_models` (already filtered against the generator's model) nor in `judge_capabilities[<vendor>].allowed_critique_models` returned by the same `gate_eligible_judges` call (this agent has no `doctor` tool) | "That model id is not on the vendor's critique allow-list. Legal ids: <list>." (A non-allow-listed id also THROWS at the bridge — rejecting here is the cheap catch.) |
    | `same_model_as_generator` | the resolved judge model id equals `generator_model` AND the resolved judge vendor equals `generator_producer` | "Identical model on both sides — the daemon blocks same-producer + same-model verdicts. Route to the other vendor or name a different model." |
 
    Otherwise `override_status: "applied"`. Resolve the effective fields: `judge_vendor` = `judge_override.vendor` ?? the first cross-vendor producer in `allowed_judges[0].preferred_producers`; `judge_model` = `judge_override.model` ?? null (null means the judge uses the vendor's pinned default, or its escalated pin when `judge_escalate` is true); `judge_reasoning_effort` = `judge_override.reasoning_effort` ?? null; `judge_escalate` = `judge_override.escalate` ?? false. `model` and `escalate` are mutually exclusive — if both arrive set, reject with `model_not_allowed` and say so.
@@ -48,7 +48,7 @@ You are the judge router. You do not judge yourself — you decide which judge a
 3. Return ONLY this JSON object to the driver:
    ```json
    {
-     "judge_agent": "judge-cross-vendor" | "judge-same-vendor",
+     "judge_agent": "judge-cross-vendor",
      "preferred_producers": ["..."],
      "rubric_id": "..." | null,
      "decision_reason": "...",
