@@ -3,7 +3,7 @@
 import { pathToFileURL } from "node:url";
 import { resolve } from "node:path";
 import { realpathSync } from "node:fs";
-import { mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -62,6 +62,20 @@ const COPILOT_EXPLICIT_TOOL_REFERENCE_TOKEN_PATTERN = [
   "Bash",
 ].join("|");
 const COPILOT_COLLAPSED_TOOL_REFERENCES = ["read", "edit", "search", "execute"];
+
+
+/**
+ * Skip entries whose target cannot be read. `.claude/agents` and `.claude/skills`
+ * carry symlinks into sibling checkouts (ExecutiveSuite, AgentSmith); when a
+ * sibling moves, the link dangles and `readFileSync` would abort the whole
+ * sync AFTER the mirror directories were already reset. Warn and continue so
+ * the mirror is regenerated from every source that still exists.
+ */
+function readableSource(path) {
+  if (existsSync(path)) return true;
+  console.warn(`[sync-copilot-assets] skipping unreadable source (dangling symlink?): ${path}`);
+  return false;
+}
 
 function ensureDir(path) {
   mkdirSync(path, { recursive: true });
@@ -349,6 +363,7 @@ function main() {
 
   for (const file of readdirSync(join(CLAUDE_DIR, "commands", "pp"))) {
     if (!file.endsWith(".md")) continue;
+    if (!readableSource(join(CLAUDE_DIR, "commands", "pp", file))) continue;
     normalizeCommand(
       join(CLAUDE_DIR, "commands", "pp", file),
       join(GENERATED_COMMANDS_DIR, file),
@@ -357,6 +372,7 @@ function main() {
 
   for (const file of readdirSync(join(CLAUDE_DIR, "agents"))) {
     if (!file.endsWith(".md")) continue;
+    if (!readableSource(join(CLAUDE_DIR, "agents", file))) continue;
     normalizeAgent(
       join(CLAUDE_DIR, "agents", file),
       join(GENERATED_AGENTS_DIR, `${basename(file, ".md")}.agent.md`),
@@ -365,6 +381,7 @@ function main() {
 
   for (const file of readdirSync(join(CLAUDE_DIR, "skills"))) {
     if (!file.endsWith(".md")) continue;
+    if (!readableSource(join(CLAUDE_DIR, "skills", file))) continue;
     const skillDir = join(GENERATED_SKILLS_DIR, basename(file, ".md"));
     ensureDir(skillDir);
     normalizeSkill(join(CLAUDE_DIR, "skills", file), skillDir);

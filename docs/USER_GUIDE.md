@@ -2,7 +2,7 @@
 
 > **Counts auto-verified against the source tree.** When you add or remove a slash command, sub-agent, team, profile, rubric, hook, missability check, forum, or MCP tool, regenerate the counts in this doc by running `Get-ChildItem` against the corresponding directory, or `grep` against the relevant source file. The numbers here are real, not aspirational.
 
-The pair-programmer harness is a **multi-vendor coding system**: **Claude Code or GitHub Copilot CLI** can act as the entrypoint, Codex CLI (OpenAI) and the Antigravity CLI (agy, Google) act as sub-agent generators and cross-vendor judges, and every artifact is validated by a model from a different vendor (or, for low-stakes lanes, a different model of the same vendor — see §6 for the one agy-degenerate exception). On top of that base loop sit specialized teams, project profiles, governance forums, standard-aligned rubrics, and a 16-section taxonomy that anchors every run to a durable master plan.
+The pair-programmer harness is a **multi-vendor coding system**: **Claude Code or GitHub Copilot CLI** can act as the entrypoint, Codex CLI (OpenAI) and the Antigravity CLI (agy, Google) act as sub-agent generators and cross-vendor judges, and every artifact is validated by a model from a **different vendor** — at every gate (JUDGE-1). A same-vendor different-model judge may still be run as a supplementary second opinion, but it never closes a stage (see §6). On top of that base loop sit specialized teams, project profiles, governance forums, standard-aligned rubrics, and a 16-section taxonomy that anchors every run to a durable master plan.
 
 This guide is the single canonical reference for using the harness day-to-day. The shorter guides under `docs/` (INSTALL, profiles, rubrics, teams, troubleshooting, validator-policy) remain as deep-dives and are linked from the relevant sections.
 
@@ -73,7 +73,7 @@ For lower-stakes gates (`code_style`, `docs_polish`, `lint_class`) the harness p
 
 ### The 5 invariants
 
-1. **Tiered validator policy** — cross-vendor by default on high-stakes gates; same-vendor different-model OK on style/lint/docs when the vendor can honor it (§6). The agy lane currently only serves one 3.x model, so same-vendor agy critique is a documented **degenerate** case (same model on both sides) until a sibling 3.x id ships. Codex same-vendor is now **conditional** because `pp_codex.critique` is pinned to `gpt-5.6-terra` (the default Codex generator pin is `gpt-5.6-luna`, so the ordinary Codex→Codex route is legal).
+1. **Cross-vendor validator policy** — cross-vendor judging is required at *every* gate (JUDGE-1); a same-vendor different-model judge is supplementary only and never closes a stage (§6). Each vendor has a default and an escalated critique lane plus an allow-list (`JUDGE_MODEL_POLICY`, `daemon/src/config.ts`), so same-vendor judging always has a second id available — and identical generator/judge model ids are rejected for every producer.
 2. **Taxonomy adherence on every task** — every run is mapped to ≥1 of the 16 sections in `taxonomy_blueprint.md` (§7).
 3. **Reflexion ×1 then surface** — at most one critique-fed retry per failed verdict; after that, the stage is `surfaced` and waits for human direction.
 4. **Anti-runaway loop ceiling** — default 6 validator calls per run. The 7th is rejected.
@@ -368,7 +368,7 @@ For best-of-2, the driver asks the judge for a structured rubric score per candi
 
 ### Self-bias guard
 
-When same-vendor judging is in play, the generator and judge MUST use **different model ids**, except for the documented degenerate agy lane. `pp_codex.critique` is hard-pinned to `gpt-5.6-terra`, so Codex same-vendor is only legal when the generator used a different model id (the default generator pin `gpt-5.6-luna` does); otherwise `gate_eligible_judges` upgrades to cross-vendor. The daemon's `record_verdict` path now rejects impossible Codex/agy judge metadata so a stale prompt cannot claim a model the wrapper did not actually use.
+When a supplementary same-vendor judge is in play, the generator and judge MUST use **different model ids** — there is no longer any exemption, the agy degenerate lane having been removed once agy gained a distinct escalated critique id. `pp_codex.critique` defaults to `gpt-5.6-terra` and `pp_agy.critique` to `gemini-3.8-flash-medium`; a same-vendor read on a generator that already used the default id must run another allow-listed id (normally the escalated lane, `gpt-5.6-sol` / `gemini-3.1-pro-high`), otherwise `gate_eligible_judges` routes the verdict cross-vendor. The daemon's `record_verdict` path rejects a judge model outside the producer's allow-list, a `default`/`escalated` source whose id does not match the pin, and an override source of `cli`/`team_yaml`/`hydra` without a reason of ≥ 8 characters — so a stale prompt cannot claim a model the wrapper did not actually use.
 
 > Deep-dive: [`docs/validator-policy.md`](validator-policy.md), [`.claude/skills/judge-policy.md`](../.claude/skills/judge-policy.md), source: [`daemon/src/orchestrator/gates.ts`](../daemon/src/orchestrator/gates.ts).
 
@@ -523,7 +523,78 @@ DB reachable? · CLI versions (codex, agy, git, node) · vendor credentials (cli
 
 `list` (default) → 25 rubrics with id/kind/title/source_url. `show <id>` (e.g. `wcag-2.2-aa@1`) → markdown body.
 
-> Sources: [`.claude/commands/pp/*.md`](../.claude/commands/pp/).
+### Judge override flags
+
+Six commands accept per-run judge overrides: `/pp:run`, `/pp:team`, `/pp:best-of`, `/pp:gate`, `/pp:retry`, `/pp:review`. They are the only sanctioned way to change which model issues a verdict, and they exist under `CONSTITUTION.md` Article V **JUDGE-1a**.
+
+| Flag | Values | Notes |
+|---|---|---|
+| `--judge-vendor=` | `codex` \| `agy` | `claude` is invalid — every gate is cross-vendor (JUDGE-1) and Claude is the generator. |
+| `--judge-model=` | an allow-listed critique id | Per-vendor allow-list from `JUDGE_MODEL_POLICY` (`daemon/src/config.ts`), surfaced by `doctor().judge_capabilities[<vendor>].allowed_critique_models`. |
+| `--judge-effort=` | `low` \| `medium` \| `high` \| `xhigh` | `xhigh` is Codex-only; agy has no `xhigh`. |
+| `--judge-escalate` | (boolean) | Selects the vendor's pinned escalated lane: Codex `gpt-5.6-sol`, agy `gemini-3.1-pro-high`. |
+| `--judge-reason="…"` | ≥ 8 characters | Required whenever `--judge-model` or `--judge-effort` is given. Recorded on every verdict. |
+
+**Defaults** (no flags): Codex `gpt-5.6-terra` at `medium`; agy `gemini-3.8-flash-medium` at `medium`.
+
+#### STOP conditions
+
+These are checked at **parse time, before any daemon call** — no run row is created, so there is nothing to abort:
+
+- `--judge-model` together with `--judge-escalate` (mutually exclusive — escalate selects a pinned model).
+- `--judge-model` without `--judge-vendor` (a model id is only meaningful against a vendor's allow-list).
+- `--judge-model` or `--judge-effort` without a `--judge-reason` of ≥ 8 characters.
+- `--judge-vendor=claude`, or any unknown vendor / effort value.
+- `--judge-effort=xhigh` with `--judge-vendor=agy`.
+
+Two further checks run against `doctor()` **before `start_run`** (step 2.5 in `/pp:run`, the equivalent point in the others), each printing the offending value plus the full allow-list:
+
+- `--judge-model` not in that vendor's `allowed_critique_models`, or `--judge-effort` not in `allowed_reasoning_efforts`. A non-allow-listed id also throws at the bridge; catching it here avoids an orphan run row.
+- `--judge-vendor=agy` while `doctor().agy_disabled` is true (`PP_DISABLE_AGY=1`). Remediation: unset the kill-switch in `.claude/settings.local.json` and re-authenticate the agy CLI, or use `--judge-vendor=codex`.
+
+At routing time `judge-router` performs a final validation and may return `override_status: "rejected"` with one of `cross_vendor_impossible`, `agy_disabled`, `model_not_allowed`, `same_model_as_generator`, `reason_missing`. **A rejected override aborts the run** (`finalize_run(status="aborted")`) — it is never silently downgraded to the default judge.
+
+#### Precedence
+
+Resolved **per field** (`vendor`, `model`, `reasoning_effort`, `escalate`), lowest first:
+
+1. **Daemon default** — `override_source: "default"`.
+2. **Team yaml `judge` block** (`model` / `reasoning_effort` / `escalate`, validated at team load) — `override_source: "team_yaml"`, reason `"team yaml <team>/<stage> judge block"`.
+3. **CLI flag** — `override_source: "cli"`, reason from `--judge-reason`.
+
+A layer that does not set a field leaves the lower layer's value intact. `"escalated"` is recorded when the escalated lane is chosen without an operator override (a sanctioned hard gate or last-resort Reflexion verdict); `"hydra"` is reserved for overrides on a Hydra `DevTask` envelope.
+
+**There is no prompt layer.** Overrides are never inferred from request prose. If your request text matches something like "judge this with gemini", the driver prints one hint line naming the equivalent flag and continues with the defaults.
+
+#### Examples
+
+```bash
+# Raise reasoning effort on an ordinary run
+/pp:run --judge-effort=high --judge-reason="auth refactor, want a harder read" "…"
+
+# Escalate to the pinned hard-gate lane (Codex gpt-5.6-sol)
+/pp:run --judge-escalate "…"
+
+# Route the judge to agy at its default pin (gemini-3.8-flash-medium)
+/pp:team --judge-vendor=agy security-review-team "…"
+
+# Name an explicit allow-listed model (vendor + reason both required)
+/pp:review --judge-vendor=codex --judge-model=gpt-5.6-sol \
+           --judge-reason="PHI in scope, want the strongest reader" threat
+
+# Re-judge an existing stage with the escalated agy lane
+/pp:gate --judge-vendor=agy --judge-escalate <run_id> <stage_id>
+```
+
+#### Where it is recorded
+
+- **`runs.cli_flags_json`** — the raw flags, persisted by `start_run` via its `cli_flags` input.
+- **`verdicts`** — `judge_model_id`, `judge_reasoning_effort`, `judge_model_source`, `judge_override_reason`, all taken from the critique **result** envelope (the effective model, not the requested one).
+- **`<run>/judge_decisions.json`** — artifact kind `judge_decisions`, taxonomy section `4.14`, re-archived with `force_overwrite: true` after every verdict. Carries the `cli_flags`, the per-vendor `allowed_critique_models`, and one `per_stage` entry each with the gate decision, generator, `resolved {vendor, model, reasoning_effort, escalate}`, `source`, `reason`, a `trace[]` of which layer set which field, `verdict_id`, `outcome`, `cross_vendor`, and `pin_mismatch`.
+- **The run summary** — a `judge` column (`vendor/model@effort`) plus an "Operator judge overrides" block listing every stage whose `source != "default"`.
+- **`/pp:replay`** re-issues the flags from `judge_decisions.json.cli_flags`, falling back to `runs.cli_flags_json`.
+
+> Sources: [`.claude/commands/pp/*.md`](../.claude/commands/pp/), [`.claude/agents/judge-router.md`](../.claude/agents/judge-router.md), [`.claude/agents/judge-cross-vendor.md`](../.claude/agents/judge-cross-vendor.md).
 
 ---
 
@@ -958,7 +1029,7 @@ Best-of-N runs N candidates in parallel through different vendors/models, then j
 ### How it works (the how)
 
 1. `start_best_of_stage(run_id, kind, gate_type, n)` allocates `N` git worktrees (or copy-mode dirs for non-git projects) and shuffles judge positions (Fisher-Yates, seeded for replay).
-2. Driver fans out `N` `engineer` invocations in parallel — pinned to different model IDs (e.g. `gpt-5.6-luna` + `gemini-3.7-flash-medium` + `claude-opus-5`).
+2. Driver fans out `N` `engineer` invocations in parallel — pinned to different model IDs (e.g. `gpt-5.6-luna` + `gemini-3.8-flash-medium` + `claude-opus-5`).
 3. Each candidate writes its artifact to its own worktree.
 4. `diff_entropy(candidate_texts[])` computes Jaccard similarity. If > 90% similar across all candidates, the result is flagged — the model already converged, which usually means `/pp:run` would have been just as good.
 5. `judge-router` runs all N artifacts against the rubric. For N≥3, optionally a second judge runs and `borda_count(rankings[])` picks the winner from combined rankings.
@@ -1317,19 +1388,23 @@ Three MCP servers register with Claude Code over stdio: **`pp_harness` 75 + `pp_
 
 Schema-level defaults are pinned in [`daemon/src/config.ts`](../daemon/src/config.ts) (`DEFAULT_MODELS`); the values below match that table. Sub-agents are expected to pass `model` explicitly via their prompt frontmatter — these defaults are the floor when nothing is passed.
 
+**Shared `critique` params (both vendors).** `artifact_text`, `rubric_md`, `cwd`, plus the judge-override surface: `model?` (an allow-listed id), `reasoning_effort?` (`low|medium|high|xhigh`; agy has no `xhigh`), `escalate?` (bool — selects the vendor's pinned escalated model; **mutually exclusive with `model`**), `override_source?` (`default|escalated|cli|team_yaml|hydra`), and `override_reason?` (required at ≥ 8 characters when the source is `cli`, `team_yaml`, or `hydra`). The result envelope returns the **effective** `model`, `reasoning_effort`, `override_source`, `override_reason`, and `pin_mismatch?` — record verdicts from the envelope, never from the request.
+
+**Allow-list rule.** `model` is checked against the vendor's critique allow-list (`JUDGE_MODEL_POLICY` in `config.ts`, surfaced as `doctor().judge_capabilities[<vendor>].allowed_critique_models`). A non-allow-listed id **throws** — it is not silently ignored and not replaced by the pin. See §8 "Judge override flags" for the operator-facing flags.
+
 ### `pp_codex` (2 tools)
 
 | Tool | Purpose |
 |---|---|
 | `generate` | Run `codex exec` headless. Inputs: `prompt`, `cwd`, `model?` (default `gpt-5.6-luna`), `sandbox?`, `output_schema?`, `untrusted_inputs?`. Returns text + tokens + cost. The daemon automatically adds `--skip-git-repo-check` for bridge calls. |
-| `critique` | Use Codex as a judge. Inputs: `artifact_text`, `rubric_md`, `cwd`, `model?` (default `gpt-5.6-terra`). Returns `{ outcome, critique_md, score }`. The daemon automatically adds `--skip-git-repo-check` for bridge calls. |
+| `critique` | Use Codex as a judge. Inputs: the shared critique params above; `model?` defaults to `gpt-5.6-terra`, `escalate: true` selects `gpt-5.6-sol`, `reasoning_effort?` defaults to `medium`. Returns `{ outcome, critique_md, score, model, reasoning_effort, override_source, override_reason, pin_mismatch? }`. The daemon automatically adds `--skip-git-repo-check` for bridge calls. |
 
 ### `pp_agy` (2 tools)
 
 | Tool | Purpose |
 |---|---|
-| `generate` | Run the Antigravity CLI (agy) in headless (`-p`) mode. Inputs: `prompt`, `cwd`, `model?` (default `gemini-3.7-flash-medium`), `output_schema?` (asks for structured JSON via the prompt; agy's raw headless output is plain text, not a JSON envelope), `untrusted_inputs?`. |
-| `critique` | Use agy as a cross-vendor judge. Inputs: `artifact_text`, `rubric_md`, `cwd`, `model?` (default `gemini-3.7-flash-medium`). |
+| `generate` | Run the Antigravity CLI (agy) in headless (`-p`) mode. Inputs: `prompt`, `cwd`, `model?` (default `gemini-3.8-flash-medium`), `output_schema?` (asks for structured JSON via the prompt; agy's raw headless output is plain text, not a JSON envelope), `untrusted_inputs?`. |
+| `critique` | Use agy as a cross-vendor judge. Inputs: the shared critique params above; `model?` defaults to `gemini-3.8-flash-medium`, `escalate: true` selects `gemini-3.1-pro-high`, `reasoning_effort?` defaults to `medium` (no `xhigh`). Same result envelope as Codex. |
 
 > Source: [`daemon/src/mcp/harness-server.ts`](../daemon/src/mcp/harness-server.ts), [`daemon/src/mcp/codex-server.ts`](../daemon/src/mcp/codex-server.ts), [`daemon/src/mcp/antigravity-server.ts`](../daemon/src/mcp/antigravity-server.ts).
 
@@ -1447,7 +1522,7 @@ Costs are computed at `record_attempt` time using `prices.json`. Update prices w
 The harness tracks but does not enforce budgets. To keep spend sensible:
 
 - **Default to `/pp:run`, escalate to `/pp:best-of` only when the cost is justified.** A best-of-3 spends ≈3× generator tokens + ≈3× judge tokens versus a single run. Use it for design decisions, public contracts, and security-critical changes — not for typo fixes.
-- **Pin cheaper models for low-stakes stages.** When authoring a custom team, set `generator.primary` to a smaller model (e.g. `claude-haiku-4-5`, `gemini-2.5-flash`) for `docs_polish` / `lint_class` stages. The cross-vendor judge still anchors quality on the high-stakes gates.
+- **Pin cheaper models for low-stakes stages.** When authoring a custom team, set `generator.primary` to a smaller model (e.g. `claude-haiku-4-5-20251001`, `gemini-3.8-flash-medium`) for `docs_polish` / `lint_class` stages. The cross-vendor judge still anchors quality on the high-stakes gates.
 - **Watch the loop ceiling.** Every `/pp:gate` and `/pp:retry` increments the validator-call counter. If you hit the ceiling, the run can't finalize until you raise the cap or aborted it.
 - **Read `/pp:budget day:<today>` daily during heavy use.** A surprise spike usually traces to one model + one stage; `/pp:budget model:<id>` locates which model.
 - **Update `prices.json` when vendor pricing changes** so cost reports stay accurate. The file is at `~/.pair-programmer/prices.json` (and `daemon/prices.json` is the upstream default copied on first run).
@@ -1698,7 +1773,7 @@ You should only need the manual flag when calling the Codex CLI yourself outside
 | **Reflexion ×1** | At most one critique-fed retry per failed attempt. Then surface. |
 | **rubric** | Standard-aligned scoring guide applied at a gate. 25 ship in the registry; project files at `<project>/.claude/rubrics/<bare-id>.md` are loaded only for IDs the registry doesn't have (registry-first). |
 | **run** | One invocation of `/pp:run` / `/pp:best-of` / `/pp:team` / `/pp:review`. Has a `run_id` and a directory. |
-| **same-vendor judge** | Judge whose vendor matches the generator. Usually a different model id; agy is a documented degenerate same-model exception, and Codex is only allowed when the generator model differs from the pinned `gpt-5.6-terra` critique model. |
+| **same-vendor judge** | Judge whose vendor matches the generator. Always a **different** model id — identical generator/judge ids are rejected for every producer — and always supplementary: a same-vendor verdict never closes a stage (JUDGE-2). |
 | **sandbox** | Codex's `read-only | workspace-write | danger-full-access` flag. Mapped per stage kind. |
 | **stage** | One slot in a run's pipeline (e.g. `spec`, `code`, `tests`). |
 | **sub-agent** | Specialized Claude Code agent invoked via the Task tool. 75 ship in `.claude/agents/` — engineering/lifecycle/judging generators plus executive-suite personas, governance authors, and AgentSmith watchers. |

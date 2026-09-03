@@ -11,7 +11,7 @@ import {
   finalizeRun, archiveArtifact, listRuns, getRun, budgetStatus, doctor,
   recordTaxonomyMapping, getStageFinalizeReadiness, ackRun,
 } from "../orchestrator/runs.js";
-import { evaluateGate, listAllowedJudges, type GateType, type Profile } from "../orchestrator/gates.js";
+import { evaluateGate, listAllowedJudges, describeJudgeCapabilities, type GateType, type Profile } from "../orchestrator/gates.js";
 import { heuristicTriage, heuristicMapping, TAXONOMY_SECTIONS, COMPLETION_CHECKLIST } from "../orchestrator/taxonomy.js";
 import { applyMasterPlanPatch, masterPlanStatus, ensureMasterPlan } from "../orchestrator/master-plan.js";
 import {
@@ -51,6 +51,8 @@ import {
   COPILOT_CLAUDE_TIER_MODELS,
   TIER_ORDER,
   ProducerSchema,
+  JUDGE_OVERRIDE_SOURCES,
+  JUDGE_REASONING_EFFORTS,
 } from "../config.js";
 import { log } from "../util/logger.js";
 import { listPriorCritiques, verifyAuditChain } from "../ecosystem/eights-writes.js";
@@ -87,6 +89,10 @@ const StartRunSchema = z.object({
   hydra_envelope_id:   z.string().optional(),
   hydra_origin_squad:  z.string().optional(),
   hydra_envelope_type: z.string().optional(),
+  // Driver-parsed CLI flags (--tier-*, --judge-*). Persisted on the run row
+  // as cli_flags_json for /pp:replay. Free-form record: the driver owns the
+  // vocabulary; the daemon only stores and echoes it.
+  cli_flags:           z.record(z.unknown()).optional(),
 });
 
 const EnsureRunSchema = z.object({
@@ -210,6 +216,14 @@ const RecordVerdictSchema = z.object({
   // the retract-then-rejudge flow, both of which legitimately record more
   // than one verdict per (attempt, judge) tuple.
   idempotency_token: z.string().min(1).optional(),
+  // v10 judge-selection provenance. The daemon (recordVerdict) owns the
+  // semantic rules -- allow-listed model per producer, effort within the
+  // vendor's allowed_efforts, and a mandatory reason on the cli/team_yaml/
+  // hydra override channels. These schemas only fix the vocabularies so a
+  // typo is rejected at the MCP boundary rather than persisted.
+  judge_reasoning_effort: z.enum(JUDGE_REASONING_EFFORTS).optional(),
+  judge_model_source:     z.enum(JUDGE_OVERRIDE_SOURCES).optional(),
+  judge_override_reason:  z.string().optional(),
 })
   // Belt-and-suspenders against the "pragmatic pass" loophole. The judge
   // sub-agents already refuse to call this tool on critique-tool failure
@@ -342,6 +356,10 @@ const GateEligibleJudgesSchema = z.object({
   profile:             z.enum(BUILTIN_PROFILE_NAMES).optional(),
   artifact_kind:       z.string().optional(),
   rubric_hint:         z.string().min(1).optional(),
+  // JUDGE-1a operator override, forwarded by judge-router so the allow-list
+  // check happens in the daemon rather than in the driver's prompt.
+  requested_judge_model:  z.string().min(1).optional(),
+  requested_judge_effort: z.string().min(1).optional(),
 });
 
 const TriageRequestSchema = z.object({
@@ -896,7 +914,7 @@ const TOOLS: ToolDef[] = [
   {
     name: "doctor",
     description:
-      "Health-check: reports CLI versions, DB reachability, configured vendors, judge capability summaries, and whether cross_vendor is satisfied. Pass `smoke: true` to also exercise each vendor's critique CLI end-to-end (catches model-not-served / auth / command-line-too-long failures); adds 10–60s per configured vendor. Use this at session start.",
+      "Health-check: reports CLI versions, DB reachability, configured vendors, judge capability summaries, and whether cross_vendor is satisfied. Also reports pin freshness for both judge vendors — `agy_pin_served` + `agy_pin_check` (per-lane `per_pin` for the default/escalated critique and generate pins, plus `unserved_allowlist` drift) and `unpriced_models` (allow-listed judge ids that price at 0). Pass `smoke: true` to also exercise each vendor's critique CLI end-to-end (catches model-not-served / auth / command-line-too-long failures) and to populate `codex_pin_served` / `codex_pin_check` from the model the Codex CLI reports serving; adds 10–60s per configured vendor. Use this at session start.",
     schema: z.object({ smoke: z.boolean().optional() }),
     handler: async (args) => await doctor({ smoke: !!(args as { smoke?: boolean }).smoke }),
   },
@@ -1295,7 +1313,7 @@ const TOOLS: ToolDef[] = [
   {
     name: "gate_eligible_judges",
     description:
-      "Given a gate_type, the generator's producer, optional generator_model, optional prompt keywords, optional profile, optional artifact_kind, and optional rubric_hint, returns the judge tier policy: required_cross_vendor (bool), base_tier, whether it was upgraded by content/profile/capability, the reason, the recommended rubric_id, and the list of allowed judges with preferred providers. rubric_hint lets a team/forum stage declare its intended rubric when that intent cannot be inferred from gate_type alone; unknown hints are ignored. If generator_model is omitted, the daemon infers Codex/agy defaults from DEFAULT_MODELS where possible. Driver MUST call this before invoking any judge.",
+      "Given a gate_type, the generator's producer, optional generator_model, optional prompt keywords, optional profile, optional artifact_kind, optional rubric_hint, and an optional requested_judge_model / requested_judge_effort override, returns the judge tier policy: required_cross_vendor (always true — JUDGE-1 mandates cross-vendor judging at every gate), base_tier, whether an independent content/profile/capability signal also forced it (upgraded), the reason, the recommended rubric_id, the list of allowed judges (each with preferred_producers, preferred_models — allow-listed ids with the generator's own model removed, best first — and closing, where exactly one lane is closing:true and it is always judge-cross-vendor), and judge_capabilities (the per-vendor critique model allow-list, so callers never hard-code pins). rubric_hint lets a team/forum stage declare its intended rubric when that intent cannot be inferred from gate_type alone; unknown hints are ignored. If generator_model is omitted, the daemon infers Codex/agy defaults from DEFAULT_MODELS where possible. Driver MUST call this before invoking any judge.",
     schema: GateEligibleJudgesSchema,
     handler: (args) => {
       const parsed = GateEligibleJudgesSchema.parse(args);
@@ -1308,8 +1326,16 @@ const TOOLS: ToolDef[] = [
         artifact_kind:   parsed.artifact_kind,
         rubric_hint:     parsed.rubric_hint,
       });
-      const judges = listAllowedJudges(decision, parsed.generator_producer);
-      return { ...decision, allowed_judges: judges };
+      const judges = listAllowedJudges(decision, parsed.generator_producer, {
+        generator_model:        parsed.generator_model,
+        requested_judge_model:  parsed.requested_judge_model,
+        requested_judge_effort: parsed.requested_judge_effort,
+      });
+      return {
+        ...decision,
+        allowed_judges: judges,
+        judge_capabilities: describeJudgeCapabilities(),
+      };
     },
   },
 ];

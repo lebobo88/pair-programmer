@@ -4,15 +4,28 @@
 //   2. DEFAULT_MODELS.codex_critique_escalated matches the escalation pin.
 //   3. selectCritiqueModel(false) returns the default pin.
 //   4. selectCritiqueModel(true) returns the escalated pin.
-//   5. Caller-passed args.model is ignored — selection depends only on escalate.
-//   6. recordVerdict accepts judge_model_id=<escalated pin>.
+//   5. selectCritiqueModel has no model parameter — escalate alone drives it.
+//   6. recordVerdict accepts judge_model_id=<escalated pin> (with
+//      judge_model_source:"escalated" -- J4 requires the source to match the pin).
 //   7. recordVerdict still rejects arbitrary (non-pinned) codex judge_model_id.
 //   8. codexCritique e2e: escalate:true → invoked with the escalated pin (DI seam).
-//   9. codexCritique e2e: escalate:false → invoked with the default pin (DI seam).
-//  10. codexCritique e2e: escalate:false + args.model:"gpt-5-bogus" → still default.
+//   9. codexCritique e2e: no model → invoked with the default pin at medium.
+//  10. codexCritique e2e: an allow-listed override (source cli + reason) REACHES
+//      genArgs.model — J5 replaced the old silent discard.
+//  11. codexCritique e2e: a non-allow-listed model ("gpt-5-bogus") THROWS.
+//  12. codexCritique e2e: escalate:true together with model THROWS (ambiguous).
+//  13. codexCritique e2e: reasoning_effort:"high" + source cli + reason reaches
+//      genArgs.reasoning_effort.
+//  14. codexCritique e2e: an override_source of "cli" with NO override_reason THROWS.
 // Items 1-5 are pure/offline. Items 6-7 exercise runs.recordVerdict against
-// a temp SQLite DB — no subprocess, no MCP server. Items 8-10 use the _invoke
+// a temp SQLite DB — no subprocess, no MCP server. Items 8-14 use the _invoke
 // DI seam to capture genArgs without spawning the Codex CLI.
+//
+// J5 CONTRACT CHANGE (issue #29): pp_codex.critique previously accepted
+// args.model and silently discarded it, hiding driver bugs behind a stderr
+// line. It now resolves through resolveJudgeSelection: an allow-listed model
+// with a justified override is HONORED, and anything outside the allow-list is
+// REJECTED LOUDLY. The old "arbitrary model ignored" case is now a throw case.
 //
 // DE-HARDCODING POLICY (model-id refresh, 2026-08-22): every assertion below
 // derives its expected model id from DEFAULT_MODELS / CLAUDE_TIER_MODELS in
@@ -42,7 +55,7 @@ const { DEFAULT_MODELS, CLAUDE_TIER_MODELS } = await import(
 );
 
 // Tripwire literals — intentionally NOT derived. CONSTITUTION.md Article V (as
-// amended, SHA 13b4fa18) pins JUDGE-1 to gpt-5.6-terra at medium reasoning
+// amended 2026-09-03, SHA 5df284cb, previously 13b4fa18) pins JUDGE-1 to gpt-5.6-terra at medium reasoning
 // effort; the escalated lane is gpt-5.6-sol. Changing DEFAULT_MODELS without a
 // constitution amendment must break this file loudly, which a self-referential
 // assertion could never do.
@@ -51,8 +64,16 @@ const EXPECTED_ESCALATED_PIN = "gpt-5.6-sol";
 // Generator model for the recordVerdict fixtures — derived so a tier repin
 // cannot silently desync the fixture from the shipped tier map.
 const GENERATOR_MODEL = CLAUDE_TIER_MODELS.sonnet;
-const { selectCritiqueModel, codexCritique } = await import(
+const { selectCritiqueModel, selectCritiqueInvocation, codexCritique } = await import(
   pathToFileURL(join(DIST, "mcp", "codex-server.js")).href
+);
+
+// An allow-listed NON-default codex judge model, used for the override cases.
+// Derived from JUDGE_MODEL_POLICY so an allow-list edit cannot silently make
+// this case vacuous; asserted distinct from both pins below.
+const { JUDGE_MODEL_POLICY } = await import(pathToFileURL(join(DIST, "config.js")).href);
+const ALLOWED_OVERRIDE_MODEL = JUDGE_MODEL_POLICY.codex.allowed_models.find(
+  (m) => m !== DEFAULT_MODELS.codex_critique && m !== DEFAULT_MODELS.codex_critique_escalated,
 );
 
 let passed = 0;
@@ -121,11 +142,12 @@ it("selectCritiqueModel(true) returns DEFAULT_MODELS.codex_critique_escalated", 
 
 // ─── 5. Caller-passed model is ignored — only escalate matters ────────────
 
-it("model selection is determined solely by the escalate boolean, not a caller-passed model string", () => {
+it("selectCritiqueModel's selection is determined solely by the escalate boolean", () => {
   // selectCritiqueModel takes exactly one boolean argument — it has no model
-  // parameter. The invented-id guard in codexCritique (~line 310) drops
-  // args.model before it can influence anything; selectCritiqueModel is the
-  // sole path to the effective model.
+  // parameter, so it can only ever name one of the two pins. Since J5 the
+  // caller-passed model is resolved by selectCritiqueInvocation /
+  // resolveJudgeSelection instead of being discarded, but this helper's own
+  // contract is unchanged and other call sites still depend on it.
 
   // escalate=false always yields the constitutional default.
   assert.equal(selectCritiqueModel(false), DEFAULT_MODELS.codex_critique);
@@ -140,10 +162,9 @@ it("model selection is determined solely by the escalate boolean, not a caller-p
     "pinned default and pinned escalation must not be the same model",
   );
 
-  // selectCritiqueModel accepts exactly one parameter (boolean). Any
-  // caller-passed args.model string never reaches this function — it is
-  // consumed by the warning branch in codexCritique and never forwarded.
-  // TypeScript enforces this at compile time; confirm at runtime:
+  // selectCritiqueModel accepts exactly one parameter (boolean). A
+  // caller-passed args.model string never reaches THIS function — model
+  // resolution lives in selectCritiqueInvocation. Confirm at runtime:
   assert.equal(selectCritiqueModel.length, 1, "selectCritiqueModel takes exactly 1 param (boolean)");
 });
 
@@ -171,6 +192,11 @@ await itAsync("recordVerdict accepts judge_model_id=<escalated codex pin>", asyn
     judge_producer: "codex",
     judge_model_id: DEFAULT_MODELS.codex_critique_escalated,
     rubric_id: "owasp-asvs-l2@1",
+    // J4: judge_model_source defaults to "default", which ASSERTS the vendor
+    // pin was used. Taking the escalated lane must now say so explicitly --
+    // otherwise recordVerdict rejects the row rather than let an escalation
+    // be laundered into the ledger as the constitutional default.
+    judge_model_source: "escalated",
     outcome: "pass",
     critique_md: "Escalated security gate review: all ASVS-L2 controls verified present. No credential leakage, injection surface contained, auth flows correctly scoped.",
     score_json: { correctness: 0.95, safety: 0.9 },
@@ -205,17 +231,20 @@ await itAsync("recordVerdict rejects arbitrary (non-pinned) codex judge_model_id
       critique_md: "This should be rejected — gpt-5-bogus is not a pinned codex critique model.",
       score_json: { correctness: 0.9 },
     }),
-    (err) => /pinned to those models/i.test(err.message),
+    // J4 rewrote this guard to read JUDGE_MODEL_POLICY instead of a
+    // hard-coded literal set; the message now names the allow-list.
+    (err) => /JUDGE_MODEL_POLICY allow-list/.test(err.message),
     "arbitrary model id must be rejected by recordVerdict",
   );
 });
 
-// ─── 8-10. codexCritique e2e via _invoke DI seam ─────────────────────────
+// ─── 8-14. codexCritique e2e via _invoke DI seam ─────────────────────────
 //
 // The _invoke seam (opts._invoke) intercepts the resolved genArgs that
 // codexCritique would otherwise pass to the real codexGenerate. We capture
-// genArgs.model and return a minimal valid CodexResult stub so codexCritique
-// can complete without touching the filesystem or spawning a CLI process.
+// genArgs.model / genArgs.reasoning_effort and return a minimal valid
+// CodexResult stub so codexCritique can complete without touching the
+// filesystem or spawning a CLI process.
 //
 // We pass output_schema:{type:"object"} so useDefaultSchema=false and the
 // result is returned directly (no stabilizeCritiqueResult retry loop).
@@ -236,79 +265,111 @@ function makeStubResult(capturedModel) {
   };
 }
 
-await itAsync("codexCritique e2e: escalate:true → invoked with the escalated pin", async () => {
-  let capturedModel;
+/** Run codexCritique through the DI seam and return the captured genArgs. */
+async function captureGenArgs(critiqueArgs) {
+  let captured;
   await codexCritique(
-    {
-      artifact_text: "fn foo() {}",
-      rubric_md: "check it",
-      cwd: STUB_CWD,
-      model: DEFAULT_MODELS.codex_critique, // caller-passed model — must be ignored
-      escalate: true,
-      output_schema: { type: "object" }, // skip stabilize path
-    },
+    { artifact_text: "fn foo() {}", rubric_md: "check it", cwd: STUB_CWD, output_schema: { type: "object" }, ...critiqueArgs },
     {
       _invoke: async (genArgs) => {
-        capturedModel = genArgs.model;
+        captured = genArgs;
         return makeStubResult(genArgs.model);
       },
     },
   );
+  return captured;
+}
+
+it("the override fixture model is allow-listed and distinct from both pins", () => {
+  assert.ok(
+    ALLOWED_OVERRIDE_MODEL,
+    "JUDGE_MODEL_POLICY.codex.allowed_models must carry a third id for the override case to be meaningful",
+  );
+});
+
+await itAsync("codexCritique e2e: escalate:true → invoked with the escalated pin", async () => {
+  // NOTE: no `model` is passed. Since J5, model + escalate is an ambiguity
+  // error, so the escalated lane is selected by the flag alone.
+  const genArgs = await captureGenArgs({ escalate: true });
   assert.equal(
-    capturedModel,
+    genArgs.model,
     DEFAULT_MODELS.codex_critique_escalated,
     "escalate:true must invoke with DEFAULT_MODELS.codex_critique_escalated",
   );
 });
 
-await itAsync("codexCritique e2e: escalate:false → invoked with the default pin", async () => {
-  let capturedModel;
-  await codexCritique(
-    {
-      artifact_text: "fn foo() {}",
-      rubric_md: "check it",
-      cwd: STUB_CWD,
-      model: DEFAULT_MODELS.codex_critique_escalated, // caller-passed — must be ignored
-      escalate: false,
-      output_schema: { type: "object" },
-    },
-    {
-      _invoke: async (genArgs) => {
-        capturedModel = genArgs.model;
-        return makeStubResult(genArgs.model);
-      },
-    },
-  );
+await itAsync("codexCritique e2e: no model, no escalate → the default pin at medium effort", async () => {
+  const genArgs = await captureGenArgs({});
+  assert.equal(genArgs.model, DEFAULT_MODELS.codex_critique);
   assert.equal(
-    capturedModel,
-    DEFAULT_MODELS.codex_critique,
-    "escalate:false must invoke with DEFAULT_MODELS.codex_critique",
+    genArgs.reasoning_effort,
+    "medium",
+    "the default path must still resolve to medium reasoning effort (JUDGE-1)",
   );
 });
 
-await itAsync("codexCritique e2e: escalate:false + args.model:gpt-5-bogus → still the default pin (arbitrary model ignored)", async () => {
-  let capturedModel;
-  await codexCritique(
-    {
-      artifact_text: "fn foo() {}",
-      rubric_md: "check it",
-      cwd: STUB_CWD,
-      model: "gpt-5-bogus",       // invented id — must be dropped by invented-id guard
-      escalate: false,
-      output_schema: { type: "object" },
-    },
-    {
-      _invoke: async (genArgs) => {
-        capturedModel = genArgs.model;
-        return makeStubResult(genArgs.model);
-      },
-    },
-  );
+await itAsync("codexCritique e2e: an allow-listed override with source+reason REACHES genArgs.model", async () => {
+  const genArgs = await captureGenArgs({
+    model: ALLOWED_OVERRIDE_MODEL,
+    override_source: "cli",
+    override_reason: "operator pinned a cheaper judge for a throwaway smoke gate",
+  });
   assert.equal(
-    capturedModel,
-    DEFAULT_MODELS.codex_critique,
-    "arbitrary caller model must never reach the invoker — only escalate determines the model",
+    genArgs.model,
+    ALLOWED_OVERRIDE_MODEL,
+    "a justified allow-listed override must be honored, not silently replaced by the pin",
   );
+});
+
+await itAsync("codexCritique e2e: a non-allow-listed model (gpt-5-bogus) THROWS", async () => {
+  // Pre-J5 this was silently discarded and the default pin used, which hid the
+  // driver bug that produced the invented id. It must now fail loudly.
+  await assert.rejects(
+    () => captureGenArgs({
+      model: "gpt-5-bogus",
+      override_source: "cli",
+      override_reason: "even a justified override cannot name an unserved model",
+    }),
+    /not allow-listed/i,
+    "an invented model id must be rejected, not ignored",
+  );
+});
+
+await itAsync("codexCritique e2e: escalate:true together with model THROWS (ambiguous)", async () => {
+  await assert.rejects(
+    () => captureGenArgs({ model: ALLOWED_OVERRIDE_MODEL, escalate: true }),
+    /ambiguous judge selection/i,
+    "model + escalate is an unresolvable request and must be rejected",
+  );
+});
+
+await itAsync("codexCritique e2e: reasoning_effort:high with source+reason reaches genArgs.reasoning_effort", async () => {
+  const genArgs = await captureGenArgs({
+    reasoning_effort: "high",
+    override_source: "cli",
+    override_reason: "raised effort for a contested security gate",
+  });
+  assert.equal(genArgs.reasoning_effort, "high", "an explicit justified effort must reach the generator");
+  assert.equal(
+    genArgs.model,
+    DEFAULT_MODELS.codex_critique,
+    "an effort-only override keeps the pinned default model",
+  );
+});
+
+await itAsync("codexCritique e2e: override_source=cli with NO override_reason THROWS", async () => {
+  await assert.rejects(
+    () => captureGenArgs({ model: ALLOWED_OVERRIDE_MODEL, override_source: "cli" }),
+    /override requires override_source and override_reason/i,
+    "deviating from the pin without a reason must be rejected",
+  );
+});
+
+it("selectCritiqueInvocation is exported and resolves the default lane", () => {
+  const sel = selectCritiqueInvocation({});
+  assert.equal(sel.model, DEFAULT_MODELS.codex_critique);
+  assert.equal(sel.reasoning_effort, "medium");
+  assert.equal(sel.source, "default");
 });
 
 console.log(`\n${passed} passed, ${failed} failed`);

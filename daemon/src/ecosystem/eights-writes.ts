@@ -226,6 +226,11 @@ export type VerdictWriteContext = {
   outcome: "pass" | "fail" | "revise";
   critique_md: string | null;
   cross_vendor: boolean;
+  // v10 judge-selection provenance. Optional so the many existing callers
+  // that only ever run the vendor pin keep compiling unchanged.
+  judge_reasoning_effort?: string | null;
+  judge_model_source?: string | null;
+  judge_override_reason?: string | null;
 };
 
 export async function writeVerdictMemory(ctx: VerdictWriteContext): Promise<void> {
@@ -242,6 +247,12 @@ export async function writeVerdictMemory(ctx: VerdictWriteContext): Promise<void
       `**outcome**: ${ctx.outcome}`,
       `**judge**: ${ctx.judge_producer}/${ctx.judge_model_id}${ctx.cross_vendor ? " (cross-vendor)" : ""}`,
       ctx.rubric_id ? `**rubric**: ${ctx.rubric_id}` : null,
+      // Only surfaced when the judge deviated from the vendor pin -- a
+      // "default" line on every memory would be noise TheEights has to
+      // read past to find the ones that matter.
+      ctx.judge_model_source && ctx.judge_model_source !== "default"
+        ? `**judge_override**: ${ctx.judge_model_source} - ${ctx.judge_override_reason ?? "(no reason recorded)"}`
+        : null,
       ``,
       ctx.critique_md ? truncate(ctx.critique_md, MEMORY_CONTENT_MAX_CHARS) : "(no critique body)",
     ]
@@ -254,7 +265,13 @@ export async function writeVerdictMemory(ctx: VerdictWriteContext): Promise<void
       // A judge verdict is a meta-cognitive memory (reflection over an attempt).
       type: "meta",
       summary,
-      provenance: { run_id: ctx.run_id, actor: "pp-daemon", model: ctx.judge_model_id },
+      provenance: {
+        run_id: ctx.run_id,
+        actor: "pp-daemon",
+        model: ctx.judge_model_id,
+        judge_model_source: ctx.judge_model_source ?? null,
+        judge_reasoning_effort: ctx.judge_reasoning_effort ?? null,
+      },
       cell,
       // The stage_kind scope is critical for cross-run reflexion lookups
       // — list_prior_critiques will search memories scoped to it. The

@@ -320,52 +320,110 @@ TTL reaper sweeps retained locks later.
 
 ## 5. Judging concepts
 
-### 5.1 Judge escalation (gpt-5.6-terra default → gpt-5.6-sol opt-in)
+### 5.1 Judge model policy — defaults, escalation, and operator overrides
 
-Codex critique runs on **`gpt-5.6-terra`** at medium reasoning effort by
-constitutional default (JUDGE-1, CONSTITUTION.md Article V as amended, SHA
-13b4fa18 — do not change). A higher-capability **`gpt-5.6-sol`** is reached only by **opt-in
-escalation** for major-scope / last-resort gates; it is never the automatic
-default. (Source: `daemon/src/config.ts` `DEFAULT_MODELS`.)
+Judge models are governed by one per-vendor policy object,
+**`JUDGE_MODEL_POLICY`** in `daemon/src/config.ts`. It is the single source of
+truth; `DEFAULT_MODELS` is derived from it, and every mention elsewhere in the
+repo (this file included) is a mirror. Repin there, never here.
+
+| Vendor | Default lane (JUDGE-1) | Escalated lane (`escalate: true`) | Allowed critique ids | Allowed efforts |
+|---|---|---|---|---|
+| `codex` | `gpt-5.6-terra` @ `medium` | `gpt-5.6-sol` @ `medium` | `gpt-5.6-terra`, `gpt-5.6-sol`, `gpt-5.6-luna` | `low`, `medium`, `high`, `xhigh` |
+| `agy` | `gemini-3.8-flash-medium` | `gemini-3.1-pro-high` | `gemini-3.8-flash-{high,medium,low}`, `gemini-3.7-flash-{high,medium,low}`, `gemini-3.1-pro-{high,low}` | `low`, `medium`, `high` |
+
+The defaults are constitutional (JUDGE-1, `CONSTITUTION.md` Article V as amended
+2026-09-03, SHA `5df284cb`, previously `13b4fa18` — do not change outside the
+HITL `/pp:constitution amend` path). The escalated lanes are reached only by
+**opt-in escalation** for major-scope / last-resort gates. agy expresses
+reasoning effort through the model-id suffix: the daemon canonicalizes a bare
+family + effort onto the suffixed id and never passes `--effort`.
+
+**Option surface.** Both `pp_codex.critique` and `pp_agy.critique` accept the
+same judge-override params: `model?`, `reasoning_effort?`, `escalate?`,
+`override_source?`, `override_reason?`. `escalate` and `model` are **mutually
+exclusive**; a non-allow-listed id **throws at the bridge** rather than being
+silently replaced by the pin. The result envelope reports the **effective**
+`model`, `reasoning_effort`, `override_source`, `override_reason`, and (Codex)
+`pin_mismatch` — verdicts are recorded from the envelope, never from the request.
+
+**Override precedence (JUDGE-1a)**, resolved per field, lowest first:
+daemon default (`override_source: "default"` / `"escalated"`) → team yaml
+`judge.{model,reasoning_effort,escalate}` (`"team_yaml"`) → CLI flags
+`--judge-vendor` / `--judge-model` / `--judge-effort` / `--judge-escalate` /
+`--judge-reason` (`"cli"`); `"hydra"` is the same channel for a `DevTask`
+envelope. **There is no prompt layer** — overrides are never inferred from
+request prose, and an override can never downgrade a cross-vendor gate.
+
+**Where it is recorded.** `judge_decisions.json` (taxonomy 4.14) holds the
+per-stage resolution; `cli_flags` is persisted on the run row; and the verdict
+row carries `judge_reasoning_effort`, `judge_model_source`
+(`default|escalated|cli|team_yaml|hydra`) and `judge_override_reason`
+(≥ 8 chars, required for the last three). Replay and the TheEights
+`DecisionRecord` carry all three.
+
+**Freshness.** `doctor()` reports `agy_pin_served` (aggregate) with a `per_pin`
+breakdown for `critique_default` / `critique_escalated` / `generate`,
+`codex_pin_served` (from the CLI-reported model under `--smoke`),
+`unpriced_models`, and `judge_capabilities[<vendor>]` with
+`default_critique_model`, `escalated_critique_model`,
+`allowed_critique_models`, `default_reasoning_effort` and
+`allowed_reasoning_efforts`. `gate_eligible_judges` accepts
+`requested_judge_model` / `requested_judge_effort` and returns
+`allowed_judges[]` entries carrying `preferred_models[]` and `closing`.
 
 ```mermaid
 %%{init: {'theme':'dark'}}%%
 flowchart LR
-    GATE["Critique gate"] --> DEF{"major-scope /<br/>last-resort?"}
-    DEF -- "no (default)" --> G56T["gpt-5.6-terra<br/>codex_critique"]
-    DEF -- "yes (opt-in)" --> G56S["gpt-5.6-sol<br/>codex_critique_escalated"]
+    GATE["Critique gate"] --> OV{"operator override?<br/>(cli / team_yaml / hydra)"}
+    OV -- "yes (allow-listed<br/>+ reason ≥ 8)" --> PIN["requested model + effort<br/>override_source recorded"]
+    OV -- "no" --> DEF{"major-scope /<br/>last-resort?"}
+    DEF -- "no (default)" --> D["codex: gpt-5.6-terra @ medium<br/>agy: gemini-3.8-flash-medium"]
+    DEF -- "yes (escalate: true)" --> E["codex: gpt-5.6-sol<br/>agy: gemini-3.1-pro-high"]
+    PIN --> REC["record_verdict<br/>+ judge_decisions.json"]
+    D --> REC
+    E --> REC
 ```
 
 ```
-   critique gate ──▶ default ─────────────▶ gpt-5.6-terra  (constitutional JUDGE-1)
-                  └▶ opt-in escalation ───▶ gpt-5.6-sol    (major-scope / last-resort only)
+   critique gate ─▶ default ──────────────▶ codex gpt-5.6-terra @ medium   (JUDGE-1)
+                 │                        └▶ agy   gemini-3.8-flash-medium (JUDGE-1)
+                 ├▶ escalate: true ───────▶ codex gpt-5.6-sol / agy gemini-3.1-pro-high
+                 └▶ operator override ────▶ allow-listed model + effort  (JUDGE-1a)
+                    (cli | team_yaml | hydra; reason ≥ 8 chars; never downgrades the gate)
+                                    ⇓
+        verdict row: judge_reasoning_effort · judge_model_source · judge_override_reason
+        run artifacts: judge_decisions.json (4.14) · runs.cli_flags
 ```
 
 ### 5.2 Tiered judging (cross-vendor vs same-vendor)
 
-High-stakes gates (spec, design, security, contracts) require a judge from a
-**different vendor** than the generator. Lower-stakes gates (code style, docs,
-lint) may be judged by a **different model from the same vendor** — with Codex
-same-vendor *upgrading* to cross-vendor when the generator already used
-GPT-5.4, and agy falling back to same-model only when no alternative exists.
-`gate_eligible_judges` resolves the required tier per gate.
+**Every** gate requires a judge from a **different vendor** than the generator
+(JUDGE-1 as amended 2026-09-03). `gate_eligible_judges` returns
+`required_cross_vendor: true` for every `gate_type` and marks the same-vendor
+lane `closing: false`. The same-vendor lane survives as a **supplementary**
+extra opinion — a cheap second read — but per **JUDGE-2** a same-vendor-only
+verdict never satisfies `finalize_stage(passed)`, which requires at least one
+`cross_vendor=true` verdict with `outcome=pass`.
+
+Same-producer + same-model verdicts are rejected for **every** producer (the
+agy exemption was removed in J4), so a supplementary same-vendor read must run
+on a different allow-listed id — typically the vendor's escalated lane.
 
 ```mermaid
 %%{init: {'theme':'dark'}}%%
 flowchart TB
-    A["Artifact + gate_type"] --> R{"high-stakes?<br/>(spec/design/security/contracts)"}
-    R -- "yes" --> CV["CROSS-VENDOR judge<br/>(different vendor than generator)"]
-    R -- "no" --> SV["SAME-VENDOR judge<br/>(different model, same vendor)"]
-    SV --> U{"Codex gen used GPT-5.4?"}
-    U -- "yes" --> CV2["upgrade → cross-vendor"]
-    U -- "no" --> SV2["same-vendor stands<br/>(agy: same-model fallback if forced)"]
+    A["Artifact + gate_type"] --> G["gate_eligible_judges<br/>required_cross_vendor: true (all gates)"]
+    G --> CV["CROSS-VENDOR judge — CLOSING<br/>(different vendor than generator)"]
+    G -.-> SV["SAME-VENDOR judge — supplementary<br/>closing: false, different model id"]
+    CV --> F["finalize_stage(passed)<br/>needs ≥1 cross_vendor pass (JUDGE-2)"]
+    SV -.-> X["never closes a stage"]
 ```
 
 ```
-   gate ─▶ high-stakes (spec/design/security/contracts) ─▶ CROSS-VENDOR judge
-        └▶ low-stakes (code/docs/lint) ─▶ SAME-VENDOR (diff model)
-                                           └─ Codex+GPT-5.4 generator ⇒ upgrade to cross-vendor
-                                           └─ agy, no alternative      ⇒ same-model fallback
+   every gate ─▶ CROSS-VENDOR judge (closing)   — JUDGE-1, all gate types
+              └▶ SAME-VENDOR judge (supplementary, closing:false, different model id)
+                    └─ same producer + same model id ⇒ rejected for EVERY producer (J4)
 ```
 
 ### 5.3 Best-of-N fan-out + Borda count
@@ -375,6 +433,11 @@ of models/seeds) into isolated **git worktrees**. A tournament judge ranks them;
 when **N ≥ 3** the winner is chosen by **Borda count** (plus diff-entropy to
 break low-information ties). The winner's worktree is committed and merged back;
 losers are archived via `archive_winner_and_losers`.
+
+At **N ≥ 3** agy joins as the **second Borda judge whenever agy is enabled** —
+that is mandatory under JUDGE-1, not a driver preference. Under
+`PP_DISABLE_AGY=1` the second judge is the other eligible cross-vendor lane and
+the run summary MUST state the substitution.
 
 ```mermaid
 %%{init: {'theme':'dark'}}%%

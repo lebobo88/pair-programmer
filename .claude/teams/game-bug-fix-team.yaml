@@ -5,11 +5,11 @@ stages:
   - kind: repro
     gate_type: spec
     generator: { agent: spec-author, primary: claude }
-    judge:     { tier: same_vendor, model_pref: claude_alt_model }
+    judge:     { tier: cross_vendor, model_pref: claude_alt_model }
   - kind: invariants
     gate_type: spec
     generator: { agent: spec-author, primary: claude }
-    judge:     { tier: same_vendor, model_pref: claude_alt_model }
+    judge:     { tier: cross_vendor, model_pref: claude_alt_model }
   - kind: tests_pre
     artifact_kind: tdd_manifest
     gate_type: contract
@@ -18,7 +18,7 @@ stages:
   - kind: code
     gate_type: code_style
     generator: { agent: engineer, primary: codex }
-    judge:     { tier: same_vendor, model_pref: codex_alt_model }
+    judge:     { tier: cross_vendor, model_pref: codex_alt_model }
   - kind: tests
     artifact_kind: test_plan
     gate_type: contract
@@ -27,7 +27,7 @@ stages:
   - kind: docs
     gate_type: docs_polish
     generator: { agent: docs-author, primary: claude }
-    judge:     { tier: same_vendor }
+    judge:     { tier: cross_vendor }
 taxonomy_required: ["4.3", "4.10", "4.13"]
 missability_required:
   - decision-logging

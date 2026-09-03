@@ -4,7 +4,14 @@
  * selection can also honor explicit stage hints and canonical artifact kinds.
  */
 
-import { DEFAULT_MODELS, agyEnabled } from "../config.js";
+import {
+  DEFAULT_MODELS,
+  JUDGE_MODEL_POLICY,
+  agyEnabled,
+  judgePolicyFor,
+  normalizeProducer,
+  vendorFor as configVendorFor,
+} from "../config.js";
 import type { ProfileName } from "./profiles.js";
 import { getRubric } from "../rubrics/registry.js";
 
@@ -16,15 +23,27 @@ export type Tier = "cross_vendor" | "same_vendor";
 
 export type Profile = ProfileName;
 
+/**
+ * Base judge tier per gate type.
+ *
+ * JUDGE-1 (CONSTITUTION.md Article V, as amended 2026-09-03, SHA 5df284cb)
+ * mandates cross-vendor judging at EVERY gate — there is no same-vendor base
+ * tier any more. The table is kept (rather than collapsed into a constant) so
+ * `base_tier` stays a reported, per-gate value and any future amendment has an
+ * obvious single place to land.
+ */
 const BASE_TIERS: Record<GateType, Tier> = {
   spec:        "cross_vendor",
   design:      "cross_vendor",
   security:    "cross_vendor",
   contract:    "cross_vendor",
-  code_style:  "same_vendor",
-  docs_polish: "same_vendor",
-  lint_class:  "same_vendor",
+  code_style:  "cross_vendor",
+  docs_polish: "cross_vendor",
+  lint_class:  "cross_vendor",
 };
+
+const JUDGE1_CITATION =
+  "JUDGE-1 (CONSTITUTION.md Article V, as amended 2026-09-03, SHA 5df284cb) mandates cross-vendor judging at every gate";
 
 /** Keywords that force cross-vendor judging regardless of base gate type. */
 const ESCALATION_RE = new RegExp(
@@ -85,11 +104,115 @@ export type SameVendorCapability = {
 };
 
 export type JudgeCapabilitySummary = {
+  /**
+   * Retained for backward compatibility — Hydra's host_bridge reads this field
+   * directly. Always equals `default_critique_model`.
+   */
   critique_model: string | null;
+  default_critique_model: string | null;
+  escalated_critique_model: string | null;
+  allowed_critique_models: string[];
+  default_reasoning_effort: string | null;
+  allowed_reasoning_efforts: string[];
   same_vendor_mode: "conditional_cross_vendor" | "degenerate_same_model_allowed" | "driver_selected";
   unavailable_when_generator_model_is: string[];
   notes: string;
 };
+
+/** Result of the deterministic different-model judge selection. */
+export type JudgeModelSelection = {
+  /** Allow-listed judge model ids, best first. Empty for policy-less producers. */
+  models: string[];
+  available: boolean;
+  /**
+   * Machine-readable rejection reason when `available` is false:
+   * `effort_not_allowed` | `model_not_allowed` | `same_model_as_generator` |
+   * `no_different_model_available`.
+   */
+  reason: string | null;
+};
+
+/** True only when both producers resolve to the SAME known vendor. */
+function sameVendorAs(a: string, b: string): boolean {
+  const va = configVendorFor(a);
+  const vb = configVendorFor(b);
+  return va !== null && vb !== null && va === vb;
+}
+
+/**
+ * Deterministic "never judge with the generator's own model" selection.
+ *
+ * Candidate order is [default, escalated, then the remaining allow-listed ids
+ * in allow-list order]. When the judge and the generator normalize onto the
+ * same vendor, the generator's model id is dropped from the candidates — that
+ * is the rule that keeps a same-producer + same-model verdict (rejected by
+ * `record_verdict`) from ever being recommended. An explicit
+ * `requested_judge_model` that survives is promoted to the front; one that does
+ * not survive is a hard rejection, never a silent fallback.
+ *
+ * Pure: no DB, no env, no subprocess.
+ */
+export function selectJudgeModels(opts: {
+  judge_producer: string;
+  generator_producer: string;
+  generator_model?: string | null;
+  requested_judge_model?: string | null;
+  requested_judge_effort?: string | null;
+}): JudgeModelSelection {
+  const policy = judgePolicyFor(opts.judge_producer);
+  // claude / copilot judge through the Task() sub-agent path and carry no CLI
+  // model pin. There is nothing to allow-list, so the lane stays available.
+  if (!policy) return { models: [], available: true, reason: null };
+
+  const requestedEffort =
+    typeof opts.requested_judge_effort === "string" && opts.requested_judge_effort.trim().length > 0
+      ? opts.requested_judge_effort.trim()
+      : null;
+  if (requestedEffort && !(policy.allowed_efforts as readonly string[]).includes(requestedEffort)) {
+    return { models: [], available: false, reason: "effort_not_allowed" };
+  }
+
+  const candidates: string[] = [];
+  for (const id of [policy.default.model, policy.escalated.model, ...policy.allowed_models]) {
+    if (!candidates.includes(id)) candidates.push(id);
+  }
+
+  const explicitGenerator =
+    typeof opts.generator_model === "string" && opts.generator_model.trim().length > 0
+      ? opts.generator_model.trim()
+      : null;
+  const generatorModel =
+    explicitGenerator ?? defaultGeneratorModelForProducer(opts.generator_producer);
+  const collides = sameVendorAs(opts.judge_producer, opts.generator_producer);
+  const surviving = candidates.filter(
+    (id) => !(collides && generatorModel !== null && id === generatorModel),
+  );
+
+  const requestedModel =
+    typeof opts.requested_judge_model === "string" && opts.requested_judge_model.trim().length > 0
+      ? opts.requested_judge_model.trim()
+      : null;
+
+  if (requestedModel) {
+    if (surviving.includes(requestedModel)) {
+      return {
+        models: [requestedModel, ...surviving.filter((id) => id !== requestedModel)],
+        available: true,
+        reason: null,
+      };
+    }
+    const reason =
+      collides && generatorModel !== null && requestedModel === generatorModel
+        ? "same_model_as_generator"
+        : "model_not_allowed";
+    return { models: [], available: false, reason };
+  }
+
+  if (surviving.length === 0) {
+    return { models: [], available: false, reason: "no_different_model_available" };
+  }
+  return { models: surviving, available: true, reason: null };
+}
 
 export function defaultGeneratorModelForProducer(producer: string): string | null {
   if (producer === "codex") return DEFAULT_MODELS.codex_generate;
@@ -131,12 +254,33 @@ export function resolveSameVendorCapability(opts: {
     };
   }
 
-  if (opts.generator_producer === "agy") {
+  if (normalizeProducer(opts.generator_producer) === "agy") {
+    // Mirrors the codex branch: agy serves eight critique-eligible ids, so a
+    // same-vendor agy lane is available whenever at least one allow-listed id
+    // differs from the generator's model. Judging on the IDENTICAL id is
+    // rejected downstream by record_verdict, so it is dropped here.
+    const selection = selectJudgeModels({
+      judge_producer: "agy",
+      generator_producer: "agy",
+      generator_model: effectiveGeneratorModel,
+    });
+    const judgeModel = selection.models[0] ?? null;
+    if (!selection.available || judgeModel === null) {
+      return {
+        available: false,
+        effective_generator_model: effectiveGeneratorModel,
+        inferred_generator_model: inferredGeneratorModel,
+        judge_model_id: null,
+        reason:
+          `same-vendor agy judging is unavailable: every allow-listed agy critique model ` +
+          `collides with generator_model "${effectiveGeneratorModel ?? "unknown"}". Use cross-vendor judging instead.`,
+      };
+    }
     return {
       available: true,
       effective_generator_model: effectiveGeneratorModel,
       inferred_generator_model: inferredGeneratorModel,
-      judge_model_id: DEFAULT_MODELS.agy_critique,
+      judge_model_id: judgeModel,
       reason: null,
     };
   }
@@ -150,26 +294,55 @@ export function resolveSameVendorCapability(opts: {
   };
 }
 
+/**
+ * Per-vendor judge capability summary, derived entirely from
+ * `JUDGE_MODEL_POLICY` — repin there, never here.
+ *
+ * `critique_model` is retained (Hydra's host_bridge reads it) and always equals
+ * `default_critique_model`. The allow-list fields exist so downstream callers
+ * (Hydra, the judge-router) can validate an override against the daemon's real
+ * policy instead of hard-coding stale static pins.
+ */
 export function describeJudgeCapabilities(): Record<string, JudgeCapabilitySummary> {
+  const codex = JUDGE_MODEL_POLICY.codex;
+  const agy = JUDGE_MODEL_POLICY.agy;
   return {
     codex: {
-      critique_model: DEFAULT_MODELS.codex_critique,
+      critique_model: codex.default.model,
+      default_critique_model: codex.default.model,
+      escalated_critique_model: codex.escalated.model,
+      allowed_critique_models: [...codex.allowed_models],
+      default_reasoning_effort: codex.default.reasoning_effort,
+      allowed_reasoning_efforts: [...codex.allowed_efforts],
       same_vendor_mode: "conditional_cross_vendor",
-      unavailable_when_generator_model_is: [DEFAULT_MODELS.codex_critique],
+      unavailable_when_generator_model_is: [codex.default.model],
       notes:
-        `pp_codex.critique is hard-pinned to "${DEFAULT_MODELS.codex_critique}". ` +
-        `Same-vendor Codex judging is only available when the generator used a different model id.`,
+        `pp_codex.critique defaults to "${codex.default.model}" (escalated: "${codex.escalated.model}"). ` +
+        `Allow-listed critique ids: ${codex.allowed_models.join(", ")}. ` +
+        `Same-vendor Codex judging is only available when the judge model id differs from the generator's.`,
     },
     agy: {
-      critique_model: DEFAULT_MODELS.agy_critique,
-      same_vendor_mode: "degenerate_same_model_allowed",
+      critique_model: agy.default.model,
+      default_critique_model: agy.default.model,
+      escalated_critique_model: agy.escalated.model,
+      allowed_critique_models: [...agy.allowed_models],
+      default_reasoning_effort: agy.default.reasoning_effort,
+      allowed_reasoning_efforts: [...agy.allowed_efforts],
+      same_vendor_mode: "conditional_cross_vendor",
       unavailable_when_generator_model_is: [],
       notes:
-        `pp_agy.critique is hard-pinned to "${DEFAULT_MODELS.agy_critique}". ` +
-        "Only one supported Gemini 3.x critique model is currently served via agy, so same-vendor agy judging is degenerate.",
+        `pp_agy.critique defaults to "${agy.default.model}" (escalated: "${agy.escalated.model}"). ` +
+        `agy serves eight critique-eligible ids (${agy.allowed_models.join(", ")}), so same-vendor agy ` +
+        `judging is NOT degenerate: the daemon picks an allow-listed id different from the generator's. ` +
+        `Self-judging on the identical model id is rejected by record_verdict.`,
     },
     claude: {
       critique_model: null,
+      default_critique_model: null,
+      escalated_critique_model: null,
+      allowed_critique_models: [],
+      default_reasoning_effort: null,
+      allowed_reasoning_efforts: [],
       same_vendor_mode: "driver_selected",
       unavailable_when_generator_model_is: [],
       notes:
@@ -187,46 +360,52 @@ export function evaluateGate(opts: {
   artifact_kind?: string | null;   // e.g. "screen_state_matrix" — Phase 6 maps this to a rubric
   rubric_hint?: string | null;     // optional stage-declared rubric id
 }): GateDecision {
-  const base = BASE_TIERS[opts.gate_type] ?? "same_vendor";
-  let required = base === "cross_vendor";
+  const base = BASE_TIERS[opts.gate_type] ?? "cross_vendor";
+  // JUDGE-1 as amended: cross-vendor is mandatory at every gate, so
+  // `required_cross_vendor` is unconditionally true. The branches below no
+  // longer change that verdict — they are retained because they still explain
+  // WHY the gate is strict (and because the same keyword/profile signals drive
+  // rubric selection below). `upgraded` now means "an independent signal would
+  // have forced cross-vendor here even without JUDGE-1's blanket rule".
+  const required = true;
   let upgraded = false;
-  let reason = `base tier for gate_type=${opts.gate_type} is ${base}`;
+  const reasons: string[] = [`${JUDGE1_CITATION}; base tier for gate_type=${opts.gate_type} is ${base}`];
 
   if (opts.profile && FORCED_CROSS_VENDOR_PROFILES.has(opts.profile)) {
-    if (!required) { upgraded = true; reason = `profile=${opts.profile} forces cross-vendor on every gate`; }
-    required = true;
+    upgraded = true;
+    reasons.push(`profile=${opts.profile} forces cross-vendor on every gate`);
   }
 
   if (opts.profile === "ai-agentic" && opts.prompt_keywords && AI_AGENTIC_KEYWORDS.test(opts.prompt_keywords)) {
-    if (!required) { upgraded = true; reason = `ai-agentic profile + eval/tool/HITL keyword forces cross-vendor`; }
-    required = true;
+    upgraded = true;
+    reasons.push(`ai-agentic profile + eval/tool/HITL keyword forces cross-vendor`);
   }
 
   if (opts.prompt_keywords && ESCALATION_RE.test(opts.prompt_keywords)) {
-    if (!required) {
-      upgraded = true;
-      reason = `prompt content matches escalation keywords (concurrency / security / data-integrity); forcing cross-vendor`;
-    }
-    required = true;
+    upgraded = true;
+    reasons.push(
+      `prompt content matches escalation keywords (concurrency / security / data-integrity); forcing cross-vendor`,
+    );
   }
 
-  if (!required && opts.generator_producer) {
+  if (opts.generator_producer) {
     const capability = resolveSameVendorCapability({
       generator_producer: opts.generator_producer,
       generator_model: opts.generator_model,
     });
     if (!capability.available) {
-      required = true;
       upgraded = true;
-      reason = capability.reason ?? `same-vendor judging is unavailable for producer=${opts.generator_producer}`;
+      reasons.push(
+        capability.reason ?? `same-vendor judging is unavailable for producer=${opts.generator_producer}`,
+      );
     }
   }
 
   return {
     required_cross_vendor: required,
     base_tier: base,
+    reason: reasons.join("; "),
     upgraded,
-    reason,
     rubric_id: pickDefaultRubric(opts.gate_type, opts.profile, opts.artifact_kind, opts.rubric_hint, opts.prompt_keywords),
   };
 }
@@ -280,10 +459,37 @@ export type AllowedJudge = {
   agent: "judge-cross-vendor" | "judge-same-vendor";
   tier: Tier;
   preferred_producers: string[];   // hint for the judge agent on which provider to use
+  /**
+   * Allow-listed judge model ids for `preferred_producers`, best first, with
+   * the generator's own model already removed. Empty for policy-less producers
+   * (claude / copilot), which pick their model in the Task() sub-agent path.
+   */
+  preferred_models: string[];
+  /**
+   * Whether a passing verdict from this lane can CLOSE the stage. Exactly one
+   * lane is `closing: true` and it is always the cross-vendor lane (JUDGE-1 /
+   * JUDGE-2). A `judge-same-vendor` lane is supplementary only.
+   */
+  closing: boolean;
 };
 
-export function listAllowedJudges(decision: GateDecision, generator_producer: string): AllowedJudge[] {
-  const generatorVendor = vendorFor(generator_producer);
+export type ListAllowedJudgesOptions = {
+  generator_model?: string | null;
+  requested_judge_model?: string | null;
+  requested_judge_effort?: string | null;
+};
+
+function dedupe(ids: string[]): string[] {
+  const out: string[] = [];
+  for (const id of ids) if (!out.includes(id)) out.push(id);
+  return out;
+}
+
+export function listAllowedJudges(
+  decision: GateDecision,
+  generator_producer: string,
+  opts: ListAllowedJudgesOptions = {},
+): AllowedJudge[] {
   // Honor the global Antigravity (agy) kill-switch (PP_DISABLE_AGY=1). This is
   // the one judge-selection path that does NOT flow through doctor()'s vendor
   // matrix, so it must consult agyEnabled() directly — otherwise the
@@ -291,31 +497,63 @@ export function listAllowedJudges(decision: GateDecision, generator_producer: st
   // point the driver at agy, on EITHER the cross-vendor pool or (for an agy
   // generator) the same-vendor lane.
   const pool = agyEnabled() ? ["codex", "agy", "claude"] : ["codex", "claude"];
-  const otherVendors = pool.filter(p => vendorFor(p) !== generatorVendor);
+  const otherVendors = pool.filter(p => !sameVendorAs(p, generator_producer));
 
-  if (decision.required_cross_vendor) {
-    return [{ agent: "judge-cross-vendor", tier: "cross_vendor", preferred_producers: otherVendors }];
-  }
+  const crossEntries = otherVendors.map((p) => ({
+    producer: p,
+    selection: selectJudgeModels({
+      judge_producer: p,
+      generator_producer,
+      generator_model: opts.generator_model,
+      requested_judge_model: opts.requested_judge_model,
+      requested_judge_effort: opts.requested_judge_effort,
+    }),
+  }));
+  // A requested model/effort narrows the cross-vendor lane to the vendors that
+  // can actually honor it. The closing lane must never be empty, so if the
+  // request eliminates every vendor we fall back to the unfiltered pool and let
+  // the driver reject the override (judge-router's `model_not_allowed` path).
+  const viable = crossEntries.filter((e) => e.selection.available);
+  const chosen = viable.length > 0 ? viable : crossEntries;
 
-  const judges: AllowedJudge[] = [];
-  // Drop the same-vendor lane only when it would point at a disabled vendor
-  // (currently just the agy lane under PP_DISABLE_AGY=1). All other
-  // producers — codex, claude, copilot — keep their existing same-vendor
-  // behavior unchanged. The cross-vendor judge below is always offered and is
-  // never empty (an agy generator still falls back to codex/claude).
-  const sameVendorDisabled = generator_producer === "agy" && !agyEnabled();
+  const judges: AllowedJudge[] = [{
+    agent: "judge-cross-vendor",
+    tier: "cross_vendor",
+    preferred_producers: chosen.map((e) => e.producer),
+    preferred_models: dedupe(chosen.flatMap((e) => e.selection.models)),
+    closing: true,
+  }];
+
+  // Supplementary same-vendor lane (JUDGE-2: informative, never closing).
+  // Dropped when it would point at a disabled vendor (the agy lane under
+  // PP_DISABLE_AGY=1) or when no allow-listed model differs from the
+  // generator's — the same-producer + same-model verdict record_verdict
+  // rejects.
+  const sameVendorDisabled = normalizeProducer(generator_producer) === "agy" && !agyEnabled();
   if (!sameVendorDisabled) {
-    judges.push({ agent: "judge-same-vendor", tier: "same_vendor", preferred_producers: [generator_producer] });
+    const capability = resolveSameVendorCapability({
+      generator_producer,
+      generator_model: opts.generator_model,
+    });
+    const selection = selectJudgeModels({
+      judge_producer: generator_producer,
+      generator_producer,
+      generator_model: opts.generator_model,
+      requested_judge_model: opts.requested_judge_model,
+      requested_judge_effort: opts.requested_judge_effort,
+    });
+    if (capability.available && selection.available) {
+      judges.push({
+        agent: "judge-same-vendor",
+        tier: "same_vendor",
+        preferred_producers: [generator_producer],
+        preferred_models: selection.models,
+        closing: false,
+      });
+    }
   }
-  judges.push({ agent: "judge-cross-vendor", tier: "cross_vendor", preferred_producers: otherVendors });
-  return judges;
-}
 
-function vendorFor(producer: string): string {
-  if (producer === "codex")  return "openai";
-  if (producer === "agy")    return "google";
-  if (producer === "claude") return "anthropic";
-  return "unknown";
+  return judges;
 }
 
 // ─── Tail-fix producer selection (R3-tail post-mortem Fix 1.1, 2026-05-21) ───

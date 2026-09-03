@@ -4,8 +4,10 @@
  *
  * WHY THIS FILE EXISTS
  * --------------------
- * `copilot-fallback-removed.unit.mjs` only asserts STATIC repo state
- * (criterion 8: the file is gone; criterion 9: the symbols are grepped away).
+ * The now-deleted `copilot-fallback-removed.unit.mjs` only asserted STATIC
+ * repo state (criterion 8: the file is gone; criterion 9: the symbols are
+ * grepped away); its judge-pin assertions were replaced by
+ * `agy-pin.unit.mjs` and `agy-escalation.unit.mjs`.
  * A future re-introduction of a silent secondary-vendor fallback under a
  * DIFFERENT name would pass every one of those assertions. Criteria 10 and 11
  * are the behavioural heart of the defect and need a runtime assertion:
@@ -54,11 +56,12 @@
  * the `if (result.exit_code !== 0) return attemptCopilotFallback(...)` branch
  * at antigravity-server.ts:185 and codex-server.ts:382.
  *
- * NOTE on `codexCritique`'s `_invoke` DI seam (codex-server.ts:107): it is NOT
- * usable here, because `_invoke` REPLACES `codexGenerate` wholesale and the
- * fallback lives INSIDE `codexGenerate`. Injecting through the seam would skip
- * the very code under test. `agyGenerate` has no equivalent seam at all. The
- * PATH-shim approach covers BOTH vendors for real, so neither gap matters.
+ * NOTE on the `_invoke` DI seams (CodexGenerateInternalOptions in
+ * codex-server.ts, AgyCritiqueInternalOptions in antigravity-server.ts — the
+ * latter added by J5/#29): NEITHER is usable here, because `_invoke` REPLACES
+ * the generator wholesale and the fallback lives INSIDE the generator.
+ * Injecting through a seam would skip the very code under test. The PATH-shim
+ * approach covers BOTH vendors for real, so the seams stay unused here.
  *
  * RED NOW / GREEN AFTER THE FIX — verified empirically:
  *   PP_COPILOT_FALLBACK=1 (today):  marker WRITTEN, exit_code 0, attempts 2,
@@ -184,7 +187,9 @@ describe("criteria 10 & 11 — no secondary-vendor spawn on primary failure (RUN
           artifact_text: "an artifact under review",
           rubric_md: "an arbitrary rubric",
           cwd: shim.workDir,
-          model: "unused-caller-model",
+          // J5 (#29): the critique surface no longer silently discards `model` — a
+          // non-allow-listed id now throws. Omit it so the pinned vendor default
+          // is used and this test keeps exercising the primary-failure path.
           // Explicit schema => single-shot invoke, no stabilizeCritiqueResult retries.
           output_schema: { type: "object" },
           timeout_ms: 20_000,
@@ -263,7 +268,8 @@ describe("criteria 10 & 11 — no secondary-vendor spawn on primary failure (RUN
             artifact_text: "an artifact under review",
             rubric_md: "an arbitrary rubric",
             cwd: shim.workDir,
-            model: "unused-caller-model",
+            // J5 (#29): see the agy case above — `model` is omitted so the
+            // pinned vendor default is used; a non-allow-listed id now throws.
             output_schema: { type: "object" },
             timeout_ms: 20_000,
           },

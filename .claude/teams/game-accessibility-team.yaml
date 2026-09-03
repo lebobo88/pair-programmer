@@ -9,23 +9,23 @@ stages:
   - kind: gag_audit
     gate_type: design
     generator: { agent: game-accessibility-specialist, primary: claude }
-    judge:     { tier: same_vendor, rubric: game-accessibility-guidelines@1 }
+    judge:     { tier: cross_vendor, rubric: game-accessibility-guidelines@1 }
   - kind: xag_audit
     gate_type: design
     generator: { agent: game-accessibility-specialist, primary: claude }
-    judge:     { tier: same_vendor, rubric: xbox-accessibility-guidelines@1 }
+    judge:     { tier: cross_vendor, rubric: xbox-accessibility-guidelines@1 }
   - kind: caption_pass
     gate_type: design
     generator: { agent: game-accessibility-specialist, primary: claude }
-    judge:     { tier: same_vendor }
+    judge:     { tier: cross_vendor }
   - kind: remap_pass
     gate_type: design
     generator: { agent: game-accessibility-specialist, primary: claude }
-    judge:     { tier: same_vendor }
+    judge:     { tier: cross_vendor }
   - kind: docs
     gate_type: docs_polish
     generator: { agent: docs-author, primary: claude }
-    judge:     { tier: same_vendor }
+    judge:     { tier: cross_vendor }
 taxonomy_required: ["4.4", "4.13"]
 missability_required:
   - subtitles-cinematics

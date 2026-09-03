@@ -70,6 +70,10 @@ CREATE TABLE IF NOT EXISTS verdicts (
   critique_md         TEXT,
   score_json          TEXT,
   cross_vendor        INTEGER NOT NULL DEFAULT 0,          -- 1 if judge vendor != generator vendor
+  -- v10: judge-selection provenance (mirror of schema.ts SCHEMA_SQL).
+  judge_reasoning_effort TEXT,                              -- low | medium | high | xhigh
+  judge_model_source     TEXT,                              -- default | escalated | cli | team_yaml | hydra
+  judge_override_reason  TEXT,                              -- required for cli | team_yaml | hydra
   created_at          TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_verdicts_attempt ON verdicts(attempt_id);

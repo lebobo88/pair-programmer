@@ -9,7 +9,7 @@ stages:
   - kind: iarc_rating_questionnaire
     gate_type: spec
     generator: { agent: spec-author, primary: claude }
-    judge:     { tier: same_vendor, rubric: iarc-rating-questionnaire@1 }
+    judge:     { tier: cross_vendor, rubric: iarc-rating-questionnaire@1 }
   - kind: accessibility_cert_pass
     gate_type: design
     generator: { agent: game-accessibility-specialist, primary: claude }
@@ -25,7 +25,7 @@ stages:
   - kind: docs
     gate_type: docs_polish
     generator: { agent: docs-author, primary: claude }
-    judge:     { tier: same_vendor }
+    judge:     { tier: cross_vendor }
 taxonomy_required: ["4.4", "4.9", "4.10", "4.11", "4.13"]
 missability_required:
   - controller-disconnect-handling

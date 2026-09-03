@@ -197,22 +197,53 @@ async function main() {
     console.log(`✓ budget_status: $${budget.cost_usd} for ${budget.tokens_in} in / ${budget.tokens_out} out`);
 
     // 11. Phase 2: gate_eligible_judges — plain Codex code_style.
-    // ASSERTION REPLACED IN PLACE (not deleted — CONSTITUTION.md FORBIDDEN-3)
-    // by the gpt-5.6 model-id refresh. Previously codex_generate and
-    // codex_critique were BOTH "gpt-5.4", so the inferred default pairing was
-    // same-model and this gate had to upgrade to cross-vendor. The pins are
-    // now distinct (gpt-5.6-luna generates, gpt-5.6-terra judges), so the
-    // inferred default pairing is a legal same-vendor different-model route
-    // and NO upgrade is expected. Step 11a below still covers the upgrade
-    // path by driving generator_model onto the critique pin explicitly.
+    // ASSERTIONS REPLACED IN PLACE (not deleted — CONSTITUTION.md FORBIDDEN-3),
+    // twice now. (a) The gpt-5.6 model-id refresh made codex_generate and
+    // codex_critique distinct. (b) J6: JUDGE-1 as amended 2026-09-03 mandates
+    // cross-vendor at EVERY gate, so code_style is cross-vendor too — the
+    // closing lane is always judge-cross-vendor and the same-vendor lane
+    // survives only as a supplementary (closing:false) extra opinion (JUDGE-2).
     const gate1 = await callTool(client, "gate_eligible_judges", {
       gate_type: "code_style",
       generator_producer: "codex",
       prompt_keywords: "rename a variable from foo to bar",
     });
-    if (gate1.required_cross_vendor) throw new Error(`expected same-vendor for default codex code_style (generate pin != critique pin), got: ${pretty(gate1)}`);
-    if (gate1.allowed_judges[0].agent !== "judge-same-vendor") throw new Error(`expected judge-same-vendor first for default codex code_style, got: ${pretty(gate1)}`);
-    console.log(`✓ gate_eligible_judges (code_style/plain codex default gpt-5.6-luna) -> same-vendor`);
+    if (!gate1.required_cross_vendor) throw new Error(`expected cross-vendor at every gate per JUDGE-1, got: ${pretty(gate1)}`);
+    if (gate1.base_tier !== "cross_vendor") throw new Error(`expected base_tier=cross_vendor for code_style, got: ${pretty(gate1)}`);
+    if (!/JUDGE-1/.test(gate1.reason)) throw new Error(`expected the reason to cite JUDGE-1, got: ${gate1.reason}`);
+    if (gate1.allowed_judges[0].agent !== "judge-cross-vendor") throw new Error(`expected judge-cross-vendor first, got: ${pretty(gate1)}`);
+    const closing1 = gate1.allowed_judges.filter((j) => j.closing);
+    if (closing1.length !== 1 || closing1[0].agent !== "judge-cross-vendor") {
+      throw new Error(`expected exactly one closing lane and it must be cross-vendor, got: ${pretty(gate1.allowed_judges)}`);
+    }
+    if (!Array.isArray(closing1[0].preferred_models) || !closing1[0].preferred_models.length) {
+      throw new Error(`expected preferred_models on the closing lane, got: ${pretty(closing1[0])}`);
+    }
+    const same1 = gate1.allowed_judges.find((j) => j.agent === "judge-same-vendor");
+    if (same1 && same1.closing !== false) throw new Error(`same-vendor lane must be closing:false, got: ${pretty(same1)}`);
+    if (same1 && same1.preferred_models.includes("gpt-5.6-luna")) {
+      throw new Error(`same-vendor lane must not offer the generator's own model, got: ${pretty(same1)}`);
+    }
+    if (gate1.judge_capabilities?.codex?.allowed_critique_models?.indexOf("gpt-5.6-terra") < 0) {
+      throw new Error(`expected judge_capabilities allow-list in the response, got: ${pretty(gate1.judge_capabilities)}`);
+    }
+    console.log(`✓ gate_eligible_judges (code_style/plain codex default gpt-5.6-luna) -> cross-vendor closing lane + supplementary same-vendor`);
+
+    // 11-b. An operator override is validated against the daemon allow-list.
+    const gateOverride = await callTool(client, "gate_eligible_judges", {
+      gate_type: "code_style",
+      generator_producer: "claude",
+      requested_judge_model: "gpt-5.6-sol",
+      requested_judge_effort: "high",
+    });
+    const closingOverride = gateOverride.allowed_judges.find((j) => j.closing);
+    if (closingOverride.preferred_models[0] !== "gpt-5.6-sol") {
+      throw new Error(`expected the requested model promoted to the front, got: ${pretty(closingOverride)}`);
+    }
+    if (closingOverride.preferred_producers.includes("agy")) {
+      throw new Error(`agy cannot serve a codex model id, got: ${pretty(closingOverride)}`);
+    }
+    console.log(`✓ gate_eligible_judges (requested_judge_model=gpt-5.6-sol) -> narrowed to codex`);
 
     // 11a. A Codex generator that already ran on the pinned critique model
     // (gpt-5.6-terra) CANNOT be judged same-vendor — the different-model half
@@ -421,8 +452,9 @@ async function main() {
     console.log(`✓ gate_eligible_judges artifact/rubric overrides: test_plan→null, browser_validation_report→${gate6.rubric_id}, rubric_hint→${gate7.rubric_id}`);
 
     // 15a. record_verdict refuses an arbitrary (non-pinned) codex judge_model_id.
-    // gpt-5.6-terra and gpt-5.6-sol are both accepted (default and escalated pins).
-    // Any other id (e.g. gpt-5-bogus) must still be rejected.
+    // gpt-5.6-terra and gpt-5.6-sol are both accepted (default and escalated pins);
+    // since J4 (#28) the rejection comes from the JUDGE_MODEL_POLICY allow-list and
+    // names the allowed ids. Any other id (e.g. gpt-5-bogus) must still be rejected.
     let sameModelRejected = false;
     try {
       await callTool(client, "record_verdict", {
@@ -434,14 +466,16 @@ async function main() {
         score_json: { correctness: 0.9, minimality: 0.95 },
       });
     } catch (err) {
-      sameModelRejected = /pinned to those models|same-vendor verdict requires different model ids/i.test(String(err));
+      sameModelRejected = /pinned to those models|allow(?:ed|-?list)|same-vendor verdict requires different model ids/i.test(String(err));
     }
     if (!sameModelRejected) throw new Error(`expected record_verdict to reject arbitrary codex judge_model_id`);
     console.log(`✓ record_verdict rejects arbitrary (non-pinned) codex judge_model_id`);
 
     // 15. Phase 4: missability library is the right size.
     const checks = await callTool(client, "list_missability_checks");
-    if (checks.length !== 56) throw new Error(`expected 56 missability checks, got ${checks.length}`);
+    // 57 since `constitution-attestation` was added; the literal here has
+    // historically lagged CHECK_DEFINITIONS (54 → 56 → 57).
+    if (checks.length !== 57) throw new Error(`expected 57 missability checks, got ${checks.length}`);
     console.log(`✓ list_missability_checks: ${checks.length} checks`);
 
     // 16. Phase 4: run_missability_checks runs and returns results.
@@ -458,7 +492,7 @@ async function main() {
       run_id: missRun.run_id,
       required_check_ids: ["decision-logging", "doc-ownership", "nfrs-declared"],
     });
-    if (missResult.results.length !== 56) throw new Error(`expected 56 results, got ${missResult.results.length}`);
+    if (missResult.results.length !== 57) throw new Error(`expected 57 results, got ${missResult.results.length}`);
     const dl = missResult.results.find(r => r.check_id === "decision-logging");
     if (dl?.status !== "pass") throw new Error(`decision-logging should pass on artifact mentioning "Decision log"`);
     console.log(`✓ run_missability_checks: ${missResult.pass_count} pass, ${missResult.fail_count} fail, ${missResult.na_count} n/a`);
@@ -597,7 +631,7 @@ async function main() {
 
     // 21. Phase 6: rubric registry has 27 rubrics (added igda-gasig@1).
     const rubricList = await callTool(client, "list_rubrics");
-    if (rubricList.length !== 27) throw new Error(`expected 27 rubrics, got ${rubricList.length}`);
+    if (rubricList.length !== 29) throw new Error(`expected 29 rubrics, got ${rubricList.length}`);
     const wcag = await callTool(client, "get_rubric", { id: "wcag-2.2-aa@1" });
     if (!wcag?.markdown.includes("8-state matrix")) throw new Error(`wcag rubric body missing expected content`);
     const wrv2 = await callTool(client, "get_rubric", { id: "web-runtime-validation@2" });
@@ -689,7 +723,7 @@ async function main() {
     console.log(`✓ team_list: ${teams.length} teams`);
     const featureTeam = await callTool(client, "team_get", { name: "feature-team", project_path: projectPath });
     if (!featureTeam?.team || featureTeam.origin !== "builtin") throw new Error(`feature-team should resolve to builtin`);
-    if (featureTeam.team.stages.length !== 7) throw new Error(`feature-team should have 7 stages, got ${featureTeam.team.stages.length}`);
+    if (featureTeam.team.stages.length !== 8) throw new Error(`feature-team should have 8 stages, got ${featureTeam.team.stages.length}`);
     const featureTests = featureTeam.team.stages.find(s => s.kind === "tests");
     const featureBrowser = featureTeam.team.stages.find(s => s.kind === "browser_validation");
     if (featureTests?.artifact_kind !== "test_plan") throw new Error(`feature-team tests stage should declare artifact_kind=test_plan`);

@@ -76,10 +76,10 @@ await record("marketing-team.yaml has best_of_n_on_major_scope=5 on code stage",
 });
 
 await record("malformed best_of_n_on_major_scope is rejected by validation", async () => {
-  // getTeam catches the validation throw and falls through to the next
-  // resolution directory — so a malformed project-scope override resolves
-  // to the built-in. To assert the error, we write a malformed yaml at
-  // project scope and confirm fallthrough behavior.
+  // Since #32 (J8), getTeam REFUSES to fall through on a malformed
+  // project-scope override: it throws rather than resolving a different
+  // team of the same name from user or built-in scope. Silent fallthrough
+  // was the old behavior and is the bug this asserts against.
   const { getTeam } = await importDist("orchestrator/teams.js");
   const project = mkdtempSync(join(tmpdir(), "pp-team-bon-proj-"));
   const projectTeamsDir = join(project, ".claude", "teams");
@@ -98,12 +98,23 @@ stages:
 `,
       "utf8",
     );
-    const result = getTeam({ name: "test-bad-bon", project_path: project });
-    // Project copy validation throws → fallthrough → no user/built-in copy
-    // exists → null. Either null OR (if a non-throwing path resolved) the
-    // strict-validation path would have thrown. The null result confirms
-    // the bad yaml didn't silently leak through.
-    assert.equal(result, null, "malformed yaml must NOT silently load");
+    assert.throws(
+      () => getTeam({ name: "test-bad-bon", project_path: project }),
+      (err) => {
+        assert.match(
+          String(err && err.message),
+          /best_of_n_on_major_scope=99/,
+          "the refusal must name the offending value",
+        );
+        assert.match(
+          String(err && err.message),
+          /Refusing to fall through to another scope/,
+          "the refusal must state that no other scope will be substituted",
+        );
+        return true;
+      },
+      "malformed yaml must NOT silently load and must NOT fall through",
+    );
   } finally {
     rmSync(project, { recursive: true, force: true });
   }

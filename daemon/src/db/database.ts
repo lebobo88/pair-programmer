@@ -179,6 +179,25 @@ function applyMigrations(conn: Database.Database): void {
     "CREATE UNIQUE INDEX IF NOT EXISTS idx_verdicts_idempotency_token " +
     "ON verdicts(idempotency_token) WHERE idempotency_token IS NOT NULL"
   );
+  // v10: judge-selection provenance on verdicts (J4). The verdict ledger
+  // previously recorded only (judge_producer, judge_model_id), so a judge run
+  // at a non-default model or reasoning effort was indistinguishable from the
+  // constitutional pin after the fact. These three columns record the effort
+  // the judge ran at, WHICH channel selected the model
+  // (JUDGE_OVERRIDE_SOURCES: default | escalated | cli | team_yaml | hydra),
+  // and the operator justification recordVerdict requires for the three
+  // override channels. Legacy rows read NULL — there is no backfill, because
+  // the provenance of a pre-v10 selection is genuinely unknown and inventing
+  // "default" for it would be a fabricated audit record.
+  //
+  // Note on the version number: the "v8" and "v9" labels above shipped
+  // without ever bumping SCHEMA_VERSION (it stayed at 7). v10 reconciles
+  // that gap in one step — see the comment on SCHEMA_VERSION in schema.ts.
+  for (const col of ["judge_reasoning_effort", "judge_model_source", "judge_override_reason"]) {
+    if (!verdictCols.some(c => c.name === col)) {
+      conn.exec(`ALTER TABLE verdicts ADD COLUMN ${col} TEXT`);
+    }
+  }
 
   // CREATE TABLE IF NOT EXISTS already covered by SCHEMA_SQL exec at boot,
   // but be defensive for DBs created at v6 before SCHEMA_SQL included it.

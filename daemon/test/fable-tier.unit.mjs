@@ -179,9 +179,22 @@ stages:
 `,
       "utf8",
     );
-    const result = getTeam({ name: "test-ultra-invalid", project_path: project });
-    // Validation throws → getTeam falls through → no user/builtin copy → null.
-    assert.equal(result, null, "invalid tier 'ultra' must NOT silently load");
+    // J8 (#32) changed the contract: a validation failure is no longer
+    // swallowed by getTeam's catch-all. It is rethrown as a
+    // TeamSpecValidationError naming the origin and the path, so a broken
+    // project/user yaml can never fall through to a builtin of the same name.
+    // (Previously this returned null, which was indistinguishable from
+    // "no such team".)
+    assert.throws(
+      () => getTeam({ name: "test-ultra-invalid", project_path: project }),
+      (err) => {
+        assert.equal(err.name, "TeamSpecValidationError", `unexpected error: ${err.message}`);
+        assert.match(err.message, /model_tier="ultra"/, "message must name the bad tier");
+        assert.match(err.message, /invalid project team yaml/, "message must name the origin");
+        return true;
+      },
+      "invalid tier 'ultra' must fail loudly, not silently load or silently return null",
+    );
   } finally {
     rmSync(project, { recursive: true, force: true });
   }

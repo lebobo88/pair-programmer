@@ -184,7 +184,12 @@ describe("recordVerdict cross_vendor provenance", () => {
         judge_model_id: config.DEFAULT_MODELS.codex_critique,
         outcome: "pass",
       }),
-      /maps to no vendor/,
+      // Two guards can fire here and BOTH are the correct refusal: the
+      // PP_STRICT_PRODUCER check ("does not map to a vendor") runs first and
+      // shadows the older unattributable-generator check ("maps to no
+      // vendor"). Accept either phrasing -- the property under test is that
+      // the verdict is refused, not which of the two guards caught it.
+      /(maps to no vendor|does not map to a vendor)/,
     );
   });
 
