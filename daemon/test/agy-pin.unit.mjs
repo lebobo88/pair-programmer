@@ -27,7 +27,8 @@ const DIST = join(__dirname, "..", "dist");
 const importDist = (relPath) => import(pathToFileURL(join(DIST, relPath)).href);
 
 const { DEFAULT_MODELS } = await importDist("config.js");
-const { parseAgyModels, evaluateAgyPin } = await importDist("orchestrator/agy-pin.js");
+const { parseAgyModels, evaluateAgyPin, evaluateAgyPins, defaultAgyPins } =
+  await importDist("orchestrator/agy-pin.js");
 
 // Verbatim `agy models` output (agy 1.1.24, 2026-09-02).
 const AGY_MODELS_STDOUT = [
@@ -113,4 +114,95 @@ test("doctor degradation rule: only a hard false marks google degraded", () => {
   assert.equal(degradedFor("gemini-3.1-pro-preview"), true);
   assert.equal(degradedFor("gemini-3.8-flash-medium"), false);
   assert.equal(evaluateAgyPin("gemini-3.8-flash-medium", null).agy_pin_served === false, false);
+});
+
+// ─── J7: multi-pin freshness (evaluateAgyPins) ──────────────────────────────
+//
+// doctor() no longer checks one scalar pin. It checks every lane pp can
+// actually invoke — the default critique pin, the escalated critique pin, and
+// the generate pin — and separately reports allow-list drift.
+
+const SERVED_ALL = parseAgyModels(AGY_MODELS_STDOUT);
+
+test("defaultAgyPins covers all three lanes and matches DEFAULT_MODELS", () => {
+  const pins = defaultAgyPins();
+  assert.deepEqual(Object.keys(pins).sort(), ["critique_default", "critique_escalated", "generate"]);
+  assert.equal(pins.critique_default, DEFAULT_MODELS.agy_critique);
+  assert.equal(pins.critique_escalated, DEFAULT_MODELS.agy_critique_escalated);
+  assert.equal(pins.generate, DEFAULT_MODELS.agy_generate);
+});
+
+test("evaluateAgyPins: every shipped pin served -> aggregate true, per_pin all true", () => {
+  const res = evaluateAgyPins(defaultAgyPins(), SERVED_ALL);
+  assert.equal(res.agy_pin_served, true);
+  assert.deepEqual(res.per_pin, {
+    critique_default: true,
+    critique_escalated: true,
+    generate: true,
+  });
+  assert.deepEqual(res.unserved_allowlist, [], "shipped allow-list is a subset of the served list");
+  assert.equal(res.note, null);
+  // Legacy fields survive for existing consumers.
+  assert.equal(res.pinned_model, DEFAULT_MODELS.agy_critique);
+  assert.equal(res.pinned_models.critique_escalated, DEFAULT_MODELS.agy_critique_escalated);
+});
+
+test("evaluateAgyPins: escalated pin absent -> aggregate false, per_pin isolates the lane", () => {
+  const served = SERVED_ALL.filter((id) => id !== "gemini-3.1-pro-high");
+  const res = evaluateAgyPins(defaultAgyPins(), served);
+  assert.equal(res.agy_pin_served, false, "one unserved pin degrades the aggregate");
+  assert.equal(res.per_pin.critique_default, true);
+  assert.equal(res.per_pin.generate, true);
+  assert.equal(res.per_pin.critique_escalated, false, "only the escalated lane is broken");
+  assert.match(res.note, /critique_escalated="gemini-3\.1-pro-high"/);
+  assert.match(res.note, /invalid model selection/, "the note states the real agy behaviour");
+  assert.ok(res.unserved_allowlist.includes("gemini-3.1-pro-high"));
+});
+
+test("evaluateAgyPins: probe failure -> aggregate null and every lane null", () => {
+  const res = evaluateAgyPins(defaultAgyPins(), null, "`agy models` failed: ENOENT");
+  assert.equal(res.agy_pin_served, null);
+  assert.deepEqual(res.per_pin, {
+    critique_default: null,
+    critique_escalated: null,
+    generate: null,
+  });
+  assert.equal(res.served_models, null);
+  assert.deepEqual(res.unserved_allowlist, [], "no drift claim can be made without a served list");
+  assert.match(res.note, /inconclusive/);
+  assert.match(res.note, /ENOENT/);
+});
+
+test("evaluateAgyPins: an empty parsed list is inconclusive, never a hard false", () => {
+  const res = evaluateAgyPins(defaultAgyPins(), []);
+  assert.equal(res.agy_pin_served, null);
+  assert.ok(Object.values(res.per_pin).every((v) => v === null));
+});
+
+test("evaluateAgyPins: unserved_allowlist surfaces drift while every pin is healthy", () => {
+  // gemini-3.1-pro-low is allow-listed for operator overrides but is NOT a pin.
+  // Dropping it must leave the aggregate true and still report the drift.
+  const served = SERVED_ALL.filter((id) => id !== "gemini-3.1-pro-low");
+  const res = evaluateAgyPins(defaultAgyPins(), served);
+  assert.equal(res.agy_pin_served, true, "a non-pinned allow-list gap is not a degradation");
+  assert.ok(Object.values(res.per_pin).every((v) => v === true));
+  assert.deepEqual(res.unserved_allowlist, ["gemini-3.1-pro-low"]);
+  assert.match(res.note, /allow-list drift/);
+});
+
+test("evaluateAgyPin (legacy single-pin form) keeps its shape and adds the new fields", () => {
+  const ok = evaluateAgyPin(DEFAULT_MODELS.agy_critique, SERVED_ALL);
+  assert.equal(ok.agy_pin_served, true);
+  assert.equal(ok.note, null, "a served single pin still carries no note");
+  assert.equal(ok.pinned_model, DEFAULT_MODELS.agy_critique);
+  assert.deepEqual(ok.per_pin, { critique_default: true });
+  assert.deepEqual(ok.pinned_models, { critique_default: DEFAULT_MODELS.agy_critique });
+
+  const bad = evaluateAgyPin("gemini-3.1-pro-preview", SERVED_ALL);
+  assert.equal(bad.agy_pin_served, false);
+  assert.deepEqual(bad.per_pin, { critique_default: false });
+  assert.match(bad.note, /NOT served/);
+  // The corrected rationale: agy rejects, it does not silently fall back.
+  assert.match(bad.note, /invalid model selection/);
+  assert.ok(!/falls back silently/.test(bad.note));
 });
