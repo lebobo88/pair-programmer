@@ -296,3 +296,67 @@ _To be populated by harness runs._
 - Artifacts:
   - `.harness/run_4LEN6bjb5gEL/summary.md` (run_summary)
 
+### Judge-model parity and JUDGE-1a operator overrides — 2026-09-03
+
+- Date: 2026-09-03
+- Mode: milestone (`judge-model-parity`, issues #25–#37)
+- Milestone: https://github.com/lebobo88/pair-programmer/milestone/1
+- Status: complete
+
+**Constitution amendment.** `CONSTITUTION.md` Article V was amended 2026-09-03 via the HITL
+`/pp:constitution amend` path — new SHA `5df284cb`, superseding `13b4fa18` (and, before it,
+`2f40cda6`). The amendment (a) restates **JUDGE-1** so cross-vendor judging is mandated at
+*every* gate and names the agy default judge `gemini-3.8-flash-medium` alongside the Codex
+default `gpt-5.6-terra` @ medium, with escalated lanes `gpt-5.6-sol` and `gemini-3.1-pro-high`;
+(b) makes agy the mandatory second Borda judge at N ≥ 3 whenever agy is enabled, requiring the
+run summary to state the substitution when `PP_DISABLE_AGY=1`; and (c) adds **JUDGE-1a**, which
+permits an explicit operator override of judge vendor / model / reasoning effort only when the
+selection is on the daemon's allow-list, the override source and a reason of ≥ 8 characters are
+recorded on the verdict, the override never downgrades a cross-vendor gate, and the JUDGE-1
+defaults apply absent an override. Overrides are never inferred from request prose.
+
+**What landed.**
+
+- `JUDGE_MODEL_POLICY` (`daemon/src/config.ts`) is now the single source of truth for judge
+  models: per-vendor `default` / `escalated` lanes, `allowed_models` and `allowed_efforts`.
+  `DEFAULT_MODELS` is derived from it. agy repinned to `gemini-3.8-flash-medium` (default) and
+  `gemini-3.1-pro-high` (escalated); the 3.7-flash family remains allow-listed but is no longer
+  a default.
+- Both critique bridges share the override surface `model? / reasoning_effort? / escalate? /
+  override_source? / override_reason?`; `escalate` and `model` are mutually exclusive and a
+  non-allow-listed id throws instead of being silently replaced by the pin. The result envelope
+  reports the *effective* model, effort, override source/reason and (Codex) `pin_mismatch`.
+- agy effort is expressed by the model-id suffix; `resolveAgyInvocation` canonicalizes a bare
+  family + effort onto the suffixed id, so pp never passes `--effort`.
+- `record_verdict` stores `judge_reasoning_effort`, `judge_model_source`
+  (`default|escalated|cli|team_yaml|hydra`) and `judge_override_reason` (≥ 8 chars for the last
+  three); replay and the TheEights `DecisionRecord` carry them. The agy exemption on the
+  same-producer + same-model guard was removed — identical generator/judge model ids are now
+  rejected for every producer, with producers normalized on both sides.
+- Driver flags `--judge-vendor`, `--judge-model`, `--judge-effort`, `--judge-escalate`,
+  `--judge-reason` on `/pp:run`, `/pp:team`, `/pp:best-of`, `/pp:gate`, `/pp:retry`, `/pp:review`;
+  precedence default < team yaml `judge.{model,reasoning_effort,escalate}` < CLI. Per-stage
+  resolution is written to `judge_decisions.json` (taxonomy 4.14) and `cli_flags` is persisted on
+  the run row. A rejected override aborts the run rather than falling back to the default judge.
+- `doctor()` now reports `agy_pin_served` with a `per_pin` breakdown (`critique_default`,
+  `critique_escalated`, `generate`), `codex_pin_served` (from the CLI-reported model under
+  `--smoke`), `unpriced_models`, and `judge_capabilities[<vendor>]`. `gate_eligible_judges`
+  accepts `requested_judge_model` / `requested_judge_effort` and returns `allowed_judges[]` with
+  `preferred_models[]` and `closing`.
+
+**Keep-up-to-date procedure.** Repin `JUDGE_MODEL_POLICY` only; then run `agy models` and
+`/pp:doctor --smoke` (agy 1.1.24 rejects unknown AND retired ids — exit 1, "invalid model
+selection" — there is no silent fallback), and update every mirror. The mirror checklist lives in
+`.claude/skills/judge-policy.md` § "Keeping the pins current": AGENTS.md, ARCHITECTURE.md,
+docs/USER_GUIDE.md, docs/validator-policy.md, judge-policy.md, pair-programmer.md,
+profile-aware-gating.md, rubric-application.md, judge-cross-vendor.md, judge-same-vendor.md,
+judge-router.md, README.md, PROJECT_MASTER.md, and the generated `.github/**` mirror via
+`scripts/sync-copilot-assets.mjs`.
+
+**agy authentication.** Antigravity's official docs document only `GEMINI_API_KEY` as the
+headless credential, alongside `"modelProvider": "gemini"` in
+`~/.gemini/antigravity-cli/settings.json`. `GOOGLE_API_KEY` and `ANTIGRAVITY_API_KEY` are
+accepted by the daemon but are undocumented upstream and should be treated as compatibility
+shims. Interactive Google Sign-In (system keyring) remains the default path, which is why
+`PP_DISABLE_AGY` defaults OFF.
+

@@ -2,7 +2,7 @@
 
 > **Counts auto-verified against the source tree.** When you add or remove a slash command, sub-agent, team, profile, rubric, hook, missability check, forum, or MCP tool, regenerate the counts in this doc by running `Get-ChildItem` against the corresponding directory, or `grep` against the relevant source file. The numbers here are real, not aspirational.
 
-The pair-programmer harness is a **multi-vendor coding system**: **Claude Code or GitHub Copilot CLI** can act as the entrypoint, Codex CLI (OpenAI) and the Antigravity CLI (agy, Google) act as sub-agent generators and cross-vendor judges, and every artifact is validated by a model from a different vendor (or, for low-stakes lanes, a different model of the same vendor — see §6 for the one agy-degenerate exception). On top of that base loop sit specialized teams, project profiles, governance forums, standard-aligned rubrics, and a 16-section taxonomy that anchors every run to a durable master plan.
+The pair-programmer harness is a **multi-vendor coding system**: **Claude Code or GitHub Copilot CLI** can act as the entrypoint, Codex CLI (OpenAI) and the Antigravity CLI (agy, Google) act as sub-agent generators and cross-vendor judges, and every artifact is validated by a model from a **different vendor** — at every gate (JUDGE-1). A same-vendor different-model judge may still be run as a supplementary second opinion, but it never closes a stage (see §6). On top of that base loop sit specialized teams, project profiles, governance forums, standard-aligned rubrics, and a 16-section taxonomy that anchors every run to a durable master plan.
 
 This guide is the single canonical reference for using the harness day-to-day. The shorter guides under `docs/` (INSTALL, profiles, rubrics, teams, troubleshooting, validator-policy) remain as deep-dives and are linked from the relevant sections.
 
@@ -73,7 +73,7 @@ For lower-stakes gates (`code_style`, `docs_polish`, `lint_class`) the harness p
 
 ### The 5 invariants
 
-1. **Tiered validator policy** — cross-vendor by default on high-stakes gates; same-vendor different-model OK on style/lint/docs when the vendor can honor it (§6). The agy lane currently only serves one 3.x model, so same-vendor agy critique is a documented **degenerate** case (same model on both sides) until a sibling 3.x id ships. Codex same-vendor is now **conditional** because `pp_codex.critique` is pinned to `gpt-5.6-terra` (the default Codex generator pin is `gpt-5.6-luna`, so the ordinary Codex→Codex route is legal).
+1. **Cross-vendor validator policy** — cross-vendor judging is required at *every* gate (JUDGE-1); a same-vendor different-model judge is supplementary only and never closes a stage (§6). Each vendor has a default and an escalated critique lane plus an allow-list (`JUDGE_MODEL_POLICY`, `daemon/src/config.ts`), so same-vendor judging always has a second id available — and identical generator/judge model ids are rejected for every producer.
 2. **Taxonomy adherence on every task** — every run is mapped to ≥1 of the 16 sections in `taxonomy_blueprint.md` (§7).
 3. **Reflexion ×1 then surface** — at most one critique-fed retry per failed verdict; after that, the stage is `surfaced` and waits for human direction.
 4. **Anti-runaway loop ceiling** — default 6 validator calls per run. The 7th is rejected.
@@ -368,7 +368,7 @@ For best-of-2, the driver asks the judge for a structured rubric score per candi
 
 ### Self-bias guard
 
-When same-vendor judging is in play, the generator and judge MUST use **different model ids**, except for the documented degenerate agy lane. `pp_codex.critique` is hard-pinned to `gpt-5.6-terra`, so Codex same-vendor is only legal when the generator used a different model id (the default generator pin `gpt-5.6-luna` does); otherwise `gate_eligible_judges` upgrades to cross-vendor. The daemon's `record_verdict` path now rejects impossible Codex/agy judge metadata so a stale prompt cannot claim a model the wrapper did not actually use.
+When a supplementary same-vendor judge is in play, the generator and judge MUST use **different model ids** — there is no longer any exemption, the agy degenerate lane having been removed once agy gained a distinct escalated critique id. `pp_codex.critique` defaults to `gpt-5.6-terra` and `pp_agy.critique` to `gemini-3.8-flash-medium`; a same-vendor read on a generator that already used the default id must run another allow-listed id (normally the escalated lane, `gpt-5.6-sol` / `gemini-3.1-pro-high`), otherwise `gate_eligible_judges` routes the verdict cross-vendor. The daemon's `record_verdict` path rejects a judge model outside the producer's allow-list, a `default`/`escalated` source whose id does not match the pin, and an override source of `cli`/`team_yaml`/`hydra` without a reason of ≥ 8 characters — so a stale prompt cannot claim a model the wrapper did not actually use.
 
 > Deep-dive: [`docs/validator-policy.md`](validator-policy.md), [`.claude/skills/judge-policy.md`](../.claude/skills/judge-policy.md), source: [`daemon/src/orchestrator/gates.ts`](../daemon/src/orchestrator/gates.ts).
 
@@ -1029,7 +1029,7 @@ Best-of-N runs N candidates in parallel through different vendors/models, then j
 ### How it works (the how)
 
 1. `start_best_of_stage(run_id, kind, gate_type, n)` allocates `N` git worktrees (or copy-mode dirs for non-git projects) and shuffles judge positions (Fisher-Yates, seeded for replay).
-2. Driver fans out `N` `engineer` invocations in parallel — pinned to different model IDs (e.g. `gpt-5.6-luna` + `gemini-3.7-flash-medium` + `claude-opus-5`).
+2. Driver fans out `N` `engineer` invocations in parallel — pinned to different model IDs (e.g. `gpt-5.6-luna` + `gemini-3.8-flash-medium` + `claude-opus-5`).
 3. Each candidate writes its artifact to its own worktree.
 4. `diff_entropy(candidate_texts[])` computes Jaccard similarity. If > 90% similar across all candidates, the result is flagged — the model already converged, which usually means `/pp:run` would have been just as good.
 5. `judge-router` runs all N artifacts against the rubric. For N≥3, optionally a second judge runs and `borda_count(rankings[])` picks the winner from combined rankings.
@@ -1773,7 +1773,7 @@ You should only need the manual flag when calling the Codex CLI yourself outside
 | **Reflexion ×1** | At most one critique-fed retry per failed attempt. Then surface. |
 | **rubric** | Standard-aligned scoring guide applied at a gate. 25 ship in the registry; project files at `<project>/.claude/rubrics/<bare-id>.md` are loaded only for IDs the registry doesn't have (registry-first). |
 | **run** | One invocation of `/pp:run` / `/pp:best-of` / `/pp:team` / `/pp:review`. Has a `run_id` and a directory. |
-| **same-vendor judge** | Judge whose vendor matches the generator. Usually a different model id; agy is a documented degenerate same-model exception, and Codex is only allowed when the generator model differs from the pinned `gpt-5.6-terra` critique model. |
+| **same-vendor judge** | Judge whose vendor matches the generator. Always a **different** model id — identical generator/judge ids are rejected for every producer — and always supplementary: a same-vendor verdict never closes a stage (JUDGE-2). |
 | **sandbox** | Codex's `read-only | workspace-write | danger-full-access` flag. Mapped per stage kind. |
 | **stage** | One slot in a run's pipeline (e.g. `spec`, `code`, `tests`). |
 | **sub-agent** | Specialized Claude Code agent invoked via the Task tool. 75 ship in `.claude/agents/` — engineering/lifecycle/judging generators plus executive-suite personas, governance authors, and AgentSmith watchers. |

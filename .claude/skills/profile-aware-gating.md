@@ -64,10 +64,12 @@ When the driver calls `gate_eligible_judges(gate_type, generator_producer, gener
 3. Apply **profile-aware upgrade**:
    - `enterprise` → cross-vendor on every gate.
    - `ai-agentic` → cross-vendor on any gate touching evals or tool permissions.
-4. Apply any **vendor capability upgrade**. Example: same-vendor Codex is impossible when `generator_model` resolves to `gpt-5.6-terra`, because `pp_codex.critique` is pinned to that same model (the default generator pin `gpt-5.6-luna` differs, so the ordinary route is fine); the daemon upgrades that path to cross-vendor automatically.
+4. Apply any **vendor capability upgrade**. Example: same-vendor Codex is unavailable when `generator_model` resolves to the same id the Codex judge would use (`gpt-5.6-terra` by default), because same-producer + same-model verdicts are rejected for every producer; the default generator pin `gpt-5.6-luna` differs, so the ordinary route is fine, and the daemon upgrades the colliding path to cross-vendor automatically.
 5. Pick the **rubric** in this priority order: explicit `rubric_hint` (when it names a real rubric) → artifact-kind-specific mapping (including explicit null overrides for test-plan/test-strategy-style artifacts) → built-in default for the gate (WCAG for design, ASVS for security, OpenAPI for contract, RFC 2119 for spec).
 
 The decision payload returned to the driver carries `upgraded`, `reason`, and `rubric_id`, so the user can see *why* a gate was tightened.
+
+- **Operator judge overrides (JUDGE-1a) apply AFTER the daemon's gate decision, and never downgrade a gate.** `--judge-vendor` / `--judge-model` / `--judge-effort` / `--judge-escalate` (and their team-yaml `judge.{model,reasoning_effort,escalate}` equivalents) only pin *how* the already-chosen judge runs; the profile-driven `required_cross_vendor` and `rubric_id` stand. An override that would make the closing verdict same-vendor is rejected by `judge-router` as `cross_vendor_impossible` and the run aborts — it is never silently downgraded. See `.claude/skills/judge-policy.md` § "Operator overrides (JUDGE-1a)".
 
 ## Profile + missability
 
