@@ -452,8 +452,9 @@ async function main() {
     console.log(`✓ gate_eligible_judges artifact/rubric overrides: test_plan→null, browser_validation_report→${gate6.rubric_id}, rubric_hint→${gate7.rubric_id}`);
 
     // 15a. record_verdict refuses an arbitrary (non-pinned) codex judge_model_id.
-    // gpt-5.6-terra and gpt-5.6-sol are both accepted (default and escalated pins).
-    // Any other id (e.g. gpt-5-bogus) must still be rejected.
+    // gpt-5.6-terra and gpt-5.6-sol are both accepted (default and escalated pins);
+    // since J4 (#28) the rejection comes from the JUDGE_MODEL_POLICY allow-list and
+    // names the allowed ids. Any other id (e.g. gpt-5-bogus) must still be rejected.
     let sameModelRejected = false;
     try {
       await callTool(client, "record_verdict", {
@@ -465,7 +466,7 @@ async function main() {
         score_json: { correctness: 0.9, minimality: 0.95 },
       });
     } catch (err) {
-      sameModelRejected = /pinned to those models|same-vendor verdict requires different model ids/i.test(String(err));
+      sameModelRejected = /pinned to those models|allow(?:ed|-?list)|same-vendor verdict requires different model ids/i.test(String(err));
     }
     if (!sameModelRejected) throw new Error(`expected record_verdict to reject arbitrary codex judge_model_id`);
     console.log(`✓ record_verdict rejects arbitrary (non-pinned) codex judge_model_id`);
