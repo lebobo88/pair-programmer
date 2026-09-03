@@ -9,15 +9,50 @@ You are about to drive a `/pp:run` invocation through the pair-programmer harnes
 
 User request: $ARGUMENTS
 
-## Tier-flag pre-parse
+## CLI-flag pre-parse
 
-Before treating `$ARGUMENTS` as request text, strip recognised tier flags. Same convention as `pp:doctor --quick`.
+Before treating `$ARGUMENTS` as request text, strip recognised flags. Same convention as `pp:doctor --quick`. This section is the canonical definition — `/pp:team`, `/pp:best-of`, `/pp:gate`, `/pp:retry`, and `/pp:review` reference it.
+
+### Tier flags
 
 - `--tier-cap=opus|sonnet|haiku` — upper bound on the resolved Claude tier for every stage in this run.
 - `--tier-floor=opus|sonnet|haiku` — lower bound on the resolved Claude tier for every stage in this run.
 - `--no-tier-policy` — bypass the profile's `model_tier_policy` block entirely (debug only; agent frontmatter + team-yaml + CLI flags still apply).
 
-Parse with a single regex pass: extract any of the above into a `cli_flags` object, then remove their tokens from the request text. Reject unknown tier values with a clear error message ("expected opus|sonnet|haiku, got 'X'") rather than silently ignoring. Persist the parsed flags in the run row (the daemon stores `cli_flags_json` on `runs` since schema v5) and include them in `tier_decisions.json` so `/pp:replay` can re-issue with the same overrides.
+### Judge-override flags (JUDGE-1a)
+
+`CONSTITUTION.md` Article V **JUDGE-1a** permits an explicit operator override of the judge vendor, model, or reasoning effort. These flags are that override path. They never downgrade a cross-vendor gate — the closing verdict is always `judge-cross-vendor`.
+
+- `--judge-vendor=codex|agy` — which non-Claude vendor issues the closing verdict. `--judge-vendor=claude` is INVALID (Claude is the generator vendor in this harness; a Claude judge could not be cross-vendor).
+- `--judge-model=<id>` — an allow-listed critique model id for that vendor (`JUDGE_MODEL_POLICY` in `daemon/src/config.ts`, surfaced by `doctor().judge_capabilities[<vendor>].allowed_critique_models`).
+- `--judge-effort=low|medium|high|xhigh` — reasoning effort. `xhigh` is Codex-only; agy has no `xhigh`.
+- `--judge-escalate` — select the vendor's pinned escalated lane (Codex `gpt-5.6-sol`, agy `gemini-3.1-pro-high`) instead of naming a model.
+- `--judge-reason="<text>"` — the operator's reason, recorded on every verdict. Required (≥ 8 characters) whenever `--judge-model` or `--judge-effort` is given.
+
+### Parsing and STOP conditions
+
+Parse with a single regex pass: extract any of the above into a `cli_flags` object, then remove their tokens from the request text. Store the judge flags as `judge_vendor`, `judge_model`, `judge_effort`, `judge_escalate`, `judge_reason`.
+
+Reject unknown tier values with a clear error message ("expected opus|sonnet|haiku, got 'X'") rather than silently ignoring.
+
+**These are parse-time STOP conditions. They fire BEFORE any daemon call — no `start_run`, no run row, nothing to finalize:**
+
+| Condition | Message |
+|---|---|
+| `--judge-model` together with `--judge-escalate` | "`--judge-model` and `--judge-escalate` are mutually exclusive: escalate selects the vendor's pinned escalated model. Pass one or the other." |
+| `--judge-model` without `--judge-vendor` | "`--judge-model` requires `--judge-vendor=codex\|agy` — a model id is only meaningful against a vendor's allow-list." |
+| `--judge-model` or `--judge-effort` without `--judge-reason` | "`--judge-reason=\"<text>\"` (≥ 8 characters) is required when overriding the judge model or effort (JUDGE-1a(b))." |
+| `--judge-reason` shorter than 8 characters | "`--judge-reason` must be at least 8 characters; got N." |
+| `--judge-vendor=claude` | "`--judge-vendor=claude` is invalid: every gate is cross-vendor (JUDGE-1) and the generator is Claude. Use `codex` or `agy`." |
+| unknown `--judge-vendor` value | "expected codex\|agy, got 'X'" |
+| unknown `--judge-effort` value | "expected low\|medium\|high\|xhigh, got 'X'" |
+| `--judge-effort=xhigh` with `--judge-vendor=agy` | "agy has no `xhigh` reasoning effort. Use low\|medium\|high, or `--judge-vendor=codex`." |
+
+Persist the parsed flags in the run row: pass `cli_flags` to `mcp__pp_harness__start_run` (the daemon stores `cli_flags_json` on `runs` since schema v5). Include them in `tier_decisions.json` and in `judge_decisions.json` so `/pp:replay` can re-issue with the same overrides.
+
+### No prompt layer
+
+Judge overrides are NEVER inferred from request prose (JUDGE-1a: "Overrides are never inferred from request prose"). If the operator's `$ARGUMENTS` text matches `/\b(judge (this|it) with|use \S+ (to )?judge)\b/i`, print exactly one hint line naming the equivalent flag — e.g. `hint: to route the judge explicitly, pass --judge-vendor=agy --judge-reason="<why>"; continuing with defaults` — and then continue with the defaults. Do NOT set any judge flag from the match, and do NOT introduce a `prompt` override source.
 
 ## AGENT_TIER_DEFAULTS (mirror of agent frontmatter)
 
@@ -32,13 +67,38 @@ This driver mirrors `.claude/agents/*.md` frontmatter `model:` values so the tie
 
 Resolve the canonical tier→model-id map via `mcp__pp_harness__get_claude_tier_models` (it returns `{ tiers: { opus, sonnet, haiku }, order: ["haiku","sonnet","opus"] }`).
 
+## Judge-override precedence
+
+Resolved **per field** (`vendor`, `model`, `reasoning_effort`, `escalate`), lowest precedence first. A layer that does not set a field leaves the lower layer's value intact — a team yaml that sets only `reasoning_effort` does not clear a CLI `--judge-model`, and a CLI `--judge-effort` does not clear the team yaml's `model`.
+
+| # | Layer | `override_source` | `override_reason` |
+|---|---|---|---|
+| 1 | Daemon default (Codex `gpt-5.6-terra` / medium; agy `gemini-3.8-flash-medium` / medium) | `"default"` | — |
+| 2 | Team yaml `judge` block (`model` / `reasoning_effort` / `escalate`) | `"team_yaml"` | `"team yaml <team>/<stage> judge block"` |
+| 3 | CLI flags (`--judge-vendor` / `--judge-model` / `--judge-effort` / `--judge-escalate`) | `"cli"` | the `--judge-reason` text verbatim |
+
+`"escalated"` is the source recorded when the escalated lane is selected without an operator override (a sanctioned hard gate or last-resort Reflexion verdict per `judge-policy.md`). `"hydra"` is reserved for overrides arriving on a Hydra `DevTask` envelope. There is **no `"prompt"` source** — see "No prompt layer" above.
+
+Build a `trace` array as you resolve, one `{ layer, field }` entry per field a layer actually set (`{"layer":"team_yaml","field":"reasoning_effort"}`, `{"layer":"cli","field":"model"}`, …). It goes into `judge_decisions.json`.
+
+The resolved object is passed to `judge-router` as `judge_override { vendor?, model?, reasoning_effort?, escalate?, source, reason }`. `judge-router` validates it and returns `override_status`; on `"rejected"` the driver **aborts the run** (see step 6).
+
 ## Lifecycle (do these steps in order)
 
 1. **Triage.** Use the Task tool to invoke the `triage` sub-agent. Pass `request_text=$ARGUMENTS`. Capture `{ class, signals }`.
 
 2. **Profile snapshot.** Use the Task tool to invoke the `profile-loader` sub-agent. Pass `cwd` (current working directory) and `request_text`. Capture the snapshot. If `source = "needs_bootstrap"`, follow the bootstrap flow in `pair-programmer` skill step 2 (detect → confirm → write → re-load). Only proceed to step 3 once a profile is bound or the user explicitly chose `skip` / generic mode.
 
-3. **Start run.** Call `mcp__pp_harness__start_run` with `request_text=$ARGUMENTS`, `project_path=<cwd>`, `mode="single"`. Capture `run_id`, `artifact_dir`, and `started_at`.
+2.5. **Validate judge overrides (only when a judge flag is set).** If `cli_flags` carries any of `judge_vendor` / `judge_model` / `judge_effort` / `judge_escalate`, call `mcp__pp_harness__doctor` BEFORE `start_run` and validate against what it reports. Capture `judge_capabilities` (per vendor: `allowed_critique_models[]`, `default_critique_model`, `escalated_critique_model`, `allowed_reasoning_efforts[]`) and `agy_disabled`.
+
+   - `judge_vendor="agy"` and `doctor().agy_disabled === true` → **STOP**. Print: "`--judge-vendor=agy` is unavailable: the agy kill-switch `PP_DISABLE_AGY=1` is set. Unset it in `.claude/settings.local.json` (and re-authenticate the agy CLI: run `agy` bare for interactive Google Sign-In, or set `GEMINI_API_KEY`/`GOOGLE_API_KEY`/`ANTIGRAVITY_API_KEY`), or re-run with `--judge-vendor=codex`."
+   - `judge_model` not in `judge_capabilities[judge_vendor].allowed_critique_models` → **STOP**. Print the rejected id AND the full allow-list for that vendor, plus its `default_critique_model` and `escalated_critique_model`. A non-allow-listed id also throws at the bridge; catching it here means no orphan run row.
+   - `judge_effort` not in `judge_capabilities[judge_vendor].allowed_reasoning_efforts` → **STOP**. Print the rejected value and the allow-list. (When no `judge_vendor` was given, validate the effort against every vendor whose lane could be routed; if it is allowed by none, STOP.)
+   - The chosen vendor is not configured at all in `doctor().vendors_configured` → **STOP** with the vendor-configuration remediation from `judge-policy.md`.
+
+   Every failure here STOPS **before a run row exists**. Do not call `start_run` and then `finalize_run(status="aborted")` — there is nothing to abort yet. Print the error and exit.
+
+3. **Start run.** Call `mcp__pp_harness__start_run` with `request_text=$ARGUMENTS`, `project_path=<cwd>`, `mode="single"`, and `cli_flags` (the object parsed in the CLI-flag pre-parse, including the judge fields). Capture `run_id`, `artifact_dir`, and `started_at`.
 
 4. **Persist profile snapshot artifact.** If the profile-loader returned a snapshot, archive it via `mcp__pp_harness__archive_artifact`:
    - `relative_path: "profile_snapshot.yaml"`
@@ -80,7 +140,7 @@ The `trace` array records which layer set the final tier ("frontmatter", "team_y
 
    For each stage:
    - `mcp__pp_harness__start_stage(run_id, kind, gate_type)`. Default `gate_type` per `kind`: `spec→spec`, `code→code_style`, `tests→lint_class`, `tests_pre→contract`, `docs→docs_polish`. Override per profile rubric bindings if the profile names a different gate type for the kind.
-   - `mcp__pp_harness__gate_eligible_judges` with `gate_type`, `generator_producer="claude"` (the `engineer` producer is **Path A / Claude** — see `.claude/agents/engineer.md`; Paths B/C codex/agy *generation* are deprecated, external CLIs are critique-only, so cross-vendor judging resolves to codex), `generator_model=<the resolved Claude tier model id from step 6a when known; otherwise let the daemon infer a default>`, `prompt_keywords=$ARGUMENTS`, `profile=<profile.name or null>`, `artifact_kind` (per-stage canonical kind). Capture `{ required_cross_vendor, rubric_id, allowed_judges, upgraded, reason }`.
+   - `mcp__pp_harness__gate_eligible_judges` with `gate_type`, `requested_judge_model=<resolved judge model or omit>`, `requested_judge_effort=<resolved effort or omit>`, `generator_producer="claude"` (the `engineer` producer is **Path A / Claude** — see `.claude/agents/engineer.md`; Paths B/C codex/agy *generation* are deprecated, external CLIs are critique-only, so cross-vendor judging resolves to codex), `generator_model=<the resolved Claude tier model id from step 6a when known; otherwise let the daemon infer a default>`, `prompt_keywords=$ARGUMENTS`, `profile=<profile.name or null>`, `artifact_kind` (per-stage canonical kind). Capture `{ required_cross_vendor, rubric_id, allowed_judges, upgraded, reason }`.
 
    - **6a. Resolve Claude tier for this stage.** Run the resolver below (highest-precedence wins, layers stack low→high). The resolver only governs Claude generators (Path A inside the `engineer` agent and any agent whose frontmatter pins `model:`). For Codex/Antigravity (agy) producers (engineer Paths B/C, api-designer when delegated to Codex, etc.) skip the resolver and use the vendor's default model id from `daemon/src/config.ts:DEFAULT_MODELS`.
 
@@ -129,8 +189,45 @@ The `trace` array records which layer set the final tier ("frontmatter", "team_y
      Where `CLAUDE_TIER_MODELS` and `shiftTier`/`tierIndex` come from `mcp__pp_harness__get_claude_tier_models` (canonical). The order is `["haiku","sonnet","opus"]`; `shiftTier(t, delta)` clamps at both ends. Off-ladder tiers (e.g. `fable`) have `tierIndex < 0` and are never touched by the cap/floor logic above.
 
    - Generator: use the Task tool to invoke the matching agent (`spec-author` for spec, `engineer` for code, `test-strategist` for tests, `docs-author` for docs). Pass `run_id`, `stage_id`, `cwd`, `request_text`, `artifact_dir`, `attempted_tier=<initial_tier>`, and (when known) `profile`. **For Claude generators, also pass `model: <model_id>` on the Task invocation** so the Agent tool's per-call model override wins over the agent's frontmatter default. The agent calls the appropriate `pp_<vendor>__generate`, archives via `archive_artifact`, and records via `record_attempt` (passing `attempted_tier` through so cost-by-tier analytics work). Capture `attempt_id`.
-   - Judge routing: use the Task tool to invoke `judge-router` with `gate_type`, `generator_producer`, `generator_model=<attempt.model_id or planned model id>`, `prompt_keywords`, `profile`, `artifact_kind`. Capture `{ judge_agent, preferred_producers, rubric_id, decision_reason }`. **The closing verdict is ALWAYS recorded by `judge-cross-vendor`** — every gate type is cross-vendor per JUDGE-1 (`CONSTITUTION.md` Article V), so `gate_eligible_judges` returns `required_cross_vendor: true` at every gate. If `judge-router` returns a same-vendor lane, that lane is **supplementary only**: its verdict may be recorded for an extra opinion but it can never be the verdict used for `finalize_stage(passed)` (JUDGE-2 — a same-vendor-only verdict cannot close a stage).
-   - Judge execution: use the Task tool to invoke the chosen judge agent (`judge-cross-vendor` or `judge-same-vendor`) with the attempt / artifact context plus `rubric_id` (or `rubric_md` if already resolved). **Also pass `artifact_path`** — the project-relative path the generator archived (`.harness/<run_id>/<relative_path>`, as returned by `archive_artifact`). The judge needs it to cite the artifact under judgment in `findings_provenance`; without it the judge invents a path, the daemon fails to resolve it, and the verdict is flagged `hallucination_suspected=1`. This is the main reason document stages tripped PP-VG-6 while code stages (which cite real repo paths) did not. The chosen judge fetches the rubric if needed, runs `pp_<other>__critique` (or in-process Claude judging on the supplementary same-vendor Claude lane), and records the verdict. Only a verdict with `cross_vendor=true` may close the stage. Capture `verdict.outcome` and `cross_vendor`.
+   - Judge routing: use the Task tool to invoke `judge-router` with `gate_type`, `generator_producer`, `generator_model=<attempt.model_id or planned model id>`, `prompt_keywords`, `profile`, `artifact_kind`, and `judge_override` (the object resolved in "Judge-override precedence"; omit it when every field is at the daemon default). Capture `{ judge_agent, preferred_producers, rubric_id, decision_reason, judge_vendor, judge_model, judge_reasoning_effort, judge_escalate, override_source, override_reason, override_status, override_rejection_reason }`.
+     - **On `override_status="rejected"`: STOP.** Print `override_rejection_reason` verbatim plus the remediation for it (see `judge-router.md`), then `mcp__pp_harness__finalize_run(status="aborted", summary_md=<the rejection context>)`. A rejected override is NEVER silently dropped and NEVER downgraded to the default — the operator asked for a specific judge and must be told they cannot have it.
+     - On `override_status="applied"`, carry `judge_vendor` / `judge_model` / `judge_reasoning_effort` / `judge_escalate` / `override_source` / `override_reason` through to the judge invocation unchanged.
+     **The closing verdict is ALWAYS recorded by `judge-cross-vendor`** — every gate type is cross-vendor per JUDGE-1 (`CONSTITUTION.md` Article V), so `gate_eligible_judges` returns `required_cross_vendor: true` at every gate. If `judge-router` returns a same-vendor lane, that lane is **supplementary only**: its verdict may be recorded for an extra opinion but it can never be the verdict used for `finalize_stage(passed)` (JUDGE-2 — a same-vendor-only verdict cannot close a stage).
+   - Judge execution: use the Task tool to invoke the chosen judge agent (`judge-cross-vendor` or `judge-same-vendor`) with the attempt / artifact context plus `rubric_id` (or `rubric_md` if already resolved). **Also pass `artifact_path`** — the project-relative path the generator archived (`.harness/<run_id>/<relative_path>`, as returned by `archive_artifact`). The judge needs it to cite the artifact under judgment in `findings_provenance`; without it the judge invents a path, the daemon fails to resolve it, and the verdict is flagged `hallucination_suspected=1`. This is the main reason document stages tripped PP-VG-6 while code stages (which cite real repo paths) did not. **Also pass the routed override fields** (`judge_vendor`, `judge_model`, `judge_reasoning_effort`, `judge_escalate`, `override_source`, `override_reason`) so the judge can hand them to the critique tool. The chosen judge fetches the rubric if needed, runs `pp_<other>__critique` (or in-process Claude judging on the supplementary same-vendor Claude lane), and records the verdict. Only a verdict with `cross_vendor=true` may close the stage. Capture `verdict.outcome`, `cross_vendor`, and the judge's returned `model` / `reasoning_effort` / `override_source` / `pin_mismatch` (all read from the critique RESULT envelope, never the request).
+
+   - **6c. Archive `judge_decisions.json`.** After each verdict is recorded (including a Reflexion retry's verdict and any PP-VG-6 rejudge), append a `per_stage` entry and re-archive the whole document. Same mechanics as `tier_decisions.json` in step 5b, but with `force_overwrite: true` because it is rewritten on every verdict:
+
+     ```
+     mcp__pp_harness__archive_artifact({
+       run_id,
+       relative_path: "judge_decisions.json",
+       kind: "judge_decisions",
+       taxonomy_section: "4.14",   // governance
+       force_overwrite: true,
+       bytes: JSON.stringify({
+         cli_flags: {
+           judge_vendor, judge_model, judge_effort, judge_escalate, judge_reason
+         },                                  // parsed in the CLI-flag pre-parse; nulls when unset
+         allowed_critique_models,            // doctor().judge_capabilities[<vendor>].allowed_critique_models, per vendor
+         per_stage: [
+           {
+             stage_id, stage_kind, gate_type,
+             required_cross_vendor,          // from gate_eligible_judges (always true)
+             judge_agent,                    // "judge-cross-vendor"
+             generator_producer, generator_model,
+             resolved: { vendor, model, reasoning_effort, escalate },
+             source,                         // "default" | "escalated" | "cli" | "team_yaml" | "hydra"
+             reason,                         // the override reason, or null at the default
+             trace: [{ layer, field }],      // which layer set which field
+             verdict_id, outcome, cross_vendor, pin_mismatch
+           },
+           ...
+         ],
+       })
+     })
+     ```
+
+     `resolved` and `pin_mismatch` are taken from the critique RESULT envelope the judge returned (`model`, `reasoning_effort`, `override_source`, `override_reason`, `pin_mismatch`) — record what actually ran, not what was requested. If `pin_mismatch` is true, surface it in the run summary.
    - **Assert the recorded provenance.** `record_verdict` returns the daemon-computed `cross_vendor` flag. If judge routing said `required_cross_vendor=true` and the returned `cross_vendor` is `false`, the gate was NOT satisfied, whatever the outcome says: STOP, print the attempt's `producer` and the verdict's `judge_producer`, and `finalize_run(status="aborted")`. Do NOT `finalize_stage(status="passed")`. Capturing the requirement from `gate_eligible_judges` and never checking the result is what let every verdict in a real run record `cross_vendor: false` while codex and agy were genuinely judging.
    - **If the judge sub-agent returns `judge_tool_failed=true`** (instead of a verdict): the underlying critique CLI failed persistently. Archive the failure context via `mcp__pp_harness__archive_artifact` with `relative_path: "critique_failures/<stage_id>.json"`, `kind: "critique_failure"`, and `bytes` = the JSON payload `{ judge_tool_failed, reason, vendor, model, exit_code, stderr_tail, attempts, failure_archive_path }`. Then call `mcp__pp_harness__finalize_stage(stage_id, status="surfaced")` and `mcp__pp_harness__finalize_run(status="aborted", summary_md=<judge tool failure context including failure_archive_path>)`. STOP. Do NOT advance to the next stage. Do NOT invoke Reflexion (Reflexion fixes generators, not broken judge environments). Do NOT fabricate a passing verdict to "unblock the pipeline" — halting is correct.
    - On `outcome="pass"`: call `mcp__pp_harness__get_stage_finalize_readiness(stage_id)` **before** any `finalize_stage(status="passed")`.
@@ -162,8 +259,9 @@ The `trace` array records which layer set the final tier ("frontmatter", "team_y
 
 10. **Report to the user.** Print:
     - The run id and status.
-    - A per-stage table: `stage | gate_type | rubric | producer/judge | model_tier | verdict | tokens_in/out | cost_usd`. The `model_tier` column shows `<tier>` for Claude generators (e.g. `sonnet`, or `sonnet→opus` if Reflexion escalated) and `—` for Codex/agy producers.
-    - The artifact paths under `<project>/.harness/<run_id>/` (including `tier_decisions.json`).
+    - A per-stage table: `stage | gate_type | rubric | producer/judge | model_tier | judge | verdict | tokens_in/out | cost_usd`. The `model_tier` column shows `<tier>` for Claude generators (e.g. `sonnet`, or `sonnet→opus` if Reflexion escalated) and `—` for Codex/agy producers. The `judge` column shows `vendor/model@effort` from `judge_decisions.json`'s `resolved` block — e.g. `codex/gpt-5.6-terra@medium`, `agy/gemini-3.8-flash-medium@medium`, `codex/gpt-5.6-sol@medium` when escalated. Append ` ⚠pin_mismatch` when the critique envelope reported one.
+    - An **"Operator judge overrides"** block listing every stage whose `source != "default"`: `stage | source | resolved vendor/model@effort | reason`. Omit the block entirely when every stage ran at the default. If the run aborted on a rejected override, print the rejection reason here instead.
+    - The artifact paths under `<project>/.harness/<run_id>/` (including `tier_decisions.json` and `judge_decisions.json`).
     - The master-plan delta (`patches_applied` count + which sections were patched).
     - The missability check summary (`pass / fail / n/a` counts).
     - Total tokens and cost from `mcp__pp_harness__budget_status(scope="run:<run_id>")`.
@@ -190,3 +288,7 @@ The `trace` array records which layer set the final tier ("frontmatter", "team_y
 - Manual-edit detection during `archive_artifact` → ask the user whether to merge or pass `force_overwrite=true`; do not silently clobber.
 - Tier resolver: stage's agent name not in AGENT_TIER_DEFAULTS → STOP, print "agent X has no tier — add `model:` to .claude/agents/X.md or update the AGENT_TIER_DEFAULTS table at the top of run.md", `finalize_run(status="aborted")`. Refusing to dispatch beats silently inheriting Opus.
 - Unknown tier value in CLI flag → STOP with "expected opus|sonnet|haiku, got 'X'", do NOT start the run.
+- Any judge-flag parse-time STOP condition (see the table in the CLI-flag pre-parse) → print the message and exit. Do NOT call `start_run`; there is no run to abort.
+- Step 2.5 validation failure (model not allow-listed, effort not allowed, `agy_disabled`, vendor unconfigured) → STOP before `start_run`, printing the rejected value AND the allow-list from `doctor().judge_capabilities`.
+- `judge-router` returns `override_status="rejected"` → STOP, print `override_rejection_reason` verbatim with its remediation, `finalize_run(status="aborted")`. Never fall back to the default judge silently — that would hide the operator's rejected intent behind a green run.
+- Critique envelope returns `pin_mismatch: true` → the effective model differs from the vendor's pin. Record it in `judge_decisions.json` and surface it in the summary; this is a warning, not a halt (the daemon already refused any non-allow-listed id).
