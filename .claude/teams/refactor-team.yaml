@@ -14,7 +14,7 @@ stages:
   - kind: code
     gate_type: code_style
     generator: { agent: engineer, primary: codex }
-    judge:     { tier: same_vendor, model_pref: codex_alt_model }
+    judge:     { tier: cross_vendor, model_pref: codex_alt_model }
   - kind: tests
     artifact_kind: test_plan
     gate_type: contract
@@ -24,6 +24,6 @@ stages:
     artifact_kind: browser_validation_report
     gate_type: contract
     generator: { agent: browser-validator, primary: claude }
-    judge:     { tier: same_vendor, rubric: web-runtime-validation@2 }
+    judge:     { tier: cross_vendor, rubric: web-runtime-validation@2 }
 taxonomy_required: ["4.3", "4.8", "4.10"]
 missability_required: ["test-data-management", "decision-logging", "browser-validation-evidence"]

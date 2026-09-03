@@ -14,7 +14,7 @@ stages:
   - kind: code
     gate_type: code_style
     generator: { agent: engineer, primary: codex }
-    judge:     { tier: same_vendor, model_pref: codex_alt_model }
+    judge:     { tier: cross_vendor, model_pref: codex_alt_model }
   - kind: tests
     artifact_kind: test_plan
     gate_type: contract
@@ -23,11 +23,11 @@ stages:
   - kind: performance_profile
     gate_type: code_style
     generator: { agent: technical-artist, primary: claude }
-    judge:     { tier: same_vendor, rubric: game-perf-budget@1 }
+    judge:     { tier: cross_vendor, rubric: game-perf-budget@1 }
   - kind: docs
     gate_type: docs_polish
     generator: { agent: docs-author, primary: claude }
-    judge:     { tier: same_vendor }
+    judge:     { tier: cross_vendor }
 taxonomy_required: ["4.6", "4.8", "4.10", "4.13"]
 missability_required:
   - decision-logging

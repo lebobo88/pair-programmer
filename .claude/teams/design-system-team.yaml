@@ -13,11 +13,11 @@ stages:
   - kind: component_preview
     gate_type: design
     generator: { agent: visual-regression-runner, primary: claude }
-    judge:     { tier: same_vendor, rubric: wcag-2.2-aa@1 }
+    judge:     { tier: cross_vendor, rubric: wcag-2.2-aa@1 }
   - kind: design_polish_review
     gate_type: design
     generator: { agent: design-system-curator, primary: claude }
-    judge:     { tier: same_vendor, rubric: design-polish@1 }
+    judge:     { tier: cross_vendor, rubric: design-polish@1 }
     notes: |
       Self-review pass per the design-polish-review skill, run on the
       composed token set / component specs (AI-slop, hierarchy/rhythm,
@@ -32,6 +32,6 @@ stages:
     artifact_kind: browser_validation_report
     gate_type: contract
     generator: { agent: browser-validator, primary: claude }
-    judge:     { tier: same_vendor, rubric: web-runtime-validation@2 }
+    judge:     { tier: cross_vendor, rubric: web-runtime-validation@2 }
 taxonomy_required: ["4.4", "4.7", "4.10"]
 missability_required: ["ui-error-empty-loading", "accessibility-localization", "browser-validation-evidence", "design-polish-evidence"]

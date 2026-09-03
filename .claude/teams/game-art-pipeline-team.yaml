@@ -6,19 +6,19 @@ stages:
     artifact_kind: art_bible
     gate_type: design
     generator: { agent: technical-artist, primary: claude }
-    judge:     { tier: same_vendor, rubric: game-perf-budget@1, model_pref: claude_alt_model }
+    judge:     { tier: cross_vendor, rubric: game-perf-budget@1, model_pref: claude_alt_model }
   - kind: rig_spec
     gate_type: design
     generator: { agent: tech-animator, primary: claude }
-    judge:     { tier: same_vendor, model_pref: claude_alt_model }
+    judge:     { tier: cross_vendor, model_pref: claude_alt_model }
   - kind: blend_tree
     gate_type: design
     generator: { agent: tech-animator, primary: claude }
-    judge:     { tier: same_vendor, model_pref: claude_alt_model }
+    judge:     { tier: cross_vendor, model_pref: claude_alt_model }
   - kind: anim_state_machine
     gate_type: design
     generator: { agent: tech-animator, primary: claude }
-    judge:     { tier: same_vendor, model_pref: claude_alt_model }
+    judge:     { tier: cross_vendor, model_pref: claude_alt_model }
   - kind: export_validation
     artifact_kind: test_plan
     gate_type: contract
@@ -27,7 +27,7 @@ stages:
   - kind: docs
     gate_type: docs_polish
     generator: { agent: docs-author, primary: claude }
-    judge:     { tier: same_vendor, model_pref: claude_alt_model }
+    judge:     { tier: cross_vendor, model_pref: claude_alt_model }
 taxonomy_required: ["4.4", "4.6", "4.10", "4.13"]
 missability_required:
   - perf-budget-evidence

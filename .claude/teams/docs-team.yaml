@@ -5,14 +5,14 @@ stages:
   - kind: outline
     gate_type: docs_polish
     generator: { agent: docs-author, primary: claude }
-    judge:     { tier: same_vendor, model_pref: claude_alt_model }
+    judge:     { tier: cross_vendor, model_pref: claude_alt_model }
   - kind: draft
     gate_type: docs_polish
     generator: { agent: docs-author, primary: claude }
-    judge:     { tier: same_vendor }
+    judge:     { tier: cross_vendor }
   - kind: lint
     gate_type: lint_class
     generator: { agent: docs-author, primary: codex }
-    judge:     { tier: same_vendor }
+    judge:     { tier: cross_vendor }
 taxonomy_required: ["4.13"]
 missability_required: ["doc-ownership"]

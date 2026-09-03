@@ -5,7 +5,7 @@ stages:
   - kind: one_pager
     gate_type: spec
     generator: { agent: spec-author, primary: claude }
-    judge:     { tier: same_vendor, rubric: rfc-2119-normative@1, model_pref: claude_alt_model }
+    judge:     { tier: cross_vendor, rubric: rfc-2119-normative@1, model_pref: claude_alt_model }
   - kind: gdd
     gate_type: spec
     generator: { agent: spec-author, primary: claude }
@@ -13,7 +13,7 @@ stages:
   - kind: mechanic_spec
     gate_type: spec
     generator: { agent: spec-author, primary: claude }
-    judge:     { tier: same_vendor, model_pref: claude_alt_model }
+    judge:     { tier: cross_vendor, model_pref: claude_alt_model }
   - kind: tech_design_doc
     gate_type: design
     generator: { agent: architect, primary: claude }
@@ -21,15 +21,15 @@ stages:
   - kind: art_bible
     gate_type: design
     generator: { agent: designer, primary: claude }
-    judge:     { tier: same_vendor, model_pref: claude_alt_model }
+    judge:     { tier: cross_vendor, model_pref: claude_alt_model }
   - kind: accessibility_plan
     gate_type: design
     generator: { agent: game-accessibility-specialist, primary: claude }
-    judge:     { tier: same_vendor, rubric: game-accessibility-guidelines@1 }
+    judge:     { tier: cross_vendor, rubric: game-accessibility-guidelines@1 }
   - kind: code
     gate_type: code_style
     generator: { agent: engineer, primary: codex }
-    judge:     { tier: same_vendor, model_pref: codex_alt_model }
+    judge:     { tier: cross_vendor, model_pref: codex_alt_model }
   - kind: tests
     artifact_kind: test_plan
     gate_type: contract
@@ -38,15 +38,15 @@ stages:
   - kind: performance_profile
     gate_type: code_style
     generator: { agent: technical-artist, primary: claude }
-    judge:     { tier: same_vendor, rubric: game-perf-budget@1 }
+    judge:     { tier: cross_vendor, rubric: game-perf-budget@1 }
   - kind: build_release_plan
     gate_type: docs_polish
     generator: { agent: release-planner, primary: claude }
-    judge:     { tier: same_vendor }
+    judge:     { tier: cross_vendor }
   - kind: docs
     gate_type: docs_polish
     generator: { agent: docs-author, primary: claude }
-    judge:     { tier: same_vendor, model_pref: claude_alt_model }
+    judge:     { tier: cross_vendor, model_pref: claude_alt_model }
 taxonomy_required: ["4.1", "4.3", "4.4", "4.6", "4.10", "4.11", "4.13"]
 missability_required:
   - perf-budget-evidence

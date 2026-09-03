@@ -9,36 +9,59 @@ The driver MUST call `mcp__pp_harness__gate_eligible_judges` before invoking any
 
 ## Base tier (per `gate_type`)
 
+Cross-vendor judging is required at **every** gate. Per `CONSTITUTION.md` Article V
+**JUDGE-1** (amended 2026-09-03, SHA `5df284cb`), there is no gate type that may close
+on a same-vendor verdict.
+
 | `gate_type` | Cross-vendor required? |
 |---|---|
 | `spec` | YES |
 | `design` | YES |
 | `security` | YES |
 | `contract` | YES |
-| `code_style` | NO (same-vendor OK only when the chosen vendor can honor the model invariant) |
-| `docs_polish` | NO |
-| `lint_class` | NO |
+| `code_style` | YES |
+| `docs_polish` | YES |
+| `lint_class` | YES |
 
-## Content-aware upgrades
+`gate_eligible_judges` returns `required_cross_vendor: true` for every gate type and
+marks the same-vendor lane `closing: false`.
 
-Even when the base tier is "same-vendor OK", the daemon scans the prompt keywords for a regex set covering security, concurrency, data integrity, authentication, and migration vocabulary. A match upgrades the gate to **cross-vendor required**, regardless of base tier. The decision returned by `gate_eligible_judges` carries `upgraded: true` and a `reason` string.
+## Same-vendor lane is supplementary
 
-Keyword groups that trigger upgrade:
+`judge-same-vendor` may still be invoked for an extra opinion — a cheap second read, a
+style pass, a sanity check before spending a cross-vendor call. Its verdict is
+**never** the one that closes a stage: per **JUDGE-2**, a same-vendor-only verdict
+cannot satisfy `finalize_stage(passed)`, which requires at least one
+`cross_vendor=true` verdict with `outcome=pass`. The driver therefore routes the
+closing verdict only to `judge-cross-vendor`.
+
+## Content-aware rubric selection
+
+The prompt-keyword regex set no longer changes the judge tier — every gate is already
+cross-vendor. It now feeds **rubric selection**: a keyword match tells the daemon which
+rubric family the gate belongs to, and `pickDefaultRubric` returns the matching
+security / concurrency / data-integrity rubric instead of the generic default. The
+decision returned by `gate_eligible_judges` carries the selected `rubric_id` and a
+`reason` string.
+
+Keyword groups that select a stricter rubric:
 - security: `security`, `threat`, `owasp`, `cve`, `rbac`, `crypto`, `privacy`, `gdpr`, `sbom`, `injection`, `xss`, `csrf`, `sqli`, `hipaa`, `pci`, `pii`, `phi`, `sox`, `password`, `credential`, `oauth`, `openid`, `saml`, `jwt`, `sso`, `auth`
 - concurrency / data-integrity: `concurren*`, `thread`, `race`, `deadlock`, `atomic`, `mutex`, `lock`, `migration*`, `schema`, `rollback`
 
-## Profile-aware upgrades
+## Profile-aware rubric selection
 
-- `enterprise` profile → cross-vendor on **every** gate (no same-vendor escape).
-- `ai-agentic` profile → cross-vendor on any gate touching evals or tool permissions (regex on `eval`, `tool_permission`, `hitl`).
+Profiles no longer raise a tier (there is nothing to raise — every gate is cross-vendor).
+They bind **stricter rubrics**:
 
-Other profiles do not change tier directly; they bind specific rubrics (e.g. `web-ui` → WCAG on design gates).
+- `enterprise` profile → the strictest available rubric on every gate.
+- `ai-agentic` profile → the eval / tool-permission rubric family on any gate matching `eval`, `tool_permission`, `hitl`.
+- `web-ui` profile → WCAG rubrics on design gates.
 
 ## Vendor matrix
 
 If the harness has only one configured vendor (`mcp__pp_harness__doctor` returns `cross_vendor_ready: false`), every cross-vendor gate REFUSES to run. The driver must STOP, surface a clear error, and ask the user to configure the missing vendor (set `OPENAI_API_KEY` + `GEMINI_API_KEY`/`ANTIGRAVITY_API_KEY` or run `codex login` / `agy` — agy has no separate `auth` subcommand, running it bare completes interactive Google Sign-In).
 
-The daemon will not silently downgrade a security/spec/design/contract gate to same-vendor.
+The daemon will not silently downgrade any gate to same-vendor.
 
 ### Antigravity (agy) disabled (`PP_DISABLE_AGY=1`)
 
@@ -52,7 +75,7 @@ For best-of-2, the driver should ask the judge for a structured rubric score per
 
 ## Self-bias
 
-- **Codex:** `pp_codex.critique` is hard-pinned to `gpt-5.6-terra`. Same-vendor Codex judging is therefore only legal when the generator used a different model id — which the default generator pin (`gpt-5.6-luna`) satisfies, so the ordinary Codex→Codex route is legal. If the generator already used `gpt-5.6-terra`, `gate_eligible_judges` upgrades the gate to cross-vendor.
+- **Codex:** `pp_codex.critique` is hard-pinned to `gpt-5.6-terra`. Same-vendor Codex judging is therefore only legal when the generator used a different model id — which the default generator pin (`gpt-5.6-luna`) satisfies, so the ordinary Codex→Codex route is legal. If the generator already used `gpt-5.6-terra`, the Codex lane cannot judge it at all (same producer + same model id is blocked) and the cross-vendor verdict must come from the other lane.
 - **agy:** `pp_agy.critique` is hard-pinned to `gemini-3.7-flash-medium` (operator policy: 3.7 flash medium is the cross-vendor verifier model; the retired `gemini-3.1-pro-preview` pin is no longer served — finding E2-1). Same-vendor agy judging is a documented degenerate case (same model on both sides) for as long as the pin names a single critique id. `doctor()` verifies the pin against `agy models` and reports `agy_pin_served`; a false value marks google `vendor_degraded`.
 - **Claude:** same-vendor Claude judging still requires a different model id from the generator.
 
@@ -93,8 +116,8 @@ When `escalate: true`, the server selects `gpt-5.6-sol` (pinned in `DEFAULT_MODE
 
 1. Call `gate_eligible_judges(gate_type, generator_producer, generator_model?, prompt_keywords, profile, artifact_kind, rubric_hint?)`.
 2. Read `required_cross_vendor`, `rubric_id`, and `allowed_judges`.
-3. If `required_cross_vendor` and the generator was Codex → invoke `judge-cross-vendor` (which calls `pp_agy.critique`). If the generator was agy → `judge-cross-vendor` calls `pp_codex.critique`.
-4. If `required_cross_vendor` is false → invoke `judge-same-vendor` (which calls `pp_<same>.critique` with a different `model_id`, except for the documented degenerate agy lane).
+3. `required_cross_vendor` is true at every gate. If the generator was Codex → invoke `judge-cross-vendor` (which calls `pp_agy.critique`). If the generator was agy → `judge-cross-vendor` calls `pp_codex.critique`. If the generator was Claude → `judge-cross-vendor` calls `pp_codex.critique` (or `pp_agy.critique`).
+4. `judge-same-vendor` may be invoked only as a supplementary extra opinion; its verdict never closes the stage (JUDGE-2).
 5. `rubric_hint` is for stage-declared intent (for example a forum stage that already names `rfc-2119-normative@1` or `web-runtime-validation@2`). It does not bypass the daemon; it gives the daemon enough context to return the right `rubric_id`.
 6. The judge fetches the rubric body via `mcp__pp_harness__get_rubric(rubric_id)` and applies it to score the artifact when `rubric_id` is non-null. If `rubric_id` is null, the judge falls back to its default critique rubric.
 7. Verdict recorded via `record_verdict`. The daemon computes the `cross_vendor` flag from `judge_producer` vs `attempt.producer` and stores it.

@@ -17,7 +17,7 @@ stages:
   - kind: anti_cheat_integration
     gate_type: security
     generator: { agent: game-security, primary: claude }
-    judge:     { tier: same_vendor }
+    judge:     { tier: cross_vendor }
   - kind: load_test_plan
     gate_type: contract
     generator: { agent: test-strategist, primary: codex }
@@ -25,7 +25,7 @@ stages:
   - kind: docs
     gate_type: docs_polish
     generator: { agent: docs-author, primary: claude }
-    judge:     { tier: same_vendor }
+    judge:     { tier: cross_vendor }
 taxonomy_required: ["4.6", "4.7", "4.9", "4.10", "4.13"]
 missability_required:
   - client-trusted-input

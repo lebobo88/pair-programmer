@@ -5,7 +5,7 @@ stages:
   - kind: repro
     gate_type: spec
     generator: { agent: spec-author, primary: claude }
-    judge:     { tier: same_vendor, model_pref: claude_alt_model }
+    judge:     { tier: cross_vendor, model_pref: claude_alt_model }
   - kind: tests_pre
     artifact_kind: tdd_manifest
     gate_type: contract
@@ -14,7 +14,7 @@ stages:
   - kind: code
     gate_type: code_style
     generator: { agent: engineer, primary: codex }
-    judge:     { tier: same_vendor, model_pref: codex_alt_model }
+    judge:     { tier: cross_vendor, model_pref: codex_alt_model }
     # R3-tail Fix 0.4: best-of-3 on major-scope bug fixes — these are the
     # bugs that touch many files (auth, schema, idempotency) where one
     # engineer's first attempt often misses an edge case.
@@ -28,10 +28,10 @@ stages:
     artifact_kind: browser_validation_report
     gate_type: contract
     generator: { agent: browser-validator, primary: claude }
-    judge:     { tier: same_vendor, rubric: web-runtime-validation@2 }
+    judge:     { tier: cross_vendor, rubric: web-runtime-validation@2 }
   - kind: docs
     gate_type: docs_polish
     generator: { agent: docs-author, primary: claude }
-    judge:     { tier: same_vendor }
+    judge:     { tier: cross_vendor }
 taxonomy_required: ["4.3", "4.10", "4.13"]
 missability_required: ["decision-logging", "browser-validation-evidence"]

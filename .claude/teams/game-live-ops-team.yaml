@@ -13,7 +13,7 @@ stages:
   - kind: ab_test_plan
     gate_type: spec
     generator: { agent: live-ops-manager, primary: claude }
-    judge:     { tier: same_vendor, model_pref: claude_alt_model }
+    judge:     { tier: cross_vendor, model_pref: claude_alt_model }
   - kind: economy_review
     gate_type: security
     generator: { agent: economy-designer, primary: claude }
@@ -21,11 +21,11 @@ stages:
   - kind: patch_notes
     gate_type: docs_polish
     generator: { agent: docs-author, primary: claude }
-    judge:     { tier: same_vendor }
+    judge:     { tier: cross_vendor }
   - kind: hotfix_runbook
     gate_type: docs_polish
     generator: { agent: ops-author, primary: claude }
-    judge:     { tier: same_vendor }
+    judge:     { tier: cross_vendor }
 taxonomy_required: ["4.5", "4.11", "4.12", "4.13"]
 missability_required:
   - lootbox-jurisdiction-declared
