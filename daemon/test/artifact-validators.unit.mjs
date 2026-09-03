@@ -560,11 +560,16 @@ it("resolveSameVendorCapability allows Codex same-vendor when generator model di
   assert.equal(capability.reason, null);
 });
 
-it("describeJudgeCapabilities reports Codex as conditional and agy as degenerate", () => {
+// J6: agy is no longer degenerate — it serves eight critique-eligible ids, so
+// the daemon picks an allow-listed id different from the generator's. Full
+// shape contract lives in judge-capabilities.unit.mjs.
+it("describeJudgeCapabilities reports Codex and agy as conditional cross-vendor", () => {
   const caps = describeJudgeCapabilities();
   assert.equal(caps.codex.same_vendor_mode, "conditional_cross_vendor");
   assert.deepEqual(caps.codex.unavailable_when_generator_model_is, [DEFAULT_MODELS.codex_critique]);
-  assert.equal(caps.agy.same_vendor_mode, "degenerate_same_model_allowed");
+  assert.equal(caps.agy.same_vendor_mode, "conditional_cross_vendor");
+  assert.equal(caps.agy.critique_model, DEFAULT_MODELS.agy_critique);
+  assert.ok(caps.agy.allowed_critique_models.includes(DEFAULT_MODELS.agy_critique_escalated));
 });
 
 it("parseCodexJsonl extracts item.completed agent_message text payloads", () => {
