@@ -1,0 +1,581 @@
+<!doctype html>
+<html lang="en" data-theme="">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Claude Code standards alignment — implementation plan</title>
+<style>
+/* ============ FABLE plan design system (planf3-style, garland squad) ============ */
+:root {
+  color-scheme: light dark;
+  --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  --font-mono: ui-monospace, "Cascadia Code", "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  --fs-body: 15.5px; --lh-body: 1.62;
+  --sp-1: 4px; --sp-2: 8px; --sp-3: 12px; --sp-4: 16px; --sp-5: 24px; --sp-6: 40px;
+  --radius: 10px; --radius-sm: 6px; --measure: 60rem;
+  --bg: #f6f7f9; --surface: #ffffff; --surface-2: #f0f2f5; --border: #dfe3e8;
+  --text: #1c2530; --text-muted: #5b6673; --accent: #2f6fed; --accent-soft: #e7f0ff;
+  --shadow: 0 1px 2px rgba(16,24,40,.06), 0 1px 3px rgba(16,24,40,.10);
+  --st-idle-bd: #c3cad3; --st-idle-fg: #5b6673; --st-idle-bg: #eef1f4;
+  --st-wip-bd:  #d9a406; --st-wip-fg:  #7a5a00; --st-wip-bg:  #fff4d6;
+  --st-done-bd: #2f9e5b; --st-done-fg: #17663a; --st-done-bg: #dcf5e6;
+  --st-fail-bd: #d64545; --st-fail-fg: #8f2020; --st-fail-bg: #fbe0e0;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0f1419; --surface: #161c24; --surface-2: #1d252f; --border: #2a3542;
+    --text: #e6ebf2; --text-muted: #9aa7b6; --accent: #6ea0ff; --accent-soft: #17233b;
+    --shadow: 0 1px 2px rgba(0,0,0,.4), 0 2px 6px rgba(0,0,0,.35);
+    --st-idle-bd:#3a4552; --st-idle-fg:#9aa7b6; --st-idle-bg:#1d252f;
+    --st-wip-bd:#8a6d12; --st-wip-fg:#f0c650; --st-wip-bg:#2a2410;
+    --st-done-bd:#2f7d4f; --st-done-fg:#7fe0a6; --st-done-bg:#122a1c;
+    --st-fail-bd:#8f3636; --st-fail-fg:#f2a5a5; --st-fail-bg:#2a1414;
+  }
+}
+:root[data-theme="dark"] {
+  --bg:#0f1419; --surface:#161c24; --surface-2:#1d252f; --border:#2a3542;
+  --text:#e6ebf2; --text-muted:#9aa7b6; --accent:#6ea0ff; --accent-soft:#17233b;
+  --shadow:0 1px 2px rgba(0,0,0,.4),0 2px 6px rgba(0,0,0,.35);
+  --st-idle-bd:#3a4552;--st-idle-fg:#9aa7b6;--st-idle-bg:#1d252f;
+  --st-wip-bd:#8a6d12;--st-wip-fg:#f0c650;--st-wip-bg:#2a2410;
+  --st-done-bd:#2f7d4f;--st-done-fg:#7fe0a6;--st-done-bg:#122a1c;
+  --st-fail-bd:#8f3636;--st-fail-fg:#f2a5a5;--st-fail-bg:#2a1414;
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--text);
+  font-family: var(--font-sans); font-size: var(--fs-body); line-height: var(--lh-body);
+  -webkit-font-smoothing: antialiased; }
+.wrap { max-width: var(--measure); margin: 0 auto; padding: var(--sp-6) var(--sp-5) 25vh; }
+header.plan-head { border-bottom: 2px solid var(--border); padding-bottom: var(--sp-4); margin-bottom: var(--sp-5); }
+header.plan-head h1 { margin: 0 0 var(--sp-2); font-size: 1.9rem; line-height: 1.2; letter-spacing: -0.01em; }
+.subtitle { color: var(--text-muted); margin: 0; }
+h2 { font-size: 1.3rem; margin: var(--sp-6) 0 var(--sp-3); padding-bottom: var(--sp-2);
+     border-bottom: 1px solid var(--border); letter-spacing: -0.01em; }
+h3 { font-size: 1.05rem; margin: var(--sp-5) 0 var(--sp-2); }
+h4 { font-size: .95rem; margin: var(--sp-4) 0 var(--sp-1); color: var(--text-muted); }
+a { color: var(--accent); }
+code, kbd, pre { font-family: var(--font-mono); }
+pre { background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--radius-sm);
+      padding: var(--sp-3); overflow-x: auto; font-size: .86em; }
+.legend { color: var(--text-muted); font-size: .9em; }
+table { border-collapse: collapse; width: 100%; margin: var(--sp-3) 0; font-size: .92em; display: block; overflow-x: auto; }
+th, td { border: 1px solid var(--border); padding: var(--sp-2) var(--sp-3); text-align: left; vertical-align: top; }
+th { background: var(--surface-2); font-weight: 600; }
+details.meta, details.amend { background: var(--surface); border: 1px solid var(--border);
+  border-radius: var(--radius); box-shadow: var(--shadow); padding: var(--sp-2) var(--sp-4); margin: var(--sp-4) 0; }
+details.meta > summary, details.amend > summary { cursor: pointer; font-weight: 600; color: var(--text-muted);
+  list-style: none; padding: var(--sp-2) 0; }
+details.meta > summary::-webkit-details-marker, details.amend > summary::-webkit-details-marker { display: none; }
+details.meta > summary::before, details.amend > summary::before { content: "▸ "; color: var(--accent); }
+details[open].meta > summary::before, details[open].amend > summary::before { content: "▾ "; }
+details.meta dl { display: grid; grid-template-columns: max-content 1fr; gap: var(--sp-1) var(--sp-4); margin: var(--sp-2) 0 0; }
+details.meta dt { color: var(--text-muted); font-family: var(--font-mono); font-size: .82em; }
+details.meta dd { margin: 0; }
+.phase { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
+         box-shadow: var(--shadow); padding: var(--sp-4) var(--sp-5); margin: var(--sp-4) 0; }
+.phase > h3 { margin-top: 0; display: flex; align-items: center; gap: var(--sp-3); flex-wrap: wrap; }
+.checklist { list-style: none; padding: 0; margin: var(--sp-3) 0; }
+.checklist li { padding: var(--sp-1) 0; display: flex; gap: var(--sp-3); align-items: baseline; }
+code.status { font-size: .78em; font-weight: 700; padding: 1px 7px; border-radius: 999px;
+  border: 1px solid var(--st-idle-bd); color: var(--st-idle-fg); background: var(--st-idle-bg); white-space: nowrap; }
+code.status[data-st="wip"]  { border-color: var(--st-wip-bd);  color: var(--st-wip-fg);  background: var(--st-wip-bg); }
+code.status[data-st="x"]    { border-color: var(--st-done-bd); color: var(--st-done-fg); background: var(--st-done-bg); }
+code.status[data-st="done"] { border-color: var(--st-done-bd); color: var(--st-done-fg); background: var(--st-done-bg); }
+code.status[data-st="f"]    { border-color: var(--st-fail-bd); color: var(--st-fail-fg); background: var(--st-fail-bg); }
+figure { margin: var(--sp-4) 0; border: 1px solid var(--border); border-radius: var(--radius);
+         overflow: hidden; background: var(--surface); box-shadow: var(--shadow); }
+figure img { display: block; width: 100%; height: auto; }
+figure figcaption { padding: var(--sp-3) var(--sp-4); color: var(--text-muted); font-size: .9em;
+                    border-top: 1px solid var(--border); background: var(--surface-2); }
+.fig-pending { display: grid; place-items: center; gap: var(--sp-2); aspect-ratio: 1536 / 1024; padding: var(--sp-5);
+  background: repeating-linear-gradient(45deg, var(--surface-2), var(--surface-2) 14px, var(--surface) 14px, var(--surface) 28px);
+  color: var(--text-muted); text-align: center; }
+.fig-pending b { color: var(--text); font-weight: 600; }
+.fig-pending .hint { font-family: var(--font-mono); font-size: .8em; }
+figure:has(img) .fig-pending { display: none; }
+@media print {
+  :root { --bg: #fff; --surface: #fff; --shadow: none; }
+  body { color: #000; } .wrap { padding: 0; max-width: none; }
+  details.meta, details.amend, .phase, figure { break-inside: avoid; }
+  .fig-pending { border: 1px dashed #999; }
+}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="plan-head">
+  <h1>Claude Code standards alignment</h1>
+  <p class="subtitle">Replace pair-programmer's hand-rolled scaffolding with the official Claude Code mechanisms that already do the same job — and retune its prompt surface for the Claude 5 generation — without changing its lifecycle, gates, or paradigms.</p>
+</header>
+
+<details class="meta" open>
+  <summary>Metadata</summary>
+  <dl>
+    <dt>created</dt><dd>2026-08-24</dd>
+    <dt>modified</dt><dd>2026-08-24</dd>
+    <dt>commits</dt><dd>—</dd>
+    <dt>agent</dt><dd>plan-deep (Fable-5) — authored to the plan-deep output contract</dd>
+    <dt>session</dt><dd>7aefb7e8-2948-46a1-b10b-f9422c843257</dd>
+    <dt>back refs</dt><dd><code>.harness/run_kUPtCqHotdYn/postmortem.md</code> (PP-VG-6 delivery stall); <code>.harness/cc-standards-alignment-plan.md</code> (superseded markdown draft)</dd>
+    <dt>forward refs</dt><dd>—</dd>
+    <dt>judged by</dt><dd>Codex <code>gpt-5.6-terra</code> @ medium, read-only, two independent rounds (findings, then plan)</dd>
+  </dl>
+</details>
+
+<p class="legend">Status markers:
+  <code class="status">[]</code> idle ·
+  <code class="status" data-st="wip">[wip]</code> in progress ·
+  <code class="status" data-st="x">[x]</code> done ·
+  <code class="status" data-st="f">[f]</code> failed</p>
+
+<section id="purpose">
+  <h2>Purpose</h2>
+  <p>pair-programmer was built before several Claude Code primitives existed, and its prompt surface was
+  tuned for a prior model generation. The result is a harness that hand-rolls things the platform now
+  provides, and that carries prose scaffolding the Claude 5 models explicitly advise removing. This plan
+  closes both gaps.</p>
+  <p><b>Hard scope rule:</b> nothing here changes pp's functionality, purpose, or paradigms. Every item
+  either replaces a hand-rolled mechanism with the official equivalent, or closes a gap where an official
+  mechanism exists and pp is not using it. Anything that would alter behavior was dropped or gated behind
+  a regression fixture.</p>
+  <h3>Invariants no phase may touch</h3>
+  <ul>
+    <li><b>JUDGE-1 pin</b> — Codex <code>gpt-5.6-terra</code> @ medium (CONSTITUTION Article V, SHA <code>13b4fa18</code>).</li>
+    <li><b>Reflexion ×1</b> — daemon-enforced via <code>retry_with_critique</code>.</li>
+    <li><b><code>finalize_run</code> hard blocks</b> — PP-VG-1/2/4, the 56 missability checks, and the same-producer + same-model verdict guard at <code>runs.ts:857</code>.</li>
+    <li><b><code>CONSTITUTION.md</code></b> is never edited.</li>
+    <li><b>SQLite</b> at <code>~/.pair-programmer/state.db</code> stays the sole source of truth for runs, verdicts, and budget. No Claude Code feature becomes a source of truth for run state.</li>
+  </ul>
+  <figure>
+    <img src="cc-standards-alignment/hero.png" alt="a workshop where hand-forged tools are being swapped one at a time for standard-issue ones on the same bench, the bench itself untouched">
+    <div class="fig-pending"><b>Image pending</b><span class="hint">hero.png — see cc-standards-alignment.image-prompts.md</span></div>
+    <figcaption>The same lifecycle, running on standard parts.</figcaption>
+  </figure>
+</section>
+
+<section id="problem">
+  <h2>Problem</h2>
+  <p>Measured directly against the current tree and the official documentation index at
+  <code>code.claude.com/docs/llms.txt</code>:</p>
+  <table>
+    <thead><tr><th>Area</th><th>Current state</th><th>Consequence</th></tr></thead>
+    <tbody>
+      <tr><td>MCP server instructions</td><td>All three servers pass only <code>{name, version}</code> (<code>harness-server.ts:1318</code>)</td><td>Tool search is on by default, so 76 <code>pp_harness</code> tool definitions are deferred and <em>instructions + tool names are all that load at session start</em>. pp supplies no instructions.</td></tr>
+      <tr><td>Skills</td><td>11 loose <code>.claude/skills/*.md</code> files; no <code>SKILL.md</code> anywhere</td><td>Not a documented layout, so none of them load. <code>run.md</code> still says "Follow the <code>pair-programmer</code> skill protocol exactly."</td></tr>
+      <tr><td>Subagents</td><td>75 agents; 4 of 16 frontmatter fields used; 33 declare no <code>tools:</code></td><td>Those 33 inherit the full subagent surface including Write/Edit/Bash, against Hard Rule 5.</td></tr>
+      <tr><td>Hooks</td><td>26 command hooks, none setting <code>timeout</code>; 5 of 31 events used</td><td>Command hooks default to 600s — a hung daemon hangs a tool call for ten minutes. Failed critiques, API-killed runs, and compaction are all unobserved.</td></tr>
+      <tr><td><b>Hook wiring</b></td><td><b>29 handlers implemented in <code>dispatcher.ts</code>; only 26 wired</b> in <code>.claude/settings.json</code>, and the same 26 in <code>hooks.json</code></td><td><b>All three TheEights recall hooks are dead code.</b> <code>eights-recall-project</code>, <code>eights-recall-stage</code>, and <code>eights-recall-request</code> are implemented and reachable by name but wired in no settings file, in either runtime. README lines 152 and 236 both claim <code>hooks.json</code> carries them; it does not.</td></tr>
+      <tr><td>MCP result size</td><td>No <code>anthropic/maxResultSizeChars</code> annotations</td><td><code>replay</code> and <code>get_run</code> return whole run trees against a 25,000-token default cap.</td></tr>
+      <tr><td>Driver control flow</td><td>25,609 bytes of prose in <code>run.md</code></td><td>Already produced one unrecoverable stall: the daemon returned <code>next_action: "dispatch_cross_vendor_rejudge"</code> and no caller implemented it.</td></tr>
+      <tr><td>Prompt surface</td><td>Tuned pre-Claude-5</td><td>Opus 5 guidance says to remove "legacy harness scaffolding that adds separate verification steps"; Sonnet 5 is literal and will not generalize across the four <code>same as /pp:run</code> cross-references.</td></tr>
+    </tbody>
+  </table>
+  <figure>
+    <img src="cc-standards-alignment/problem.png" alt="a control panel where most switches are unlabelled and unwired, with a few hand-soldered jumper wires bypassing empty standard sockets">
+    <div class="fig-pending"><b>Image pending</b><span class="hint">problem.png — see prompt sheet</span></div>
+    <figcaption>Official sockets sit empty while hand-wiring carries the load.</figcaption>
+  </figure>
+</section>
+
+<section id="solution">
+  <h2>Solution</h2>
+  <p>Ten phases. Each either fills an empty official socket or retunes prose for the Claude 5 generation.
+  The daemon, the gates, the judge pin, and the SQLite ledger are untouched throughout.</p>
+  <h3>Operator decisions (binding)</h3>
+  <table>
+    <thead><tr><th>#</th><th>Decision</th><th>Consequence accepted</th></tr></thead>
+    <tbody>
+      <tr><td>D1</td><td>No plugin migration. <code>.claude/</code> project scope + <code>scripts/install-user.ps1</code> stay.</td><td>No <code>claude plugin validate</code>, no namespacing, no <code>userConfig</code>. Q1 stays open.</td></tr>
+      <tr><td>D2</td><td>Dynamic workflows scoped to the best-of-N fan-out only.</td><td>Full lifecycle driver stays prose.</td></tr>
+      <tr><td>D3</td><td>Skills migrate to <code>&lt;name&gt;/SKILL.md</code> with <code>user-invocable: false</code> + agent <code>skills:</code> preload.</td><td>They become model-invocable where previously inert.</td></tr>
+      <tr><td>D4</td><td>Full subagent tuning <em>including</em> judges.</td><td>Gated behind deterministic regression fixtures.</td></tr>
+    </tbody>
+  </table>
+  <figure>
+    <img src="cc-standards-alignment/solution.png" alt="the same control panel with every socket filled by a labelled standard module and the jumper wires removed, panel layout otherwise identical to the problem image">
+    <div class="fig-pending"><b>Image pending</b><span class="hint">solution.png — see prompt sheet</span></div>
+    <figcaption>Same panel, same wiring topology — standard modules in every socket.</figcaption>
+  </figure>
+</section>
+
+<section id="files">
+  <h2>Relevant files</h2>
+  <h3>Existing</h3>
+  <ul>
+    <li><code>daemon/src/mcp/harness-server.ts</code> — <code>new Server()</code> at :1318 needs <code>instructions</code>; <code>tools/list</code> at :1323-1327 needs <code>_meta</code> annotations.</li>
+    <li><code>daemon/src/mcp/codex-server.ts</code>, <code>daemon/src/mcp/antigravity-server.ts</code> — same <code>instructions</code> gap.</li>
+    <li><code>.claude/settings.json</code> — 26 hooks with no timeouts; only <code>permissions.allow</code> + <code>hooks</code> keys; stale <code>_comment</code> claiming 24 hooks.</li>
+    <li><code>.claude/skills/*.md</code> — the 11 loose files to migrate.</li>
+    <li><code>.claude/agents/*.md</code> — 75 files; 33 without <code>tools:</code>, 35 without <code>model:</code>.</li>
+    <li><code>.claude/agents/engineer.md</code> — step 4.5 mandatory self-verification; pinned <code>claude-sonnet-5</code>.</li>
+    <li><code>.claude/commands/pp/best-of.md</code> — steps 6 / 6.5 / 7 / 8 / 9 / 9.5 define the fan-out boundary; step 27 references "verification step (3.5)" against engineer.md's 4.5.</li>
+    <li><code>.claude/commands/pp/run.md</code>, <code>.claude/commands/pp/review.md</code> — <code>same as /pp:run</code> cross-references.</li>
+    <li><code>AGENTS.md</code> — 96 lines / 12,446 bytes; the cross-tool contract Codex, agy, and Copilot all read.</li>
+    <li><code>daemon/src/orchestrator/runs.ts</code> — <code>recordAttempt</code> slot idempotency at :433; verdict guard at :857.</li>
+  </ul>
+  <h3>New</h3>
+  <ul>
+    <li><code>.claude/skills/&lt;name&gt;/SKILL.md</code> ×11 — the migrated skills.</li>
+    <li><code>.claude/rules/*.md</code> — path-scoped Claude-only mirrors.</li>
+    <li><code>.claude/workflows/pp-best-of.js</code> — step-6 fan-out only.</li>
+    <li><code>daemon/test/mcp-instructions.unit.mjs</code>, <code>daemon/test/hook-inventory.unit.mjs</code>, <code>daemon/test/skill-discovery.unit.mjs</code>, <code>daemon/test/execution-events.unit.mjs</code> — the new guards.</li>
+  </ul>
+</section>
+
+<section id="phases">
+  <h2>Implementation phases</h2>
+  <p class="legend"><b>Execution order</b> (adopted from round-2 review, which differs from the numbering):
+  0 → 1 → 9 → 2 → 4 → 5.1 → 3 → 7 → 6 → 5.2–5.4 → 8.</p>
+
+  <div class="phase">
+    <h3>Phase 0 — Baseline probe <code class="status">[]</code></h3>
+    <p>Nothing lands before this. Round-2 review required a version/capability probe first, and caught that
+    my own inventory was wrong.</p>
+    <h4>Tasks</h4>
+    <ul class="checklist">
+      <li><code class="status">[]</code> Pin the exact Claude Code version; confirm every field and hook event used below exists in it.</li>
+      <li><code class="status">[]</code> Correct the hook inventory: <code>.claude/settings.json</code> has <b>26</b> command hooks (SessionStart 5, PreToolUse 7, PostToolUse 7, UserPromptSubmit 5, Stop 2), not the 24 its own <code>_comment</code> claims. <code>hooks.json</code> adds 3 for the Copilot runtime. Fix the stale comment.</li>
+      <li><code class="status">[]</code> Record current <code>/context</code> composition as the before-baseline.</li>
+      <li><code class="status">[]</code> Measure real tool-result sizes for <code>replay</code>, <code>get_run</code>, <code>master_plan_status</code>, <code>list_missability_checks</code> against the largest run in <code>.harness/</code>.</li>
+    </ul>
+    <h4>Testing strategy — loop until every check passes before advancing</h4>
+    <ul class="checklist">
+      <li><code class="status">[]</code> Hook count asserted by a unit test that parses <code>settings.json</code>, so the comment cannot drift again.</li>
+      <li><code class="status">[]</code> Measurements written to <code>.harness/</code> as the comparison baseline for Phases 1 and 4.</li>
+    </ul>
+    <p class="legend">If a check cannot be made to pass after reasonable effort, mark the phase
+      <code class="status" data-st="f">[f]</code> and record why in Notes rather than looping forever.</p>
+    <figure>
+      <img src="cc-standards-alignment/phase0.png" alt="a measuring bench with calipers and a labelled baseline chart, before any assembly begins">
+      <div class="fig-pending"><b>Image pending</b><span class="hint">phase0.png — see prompt sheet</span></div>
+      <figcaption>Measure first — the round-1 inventory was wrong by two hooks.</figcaption>
+    </figure>
+  </div>
+
+  <div class="phase">
+    <h3>Phase 1 — MCP discoverability and result sizing <code class="status">[]</code></h3>
+    <p>The only phase round-2 review rated <b>SOUND</b> outright, and the cheapest high-leverage change available.</p>
+    <h4>Tasks</h4>
+    <ul class="checklist">
+      <li><code class="status">[]</code> Add a server-level <code>instructions</code> string (≤2KB — the documented truncation limit) to all three MCP servers. Strictly navigational: lifecycle entrypoint order, the <code>gate_eligible_judges</code> routing entrypoint, the JUDGE-1 constraint. <b>Not</b> a condensed driver.</li>
+      <li><code class="status">[]</code> Using the Phase 0 measurements, add <code>_meta["anthropic/maxResultSizeChars"]</code> to the <code>tools/list</code> entry <em>only</em> for tools measured to exceed the 25,000-token default. Ceiling 500,000.</li>
+      <li><code class="status">[]</code> Prefer pagination over raising the cap wherever a tool can paginate (round-2 note).</li>
+    </ul>
+    <h4>Testing strategy — loop until every check passes before advancing</h4>
+    <ul class="checklist">
+      <li><code class="status">[]</code> Unit test: <code>instructions</code> present and ≤2048 bytes on all three servers.</li>
+      <li><code class="status">[]</code> Unit test: every annotated tool's measured output is under its declared ceiling.</li>
+      <li><code class="status">[]</code> <code>npm run build</code> and <code>npm run typecheck</code> clean.</li>
+    </ul>
+    <p class="legend">If a check cannot be made to pass after reasonable effort, mark the phase
+      <code class="status" data-st="f">[f]</code> and record why in Notes rather than looping forever.</p>
+    <figure>
+      <img src="cc-standards-alignment/phase1.png" alt="a signpost at the mouth of a vast warehouse of 76 numbered drawers, the sign being the only thing visible from outside">
+      <div class="fig-pending"><b>Image pending</b><span class="hint">phase1.png — see prompt sheet</span></div>
+      <figcaption>With tool search on, the signpost is all the model sees at session start.</figcaption>
+    </figure>
+  </div>
+
+  <div class="phase">
+    <h3>Phase 2 — Hook hardening, safe subset <code class="status">[]</code></h3>
+    <p>Timeouts and predicates only. The two genuinely attractive optimizations are deferred as spikes.</p>
+    <h4>Tasks</h4>
+    <ul class="checklist">
+      <li><code class="status">[]</code> Classify all 26 hooks as <b>blocking / recovery / informational</b> first, then set explicit <code>timeout</code> per class. Round-2 caveat: a too-tight timeout converts a slow <em>success</em> into a failure, so values follow the classification, not a blanket number.</li>
+      <li><code class="status">[]</code> Add <code>if:</code> predicates. <code>block-destructive-shell</code> currently runs on <em>every</em> Bash call; <code>enforce-rfc2119-language</code> on <em>every</em> Write/Edit rather than markdown artifacts only.</li>
+      <li><code class="status">[]</code> Add <code>statusMessage</code> to <code>enforce-no-secrets</code> and <code>enforce-validator-gate</code>.</li>
+      <li><code class="status">[]</code> <b>Wire the three dead handlers.</b> <code>dispatcher.ts</code> implements 29 handlers; only 26 are wired, in either runtime. <code>eights-recall-project</code> (SessionStart), <code>eights-recall-stage</code> (PreToolUse on <code>__start_stage</code>), and <code>eights-recall-request</code> (UserPromptSubmit) are reachable by name but referenced by no settings file. TheEights episodic recall is therefore silently off — including the cross-run prior-critique lookup that <code>/forge:cauterize</code> advertises as "pulls cross-run reflexion context". Add all three to <code>.claude/settings.json</code> and <code>hooks.json</code>.</li>
+      <li><code class="status">[]</code> <b>Correct README lines 152 and 236</b>, which both claim <code>hooks.json</code> carries the 3 eights-recall hooks for a total of 29. It carries 26 and none of them.</li>
+      <li><code class="status">[]</code> <b>Deferred spike (Q3):</b> <code>type: "mcp_tool"</code> hooks against the live <code>pp_harness</code> server — would remove 26 Node cold-starts and SQLite reopens per event cycle, but needs MCP-callable adapters and payload mapping, and <code>async</code>/<code>asyncRewake</code> are command-hook-only so they cannot combine with it.</li>
+      <li><code class="status">[]</code> <b>Deferred spike (Q3):</b> <code>async: true</code> on telemetry hooks — risks SQLite write races and loses ordering.</li>
+    </ul>
+    <h4>Testing strategy — loop until every check passes before advancing</h4>
+    <ul class="checklist">
+      <li><code class="status">[]</code> Every hook has an explicit <code>timeout</code>, asserted by the Phase 0 inventory test.</li>
+      <li><code class="status">[]</code> <b>Parity test:</b> the set of handler names in <code>dispatcher.ts</code> equals the set wired in <code>.claude/settings.json</code> equals the set in <code>hooks.json</code>. This is the guard that would have caught the eights-recall gap, and it must run in CI.</li>
+      <li><code class="status">[]</code> With recall wired, a SessionStart in a project with prior runs actually emits the <code>[pp] eights recall:</code> line.</li>
+      <li><code class="status">[]</code> Each <code>if:</code> predicate verified to still fire on the cases it must catch — especially <code>block-destructive-shell</code> on real destructive shapes.</li>
+      <li><code class="status">[]</code> No hook that previously succeeded slowly now times out. Measure against the Phase 0 baseline.</li>
+    </ul>
+    <p class="legend">If a check cannot be made to pass after reasonable effort, mark the phase
+      <code class="status" data-st="f">[f]</code> and record why in Notes rather than looping forever.</p>
+    <figure>
+      <img src="cc-standards-alignment/phase2.png" alt="twenty-six identical valves on a manifold, each now fitted with a pressure gauge and a labelled cutoff">
+      <div class="fig-pending"><b>Image pending</b><span class="hint">phase2.png — see prompt sheet</span></div>
+      <figcaption>Twenty-six hooks, none of which currently has a cutoff.</figcaption>
+    </figure>
+  </div>
+
+  <div class="phase">
+    <h3>Phase 3 — Missing hook events, redesigned <code class="status">[]</code></h3>
+    <p>Round 2 rejected the original framing outright. Corrected principle: <b>these are recovery
+    observations, never manufactured ledger rows.</b> A failed <em>critique</em> is not a generation
+    <em>attempt</em>; conflating them corrupts the ledger's meaning.</p>
+    <h4>Tasks</h4>
+    <ul class="checklist">
+      <li><code class="status">[]</code> Add a new idempotent <b>execution-event</b> record (call key, tool, run/stage correlation, status, cost), distinct from the <code>attempts</code> table, surfaced in <code>replay</code> and budget reporting.</li>
+      <li><code class="status">[]</code> <code>PostToolUseFailure</code> on <code>mcp__pp_codex__.*|mcp__pp_agy__.*</code> → writes an execution-event. Today <code>record-attempt</code>/<code>cost-tally</code> fire only on success, so every failed critique is invisible. <code>.harness/critique_failures/</code> exists because of this gap.</li>
+      <li><code class="status">[]</code> <code>StopFailure</code> (<code>rate_limit|overloaded|authentication_failed</code>) → mark an API-killed run <code>surfaced</code> with the reason instead of leaving it <code>running</code>. Two such runs are pending in this repo now.</li>
+      <li><code class="status">[]</code> <code>PreCompact</code>/<code>PostCompact</code> → re-inject active <code>run_id</code>/<code>stage_id</code> via <code>additionalContext</code>.</li>
+      <li><code class="status">[]</code> <code>FileChanged</code> (<code>CONSTITUTION.md</code>) → drift <b>detector</b> only. Explicitly not enforcement.</li>
+      <li><code class="status">[]</code> <b>Blocked on a correlation model:</b> <code>SubagentStop</code> (matcher <code>engineer</code>). In best-of-N every candidate is <code>producer="claude"</code>, so no <code>mcp__pp_codex__*</code> PostToolUse ever fires. But <code>runs.ts:433</code> returns the existing slot row <em>without updating it</em> — a stop-handler that writes first permanently discards the engineer's real metadata, and one without the <code>attempt_slot_id</code> writes a second row. Prerequisite: persist a dispatch-time correlation record (subagent/task id → <code>run_id, stage_id, attempt_slot_id</code>), then have <code>SubagentStop</code> write a recovery observation reconciled later.</li>
+      <li><code class="status">[]</code> <b>Dropped:</b> <code>SessionEnd</code> cleanup — the 1.5s shared budget makes it unreliable for janitor/teardown work.</li>
+    </ul>
+    <h4>Testing strategy — loop until every check passes before advancing</h4>
+    <ul class="checklist">
+      <li><code class="status">[]</code> <code>execution-events.unit.mjs</code>: a failed critique produces exactly one execution-event and <b>zero</b> attempt rows.</li>
+      <li><code class="status">[]</code> Idempotency: replaying the same hook payload twice produces no duplicate and no partial record.</li>
+      <li><code class="status">[]</code> <code>SubagentStop</code> test proves exactly one attempt row per candidate with the engineer's metadata intact, or the sub-task stays <code class="status" data-st="f">[f]</code>.</li>
+      <li><code class="status">[]</code> Budget totals reconcile: failed calls now appear in <code>budget_status</code>.</li>
+    </ul>
+    <p class="legend">If a check cannot be made to pass after reasonable effort, mark the phase
+      <code class="status" data-st="f">[f]</code> and record why in Notes rather than looping forever.</p>
+    <figure>
+      <img src="cc-standards-alignment/phase3.png" alt="two separate ledgers side by side on a desk, one labelled attempts and one labelled events, with a clerk deliberately not merging them">
+      <div class="fig-pending"><b>Image pending</b><span class="hint">phase3.png — see prompt sheet</span></div>
+      <figcaption>A failed critique is not a generation attempt. Two ledgers, never merged.</figcaption>
+    </figure>
+  </div>
+
+  <div class="phase">
+    <h3>Phase 4 — Skills migration <code class="status">[]</code> <span class="legend">(D3)</span></h3>
+    <p>The 11 files in <code>.claude/skills/</code> are not skills. Loose <code>.md</code> at the skills root
+    is not a documented layout, and this session's own skill listing confirms none of them load — while
+    <code>run.md</code> still instructs "Follow the <code>pair-programmer</code> skill protocol exactly."</p>
+    <h4>Tasks</h4>
+    <ul class="checklist">
+      <li><code class="status">[]</code> Move each loose file to <code>.claude/skills/&lt;name&gt;/SKILL.md</code>.</li>
+      <li><code class="status">[]</code> <code>user-invocable: false</code> on the six harness-internal ones (judge-policy, rubric-application, taxonomy-adherence, artifact-conventions, master-plan-patching, profile-aware-gating): hidden from the <code>/</code> menu, still model-invocable, still preloadable.</li>
+      <li><code class="status">[]</code> Do <b>not</b> use <code>disable-model-invocation</code> here — it blocks subagent preloading, which is the entire point.</li>
+      <li><code class="status">[]</code> Add <code>skills:</code> preload to consuming agents: judge-cross-vendor / judge-same-vendor / judge-router → judge-policy + rubric-application; master-plan-patcher → master-plan-patching; taxonomy-mapper → taxonomy-adherence; designer / design-system-curator → the design-* set.</li>
+      <li><code class="status">[]</code> Remove the now-dead "Read this file by path" instructions from those agent bodies.</li>
+      <li><code class="status">[]</code> Land atomically: valid frontmatter, stable <code>name</code>, updated preload references, all in one commit.</li>
+    </ul>
+    <h4>Testing strategy — loop until every check passes before advancing</h4>
+    <ul class="checklist">
+      <li><code class="status">[]</code> <b>Discovery test against the pinned Claude Code version</b> — each migrated skill actually appears. Round-2 condition.</li>
+      <li><code class="status">[]</code> No agent body still references a skill by filesystem path.</li>
+      <li><code class="status">[]</code> <code>/context</code> compared against the Phase 0 baseline; 11 new skill descriptions have not blown the listing budget. Treat <code>skillListingMaxDescChars</code> as unverified until runtime-tested.</li>
+    </ul>
+    <p class="legend">If a check cannot be made to pass after reasonable effort, mark the phase
+      <code class="status" data-st="f">[f]</code> and record why in Notes rather than looping forever.</p>
+    <figure>
+      <img src="cc-standards-alignment/phase4.png" alt="eleven books lying flat and unshelved beside an empty card catalogue, then slotted into the catalogue's labelled drawers">
+      <div class="fig-pending"><b>Image pending</b><span class="hint">phase4.png — see prompt sheet</span></div>
+      <figcaption>Referenced by name everywhere, discoverable nowhere.</figcaption>
+    </figure>
+  </div>
+
+  <div class="phase">
+    <h3>Phase 5 — Subagent frontmatter <code class="status">[]</code> <span class="legend">(D4)</span></h3>
+    <p>Four of sixteen available fields are in use across 75 agents. Split into a safe half (5.1) and a
+    gated half (5.2–5.4) because round 2 correctly rejected my "zero quality impact" claim.</p>
+    <h4>Tasks</h4>
+    <ul class="checklist">
+      <li><code class="status">[]</code> <b>5.1</b> Build a per-agent capability matrix from each agent body <em>first</em> — an allowlist that omits a tool the body needs breaks the agent. Then apply <code>tools:</code>/<code>disallowedTools:</code> to the 33 agents that declare no <code>tools:</code> and inherit the full surface including Write/Edit/Bash, against Hard Rule 5.</li>
+      <li><code class="status">[]</code> <b>5.2</b> <code>effort: low</code> on non-verdict helpers (triage, profile-loader, taxonomy-mapper, run-finalizer, missability-inspector). Official Opus 5 guidance: "use <code>low</code> and <code>medium</code> liberally as your primary control for token cost."</li>
+      <li><code class="status">[]</code> <b>5.2</b> <code>effort: high</code> on judge-cross-vendor and security-reviewer per D4. Sonnet 5 default is already <code>high</code>; <code>xhigh</code> is the documented setting for the hardest agentic work.</li>
+      <li><code class="status">[]</code> <b>5.3</b> <code>maxTurns:</code> including engineer.</li>
+      <li><code class="status">[]</code> <b>5.5</b> <code>color:</code> for transcript legibility; fold the 75 flat files into <code>harness/</code>, <code>exec/</code>, <code>smith/</code> subdirectories — <code>.claude/agents/</code> is scanned recursively and only <code>name:</code> is identity.</li>
+    </ul>
+    <h4>Testing strategy — loop until every check passes before advancing</h4>
+    <ul class="checklist">
+      <li><code class="status">[]</code> Each restricted agent still completes its canonical task — capability matrix verified, not assumed.</li>
+      <li><code class="status">[]</code> <b>Gate for 5.2/5.3:</b> deterministic regression fixtures (round-2 correction — fixtures, not live "verdict parity") show protocol equivalence on judge output.</li>
+      <li><code class="status">[]</code> Bounded-turn test proves <code>maxTurns</code> cannot truncate a valid Reflexion attempt.</li>
+      <li><code class="status">[]</code> On failure, fall back to the non-gating-helpers-only subset and mark 5.2–5.4 <code class="status" data-st="f">[f]</code>.</li>
+    </ul>
+    <p class="legend">If a check cannot be made to pass after reasonable effort, mark the phase
+      <code class="status" data-st="f">[f]</code> and record why in Notes rather than looping forever.</p>
+    <figure>
+      <img src="cc-standards-alignment/phase5.png" alt="seventy-five keyrings on a board, thirty-three of them holding a full master keyset and the rest holding two or three cut keys">
+      <div class="fig-pending"><b>Image pending</b><span class="hint">phase5.png — see prompt sheet</span></div>
+      <figcaption>Thirty-three agents currently hold the master keyset.</figcaption>
+    </figure>
+  </div>
+
+  <div class="phase">
+    <h3>Phase 6 — settings.json <code class="status">[]</code></h3>
+    <p>Two of roughly two hundred keys are in use. Round 2 insisted each item below is its own
+    security/product decision rather than config hygiene, so they land separately.</p>
+    <h4>Tasks</h4>
+    <ul class="checklist">
+      <li><code class="status">[]</code> <code>permissions.deny</code> on <code>CONSTITUTION.md</code> writes. Explicitly <b>defense in depth, not inviolability</b> — it constrains Claude's tool calls only, not a human or a shell. The daemon gate stays primary. Validate the exact path-rule syntax against the pinned version first.</li>
+      <li><code class="status">[]</code> <code>env</code> block for the <code>PP_*</code> flags currently described only in a settings <code>_comment</code>, plus <code>MAX_MCP_OUTPUT_TOKENS</code> alongside Phase 1.</li>
+      <li><code class="status">[]</code> <code>env</code>: <code>CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH</code> and <code>CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS</code> — the official deterministic delegation caps (Claude Code 2.1.217+), named directly in the Opus 5 prompting guide. These are the platform answer to the Windows parallel-spawn fragility <code>run.md:170</code> handles by hand.</li>
+      <li><code class="status">[]</code> <code>PP_DISABLE_AGY</code> stays <b>unset</b> (default OFF = agy enabled); setting it would change the default vendor matrix, which is a product decision.</li>
+      <li><code class="status">[]</code> <code>statusLine</code>/<code>subagentStatusLine</code>. Depends on the Phase 3 correlation work — it needs a durable way to identify the active run/stage, and must be fast and failure-tolerant. <b>Note:</b> a <code>statusLine</code> already exists at user scope but is broken — it points at <code>bash /Users/robob/.claude/statusline-command.sh</code>, a macOS path on a Windows host. Fix or replace it rather than assuming the slot is empty.</li>
+      <li><code class="status">[]</code> <b>Dropped:</b> <code>enableAllProjectMcpServers</code> — changes the trust boundary, and is ignored in an untrusted folder anyway.</li>
+    </ul>
+    <h4>Testing strategy — loop until every check passes before advancing</h4>
+    <ul class="checklist">
+      <li><code class="status">[]</code> A write to <code>CONSTITUTION.md</code> via Edit/Write is denied; the daemon gate independently still refuses.</li>
+      <li><code class="status">[]</code> Spawn caps verified to bound a best-of-N fan-out at N=8 without breaking it.</li>
+      <li><code class="status">[]</code> Status line degrades silently when no run is active.</li>
+    </ul>
+    <p class="legend">If a check cannot be made to pass after reasonable effort, mark the phase
+      <code class="status" data-st="f">[f]</code> and record why in Notes rather than looping forever.</p>
+    <figure>
+      <img src="cc-standards-alignment/phase6.png" alt="a fuse box with two occupied slots and dozens of empty labelled ones, a few being filled deliberately and the rest left open">
+      <div class="fig-pending"><b>Image pending</b><span class="hint">phase6.png — see prompt sheet</span></div>
+      <figcaption>Fill deliberately. Most empty slots should stay empty.</figcaption>
+    </figure>
+  </div>
+
+  <div class="phase">
+    <h3>Phase 7 — Path-scoped rules: mirror, do not extract <code class="status">[]</code></h3>
+    <p>Round 2 caught the real risk here, and it inverted the design.</p>
+    <h4>Tasks</h4>
+    <ul class="checklist">
+      <li><code class="status">[]</code> Recognize that <code>AGENTS.md</code> is the <b>cross-tool</b> contract — Codex, agy, and Copilot read it and do <b>not</b> read <code>.claude/rules/</code>. Extracting the only copy degrades all three.</li>
+      <li><code class="status">[]</code> Keep concise copies in <code>AGENTS.md</code> (or generate both mirrors from one source) and <em>add</em> Claude-only path-scoped <code>.claude/rules/*.md</code> with <code>paths:</code> globs.</li>
+      <li><code class="status">[]</code> Scope to genuinely file-bound rules only: ANTI-STALL TEST RULE (<code>daemon/test/**</code>), git-plumbing (<code>daemon/src/**</code>), correct-module-before-edit (<code>daemon/src/**</code>).</li>
+      <li><code class="status">[]</code> Governance invariants, Hard Rules, and run semantics stay in always-loaded <code>AGENTS.md</code>.</li>
+    </ul>
+    <h4>Testing strategy — loop until every check passes before advancing</h4>
+    <ul class="checklist">
+      <li><code class="status">[]</code> A Codex critique run still receives every rule it received before — verified by diffing the rendered <code>AGENTS.md</code> content, not by <code>agents_md_status</code>, which reports section <em>population</em> and cannot prove semantic coverage.</li>
+      <li><code class="status">[]</code> A Claude session touching <code>daemon/test/**</code> loads the anti-stall rule; one touching only <code>docs/</code> does not.</li>
+    </ul>
+    <p class="legend">If a check cannot be made to pass after reasonable effort, mark the phase
+      <code class="status" data-st="f">[f]</code> and record why in Notes rather than looping forever.</p>
+    <figure>
+      <img src="cc-standards-alignment/phase7.png" alt="one master document photocopied into two filing cabinets labelled cross-tool and claude-only, the original never removed">
+      <div class="fig-pending"><b>Image pending</b><span class="hint">phase7.png — see prompt sheet</span></div>
+      <figcaption>Mirror, never move — three other vendors read the original.</figcaption>
+    </figure>
+  </div>
+
+  <div class="phase">
+    <h3>Phase 8 — best-of-N fan-out as a dynamic workflow <code class="status">[]</code> <span class="legend">(D2)</span></h3>
+    <p>Round 2 corrected my boundary, and the correction was load-bearing.</p>
+    <h4>Tasks</h4>
+    <ul class="checklist">
+      <li><code class="status">[]</code> Note the corrected span. In <code>best-of.md</code>, <b>step 8 is judge routing and step 9 is judge execution</b>, with 6.5 (smoke collection), 7 (diff entropy) and 9.5 (smoke post-filter) between them. Absorbing "step 6 + step 8" would have silently dropped smoke collection, entropy, verdict execution, Borda, and the smoke post-filter — <b>changing winner selection.</b></li>
+      <li><code class="status">[]</code> Author <code>.claude/workflows/pp-best-of.js</code> covering <b>step 6 only</b>: N-candidate parallel <code>engineer</code> dispatch and structured collection of the fan-out results.</li>
+      <li><code class="status">[]</code> The prose driver retains steps 6.5 through 9.5 intact.</li>
+      <li><code class="status">[]</code> The daemon still owns candidate worktrees, attempt slots, Borda, and archival. The workflow calls the same MCP tools the Task-dispatched engineers call today.</li>
+      <li><code class="status">[]</code> Opt-in; the existing prose path stays as fallback. Set <code>workflowSizeGuideline: small</code> (N is 2–8).</li>
+    </ul>
+    <h4>Testing strategy — loop until every check passes before advancing</h4>
+    <ul class="checklist">
+      <li><code class="status">[]</code> Protocol equivalence: the same N candidates, the same attempt slots, the same smoke results reach step 6.5 whether the workflow or the prose path ran.</li>
+      <li><code class="status">[]</code> Winner selection is byte-identical across both paths on a fixture run.</li>
+      <li><code class="status">[]</code> Verify no HITL gate falls inside step 6, so the no-mid-run-input limit costs nothing.</li>
+    </ul>
+    <p class="legend">If a check cannot be made to pass after reasonable effort, mark the phase
+      <code class="status" data-st="f">[f]</code> and record why in Notes rather than looping forever.</p>
+    <figure>
+      <img src="cc-standards-alignment/phase8.png" alt="a relay race baton exchange zone marked with precise chalk boundaries, showing exactly where one runner's leg ends">
+      <div class="fig-pending"><b>Image pending</b><span class="hint">phase8.png — see prompt sheet</span></div>
+      <figcaption>The handoff boundary is the whole finding. Step 6 ends; 6.5 belongs to the driver.</figcaption>
+    </figure>
+  </div>
+
+  <div class="phase">
+    <h3>Phase 9 — Claude 5 prompt-surface alignment <code class="status">[]</code></h3>
+    <p>From the official model-specific prompting guides for Opus 5 and Sonnet 5. pp is, in the guides'
+    own terms, a "code-review harness" — both pages address that case directly. Two checks came back
+    clean and are recorded as such; three are real.</p>
+    <h4>Tasks</h4>
+    <ul class="checklist">
+      <li><code class="status">[]</code> <b>Coverage-vs-filter split (enhancement).</b> Verified clean: no "only report high-severity", "be conservative", or "don't nitpick" language exists in any judge agent or rubric, so pp has no recall regression. But the guides prescribe going further — instruct the finding stage to "report every issue you find, including ones you are uncertain about", with confidence and severity attached, and let a downstream stage filter. pp already <em>has</em> that downstream stage (Borda, findings-closure, missability), so the split is free to adopt.</li>
+      <li><code class="status">[]</code> <b>Audit <code>engineer.md</code> step 4.5.</b> Opus 5 guidance says to remove "legacy harness scaffolding that adds separate verification steps" and to not "use subagents to verify or double-check your own work." Step 4.5 is mandatory self-verification. Nuance that must be preserved: 4.5 produces <em>falsifiable evidence for the external cross-vendor judge</em>, which is not self-double-checking. Keep the evidence-producing anti-pattern grep; drop anything that is purely a re-read. Note <code>engineer.md</code> is pinned <code>claude-sonnet-5</code>, so the Opus 5 over-verification guidance applies only where an Opus tier resolves.</li>
+      <li><code class="status">[]</code> <b>Fix the four <code>same as /pp:run</code> cross-references</b> (<code>best-of.md</code> ×3, <code>review.md</code> ×1). Sonnet 5 "does not silently generalize an instruction from one item to another"; the guide's remedy is to state scope explicitly. Inline the referenced steps or name them exactly.</li>
+      <li><code class="status">[]</code> <b>Fix the step-number mismatch:</b> <code>best-of.md:27</code> says "runs the verification step (3.5)" while <code>engineer.md</code> numbers self-verification 4.5 (3.5 is the runtime smoke test). Under Sonnet 5 literalism this is a live misdirection.</li>
+      <li><code class="status">[]</code> <b>Rebaseline budget for the new tokenizer.</b> Sonnet 5 "produces approximately 30% more tokens for the same text." pp's <code>budget_status</code> history, cost thresholds, and any <code>max_tokens</code> tuned pre-Sonnet-5 need re-baselining or they will read as a regression.</li>
+      <li><code class="status">[]</code> <b>Recorded clean, no action:</b> nothing in <code>daemon/src</code> sets <code>temperature</code>, <code>top_p</code>, or <code>top_k</code> on a generation path, so there is no Sonnet 5 400-error risk. best-of-N diversity already runs on prompt-level <code>seed</code> values, which is exactly what the guide recommends now that sampling parameters are rejected.</li>
+    </ul>
+    <h4>Testing strategy — loop until every check passes before advancing</h4>
+    <ul class="checklist">
+      <li><code class="status">[]</code> Re-run the grep suite: zero conservative-filter phrases in judges/rubrics; zero <code>same as /pp:run</code> cross-references; zero <code>temperature</code>/<code>top_p</code> on generation paths.</li>
+      <li><code class="status">[]</code> Judge recall measured on an archived-stage fixture set before and after the coverage-vs-filter split; recall must not fall.</li>
+      <li><code class="status">[]</code> Step-4.5 audit does not reduce the evidence the cross-vendor judge receives — verify against a <code>findings_closed</code> fixture.</li>
+      <li><code class="status">[]</code> Budget baseline re-recorded and annotated with the tokenizer change so historical comparisons stay honest.</li>
+    </ul>
+    <p class="legend">If a check cannot be made to pass after reasonable effort, mark the phase
+      <code class="status" data-st="f">[f]</code> and record why in Notes rather than looping forever.</p>
+    <figure>
+      <img src="cc-standards-alignment/phase9.png" alt="a proofreader's desk where instructions written for an older reader are being re-marked for a new one who reads strictly literally">
+      <div class="fig-pending"><b>Image pending</b><span class="hint">phase9.png — see prompt sheet</span></div>
+      <figcaption>Sonnet 5 reads literally and will not generalize "same as /pp:run".</figcaption>
+    </figure>
+  </div>
+
+</section>
+
+<section id="validation">
+  <h2>Global validation commands — final gate (run after all phases show [x])</h2>
+  <ul class="checklist">
+    <li><code class="status">[]</code> <code>cd daemon &amp;&amp; npm run build &amp;&amp; npm run typecheck</code></li>
+    <li><code class="status">[]</code> <code>node --test --test-timeout=60000 daemon/test/*.unit.mjs</code> — all 37 suites. Note the known pre-existing failure in <code>producer-validation.unit.mjs</code> (expects <code>/maps to no vendor/</code>, message reads "does not map to a vendor"); it must not grow.</li>
+    <li><code class="status">[]</code> <code>/pp:doctor</code> — daemon reachable, sub-CLIs installed, vendor matrix intact, JUDGE-1 pin unchanged.</li>
+    <li><code class="status">[]</code> A full <code>/pp:best-of 3</code> fixture run completes and picks the same winner as the pre-change baseline.</li>
+    <li><code class="status">[]</code> <code>/context</code> compared against the Phase 0 baseline — net context cost has not increased.</li>
+  </ul>
+  <p class="legend">Same loop discipline as per-phase checks: nothing is done until every command here passes.</p>
+</section>
+
+<section id="questionables">
+  <h2>Questionables</h2>
+  <ul>
+    <li><b>Q1 — Assumption:</b> pp can live without plugin namespacing (decision D1). — <b>Why it matters:</b> with no plugin, AgentSmith, rlm-gaming, marketing, and curia all ship agents into the same flat <code>.claude/agents/</code> namespace as pp's 75, across the Hydra ecosystem. A name collision would silently resolve to the wrong agent. — <b>Resolved:</b> <code class="status">[]</code> open</li>
+    <li><b>Q2 — Assumption:</b> cross-vendor gates can lean entirely on Codex. — <b>Why it matters:</b> agy is degraded on this host — no <code>grep</code> on <code>%PATH%</code>, so every agy critique silently degrades to unverified reasoning (<code>run_kUPtCqHotdYn/postmortem.md</code>). The cross-vendor requirement is nominally satisfied while one of the two vendors is blind. Not addressed by this plan. — <b>Resolved:</b> <code class="status">[]</code> open</li>
+    <li><b>Q3 — Assumption:</b> the deferred hook spikes (Phase 2.4 <code>mcp_tool</code> conversion, 2.5 <code>async</code> telemetry) are worth their risk. — <b>Why it matters:</b> together they would remove 26 Node cold-starts and SQLite reopens per event cycle, the single largest runtime saving identified. Undecided. — <b>Resolved:</b> <code class="status">[]</code> open</li>
+    <li><b>Q4 — Assumption:</b> the read-only render commands must run on the session model. — <b>Why it matters:</b> <code>/pp:status</code>, <code>/pp:budget</code>, <code>/pp:teams</code>, <code>/pp:rubrics</code>, <code>/pp:taxonomy</code>, <code>/pp:checklist</code>, <code>/pp:master</code>, <code>/pp:profile</code> are single-MCP-call renderers. <code>model: haiku</code> is a real cost lever, and Haiku 4.5 does support tool search — but it changes the model, so it is not free. Not scheduled. — <b>Resolved:</b> <code class="status">[]</code> open</li>
+    <li><b>Q5 — Assumption:</b> <code>engineer.md</code> step 4.5 survives the Opus 5 over-verification audit. — <b>Why it matters:</b> if the audit concludes 4.5 is scaffolding rather than evidence generation, removing it weakens the <code>findings_closed</code> signal the Fix 0.2 re-judge gate depends on. — <b>Resolved:</b> <code class="status">[]</code> open</li>
+  </ul>
+</section>
+
+<section id="notes">
+  <h2>Notes</h2>
+  <h3>How this plan was validated</h3>
+  <p>Two independent adversarial rounds against Codex <code>gpt-5.6-terra</code> at medium reasoning
+  effort, read-only sandbox — the JUDGE-1 pin. agy was deliberately excluded rather than used alongside:
+  it cannot resolve <code>grep</code> on this host, so its critiques silently degrade to unverified
+  reasoning. Round 1 judged 13 findings; round 2 judged the resulting plan with repo access.</p>
+  <h3>What the review killed, and what I kept anyway</h3>
+  <table>
+    <thead><tr><th>Claim</th><th>Verdict</th><th>Outcome</th></tr></thead>
+    <tbody>
+      <tr><td>Worktree lifecycle hooks for daemon candidates</td><td>REFUTED</td><td><b>Dropped.</b> <code>WorktreeCreate</code>/<code>WorktreeRemove</code> observe Claude-Code-managed worktrees only; they would never fire for daemon-created paths.</td></tr>
+      <tr><td>Command <code>allowed-tools</code> enforces the delegation contract</td><td>REFUTED</td><td><b>Dropped, repaired.</b> It is pre-approval, not restriction. <code>disallowed-tools</code> <em>is</em> restriction and is used in Phases 4–5 instead.</td></tr>
+      <tr><td>Native OpenTelemetry</td><td>NOISE</td><td><b>Dropped.</b> Observes Claude Code, not pp's cross-vendor lifecycle. SQLite stays authoritative.</td></tr>
+      <tr><td>Plugin migration</td><td>RISKY</td><td><b>Dropped by D1.</b> Round 2 also found plugin-shipped subagents ignore <code>permissionMode</code>, <code>hooks</code>, and <code>mcpServers</code> — it would have cancelled part of Phase 5.</td></tr>
+      <tr><td>Dynamic workflows do not exist</td><td>—</td><td><b>Not accepted.</b> The reviewer ran read-only with no network. They are documented at <code>/docs/en/workflows.md</code>. Its <em>design</em> objection (no mid-run input, same-session resume) was accepted and is why Phase 8 is scoped to step 6.</td></tr>
+      <tr><td>Haiku cannot use MCP tool search</td><td>—</td><td><b>Not accepted.</b> The docs list Haiku 4.5 explicitly. Recorded in Q4.</td></tr>
+    </tbody>
+  </table>
+  <h3>The sharpest catch</h3>
+  <p>The <code>SubagentStop</code> idea looked clean until round 2 pointed at <code>runs.ts:433</code>:
+  re-calling <code>record_attempt</code> with the same pre-allocated slot returns the existing row
+  <em>without updating it</em>. So a stop-handler that writes first would permanently discard the
+  engineer's real metadata, and one without the <code>attempt_slot_id</code> would write a duplicate.
+  That is why Phase 3 now writes execution-events and recovery observations rather than manufacturing
+  attempt rows — and why a failed critique is never recorded as a generation attempt.</p>
+  <h3>Sources</h3>
+  <ul>
+    <li><code>code.claude.com/docs/llms.txt</code> and the reference pages for skills, sub-agents, hooks, MCP, plugins, settings, workflows, and the <code>.claude</code> directory.</li>
+    <li><code>platform.claude.com/docs/.../prompting-claude-opus-5</code> and <code>.../prompting-claude-sonnet-5</code> — the model-specific guides behind Phase 9.</li>
+    <li><code>H:\CommandCenter</code> research corpus. It largely <em>corroborates</em> pp's existing design (graduated validation, tiered model routing, tool restriction, generator–verifier separation, bounded retries, shared knowledge base, provenance tracking are all already implemented). The one place it points somewhere pp is not: "Designing a Verifier AI Agent for Autonomous Coding Harnesses" Strategic Recommendation A2 — "Implement dynamic workflows for verification: Use Claude's workflows to encode GA→VA→GA loops" — which independently corroborates Phase 8.</li>
+  </ul>
+  <figure>
+    <img src="cc-standards-alignment/notes.png" alt="a decision matrix grid showing thirteen findings flowing through two adversarial review gates, with several visibly discarded at each gate">
+    <div class="fig-pending"><b>Image pending</b><span class="hint">notes.png — see prompt sheet</span></div>
+    <figcaption>Thirteen findings in, two adversarial gates, ten phases out.</figcaption>
+  </figure>
+</section>
+
+<section id="amendments">
+  <h2>Amendments</h2>
+  <details class="amend">
+    <summary>— no amendments yet</summary>
+    <p>Append-only post-execution change history (newest at the bottom). Never rewrite history — only add.</p>
+  </details>
+</section>
+
+</div>
+</body>
+</html>
+
