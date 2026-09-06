@@ -75,7 +75,11 @@ details.meta dd { margin: 0; }
          box-shadow: var(--shadow); padding: var(--sp-4) var(--sp-5); margin: var(--sp-4) 0; }
 .phase > h3 { margin-top: 0; display: flex; align-items: center; gap: var(--sp-3); flex-wrap: wrap; }
 .checklist { list-style: none; padding: 0; margin: var(--sp-3) 0; }
-.checklist li { padding: var(--sp-1) 0; display: flex; gap: var(--sp-3); align-items: baseline; }
+/* Block, not flex: as a flex container every inline <code>/<b> child became its own
+   non-wrapping flex item, so long items overflowed the document horizontally. */
+.checklist li { padding: var(--sp-1) 0; padding-left: 3.6rem; text-indent: -3.6rem; }
+.checklist li > code.status:first-child { margin-right: var(--sp-2); }
+.checklist li > code.status:first-child + * { text-indent: 0; }
 code.status { font-size: .78em; font-weight: 700; padding: 1px 7px; border-radius: 999px;
   border: 1px solid var(--st-idle-bd); color: var(--st-idle-fg); background: var(--st-idle-bg); white-space: nowrap; }
 code.status[data-st="wip"]  { border-color: var(--st-wip-bd);  color: var(--st-wip-fg);  background: var(--st-wip-bg); }
@@ -113,13 +117,17 @@ figure:has(img) .fig-pending { display: none; }
   <summary>Metadata</summary>
   <dl>
     <dt>created</dt><dd>2026-08-24</dd>
-    <dt>modified</dt><dd>2026-08-24</dd>
-    <dt>commits</dt><dd>—</dd>
+    <dt>modified</dt><dd>2026-09-05 — validation round; see Amendments</dd>
+    <dt>commits</dt><dd>branch <code>feat/cc-standards-alignment</code></dd>
     <dt>agent</dt><dd>plan-deep (Fable-5) — authored to the plan-deep output contract</dd>
     <dt>session</dt><dd>7aefb7e8-2948-46a1-b10b-f9422c843257</dd>
     <dt>back refs</dt><dd><code>.harness/run_kUPtCqHotdYn/postmortem.md</code> (PP-VG-6 delivery stall); <code>.harness/cc-standards-alignment-plan.md</code> (superseded markdown draft)</dd>
-    <dt>forward refs</dt><dd>—</dd>
-    <dt>judged by</dt><dd>Codex <code>gpt-5.6-terra</code> @ medium, read-only, two independent rounds (findings, then plan)</dd>
+    <dt>forward refs</dt><dd><a href="https://github.com/lebobo88/pair-programmer/issues/42">#42</a> — epic; one issue per phase, listed on each phase below</dd>
+    <dt>judged by</dt><dd>
+      <b>Authoring (2026-08-24):</b> Codex <code>gpt-5.6-terra</code> @ medium, read-only, two independent rounds (findings, then plan).<br>
+      <b>Validation (2026-09-05):</b> Fable 5.1 @ medium against the current tree, then adjudicated by Codex <code>gpt-5.6-terra</code> (JUDGE-1) over 15 claims — <code>exit 0</code>, outcome <code>revise</code>.
+      An agy critique at <code>gemini-3.8-flash-medium</code> was attempted <em>first</em> and <b>timed out with no verdict</b> (<code>exit_code 1</code>, <code>reason: "missing outcome"</code>, 600 s, $0.27, archived to <code>.harness/critique_failures/</code>); it is re-run in Phase A. A bridge error is never a verdict.
+    </dd>
   </dl>
 </details>
 
@@ -141,9 +149,9 @@ figure:has(img) .fig-pending { display: none; }
   a regression fixture.</p>
   <h3>Invariants no phase may touch</h3>
   <ul>
-    <li><b>JUDGE-1 pin</b> — Codex <code>gpt-5.6-terra</code> @ medium (CONSTITUTION Article V, SHA <code>13b4fa18</code>).</li>
+    <li><b>JUDGE-1 pin</b> — Codex <code>gpt-5.6-terra</code> @ medium (CONSTITUTION Article V <b>as amended 2026-09-03, SHA <code>5df284cb</code></b>, superseding <code>13b4fa18</code>). The same article pins the agy default <code>gemini-3.8-flash-medium</code> and mandates <b>cross-vendor judging at every gate</b>, not just spec/design/security/contract.</li>
     <li><b>Reflexion ×1</b> — daemon-enforced via <code>retry_with_critique</code>.</li>
-    <li><b><code>finalize_run</code> hard blocks</b> — PP-VG-1/2/4, the 56 missability checks, and the same-producer + same-model verdict guard at <code>runs.ts:857</code>.</li>
+    <li><b><code>finalize_run</code> hard blocks</b> — PP-VG-1/2/4, the missability checks, and the same-producer + same-model verdict guard at <code>runs.ts:1057+</code> (the agy exemption on that guard was removed in J4).</li>
     <li><b><code>CONSTITUTION.md</code></b> is never edited.</li>
     <li><b>SQLite</b> at <code>~/.pair-programmer/state.db</code> stays the sole source of truth for runs, verdicts, and budget. No Claude Code feature becomes a source of truth for run state.</li>
   </ul>
@@ -163,8 +171,8 @@ figure:has(img) .fig-pending { display: none; }
     <tbody>
       <tr><td>MCP server instructions</td><td>All three servers pass only <code>{name, version}</code> (<code>harness-server.ts:1318</code>)</td><td>Tool search is on by default, so 76 <code>pp_harness</code> tool definitions are deferred and <em>instructions + tool names are all that load at session start</em>. pp supplies no instructions.</td></tr>
       <tr><td>Skills</td><td>11 loose <code>.claude/skills/*.md</code> files; no <code>SKILL.md</code> anywhere</td><td>Not a documented layout, so none of them load. <code>run.md</code> still says "Follow the <code>pair-programmer</code> skill protocol exactly."</td></tr>
-      <tr><td>Subagents</td><td>75 agents; 4 of 16 frontmatter fields used; 33 declare no <code>tools:</code></td><td>Those 33 inherit the full subagent surface including Write/Edit/Bash, against Hard Rule 5.</td></tr>
-      <tr><td>Hooks</td><td>26 command hooks, none setting <code>timeout</code>; 5 of 31 events used</td><td>Command hooks default to 600s — a hung daemon hangs a tool call for ten minutes. Failed critiques, API-killed runs, and compaction are all unobserved.</td></tr>
+      <tr><td>Subagents</td><td>75 files in <code>.claude/agents/</code>, but only <b>42 are agents</b>; 4 of 17 frontmatter fields used</td><td><b>Corrected 2026-09-05.</b> The other 33 are one-line pointer stubs naming <code>C:/AiAppDeployments/…</code>, with no frontmatter — they cannot load, so the "33 permissive agents" security gap does not exist. The real defect is 50 dangling pointers (33 agents + 17 skills). Now <a href="https://github.com/lebobo88/pair-programmer/issues/38">#38</a> / Phase E.</td></tr>
+      <tr><td>Hooks</td><td>26 command hooks in <code>.claude/settings.json</code>, <b>none</b> setting <code>timeout</code>; 5 of 33 events used</td><td>A hung daemon hangs a tool call. Failed critiques, API-killed runs, and compaction are all unobserved. <b>Note:</b> <code>hooks.json</code> (Copilot runtime) <em>already</em> sets <code>timeoutSec: 30</code> on all 26 — use it as the classification baseline rather than inventing values.</td></tr>
       <tr><td><b>Hook wiring</b></td><td><b>29 handlers implemented in <code>dispatcher.ts</code>; only 26 wired</b> in <code>.claude/settings.json</code>, and the same 26 in <code>hooks.json</code></td><td><b>All three TheEights recall hooks are dead code.</b> <code>eights-recall-project</code>, <code>eights-recall-stage</code>, and <code>eights-recall-request</code> are implemented and reachable by name but wired in no settings file, in either runtime. README lines 152 and 236 both claim <code>hooks.json</code> carries them; it does not.</td></tr>
       <tr><td>MCP result size</td><td>No <code>anthropic/maxResultSizeChars</code> annotations</td><td><code>replay</code> and <code>get_run</code> return whole run trees against a 25,000-token default cap.</td></tr>
       <tr><td>Driver control flow</td><td>25,609 bytes of prose in <code>run.md</code></td><td>Already produced one unrecoverable stall: the daemon returned <code>next_action: "dispatch_cross_vendor_rejudge"</code> and no caller implemented it.</td></tr>
@@ -189,9 +197,17 @@ figure:has(img) .fig-pending { display: none; }
       <tr><td>D1</td><td>No plugin migration. <code>.claude/</code> project scope + <code>scripts/install-user.ps1</code> stay.</td><td>No <code>claude plugin validate</code>, no namespacing, no <code>userConfig</code>. Q1 stays open.</td></tr>
       <tr><td>D2</td><td>Dynamic workflows scoped to the best-of-N fan-out only.</td><td>Full lifecycle driver stays prose.</td></tr>
       <tr><td>D3</td><td>Skills migrate to <code>&lt;name&gt;/SKILL.md</code> with <code>user-invocable: false</code> + agent <code>skills:</code> preload.</td><td>They become model-invocable where previously inert.</td></tr>
-      <tr><td>D4</td><td>Full subagent tuning <em>including</em> judges.</td><td>Gated behind deterministic regression fixtures.</td></tr>
+      <tr><td>D4</td><td>Full subagent tuning <em>including</em> judges. <b>Clarified 2026-09-05:</b> agent <code>effort:</code> sets the <em>Claude wrapper's</em> reasoning only — it is orthogonal to <code>judge_reasoning_effort</code>, the vendor CLI's effort recorded on the verdict. It does not escalate the verdict.</td><td>Gated behind deterministic regression fixtures.</td></tr>
+      <tr><td>D5</td><td>Hook adapters for the <code>mcp_tool</code> conversion register on <b><code>pp_harness</code></b>, not a new server.</td><td>Tool list grows 76 → ~100, so Phase B's <code>instructions</code> must never enumerate tools.</td></tr>
+      <tr><td>D6</td><td><b>No <code>async: true</code>.</b> <code>mcp_tool</code> only.</td><td>Forgoes the prompt-path latency win; keeps SQLite write ordering intact. <code>daemon-up</code> stays a command hook — it is the liveness probe.</td></tr>
+      <tr><td>D7</td><td><code>model: haiku</code> <b>piloted on <code>/pp:budget</code></b> before the other seven.</td><td>Settles empirically whether Haiku can drive a deferred MCP tool, which docs do not confirm.</td></tr>
+      <tr><td>D8</td><td>Work lands on branch <code>feat/cc-standards-alignment</code>, mirrored to GitHub issues, tracked in this file.</td><td>This document is the living tracker; status markers below are authoritative for narrative, GitHub for state.</td></tr>
     </tbody>
   </table>
+  <p class="legend"><b>Status sync:</b> <code class="status">[]</code> = issue open, unassigned ·
+    <code class="status" data-st="wip">[wip]</code> = open, assigned, <code>in-progress</code> ·
+    <code class="status" data-st="x">[x]</code> = issue closed ·
+    <code class="status" data-st="f">[f]</code> = open, <code>blocked</code>, with a Notes entry saying why.</p>
   <figure>
     <img src="cc-standards-alignment/solution.png" alt="the same control panel with every socket filled by a labelled standard module and the jumper wires removed, panel layout otherwise identical to the problem image">
     <div class="fig-pending"><b>Image pending</b><span class="hint">solution.png — see prompt sheet</span></div>
@@ -225,24 +241,33 @@ figure:has(img) .fig-pending { display: none; }
 
 <section id="phases">
   <h2>Implementation phases</h2>
-  <p class="legend"><b>Execution order</b> (adopted from round-2 review, which differs from the numbering):
-  0 → 1 → 9 → 2 → 4 → 5.1 → 3 → 7 → 6 → 5.2–5.4 → 8.</p>
+  <p class="legend"><b>Execution order:</b> A → B → C → D → E → F → G → H → I → J → K → L → M.
+  <b>Phases were re-lettered on 2026-09-05</b> so the order and the labels finally agree — the original numbering ran 0–9 and executed in a different sequence (0 → 1 → 9 → 2 → 4 → 5.1 → 3 → 7 → 6 → 5.2–5.4 → 8), which was a standing source of confusion.
+  Mapping: A←0, B←1, C←9, D←2, F←4, G←5, H←3, I←7, J←6, K←8. <b>E, L and M are new</b> — E replaces the refuted Phase 5.1, and L and M promote the two deferred spikes (old Q3, Q4) into real phases.</p>
 
   <div class="phase">
-    <h3>Phase 0 — Baseline probe <code class="status">[]</code></h3>
+    <h3 id="phase-a">Phase A — Unblock the judge lane, restore the runtime, baseline <code class="status">[]</code> <span class="legend"><a href="https://github.com/lebobo88/pair-programmer/issues/43">#43</a> · blocked by <a href="https://github.com/lebobo88/pair-programmer/issues/41">#41</a></span></h3>
     <p>Nothing lands before this. Round-2 review required a version/capability probe first, and caught that
-    my own inventory was wrong.</p>
+    my own inventory was wrong. <b>Expanded 2026-09-05:</b> this phase now also repairs the judge lane and the
+    runtime, because two anomalies found during validation are stale-binary artifacts and one
+    (<a href="https://github.com/lebobo88/pair-programmer/issues/41">#41</a>) blocks the campaign's own
+    execution model — no truthful agy verdict can be recorded until it is fixed.</p>
     <h4>Tasks</h4>
     <ul class="checklist">
       <li><code class="status">[]</code> Pin the exact Claude Code version; confirm every field and hook event used below exists in it.</li>
-      <li><code class="status">[]</code> Correct the hook inventory: <code>.claude/settings.json</code> has <b>26</b> command hooks (SessionStart 5, PreToolUse 7, PostToolUse 7, UserPromptSubmit 5, Stop 2), not the 24 its own <code>_comment</code> claims. <code>hooks.json</code> adds 3 for the Copilot runtime. Fix the stale comment.</li>
+      <li><code class="status">[]</code> <b>Resolve <a href="https://github.com/lebobo88/pair-programmer/issues/41">#41</a>.</b> Add <code>judge_model_source</code> + <code>judge_override_reason</code> to <code>record_verdict</code>'s schema — its own error message demands them but <code>additionalProperties: false</code> rejects them. Make <code>pp_agy.critique</code> <b>fail loudly</b> rather than silently substituting a model, and have the critique response carry a token the verdict call passes back so the recorded model id is tool-emitted evidence, not a caller-typed string. Reconcile the <code>JUDGE_MODEL_POLICY.agy</code> pin with what the gateway actually serves.</li>
+      <li><code class="status">[]</code> <b>Fix the false <code>resumed</code> signal.</b> <code>antigravity-server.ts:314</code> returns <code>resumed: !!existing</code>, but <code>:223</code> only appends <code>--continue</code> when <code>!fresh_session</code> and the critique path sets <code>fresh_session: true</code> at <code>:355</code>. Every critique reports <code>resumed: true</code> whenever any prior session exists — it produced a false contamination alarm during validation. Report whether <code>--continue</code> was actually passed.</li>
+      <li><code class="status">[]</code> Rebuild (<code>npm run build &amp;&amp; npm run typecheck</code>) and <b>reconnect the MCP servers</b>, then re-run <code>doctor({smoke:true})</code>. If agy still substitutes a model after a clean rebuild, #41 is not fixed — stop, do not proceed to agy-judged phases.</li>
+      <li><code class="status">[]</code> <b>Re-judge all 15 validated claims via agy</b> at <code>gemini-3.8-flash-medium</code>, split into 3–4 chunks (one 15-claim critique hit the 300 s-per-attempt ceiling and returned no verdict).</li>
+      <li><code class="status">[]</code> Correct the hook inventory: <code>.claude/settings.json</code> has <b>26</b> command hooks (SessionStart 5, PreToolUse 7, PostToolUse 7, UserPromptSubmit 5, Stop 2), not the 24 its own <code>_comment</code> claims. <b>Corrected:</b> <code>hooks.json</code> also carries <b>26</b>, not 3 extra — and it already sets <code>timeoutSec: 30</code> on every one. Fix the stale comment.</li>
+      <li><code class="status">[]</code> Apply this document's amendments and open the GitHub epic + phase issues.</li>
       <li><code class="status">[]</code> Record current <code>/context</code> composition as the before-baseline.</li>
       <li><code class="status">[]</code> Measure real tool-result sizes for <code>replay</code>, <code>get_run</code>, <code>master_plan_status</code>, <code>list_missability_checks</code> against the largest run in <code>.harness/</code>.</li>
     </ul>
     <h4>Testing strategy — loop until every check passes before advancing</h4>
     <ul class="checklist">
       <li><code class="status">[]</code> Hook count asserted by a unit test that parses <code>settings.json</code>, so the comment cannot drift again.</li>
-      <li><code class="status">[]</code> Measurements written to <code>.harness/</code> as the comparison baseline for Phases 1 and 4.</li>
+      <li><code class="status">[]</code> Measurements written to <code>.harness/</code> as the comparison baseline for Phases B and F.</li>
     </ul>
     <p class="legend">If a check cannot be made to pass after reasonable effort, mark the phase
       <code class="status" data-st="f">[f]</code> and record why in Notes rather than looping forever.</p>
@@ -254,12 +279,13 @@ figure:has(img) .fig-pending { display: none; }
   </div>
 
   <div class="phase">
-    <h3>Phase 1 — MCP discoverability and result sizing <code class="status">[]</code></h3>
+    <h3 id="phase-b">Phase B — MCP discoverability and result sizing <code class="status">[]</code> <span class="legend"><a href="https://github.com/lebobo88/pair-programmer/issues/44">#44</a></span></h3>
     <p>The only phase round-2 review rated <b>SOUND</b> outright, and the cheapest high-leverage change available.</p>
     <h4>Tasks</h4>
     <ul class="checklist">
-      <li><code class="status">[]</code> Add a server-level <code>instructions</code> string (≤2KB — the documented truncation limit) to all three MCP servers. Strictly navigational: lifecycle entrypoint order, the <code>gate_eligible_judges</code> routing entrypoint, the JUDGE-1 constraint. <b>Not</b> a condensed driver.</li>
-      <li><code class="status">[]</code> Using the Phase 0 measurements, add <code>_meta["anthropic/maxResultSizeChars"]</code> to the <code>tools/list</code> entry <em>only</em> for tools measured to exceed the 25,000-token default. Ceiling 500,000.</li>
+      <li><code class="status">[]</code> Add a server-level <code>instructions</code> string (≤2KB) to all three MCP servers — <code>harness-server.ts:1346</code>, <code>codex-server.ts:669</code>, <code>antigravity-server.ts:453</code> (the <code>:1318</code> cited above went stale in the 2026-09-03 pull). Strictly navigational: lifecycle entrypoint order, the <code>gate_eligible_judges</code> routing entrypoint, and — new since authoring — cross-vendor required at <b>every</b> gate, <code>judge-same-vendor</code> supplementary only (JUDGE-2), the JUDGE-1a override channels, and the <code>escalate</code>/<code>model</code> mutual exclusion. <b>Not</b> a condensed driver.</li>
+      <li><code class="status">[]</code> <b>Write it to survive Phase L.</b> That phase registers ~26 hook adapters on this same server, taking it from 76 tools to roughly 100 — so <code>instructions</code> must never enumerate tools, and must mark the hook-adapter namespace as "invoked by hooks, not by you".</li>
+      <li><code class="status">[]</code> Using the Phase A measurements, add <code>_meta["anthropic/maxResultSizeChars"]</code> to the <code>tools/list</code> entry <em>only</em> for tools measured to exceed the 25,000-token default. Ceiling 500,000.</li>
       <li><code class="status">[]</code> Prefer pagination over raising the cap wherever a tool can paginate (round-2 note).</li>
     </ul>
     <h4>Testing strategy — loop until every check passes before advancing</h4>
@@ -278,25 +304,54 @@ figure:has(img) .fig-pending { display: none; }
   </div>
 
   <div class="phase">
-    <h3>Phase 2 — Hook hardening, safe subset <code class="status">[]</code></h3>
-    <p>Timeouts and predicates only. The two genuinely attractive optimizations are deferred as spikes.</p>
+    <h3 id="phase-c">Phase C — Claude 5 prompt-surface alignment <code class="status">[]</code> <span class="legend"><a href="https://github.com/lebobo88/pair-programmer/issues/45">#45</a></span></h3>
+    <p>From the official model-specific prompting guides for Opus 5 and Sonnet 5. pp is, in the guides'
+    own terms, a "code-review harness" — both pages address that case directly. Two checks came back
+    clean and are recorded as such; three are real.</p>
     <h4>Tasks</h4>
     <ul class="checklist">
-      <li><code class="status">[]</code> Classify all 26 hooks as <b>blocking / recovery / informational</b> first, then set explicit <code>timeout</code> per class. Round-2 caveat: a too-tight timeout converts a slow <em>success</em> into a failure, so values follow the classification, not a blanket number.</li>
-      <li><code class="status">[]</code> Add <code>if:</code> predicates. <code>block-destructive-shell</code> currently runs on <em>every</em> Bash call; <code>enforce-rfc2119-language</code> on <em>every</em> Write/Edit rather than markdown artifacts only.</li>
-      <li><code class="status">[]</code> Add <code>statusMessage</code> to <code>enforce-no-secrets</code> and <code>enforce-validator-gate</code>.</li>
-      <li><code class="status">[]</code> <b>Wire the three dead handlers.</b> <code>dispatcher.ts</code> implements 29 handlers; only 26 are wired, in either runtime. <code>eights-recall-project</code> (SessionStart), <code>eights-recall-stage</code> (PreToolUse on <code>__start_stage</code>), and <code>eights-recall-request</code> (UserPromptSubmit) are reachable by name but referenced by no settings file. TheEights episodic recall is therefore silently off — including the cross-run prior-critique lookup that <code>/forge:cauterize</code> advertises as "pulls cross-run reflexion context". Add all three to <code>.claude/settings.json</code> and <code>hooks.json</code>.</li>
-      <li><code class="status">[]</code> <b>Correct README lines 152 and 236</b>, which both claim <code>hooks.json</code> carries the 3 eights-recall hooks for a total of 29. It carries 26 and none of them.</li>
-      <li><code class="status">[]</code> <b>Deferred spike (Q3):</b> <code>type: "mcp_tool"</code> hooks against the live <code>pp_harness</code> server — would remove 26 Node cold-starts and SQLite reopens per event cycle, but needs MCP-callable adapters and payload mapping, and <code>async</code>/<code>asyncRewake</code> are command-hook-only so they cannot combine with it.</li>
-      <li><code class="status">[]</code> <b>Deferred spike (Q3):</b> <code>async: true</code> on telemetry hooks — risks SQLite write races and loses ordering.</li>
+      <li><code class="status">[]</code> <b>Coverage-vs-filter split (enhancement).</b> Verified clean: no "only report high-severity", "be conservative", or "don't nitpick" language exists in any judge agent or rubric, so pp has no recall regression. But the guides prescribe going further — instruct the finding stage to "report every issue you find, including ones you are uncertain about", with confidence and severity attached, and let a downstream stage filter. pp already <em>has</em> that downstream stage (Borda, findings-closure, missability), so the split is free to adopt.</li>
+      <li><code class="status">[]</code> <b>Audit <code>engineer.md</code> step 4.5.</b> Opus 5 guidance says to remove "legacy harness scaffolding that adds separate verification steps" and to not "use subagents to verify or double-check your own work." Step 4.5 is mandatory self-verification. Nuance that must be preserved: 4.5 produces <em>falsifiable evidence for the external cross-vendor judge</em>, which is not self-double-checking. Keep the evidence-producing anti-pattern grep; drop anything that is purely a re-read. Note <code>engineer.md</code> is pinned <code>claude-sonnet-5</code>, so the Opus 5 over-verification guidance applies only where an Opus tier resolves.</li>
+      <li><code class="status">[]</code> <b>Fix the four <code>same as /pp:run</code> cross-references</b> (<code>best-of.md</code> ×3, <code>review.md</code> ×1). Sonnet 5 "does not silently generalize an instruction from one item to another"; the guide's remedy is to state scope explicitly. Inline the referenced steps or name them exactly.</li>
+      <li><code class="status" data-st="f">[f]</code> <b>DROPPED 2026-09-05 — refuted.</b> <s>Fix the step-number mismatch between <code>best-of.md</code>'s "verification step (3.5)" and <code>engineer.md</code>'s 4.5.</s> This is not a bug. <code>engineer.md:49</code> reads <em>"3.5. Verification before commit (runtime smoke test)"</em> and scopes itself to UI projects; <code>best-of.md:39</code> says "runs the verification step (3.5) <b>on UI projects</b>" — exactly 3.5's scope. The reference is correct as written; 4.5 is a separate self-verification step. Cross-vendor judged REFUTED at high confidence by Codex <code>gpt-5.6-terra</code>, overturning both the original plan and a later audit.</li>
+      <li><code class="status">[]</code> <b>Rebaseline budget for the new tokenizer — MOVED to Phase H.</b> Sonnet 5 "produces approximately 30% more tokens for the same text", so pre-Sonnet-5 thresholds will read as a regression. But every Claude-5 / gpt-5.6 / gemini-3.8 rate in <code>daemon/prices.json:36-43</code> is a marked <b>PLACEHOLDER</b> — rebaselining against those compounds two unknowns. Confirm real rates first; it now lands with Phase H's ledger work.</li>
+      <li><code class="status">[]</code> <b>Recorded clean, no action:</b> nothing in <code>daemon/src</code> sets <code>temperature</code>, <code>top_p</code>, or <code>top_k</code> on a generation path, so there is no Sonnet 5 400-error risk. best-of-N diversity already runs on prompt-level <code>seed</code> values, which is exactly what the guide recommends now that sampling parameters are rejected.</li>
     </ul>
     <h4>Testing strategy — loop until every check passes before advancing</h4>
     <ul class="checklist">
-      <li><code class="status">[]</code> Every hook has an explicit <code>timeout</code>, asserted by the Phase 0 inventory test.</li>
+      <li><code class="status">[]</code> Re-run the grep suite: zero conservative-filter phrases in judges/rubrics; zero <code>same as /pp:run</code> cross-references; zero <code>temperature</code>/<code>top_p</code> on generation paths.</li>
+      <li><code class="status">[]</code> Judge recall measured on an archived-stage fixture set before and after the coverage-vs-filter split; recall must not fall.</li>
+      <li><code class="status">[]</code> Step-4.5 audit does not reduce the evidence the cross-vendor judge receives — verify against a <code>findings_closed</code> fixture.</li>
+      <li><code class="status">[]</code> Budget baseline re-recorded and annotated with the tokenizer change so historical comparisons stay honest.</li>
+    </ul>
+    <p class="legend">If a check cannot be made to pass after reasonable effort, mark the phase
+      <code class="status" data-st="f">[f]</code> and record why in Notes rather than looping forever.</p>
+    <figure>
+      <img src="cc-standards-alignment/phase9.png" alt="a proofreader's desk where instructions written for an older reader are being re-marked for a new one who reads strictly literally">
+      <div class="fig-pending"><b>Image pending</b><span class="hint">phase9.png — see prompt sheet</span></div>
+      <figcaption>Sonnet 5 reads literally and will not generalize "same as /pp:run".</figcaption>
+    </figure>
+  </div>
+
+  <div class="phase">
+    <h3 id="phase-d">Phase D — Hook hardening, safe subset <code class="status">[]</code> <span class="legend"><a href="https://github.com/lebobo88/pair-programmer/issues/46">#46</a></span></h3>
+    <p>Timeouts and predicates only. The two genuinely attractive optimizations are deferred as spikes.</p>
+    <h4>Tasks</h4>
+    <ul class="checklist">
+      <li><code class="status">[]</code> Classify all 26 hooks as <b>blocking / recovery / informational</b> first, then set explicit <code>timeout</code> per class. <b>Start from the <code>timeoutSec: 30</code> that <code>hooks.json</code> already sets on all 26 of its entries</b> rather than inventing values; note <code>UserPromptSubmit</code> hooks already default to 30 s, not 600 s. Round-2 caveat still applies: a too-tight timeout converts a slow <em>success</em> into a failure, so values follow the classification, not a blanket number.</li>
+      <li><code class="status">[]</code> Add <code>if:</code> predicates. <code>block-destructive-shell</code> currently runs on <em>every</em> Bash call; <code>enforce-rfc2119-language</code> on <em>every</em> Write/Edit rather than markdown artifacts only. <b>Note:</b> <code>if:</code> is evaluated only on <em>tool</em> events, so this applies to the PreToolUse/PostToolUse hooks — not to SessionStart, UserPromptSubmit, or Stop.</li>
+      <li><code class="status">[]</code> Add <code>statusMessage</code> to <code>enforce-no-secrets</code> and <code>enforce-validator-gate</code>.</li>
+      <li><code class="status">[]</code> <b>Wire the three dead handlers.</b> <code>dispatcher.ts</code> implements 29 handlers; only 26 are wired, in either runtime. <code>eights-recall-project</code> (SessionStart), <code>eights-recall-stage</code> (PreToolUse on <code>__start_stage</code>), and <code>eights-recall-request</code> (UserPromptSubmit) are reachable by name but referenced by no settings file. TheEights episodic recall is therefore silently off — including the cross-run prior-critique lookup that <code>/forge:cauterize</code> advertises as "pulls cross-run reflexion context". Add all three to <code>.claude/settings.json</code> and <code>hooks.json</code>.</li>
+      <li><code class="status">[]</code> <b>Correct README lines 152 and 236</b>, which both claim <code>hooks.json</code> carries the 3 eights-recall hooks for a total of 29. It carries 26 and none of them.</li>
+      <li><code class="status">[]</code> <b>No longer deferred — promoted to Phase L.</b> The <code>type: "mcp_tool"</code> conversion is now a real phase, landing after Phase H so the SQLite write discipline is settled first. Per D6 there is <b>no</b> <code>async: true</code> anywhere: it is command-hook-only, mutually exclusive with <code>mcp_tool</code>, and five PostToolUse hooks write SQLite. Keep this phase's hooks as command hooks; L migrates them.</li>
+    </ul>
+    <h4>Testing strategy — loop until every check passes before advancing</h4>
+    <ul class="checklist">
+      <li><code class="status">[]</code> Every hook has an explicit <code>timeout</code>, asserted by the Phase A inventory test.</li>
       <li><code class="status">[]</code> <b>Parity test:</b> the set of handler names in <code>dispatcher.ts</code> equals the set wired in <code>.claude/settings.json</code> equals the set in <code>hooks.json</code>. This is the guard that would have caught the eights-recall gap, and it must run in CI.</li>
       <li><code class="status">[]</code> With recall wired, a SessionStart in a project with prior runs actually emits the <code>[pp] eights recall:</code> line.</li>
       <li><code class="status">[]</code> Each <code>if:</code> predicate verified to still fire on the cases it must catch — especially <code>block-destructive-shell</code> on real destructive shapes.</li>
-      <li><code class="status">[]</code> No hook that previously succeeded slowly now times out. Measure against the Phase 0 baseline.</li>
+      <li><code class="status">[]</code> No hook that previously succeeded slowly now times out. Measure against the Phase A baseline.</li>
     </ul>
     <p class="legend">If a check cannot be made to pass after reasonable effort, mark the phase
       <code class="status" data-st="f">[f]</code> and record why in Notes rather than looping forever.</p>
@@ -308,44 +363,35 @@ figure:has(img) .fig-pending { display: none; }
   </div>
 
   <div class="phase">
-    <h3>Phase 3 — Missing hook events, redesigned <code class="status">[]</code></h3>
-    <p>Round 2 rejected the original framing outright. Corrected principle: <b>these are recovery
-    observations, never manufactured ledger rows.</b> A failed <em>critique</em> is not a generation
-    <em>attempt</em>; conflating them corrupts the ledger's meaning.</p>
+    <h3 id="phase-e">Phase E — Pointer-stub cleanup <code class="status">[]</code> <span class="legend"><a href="https://github.com/lebobo88/pair-programmer/issues/38">#38</a></span></h3>
+    <p><b>New 2026-09-05 — replaces the refuted Phase 5.1.</b> The finding that 33 agents held an over-broad tool surface was wrong; those files are dangling pointers. This is the defect that was actually there, and it had already been filed independently as #38 on 2026-09-03.</p>
     <h4>Tasks</h4>
     <ul class="checklist">
-      <li><code class="status">[]</code> Add a new idempotent <b>execution-event</b> record (call key, tool, run/stage correlation, status, cost), distinct from the <code>attempts</code> table, surfaced in <code>replay</code> and budget reporting.</li>
-      <li><code class="status">[]</code> <code>PostToolUseFailure</code> on <code>mcp__pp_codex__.*|mcp__pp_agy__.*</code> → writes an execution-event. Today <code>record-attempt</code>/<code>cost-tally</code> fire only on success, so every failed critique is invisible. <code>.harness/critique_failures/</code> exists because of this gap.</li>
-      <li><code class="status">[]</code> <code>StopFailure</code> (<code>rate_limit|overloaded|authentication_failed</code>) → mark an API-killed run <code>surfaced</code> with the reason instead of leaving it <code>running</code>. Two such runs are pending in this repo now.</li>
-      <li><code class="status">[]</code> <code>PreCompact</code>/<code>PostCompact</code> → re-inject active <code>run_id</code>/<code>stage_id</code> via <code>additionalContext</code>.</li>
-      <li><code class="status">[]</code> <code>FileChanged</code> (<code>CONSTITUTION.md</code>) → drift <b>detector</b> only. Explicitly not enforcement.</li>
-      <li><code class="status">[]</code> <b>Blocked on a correlation model:</b> <code>SubagentStop</code> (matcher <code>engineer</code>). In best-of-N every candidate is <code>producer="claude"</code>, so no <code>mcp__pp_codex__*</code> PostToolUse ever fires. But <code>runs.ts:433</code> returns the existing slot row <em>without updating it</em> — a stop-handler that writes first permanently discards the engineer's real metadata, and one without the <code>attempt_slot_id</code> writes a second row. Prerequisite: persist a dispatch-time correlation record (subagent/task id → <code>run_id, stage_id, attempt_slot_id</code>), then have <code>SubagentStop</code> write a recovery observation reconciled later.</li>
-      <li><code class="status">[]</code> <b>Dropped:</b> <code>SessionEnd</code> cleanup — the 1.5s shared budget makes it unreliable for janitor/teardown work.</li>
+      <li><code class="status">[]</code> Repair or remove all <b>50</b> stubs — <b>33</b> in <code>.claude/agents/</code> and <b>17</b> in <code>.claude/skills/</code>. Each contains only an absolute path into a sibling checkout.</li>
+      <li><code class="status">[]</code> <b>#38 undercounts at 33.</b> It scoped to dangling <em>ExecutiveSuite</em> links; <code>C:/AiAppDeployments/AgentSmith</code> is missing too, so the true count is 50.</li>
+      <li><code class="status">[]</code> Decide per family: regenerate the overlay for this machine, or delete it — and drop the mirrored <code>.github</code> copies that #38 notes were left in place. <b>Do not touch the targets</b>; only this checkout's pointers.</li>
+      <li><code class="status">[]</code> Sequence before Phase F. <code>.claude/skills/</code> has <b>zero directories</b> today, so the SKILL.md migration would otherwise create them alongside 17 dangling pointers.</li>
     </ul>
     <h4>Testing strategy — loop until every check passes before advancing</h4>
     <ul class="checklist">
-      <li><code class="status">[]</code> <code>execution-events.unit.mjs</code>: a failed critique produces exactly one execution-event and <b>zero</b> attempt rows.</li>
-      <li><code class="status">[]</code> Idempotency: replaying the same hook payload twice produces no duplicate and no partial record.</li>
-      <li><code class="status">[]</code> <code>SubagentStop</code> test proves exactly one attempt row per candidate with the engineer's metadata intact, or the sub-task stays <code class="status" data-st="f">[f]</code>.</li>
-      <li><code class="status">[]</code> Budget totals reconcile: failed calls now appear in <code>budget_status</code>.</li>
+      <li><code class="status">[]</code> <code>git grep -rn "C:/AiAppDeployments" .claude/</code> returns nothing.</li>
+      <li><code class="status">[]</code> <code>scripts/sync-copilot-assets.mjs</code> completes without the ENOENT abort described in #38.</li>
+      <li><code class="status">[]</code> The 42 real agents and 11 real skills all still resolve.</li>
     </ul>
     <p class="legend">If a check cannot be made to pass after reasonable effort, mark the phase
       <code class="status" data-st="f">[f]</code> and record why in Notes rather than looping forever.</p>
-    <figure>
-      <img src="cc-standards-alignment/phase3.png" alt="two separate ledgers side by side on a desk, one labelled attempts and one labelled events, with a clerk deliberately not merging them">
-      <div class="fig-pending"><b>Image pending</b><span class="hint">phase3.png — see prompt sheet</span></div>
-      <figcaption>A failed critique is not a generation attempt. Two ledgers, never merged.</figcaption>
-    </figure>
   </div>
 
   <div class="phase">
-    <h3>Phase 4 — Skills migration <code class="status">[]</code> <span class="legend">(D3)</span></h3>
+    <h3 id="phase-f">Phase F — Skills migration <code class="status">[]</code> <span class="legend"><a href="https://github.com/lebobo88/pair-programmer/issues/47">#47</a> · (D3)</span></h3>
     <p>The 11 files in <code>.claude/skills/</code> are not skills. Loose <code>.md</code> at the skills root
     is not a documented layout, and this session's own skill listing confirms none of them load — while
     <code>run.md</code> still instructs "Follow the <code>pair-programmer</code> skill protocol exactly."</p>
     <h4>Tasks</h4>
     <ul class="checklist">
-      <li><code class="status">[]</code> Move each loose file to <code>.claude/skills/&lt;name&gt;/SKILL.md</code>.</li>
+      <li><code class="status">[]</code> <b>FIRST change <code>scripts/sync-copilot-assets.mjs</code></b> — <code>normalizeSkill</code> (<code>:240-250</code>), the path-rewrite regex table (<code>~:26</code>), and <code>:381-390</code>. <code>.github/skills/&lt;name&gt;/SKILL.md</code> already exists but is <b>generated from</b> these loose files: it is the shape target, not a migration source. Treating this phase as a file move breaks the generator's input (Codex flagged it as dangerous).</li>
+      <li><code class="status">[]</code> <b>Then</b> move each of the 11 real loose files to <code>.claude/skills/&lt;name&gt;/SKILL.md</code>. Note <code>.claude/skills/</code> currently holds <b>28 entries: 17 broken pointer stubs, 11 real files, zero directories</b> — Phase E must clear the stubs first.</li>
+      <li><code class="status">[]</code> Update path references: <code>AGENTS.md:26</code> and <code>:94</code>, <code>run.md</code>, and the mirror tests <code>sync-copilot-comments.unit.mjs</code> / <code>sync-comment-injection.unit.mjs</code>.</li>
       <li><code class="status">[]</code> <code>user-invocable: false</code> on the six harness-internal ones (judge-policy, rubric-application, taxonomy-adherence, artifact-conventions, master-plan-patching, profile-aware-gating): hidden from the <code>/</code> menu, still model-invocable, still preloadable.</li>
       <li><code class="status">[]</code> Do <b>not</b> use <code>disable-model-invocation</code> here — it blocks subagent preloading, which is the entire point.</li>
       <li><code class="status">[]</code> Add <code>skills:</code> preload to consuming agents: judge-cross-vendor / judge-same-vendor / judge-router → judge-policy + rubric-application; master-plan-patcher → master-plan-patching; taxonomy-mapper → taxonomy-adherence; designer / design-system-curator → the design-* set.</li>
@@ -356,7 +402,7 @@ figure:has(img) .fig-pending { display: none; }
     <ul class="checklist">
       <li><code class="status">[]</code> <b>Discovery test against the pinned Claude Code version</b> — each migrated skill actually appears. Round-2 condition.</li>
       <li><code class="status">[]</code> No agent body still references a skill by filesystem path.</li>
-      <li><code class="status">[]</code> <code>/context</code> compared against the Phase 0 baseline; 11 new skill descriptions have not blown the listing budget. Treat <code>skillListingMaxDescChars</code> as unverified until runtime-tested.</li>
+      <li><code class="status">[]</code> <code>/context</code> compared against the Phase A baseline; 11 new skill descriptions have not blown the listing budget. The per-entry description cap is real, so keep descriptions tight.</li>
     </ul>
     <p class="legend">If a check cannot be made to pass after reasonable effort, mark the phase
       <code class="status" data-st="f">[f]</code> and record why in Notes rather than looping forever.</p>
@@ -368,16 +414,16 @@ figure:has(img) .fig-pending { display: none; }
   </div>
 
   <div class="phase">
-    <h3>Phase 5 — Subagent frontmatter <code class="status">[]</code> <span class="legend">(D4)</span></h3>
+    <h3 id="phase-g">Phase G — Subagent frontmatter <code class="status">[]</code> <span class="legend"><a href="https://github.com/lebobo88/pair-programmer/issues/48">#48</a> · (D4)</span></h3>
     <p>Four of sixteen available fields are in use across 75 agents. Split into a safe half (5.1) and a
     gated half (5.2–5.4) because round 2 correctly rejected my "zero quality impact" claim.</p>
     <h4>Tasks</h4>
     <ul class="checklist">
-      <li><code class="status">[]</code> <b>5.1</b> Build a per-agent capability matrix from each agent body <em>first</em> — an allowlist that omits a tool the body needs breaks the agent. Then apply <code>tools:</code>/<code>disallowedTools:</code> to the 33 agents that declare no <code>tools:</code> and inherit the full surface including Write/Edit/Bash, against Hard Rule 5.</li>
+      <li><code class="status" data-st="f">[f]</code> <b>5.1 OBSOLETE 2026-09-05 — refuted.</b> <s>Apply <code>tools:</code>/<code>disallowedTools:</code> to the 33 agents that declare no <code>tools:</code> and inherit the full surface including Write/Edit/Bash, against Hard Rule 5.</s> Those 33 files are one-line pointer stubs containing only an absolute <code>C:/AiAppDeployments/…</code> path. They have no frontmatter, so Claude Code never loads them as agents — there is no permissive-agent gap. Verified three ways (own count, Fable 5.1 audit, agy PowerShell pass): 75 files, 33 pointers, 33 without <code>tools:</code>, 33 without frontmatter — an exact overlap. The real defect is <b>50 dangling pointers</b> (33 agents + 17 skills), now <b>Phase E</b> / <a href="https://github.com/lebobo88/pair-programmer/issues/38">#38</a>. This phase applies to the <b>42 real agents</b> only.</li>
       <li><code class="status">[]</code> <b>5.2</b> <code>effort: low</code> on non-verdict helpers (triage, profile-loader, taxonomy-mapper, run-finalizer, missability-inspector). Official Opus 5 guidance: "use <code>low</code> and <code>medium</code> liberally as your primary control for token cost."</li>
-      <li><code class="status">[]</code> <b>5.2</b> <code>effort: high</code> on judge-cross-vendor and security-reviewer per D4. Sonnet 5 default is already <code>high</code>; <code>xhigh</code> is the documented setting for the hardest agentic work.</li>
+      <li><code class="status">[]</code> <b>5.2</b> <code>effort: high</code> on judge-cross-vendor and security-reviewer per D4. Sonnet 5 default is already <code>high</code>; <code>xhigh</code> is the documented setting for the hardest agentic work. <b>Document explicitly</b> that this sets the <em>Claude wrapper's</em> reasoning and is orthogonal to <code>judge_reasoning_effort</code> — the vendor CLI's effort, validated at <code>runs.ts:1006-1012</code> and recorded on the verdict. It does <b>not</b> escalate the verdict; the judge model's effort remains the pin.</li>
       <li><code class="status">[]</code> <b>5.3</b> <code>maxTurns:</code> including engineer.</li>
-      <li><code class="status">[]</code> <b>5.5</b> <code>color:</code> for transcript legibility; fold the 75 flat files into <code>harness/</code>, <code>exec/</code>, <code>smith/</code> subdirectories — <code>.claude/agents/</code> is scanned recursively and only <code>name:</code> is identity.</li>
+      <li><code class="status">[]</code> <b>5.5</b> <code>color:</code> for transcript legibility; fold the flat agent files into <code>harness/</code>, <code>exec/</code>, <code>smith/</code> subdirectories — <code>.claude/agents/</code> is scanned recursively and only <code>name:</code> is identity. <b>But make <code>scripts/sync-copilot-assets.mjs</code> recursive first</b>: it reads <code>.claude/agents</code> flat at <code>:373-377</code>, so subdirectories would silently drop agents from the Copilot mirror.</li>
     </ul>
     <h4>Testing strategy — loop until every check passes before advancing</h4>
     <ul class="checklist">
@@ -396,35 +442,38 @@ figure:has(img) .fig-pending { display: none; }
   </div>
 
   <div class="phase">
-    <h3>Phase 6 — settings.json <code class="status">[]</code></h3>
-    <p>Two of roughly two hundred keys are in use. Round 2 insisted each item below is its own
-    security/product decision rather than config hygiene, so they land separately.</p>
+    <h3 id="phase-h">Phase H — Execution events and missing hook events <code class="status">[]</code> <span class="legend"><a href="https://github.com/lebobo88/pair-programmer/issues/49">#49</a> · schema v11</span></h3>
+    <p>Round 2 rejected the original framing outright. Corrected principle: <b>these are recovery
+    observations, never manufactured ledger rows.</b> A failed <em>critique</em> is not a generation
+    <em>attempt</em>; conflating them corrupts the ledger's meaning.</p>
     <h4>Tasks</h4>
     <ul class="checklist">
-      <li><code class="status">[]</code> <code>permissions.deny</code> on <code>CONSTITUTION.md</code> writes. Explicitly <b>defense in depth, not inviolability</b> — it constrains Claude's tool calls only, not a human or a shell. The daemon gate stays primary. Validate the exact path-rule syntax against the pinned version first.</li>
-      <li><code class="status">[]</code> <code>env</code> block for the <code>PP_*</code> flags currently described only in a settings <code>_comment</code>, plus <code>MAX_MCP_OUTPUT_TOKENS</code> alongside Phase 1.</li>
-      <li><code class="status">[]</code> <code>env</code>: <code>CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH</code> and <code>CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS</code> — the official deterministic delegation caps (Claude Code 2.1.217+), named directly in the Opus 5 prompting guide. These are the platform answer to the Windows parallel-spawn fragility <code>run.md:170</code> handles by hand.</li>
-      <li><code class="status">[]</code> <code>PP_DISABLE_AGY</code> stays <b>unset</b> (default OFF = agy enabled); setting it would change the default vendor matrix, which is a product decision.</li>
-      <li><code class="status">[]</code> <code>statusLine</code>/<code>subagentStatusLine</code>. Depends on the Phase 3 correlation work — it needs a durable way to identify the active run/stage, and must be fast and failure-tolerant. <b>Note:</b> a <code>statusLine</code> already exists at user scope but is broken — it points at <code>bash /Users/robob/.claude/statusline-command.sh</code>, a macOS path on a Windows host. Fix or replace it rather than assuming the slot is empty.</li>
-      <li><code class="status">[]</code> <b>Dropped:</b> <code>enableAllProjectMcpServers</code> — changes the trust boundary, and is ignored in an untrusted folder anyway.</li>
+      <li><code class="status">[]</code> Add a new idempotent <b>execution-event</b> record (call key, tool, run/stage correlation, status, cost), distinct from the <code>attempts</code> table, surfaced in <code>replay</code> and budget reporting.</li>
+      <li><code class="status">[]</code> <code>PostToolUseFailure</code> on <code>mcp__pp_codex__.*|mcp__pp_agy__.*</code> → writes an execution-event. Today <code>record-attempt</code>/<code>cost-tally</code> fire only on success, so every failed critique is invisible. <b>Evidence corrected 2026-09-05:</b> the claim that <code>.harness/critique_failures/</code> "exists because of this gap" is false as to causation — that directory is deliberate bridge archival written by <code>cli-runner.ts:674-777</code> on final non-zero exit, independent of hooks (Codex: PARTIALLY CORRECT). The blind spot is real, and now has a live example: the agy critique that failed during this validation cost <b>$0.27 over 600 s</b> and appears in no <code>budget_status</code>.</li>
+      <li><code class="status">[]</code> <code>StopFailure</code> (<code>rate_limit|overloaded|authentication_failed</code>) → mark an API-killed run <code>surfaced</code> with the reason instead of leaving it <code>running</code>. Two such runs are pending in this repo now.</li>
+      <li><code class="status">[]</code> <code>PreCompact</code>/<code>PostCompact</code> → re-inject active <code>run_id</code>/<code>stage_id</code> via <code>additionalContext</code>.</li>
+      <li><code class="status">[]</code> <code>FileChanged</code> (<code>CONSTITUTION.md</code>) → drift <b>detector</b> only. Explicitly not enforcement.</li>
+      <li><code class="status">[]</code> <b>Blocked on a correlation model:</b> <code>SubagentStop</code> (matcher <code>engineer</code>). In best-of-N every candidate is <code>producer="claude"</code>, so no <code>mcp__pp_codex__*</code> PostToolUse ever fires. But <code>runs.ts:449-475</code> (cited as <code>:433</code> when this was written) returns the existing slot row <em>without updating it</em> — a stop-handler that writes first permanently discards the engineer's real metadata, and one without the <code>attempt_slot_id</code> writes a second row. Prerequisite: persist a dispatch-time correlation record (subagent/task id → <code>run_id, stage_id, attempt_slot_id</code>), then have <code>SubagentStop</code> write a recovery observation reconciled later.</li>
+      <li><code class="status">[]</code> <b>Reinstated for review 2026-09-05:</b> <code>SessionEnd</code> cleanup was dropped over a 1.5 s shared budget, but that budget <b>extends to match a longer per-hook <code>timeout</code>, up to 60 s</b>. Judge it on merit rather than on the stale limit.</li>
     </ul>
     <h4>Testing strategy — loop until every check passes before advancing</h4>
     <ul class="checklist">
-      <li><code class="status">[]</code> A write to <code>CONSTITUTION.md</code> via Edit/Write is denied; the daemon gate independently still refuses.</li>
-      <li><code class="status">[]</code> Spawn caps verified to bound a best-of-N fan-out at N=8 without breaking it.</li>
-      <li><code class="status">[]</code> Status line degrades silently when no run is active.</li>
+      <li><code class="status">[]</code> <code>execution-events.unit.mjs</code>: a failed critique produces exactly one execution-event and <b>zero</b> attempt rows.</li>
+      <li><code class="status">[]</code> Idempotency: replaying the same hook payload twice produces no duplicate and no partial record.</li>
+      <li><code class="status">[]</code> <code>SubagentStop</code> test proves exactly one attempt row per candidate with the engineer's metadata intact, or the sub-task stays <code class="status" data-st="f">[f]</code>.</li>
+      <li><code class="status">[]</code> Budget totals reconcile: failed calls now appear in <code>budget_status</code>.</li>
     </ul>
     <p class="legend">If a check cannot be made to pass after reasonable effort, mark the phase
       <code class="status" data-st="f">[f]</code> and record why in Notes rather than looping forever.</p>
     <figure>
-      <img src="cc-standards-alignment/phase6.png" alt="a fuse box with two occupied slots and dozens of empty labelled ones, a few being filled deliberately and the rest left open">
-      <div class="fig-pending"><b>Image pending</b><span class="hint">phase6.png — see prompt sheet</span></div>
-      <figcaption>Fill deliberately. Most empty slots should stay empty.</figcaption>
+      <img src="cc-standards-alignment/phase3.png" alt="two separate ledgers side by side on a desk, one labelled attempts and one labelled events, with a clerk deliberately not merging them">
+      <div class="fig-pending"><b>Image pending</b><span class="hint">phase3.png — see prompt sheet</span></div>
+      <figcaption>A failed critique is not a generation attempt. Two ledgers, never merged.</figcaption>
     </figure>
   </div>
 
   <div class="phase">
-    <h3>Phase 7 — Path-scoped rules: mirror, do not extract <code class="status">[]</code></h3>
+    <h3 id="phase-i">Phase I — Path-scoped rules: mirror, do not extract <code class="status">[]</code> <span class="legend"><a href="https://github.com/lebobo88/pair-programmer/issues/50">#50</a></span></h3>
     <p>Round 2 caught the real risk here, and it inverted the design.</p>
     <h4>Tasks</h4>
     <ul class="checklist">
@@ -448,7 +497,35 @@ figure:has(img) .fig-pending { display: none; }
   </div>
 
   <div class="phase">
-    <h3>Phase 8 — best-of-N fan-out as a dynamic workflow <code class="status">[]</code> <span class="legend">(D2)</span></h3>
+    <h3 id="phase-j">Phase J — settings.json <code class="status">[]</code> <span class="legend"><a href="https://github.com/lebobo88/pair-programmer/issues/51">#51</a></span></h3>
+    <p>Two of roughly two hundred keys are in use. Round 2 insisted each item below is its own
+    security/product decision rather than config hygiene, so they land separately.</p>
+    <h4>Tasks</h4>
+    <ul class="checklist">
+      <li><code class="status">[]</code> <code>permissions.deny</code> on <code>CONSTITUTION.md</code> writes. Explicitly <b>defense in depth, not inviolability</b> — it constrains Claude's tool calls only, not a human or a shell. The daemon gate stays primary. Validate the exact path-rule syntax against the pinned version first.</li>
+      <li><code class="status">[]</code> <code>env</code> block for the <code>PP_*</code> flags currently described only in a settings <code>_comment</code>, plus <code>MAX_MCP_OUTPUT_TOKENS</code> alongside Phase B.</li>
+      <li><code class="status">[]</code> <b>DEMOTED 2026-09-05.</b> <code>CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH</code> / <code>CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS</code> were framed as "the platform answer to the Windows parallel-spawn fragility". They are not: default concurrency already exceeds best-of-N's maximum N=8, so the caps change nothing for this workload, and the documented failure at <code>run.md:271-277</code> (cited as <code>:170</code> above) is process-group limits <b>and pipe contention</b>, which caps do not address. Codex judged this PARTIALLY CORRECT and <b>dangerous to act on</b> as a cure for Windows hangs. Add for hygiene if wanted; do not present as the fix.</li>
+      <li><code class="status">[]</code> <code>PP_DISABLE_AGY</code> stays <b>unset</b> (default OFF = agy enabled); setting it would change the default vendor matrix, which is a product decision.</li>
+      <li><code class="status">[]</code> <code>statusLine</code>/<code>subagentStatusLine</code>. Depends on the Phase H correlation work — it needs a durable way to identify the active run/stage, and must be fast and failure-tolerant. <b>Note:</b> a <code>statusLine</code> already exists at user scope but is broken — it points at <code>bash /Users/robob/.claude/statusline-command.sh</code>, a macOS path on a Windows host. Fix or replace it rather than assuming the slot is empty.</li>
+      <li><code class="status">[]</code> <b>Dropped:</b> <code>enableAllProjectMcpServers</code> — changes the trust boundary, and is ignored in an untrusted folder anyway.</li>
+    </ul>
+    <h4>Testing strategy — loop until every check passes before advancing</h4>
+    <ul class="checklist">
+      <li><code class="status">[]</code> A write to <code>CONSTITUTION.md</code> via Edit/Write is denied; the daemon gate independently still refuses.</li>
+      <li><code class="status">[]</code> Spawn caps verified to bound a best-of-N fan-out at N=8 without breaking it.</li>
+      <li><code class="status">[]</code> Status line degrades silently when no run is active.</li>
+    </ul>
+    <p class="legend">If a check cannot be made to pass after reasonable effort, mark the phase
+      <code class="status" data-st="f">[f]</code> and record why in Notes rather than looping forever.</p>
+    <figure>
+      <img src="cc-standards-alignment/phase6.png" alt="a fuse box with two occupied slots and dozens of empty labelled ones, a few being filled deliberately and the rest left open">
+      <div class="fig-pending"><b>Image pending</b><span class="hint">phase6.png — see prompt sheet</span></div>
+      <figcaption>Fill deliberately. Most empty slots should stay empty.</figcaption>
+    </figure>
+  </div>
+
+  <div class="phase">
+    <h3 id="phase-k">Phase K — best-of-N fan-out as a dynamic workflow <code class="status">[]</code> <span class="legend"><a href="https://github.com/lebobo88/pair-programmer/issues/52">#52</a> · (D2)</span></h3>
     <p>Round 2 corrected my boundary, and the correction was load-bearing.</p>
     <h4>Tasks</h4>
     <ul class="checklist">
@@ -474,33 +551,43 @@ figure:has(img) .fig-pending { display: none; }
   </div>
 
   <div class="phase">
-    <h3>Phase 9 — Claude 5 prompt-surface alignment <code class="status">[]</code></h3>
-    <p>From the official model-specific prompting guides for Opus 5 and Sonnet 5. pp is, in the guides'
-    own terms, a "code-review harness" — both pages address that case directly. Two checks came back
-    clean and are recorded as such; three are real.</p>
+    <h3 id="phase-l">Phase L — Convert command hooks to <code>type: "mcp_tool"</code> <code class="status">[]</code> <span class="legend"><a href="https://github.com/lebobo88/pair-programmer/issues/53">#53</a></span></h3>
+    <p><b>New 2026-09-05 — promoted from Q3, which had this as a deferred spike.</b> The largest runtime saving identified anywhere in this plan: 26 Node cold-starts and SQLite reopens per event cycle, replaced by calls into the already-running <code>pp_harness</code> stdio server. Lands after Phase H so the write discipline is settled first.</p>
     <h4>Tasks</h4>
     <ul class="checklist">
-      <li><code class="status">[]</code> <b>Coverage-vs-filter split (enhancement).</b> Verified clean: no "only report high-severity", "be conservative", or "don't nitpick" language exists in any judge agent or rubric, so pp has no recall regression. But the guides prescribe going further — instruct the finding stage to "report every issue you find, including ones you are uncertain about", with confidence and severity attached, and let a downstream stage filter. pp already <em>has</em> that downstream stage (Borda, findings-closure, missability), so the split is free to adopt.</li>
-      <li><code class="status">[]</code> <b>Audit <code>engineer.md</code> step 4.5.</b> Opus 5 guidance says to remove "legacy harness scaffolding that adds separate verification steps" and to not "use subagents to verify or double-check your own work." Step 4.5 is mandatory self-verification. Nuance that must be preserved: 4.5 produces <em>falsifiable evidence for the external cross-vendor judge</em>, which is not self-double-checking. Keep the evidence-producing anti-pattern grep; drop anything that is purely a re-read. Note <code>engineer.md</code> is pinned <code>claude-sonnet-5</code>, so the Opus 5 over-verification guidance applies only where an Opus tier resolves.</li>
-      <li><code class="status">[]</code> <b>Fix the four <code>same as /pp:run</code> cross-references</b> (<code>best-of.md</code> ×3, <code>review.md</code> ×1). Sonnet 5 "does not silently generalize an instruction from one item to another"; the guide's remedy is to state scope explicitly. Inline the referenced steps or name them exactly.</li>
-      <li><code class="status">[]</code> <b>Fix the step-number mismatch:</b> <code>best-of.md:27</code> says "runs the verification step (3.5)" while <code>engineer.md</code> numbers self-verification 4.5 (3.5 is the runtime smoke test). Under Sonnet 5 literalism this is a live misdirection.</li>
-      <li><code class="status">[]</code> <b>Rebaseline budget for the new tokenizer.</b> Sonnet 5 "produces approximately 30% more tokens for the same text." pp's <code>budget_status</code> history, cost thresholds, and any <code>max_tokens</code> tuned pre-Sonnet-5 need re-baselining or they will read as a regression.</li>
-      <li><code class="status">[]</code> <b>Recorded clean, no action:</b> nothing in <code>daemon/src</code> sets <code>temperature</code>, <code>top_p</code>, or <code>top_k</code> on a generation path, so there is no Sonnet 5 400-error risk. best-of-N diversity already runs on prompt-level <code>seed</code> values, which is exactly what the guide recommends now that sampling parameters are rejected.</li>
+      <li><code class="status">[]</code> <b>Register the ~26 adapters on <code>pp_harness</code></b> (D5), not a new server — they share the daemon's DB handle directly. Accept the tool list growing 76 → ~100, and hold Phase B's <code>instructions</code> to the no-enumeration constraint. Give the adapters a consistent prefix so they stay separable in tool search.</li>
+      <li><code class="status">[]</code> <b>No <code>async: true</code> anywhere</b> (D6). It is command-hook-only and mutually exclusive with <code>mcp_tool</code>, and five PostToolUse hooks write SQLite — <code>cost-tally</code>, <code>record-attempt</code>, <code>loop-ceiling-tally</code>, <code>taxonomy-coverage-update</code>, <code>update-master-plan</code>. Async there would make telemetry eventually-consistent and collide with Phase H's idempotency guarantees.</li>
+      <li><code class="status">[]</code> <b>Carve-out: <code>daemon-up</code> stays a command hook.</b> It is the liveness probe — calling it over MCP is self-referential, since a dead daemon fails the transport rather than reporting cleanly.</li>
+      <li><code class="status">[]</code> Map each handler's CLI payload onto the adapter's MCP input schema. <b>Verify the <code>mcp_tool</code> hook contract carries a deny/allow result</b> — the 7 PreToolUse blockers must still decide synchronously, and stay command hooks if it cannot.</li>
+      <li><code class="status">[]</code> Update <code>.claude/settings.json</code> and <code>hooks.json</code> together; Phase A’s parity test guards the migration.</li>
     </ul>
     <h4>Testing strategy — loop until every check passes before advancing</h4>
     <ul class="checklist">
-      <li><code class="status">[]</code> Re-run the grep suite: zero conservative-filter phrases in judges/rubrics; zero <code>same as /pp:run</code> cross-references; zero <code>temperature</code>/<code>top_p</code> on generation paths.</li>
-      <li><code class="status">[]</code> Judge recall measured on an archived-stage fixture set before and after the coverage-vs-filter split; recall must not fall.</li>
-      <li><code class="status">[]</code> Step-4.5 audit does not reduce the evidence the cross-vendor judge receives — verify against a <code>findings_closed</code> fixture.</li>
-      <li><code class="status">[]</code> Budget baseline re-recorded and annotated with the tokenizer change so historical comparisons stay honest.</li>
+      <li><code class="status">[]</code> Every converted hook shows identical observable behavior to its command form: same blocks, same telemetry rows, same ordering.</li>
+      <li><code class="status">[]</code> Per-event-cycle latency measured against the Phase A baseline, delta recorded.</li>
+      <li><code class="status">[]</code> <code>hook-inventory.unit.mjs</code> passes with the mixed command/mcp_tool set.</li>
     </ul>
     <p class="legend">If a check cannot be made to pass after reasonable effort, mark the phase
       <code class="status" data-st="f">[f]</code> and record why in Notes rather than looping forever.</p>
-    <figure>
-      <img src="cc-standards-alignment/phase9.png" alt="a proofreader's desk where instructions written for an older reader are being re-marked for a new one who reads strictly literally">
-      <div class="fig-pending"><b>Image pending</b><span class="hint">phase9.png — see prompt sheet</span></div>
-      <figcaption>Sonnet 5 reads literally and will not generalize "same as /pp:run".</figcaption>
-    </figure>
+  </div>
+
+  <div class="phase">
+    <h3 id="phase-m">Phase M — <code>model: haiku</code> on read-only render commands <code class="status">[]</code> <span class="legend"><a href="https://github.com/lebobo88/pair-programmer/issues/54">#54</a></span></h3>
+    <p><b>New 2026-09-05 — promoted from Q4, which had this unscheduled.</b> Eight slash commands are single-MCP-call renderers where the model only formats a result, yet no pp command sets <code>model:</code> at all, so the session model renders a table.</p>
+    <h4>Tasks</h4>
+    <ul class="checklist">
+      <li><code class="status">[]</code> <b>Pilot <code>/pp:budget</code> alone</b> (D7) — one <code>budget_status</code> call, trivially verifiable output.</li>
+      <li><code class="status">[]</code> <b>The risk that shapes this.</b> The claim "Haiku 4.5 supports tool search" could <b>not</b> be confirmed against current docs during validation — marked NOT-FOUND, not refuted. Every one of these commands calls a <em>deferred</em> MCP tool, so if Haiku cannot drive tool search, all eight break at once. The pilot settles it empirically.</li>
+      <li><code class="status">[]</code> If the pilot passes, fan out to <code>/pp:status</code>, <code>/pp:teams</code>, <code>/pp:rubrics</code>, <code>/pp:taxonomy</code>, <code>/pp:checklist</code>, <code>/pp:master</code>, <code>/pp:profile</code>.</li>
+      <li><code class="status">[]</code> <b>Watch the three interpretive ones.</b> <code>/pp:status</code> renders a run tree, <code>/pp:master</code> a master-plan document, <code>/pp:checklist</code> a completion checklist — these do more than format. Leave any that degrades on the session model.</li>
+    </ul>
+    <h4>Testing strategy — loop until every check passes before advancing</h4>
+    <ul class="checklist">
+      <li><code class="status">[]</code> Each converted command produces output equivalent to the session model's on a fixture run: same rows, same fields, no dropped columns, no invented summary.</li>
+      <li><code class="status">[]</code> Revert any command that fails, rather than accepting worse output for the saving.</li>
+    </ul>
+    <p class="legend">If a check cannot be made to pass after reasonable effort, mark the phase
+      <code class="status" data-st="f">[f]</code> and record why in Notes rather than looping forever.</p>
   </div>
 
 </section>
@@ -509,22 +596,63 @@ figure:has(img) .fig-pending { display: none; }
   <h2>Global validation commands — final gate (run after all phases show [x])</h2>
   <ul class="checklist">
     <li><code class="status">[]</code> <code>cd daemon &amp;&amp; npm run build &amp;&amp; npm run typecheck</code></li>
-    <li><code class="status">[]</code> <code>node --test --test-timeout=60000 daemon/test/*.unit.mjs</code> — all 37 suites. Note the known pre-existing failure in <code>producer-validation.unit.mjs</code> (expects <code>/maps to no vendor/</code>, message reads "does not map to a vendor"); it must not grow.</li>
+    <li><code class="status">[]</code> <code>node --test --test-timeout=60000 daemon/test/*.unit.mjs</code> — all <b>48</b> suites (corrected from 37 on 2026-09-05) plus the four new guards this plan adds. Prefer <code>*.unit.mjs</code> over <code>npm test</code>, which pulls in <code>eights-integration.smoke.mjs</code> and needs an external TheEights peer. <b>The pre-existing <code>producer-validation.unit.mjs</code> failure this warned about is fixed</b> — the test now accepts both phrasings (<code>:192</code>).</li>
     <li><code class="status">[]</code> <code>/pp:doctor</code> — daemon reachable, sub-CLIs installed, vendor matrix intact, JUDGE-1 pin unchanged.</li>
     <li><code class="status">[]</code> A full <code>/pp:best-of 3</code> fixture run completes and picks the same winner as the pre-change baseline.</li>
-    <li><code class="status">[]</code> <code>/context</code> compared against the Phase 0 baseline — net context cost has not increased.</li>
+    <li><code class="status">[]</code> <code>/context</code> compared against the Phase A baseline — net context cost has not increased.</li>
   </ul>
   <p class="legend">Same loop discipline as per-phase checks: nothing is done until every command here passes.</p>
 </section>
 
 <section id="questionables">
   <h2>Questionables</h2>
+  <p class="legend">Updated 2026-09-05. Four of the five original questions are now settled; two became
+    phases in their own right.</p>
   <ul>
-    <li><b>Q1 — Assumption:</b> pp can live without plugin namespacing (decision D1). — <b>Why it matters:</b> with no plugin, AgentSmith, rlm-gaming, marketing, and curia all ship agents into the same flat <code>.claude/agents/</code> namespace as pp's 75, across the Hydra ecosystem. A name collision would silently resolve to the wrong agent. — <b>Resolved:</b> <code class="status">[]</code> open</li>
-    <li><b>Q2 — Assumption:</b> cross-vendor gates can lean entirely on Codex. — <b>Why it matters:</b> agy is degraded on this host — no <code>grep</code> on <code>%PATH%</code>, so every agy critique silently degrades to unverified reasoning (<code>run_kUPtCqHotdYn/postmortem.md</code>). The cross-vendor requirement is nominally satisfied while one of the two vendors is blind. Not addressed by this plan. — <b>Resolved:</b> <code class="status">[]</code> open</li>
-    <li><b>Q3 — Assumption:</b> the deferred hook spikes (Phase 2.4 <code>mcp_tool</code> conversion, 2.5 <code>async</code> telemetry) are worth their risk. — <b>Why it matters:</b> together they would remove 26 Node cold-starts and SQLite reopens per event cycle, the single largest runtime saving identified. Undecided. — <b>Resolved:</b> <code class="status">[]</code> open</li>
-    <li><b>Q4 — Assumption:</b> the read-only render commands must run on the session model. — <b>Why it matters:</b> <code>/pp:status</code>, <code>/pp:budget</code>, <code>/pp:teams</code>, <code>/pp:rubrics</code>, <code>/pp:taxonomy</code>, <code>/pp:checklist</code>, <code>/pp:master</code>, <code>/pp:profile</code> are single-MCP-call renderers. <code>model: haiku</code> is a real cost lever, and Haiku 4.5 does support tool search — but it changes the model, so it is not free. Not scheduled. — <b>Resolved:</b> <code class="status">[]</code> open</li>
-    <li><b>Q5 — Assumption:</b> <code>engineer.md</code> step 4.5 survives the Opus 5 over-verification audit. — <b>Why it matters:</b> if the audit concludes 4.5 is scaffolding rather than evidence generation, removing it weakens the <code>findings_closed</code> signal the Fix 0.2 re-judge gate depends on. — <b>Resolved:</b> <code class="status">[]</code> open</li>
+    <li><b>Q1 — Assumption:</b> pp can live without plugin namespacing (decision D1). — <b>Why it mattered:</b>
+      with no plugin, AgentSmith, rlm-gaming, marketing, and curia all ship agents into the same flat
+      <code>.claude/agents/</code> namespace, and a name collision would silently resolve to the wrong agent. —
+      <b>Resolved:</b> <code class="status" data-st="x">[x]</code> <b>closed by Phase E.</b> The collision risk is
+      moot: the sibling agents are dangling pointers with no frontmatter, so none of them load at all. Revisit
+      only if the overlays are regenerated rather than deleted.</li>
+
+    <li><b>Q2 — Assumption:</b> cross-vendor gates can lean entirely on Codex, because agy is degraded on this
+      host — no <code>grep</code> on <code>%PATH%</code>, so every agy critique silently degrades to unverified
+      reasoning (<code>run_kUPtCqHotdYn/postmortem.md</code>). — <b>Resolved:</b>
+      <code class="status" data-st="x">[x]</code> <b>the stated mechanism is refuted.</b> agy still has no
+      <code>grep</code>, but it does not degrade — it falls back to PowerShell <code>Select-String</code> /
+      <code>Get-ChildItem</code> and verifies fine (observed doing exactly that during the 2026-09-05
+      validation). <code>doctor({smoke:true})</code> now returns <code>exit 0</code> for the agy critique lane
+      and <code>cross_vendor_ready: true</code>. <b>A different agy problem replaces it</b> — see
+      <a href="https://github.com/lebobo88/pair-programmer/issues/41">#41</a>, tracked as the Phase A blocker:
+      the lane serves a model other than the one requested, and no truthful verdict can be recorded for it.</li>
+
+    <li><b>Q3 — Assumption:</b> the deferred hook spikes are worth their risk. — <b>Resolved:</b>
+      <code class="status" data-st="x">[x]</code> <b>promoted to <a href="#phase-l">Phase L</a></b>
+      (<a href="https://github.com/lebobo88/pair-programmer/issues/53">#53</a>). Scoped by operator decision:
+      <code>mcp_tool</code> adapters register on <code>pp_harness</code> (D5), <b>no</b> <code>async</code>
+      anywhere (D6), and <code>daemon-up</code> stays a command hook because it is the liveness probe.</li>
+
+    <li><b>Q4 — Assumption:</b> the read-only render commands must run on the session model. — <b>Resolved:</b>
+      <code class="status" data-st="x">[x]</code> <b>promoted to <a href="#phase-m">Phase M</a></b>
+      (<a href="https://github.com/lebobo88/pair-programmer/issues/54">#54</a>). Note the original claim that
+      "Haiku 4.5 does support tool search" could <b>not</b> be confirmed against current documentation during
+      validation — marked NOT-FOUND rather than refuted. That is precisely why D7 pilots
+      <code>/pp:budget</code> alone before the other seven.</li>
+
+    <li><b>Q5 — Assumption:</b> <code>engineer.md</code> step 4.5 survives the Opus 5 over-verification audit. —
+      <b>Resolved:</b> <code class="status" data-st="x">[x]</code> <b>keep 4.5.</b> It emits
+      <code>findings_closed</code> and <code>touched_hashes_path</code>, consumed by the <em>external</em>
+      cross-vendor judge (<code>engineer.md:164-165</code>). That is evidence generation for a third party, not
+      the self-double-checking the Opus 5 guide warns against. Phase C drops only what is purely a re-read.</li>
+
+    <li><b>Q6 — New 2026-09-05.</b> Both archived <code>codex_*</code> bridge failures in
+      <code>.harness/critique_failures/</code> were rejected for a schema reason —
+      <code>invalid_json_schema … Missing 'findings_provenance'</code> — and commit <code>80a8a2b</code> was
+      supposed to have fixed it. The Codex critique run during this validation succeeded <em>and</em> returned
+      that field, so the fix looks sufficient. — <b>Why it matters:</b> one green run proves the deployed
+      binary works today, not that the contract is right. Confirm against <code>critique-schema.ts</code> and
+      its tests before treating this as closed. — <b>Resolved:</b> <code class="status">[]</code> open</li>
   </ul>
 </section>
 
@@ -532,9 +660,11 @@ figure:has(img) .fig-pending { display: none; }
   <h2>Notes</h2>
   <h3>How this plan was validated</h3>
   <p>Two independent adversarial rounds against Codex <code>gpt-5.6-terra</code> at medium reasoning
-  effort, read-only sandbox — the JUDGE-1 pin. agy was deliberately excluded rather than used alongside:
-  it cannot resolve <code>grep</code> on this host, so its critiques silently degrade to unverified
-  reasoning. Round 1 judged 13 findings; round 2 judged the resulting plan with repo access.</p>
+  effort, read-only sandbox — the JUDGE-1 pin. agy was deliberately excluded rather than used alongside, on the belief that it could not resolve
+  <code>grep</code> on this host and so degraded to unverified reasoning. <b>That reasoning was wrong</b> —
+  see the 2026-09-05 amendment: agy has no <code>grep</code> but falls back to PowerShell and verifies
+  correctly. A different agy defect (<a href="https://github.com/lebobo88/pair-programmer/issues/41">#41</a>)
+  now gates its use. Round 1 judged 13 findings; round 2 judged the resulting plan with repo access.</p>
   <h3>What the review killed, and what I kept anyway</h3>
   <table>
     <thead><tr><th>Claim</th><th>Verdict</th><th>Outcome</th></tr></thead>
@@ -542,23 +672,23 @@ figure:has(img) .fig-pending { display: none; }
       <tr><td>Worktree lifecycle hooks for daemon candidates</td><td>REFUTED</td><td><b>Dropped.</b> <code>WorktreeCreate</code>/<code>WorktreeRemove</code> observe Claude-Code-managed worktrees only; they would never fire for daemon-created paths.</td></tr>
       <tr><td>Command <code>allowed-tools</code> enforces the delegation contract</td><td>REFUTED</td><td><b>Dropped, repaired.</b> It is pre-approval, not restriction. <code>disallowed-tools</code> <em>is</em> restriction and is used in Phases 4–5 instead.</td></tr>
       <tr><td>Native OpenTelemetry</td><td>NOISE</td><td><b>Dropped.</b> Observes Claude Code, not pp's cross-vendor lifecycle. SQLite stays authoritative.</td></tr>
-      <tr><td>Plugin migration</td><td>RISKY</td><td><b>Dropped by D1.</b> Round 2 also found plugin-shipped subagents ignore <code>permissionMode</code>, <code>hooks</code>, and <code>mcpServers</code> — it would have cancelled part of Phase 5.</td></tr>
-      <tr><td>Dynamic workflows do not exist</td><td>—</td><td><b>Not accepted.</b> The reviewer ran read-only with no network. They are documented at <code>/docs/en/workflows.md</code>. Its <em>design</em> objection (no mid-run input, same-session resume) was accepted and is why Phase 8 is scoped to step 6.</td></tr>
+      <tr><td>Plugin migration</td><td>RISKY</td><td><b>Dropped by D1.</b> Round 2 also found plugin-shipped subagents ignore <code>permissionMode</code>, <code>hooks</code>, and <code>mcpServers</code> — it would have cancelled part of Phase G.</td></tr>
+      <tr><td>Dynamic workflows do not exist</td><td>—</td><td><b>Not accepted.</b> The reviewer ran read-only with no network. They are documented at <code>/docs/en/workflows.md</code>. Its <em>design</em> objection (no mid-run input, same-session resume) was accepted and is why Phase K is scoped to step 6.</td></tr>
       <tr><td>Haiku cannot use MCP tool search</td><td>—</td><td><b>Not accepted.</b> The docs list Haiku 4.5 explicitly. Recorded in Q4.</td></tr>
     </tbody>
   </table>
   <h3>The sharpest catch</h3>
-  <p>The <code>SubagentStop</code> idea looked clean until round 2 pointed at <code>runs.ts:433</code>:
+  <p>The <code>SubagentStop</code> idea looked clean until round 2 pointed at <code>runs.ts:449-475</code> (cited as <code>:433</code> at the time):
   re-calling <code>record_attempt</code> with the same pre-allocated slot returns the existing row
   <em>without updating it</em>. So a stop-handler that writes first would permanently discard the
   engineer's real metadata, and one without the <code>attempt_slot_id</code> would write a duplicate.
-  That is why Phase 3 now writes execution-events and recovery observations rather than manufacturing
+  That is why Phase H now writes execution-events and recovery observations rather than manufacturing
   attempt rows — and why a failed critique is never recorded as a generation attempt.</p>
   <h3>Sources</h3>
   <ul>
     <li><code>code.claude.com/docs/llms.txt</code> and the reference pages for skills, sub-agents, hooks, MCP, plugins, settings, workflows, and the <code>.claude</code> directory.</li>
-    <li><code>platform.claude.com/docs/.../prompting-claude-opus-5</code> and <code>.../prompting-claude-sonnet-5</code> — the model-specific guides behind Phase 9.</li>
-    <li><code>H:\CommandCenter</code> research corpus. It largely <em>corroborates</em> pp's existing design (graduated validation, tiered model routing, tool restriction, generator–verifier separation, bounded retries, shared knowledge base, provenance tracking are all already implemented). The one place it points somewhere pp is not: "Designing a Verifier AI Agent for Autonomous Coding Harnesses" Strategic Recommendation A2 — "Implement dynamic workflows for verification: Use Claude's workflows to encode GA→VA→GA loops" — which independently corroborates Phase 8.</li>
+    <li><code>platform.claude.com/docs/.../prompting-claude-opus-5</code> and <code>.../prompting-claude-sonnet-5</code> — the model-specific guides behind Phase C.</li>
+    <li><code>H:\CommandCenter</code> research corpus. It largely <em>corroborates</em> pp's existing design (graduated validation, tiered model routing, tool restriction, generator–verifier separation, bounded retries, shared knowledge base, provenance tracking are all already implemented). The one place it points somewhere pp is not: "Designing a Verifier AI Agent for Autonomous Coding Harnesses" Strategic Recommendation A2 — "Implement dynamic workflows for verification: Use Claude's workflows to encode GA→VA→GA loops" — which independently corroborates Phase K.</li>
   </ul>
   <figure>
     <img src="cc-standards-alignment/notes.png" alt="a decision matrix grid showing thirteen findings flowing through two adversarial review gates, with several visibly discarded at each gate">
@@ -569,9 +699,90 @@ figure:has(img) .fig-pending { display: none; }
 
 <section id="amendments">
   <h2>Amendments</h2>
-  <details class="amend">
-    <summary>— no amendments yet</summary>
-    <p>Append-only post-execution change history (newest at the bottom). Never rewrite history — only add.</p>
+  <p class="legend">Append-only post-execution change history (newest at the bottom).
+    Never rewrite history — only add.</p>
+
+  <details class="amend" open>
+    <summary>2026-09-05 — Validation round: 3 findings refuted, 3 phases added, plan re-lettered</summary>
+
+    <p>The plan was authored 2026-08-24 against commit <code>e12fcaa</code> and never implemented — every
+    marker was still <code class="status">[]</code>, <code>specs/</code> was untracked, and no commit
+    referenced it. Meanwhile the repo pulled <code>1468835</code> (2026-09-03), an unrelated judge-policy /
+    agy-pin / schema-v10 workstream the plan was never updated for. It was re-validated before any of it
+    was allowed to land.</p>
+
+    <h4>How it was validated</h4>
+    <p>A Fable 5.1 agent audited every phase and claim against the current tree, then Codex
+    <code>gpt-5.6-terra</code> (JUDGE-1) adjudicated 15 numbered claims under a refute-by-default rubric —
+    <code>exit 0</code>, outcome <code>revise</code>. An agy critique at <code>gemini-3.8-flash-medium</code>
+    was attempted <em>first</em>, per the cross-vendor pattern, and <b>timed out with no verdict</b>
+    (<code>exit_code 1</code>, <code>reason: "missing outcome"</code>, 600 s across two 300 s attempts,
+    $0.27). Its partial transcript independently confirmed five claims via PowerShell before it died; that is
+    evidence, not a verdict, and it is recorded as such. Phase A re-runs it.</p>
+
+    <h4>Refuted — removed or replaced</h4>
+    <ul>
+      <li><b>Phase 5.1's security premise.</b> "33 agents declare no <code>tools:</code> and inherit
+        Write/Edit/Bash, against Hard Rule 5." Those 33 files are one-line pointer stubs naming
+        <code>C:/AiAppDeployments/…</code>, with no frontmatter — they never load. Verified three ways with an
+        exact 33/33/33 overlap. Replaced by <b>Phase E</b> (50 dangling pointers), already filed as
+        <a href="https://github.com/lebobo88/pair-programmer/issues/38">#38</a>.</li>
+      <li><b>Phase 9's step-number mismatch.</b> <code>engineer.md:49</code> <em>is</em> "3.5. Verification
+        before commit (runtime smoke test)" and scopes to UI projects; <code>best-of.md</code> says
+        "verification step (3.5) on UI projects". The reference was correct all along. Task dropped.</li>
+      <li><b>The evidence for Phase 3.</b> "<code>.harness/critique_failures/</code> exists because of this
+        gap" is false as to causation — that directory is deliberate bridge archival by
+        <code>cli-runner.ts:674-777</code>, independent of hooks. The blind spot is real and now has a
+        genuine example: the failed agy critique above cost $0.27 and appears in no
+        <code>budget_status</code>.</li>
+    </ul>
+
+    <h4>Stale — corrected</h4>
+    <ul>
+      <li>Article V SHA <code>13b4fa18</code> → <code>5df284cb</code>; cross-vendor is now mandated at
+        <b>every</b> gate, not four gate types.</li>
+      <li>Verdict guard <code>runs.ts:857</code> → <code>runs.ts:1057+</code>; the agy exemption was removed
+        (J4) and producers are normalized on both sides.</li>
+      <li><code>recordAttempt</code> idempotency <code>:433</code> → <code>:449-475</code>. The behavior — and
+        so the plan's "sharpest catch" — still holds.</li>
+      <li>"37 suites" → <b>48</b>; the <code>producer-validation.unit.mjs</code> failure it warned about was
+        already fixed.</li>
+      <li><code>harness-server.ts:1318</code> → <code>:1346</code>; <code>run.md:170</code> →
+        <code>:271-277</code>.</li>
+      <li>Q2's premise: agy has no <code>grep</code> but does <b>not</b> degrade to unverified reasoning — it
+        falls back to PowerShell and verifies correctly.</li>
+    </ul>
+
+    <h4>Missed by the plan — found during validation</h4>
+    <ul>
+      <li><b>The agy judge lane cannot record a verdict at all</b>
+        (<a href="https://github.com/lebobo88/pair-programmer/issues/41">#41</a>). It serves a model other than
+        the one requested, and <code>record_verdict</code>'s schema rejects the very override fields its own
+        error message demands. Independently reproduced here on a second transport with a
+        <em>different</em> substitute model, so it is not environment-specific. This blocks the campaign's own
+        execution model and is now the Phase A blocker.</li>
+      <li><b><code>resumed</code> telemetry lies.</b> <code>antigravity-server.ts:314</code> reports
+        <code>resumed: !!existing</code> even when <code>--continue</code> was correctly suppressed. It
+        produced a false contamination alarm during this very validation.</li>
+      <li><b><code>hooks.json</code> already sets <code>timeoutSec: 30</code></b> on all 26 entries — the
+        timeout work has a baseline it did not know about.</li>
+      <li><b><code>.github/skills/</code> is generated</b>, not a migration source, so Phase F must change
+        <code>sync-copilot-assets.mjs</code> before moving any file.</li>
+    </ul>
+
+    <h4>Structural changes</h4>
+    <ul>
+      <li><b>Phases re-lettered 0–9 → A–M</b> so the labels and the execution order finally agree. Mapping:
+        A←0, B←1, C←9, D←2, F←4, G←5, H←3, I←7, J←6, K←8.</li>
+      <li><b>Three phases added:</b> E (pointer cleanup, replacing 5.1), L (<code>mcp_tool</code> conversion,
+        promoted from Q3), M (<code>model: haiku</code>, promoted from Q4).</li>
+      <li><b>Four operator decisions added</b> — D5 (adapters on <code>pp_harness</code>), D6 (no
+        <code>async</code>), D7 (pilot <code>/pp:budget</code>), D8 (branch + issues + this file as tracker).</li>
+      <li>Budget rebaselining moved from Phase C to Phase H, behind confirming the <b>placeholder</b> rates in
+        <code>daemon/prices.json:36-43</code>.</li>
+      <li>Work now tracked on branch <code>feat/cc-standards-alignment</code> and mirrored to GitHub epic
+        <a href="https://github.com/lebobo88/pair-programmer/issues/42">#42</a> with one issue per phase.</li>
+    </ul>
   </details>
 </section>
 
