@@ -255,7 +255,7 @@ The `trace` array records which layer set the final tier ("frontmatter", "team_y
 
 8b. **AGENTS.md sync.** If the master-plan-patcher touched any of sections 11 (architecture), 12 (interfaces), 13 (engineering standards), or 14 (security), use the Task tool to invoke `agents-md-author`. It reads the patched PROJECT_MASTER.md sections, distills them into AGENTS.md's "Coding conventions" / "Workflow rules" / "Do not" sections via `mcp__pp_harness__apply_agents_md_patch`, and appends a one-line entry to "Notes from the harness" with the run id. If no relevant sections were patched, skip this step. The agents-md-author is idempotent — re-runs on the same run id no-op.
 
-9. **Finalize.** Use the Task tool to invoke `run-finalizer` with `run_id`, `project_path`, `final_status`, `mode="single"`. The finalizer writes `run.summary.md`, calls `finalize_run`, and returns `{ ok, run_id, status, summary_path, master_plan_path, patches_applied }`.
+9. **Finalize.** Use the Task tool to invoke `run-finalizer` with `run_id`, `project_path`, `final_status`, `mode="single"`. The finalizer writes `run.summary.md`, calls `finalize_run`, and returns `{ ok, run_id, status, summary_path, master_plan_path, patches_applied }`. **Then check `finalize_run`'s own return**, which is `{ effective_status, requested_status, downgraded, surfaced_stage_count }`: when `downgraded` is true your requested `complete` was written as `surfaced` because a child stage is surfaced (PP-VG-7). Report `effective_status`, never `requested_status` — a run reported as complete while the ledger says surfaced is the exact drift PP-VG-7 exists to make visible.
 
 10. **Report to the user.** Print:
     - The run id and status.

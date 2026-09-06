@@ -22,13 +22,13 @@ You are about to drive a `/pp:best-of` invocation. Follow the `pair-programmer` 
 
 ## Lifecycle
 
-1. **Triage + profile snapshot** — same as `/pp:run`. Best-of-N is heavy; if triage returns `trivial`, suggest `/pp:run` instead.
+1. **Triage + profile snapshot** — identical to `/pp:run` steps 1 and 2. Invoke the `triage` sub-agent with `request_text=$ARGUMENTS` and capture `{ class, signals }`; then invoke `profile-loader` with `cwd` and `request_text` and capture the snapshot. If the loader returns `source = "needs_bootstrap"`, follow the bootstrap flow in the `pair-programmer` skill step 2 (detect → confirm → write → re-load) and do not proceed until a profile is bound or the user explicitly chose `skip` / generic mode. Best-of-N is heavy; if triage returns `trivial`, suggest `/pp:run` instead.
 
 1.5. **Validate judge overrides (only when a judge flag is set).** Identical to `/pp:run` step 2.5 and it runs BEFORE `start_run`: call `mcp__pp_harness__doctor`, validate `cli_flags.judge_model` against `judge_capabilities[judge_vendor].allowed_critique_models` and `cli_flags.judge_effort` against `allowed_reasoning_efforts`, and STOP with the `PP_DISABLE_AGY=1` kill-switch remediation when `judge_vendor="agy"` and `agy_disabled` is true. Any failure STOPS before a run row exists — print the rejected value and the allow-list.
 
 2. **Start run.** `mcp__pp_harness__start_run(mode="best_of", n=N, request_text=<rest>, project_path=<cwd>, cli_flags=<the parsed object, including the judge fields>)`.
 
-3. **Taxonomy mapping** — same as `/pp:run`.
+3. **Taxonomy mapping** — identical to `/pp:run` step 5. Invoke the `taxonomy-mapper` sub-agent with `request_text`, the triage class/signals and the profile snapshot; it returns `{ scope, signals, sections, missability_required }`. Persist it with `mcp__pp_harness__record_taxonomy_mapping(run_id, …)`. Map only sections whose required artifacts this run can genuinely produce — `finalize_run` hard-blocks on them (PP-VG-2).
 
 4. **Open the best-of stage.** `mcp__pp_harness__start_best_of_stage(run_id, kind="code", gate_type="code_style", n=N)`. Returns `{stage_id, candidates: [{candidate_index, attempt_slot_id, worktree_path, worktree_mode}, ...]}`. The daemon refuses to open the stage unless at least one non-Claude vendor (codex OR agy) is reachable, since judges need cross-vendor capability when all candidates are Claude.
 
@@ -74,7 +74,7 @@ You are about to drive a `/pp:best-of` invocation. Follow the `pair-programmer` 
 
 12. **Finalize stage.** `finalize_stage(stage_id, status="passed", winner_attempt_id=<winner attempt id>)` (or `surfaced` on merge conflict, empty diff, or failed preservation).
 
-13. **Missability + master-plan + finalize.** Same as `/pp:run` steps 7–9. Reflexion ×1 applies only to the winner. **Trigger Reflexion when the winner has `smoke_status="fail"`** — construct the critique from `smoke_reason` (the matched fail pattern + first 30 stderr lines) and feed it to the engineer for a single retry. Reflexion does NOT trigger on `smoke_status="infra_error"` (that's an environment problem, not a code crash, so the retry won't help).
+13. **Missability + master-plan + finalize.** Identical to `/pp:run` steps 7, 8, 8b and 9: invoke `missability-inspector` (it calls `run_missability_checks(run_id, required_check_ids=<from step 3>)`, and any `fail` on a required check sets `final_status="surfaced"`); then `master-plan-patcher` (`ensure_master_plan` then patch per touched section, setting `final_status="complete"`); then `agents-md-author` **only if** the patcher touched sections 11, 12, 13 or 14; then `run-finalizer`, which writes `run.summary.md` and calls `finalize_run` and returns `{ ok, run_id, status, summary_path, master_plan_path, patches_applied }`. **Beyond what `/pp:run` step 9 states:** `finalize_run` itself also returns `{ effective_status, requested_status, downgraded, surfaced_stage_count }` (see its tool description) — check `downgraded` before reporting a clean `complete`, because PP-VG-7 rewrites a requested `complete` as `surfaced` when any child stage is surfaced. This is attributed to the tool, not to step 9, which does not mention it. Reflexion ×1 applies only to the winner. **Trigger Reflexion when the winner has `smoke_status="fail"`** — construct the critique from `smoke_reason` (the matched fail pattern + first 30 stderr lines) and feed it to the engineer for a single retry. Reflexion does NOT trigger on `smoke_status="infra_error"` (that's an environment problem, not a code crash, so the retry won't help).
 
 14. **Report.** Show:
    - Winning candidate (index, model, seed, attempt id) and its critique.

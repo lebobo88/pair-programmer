@@ -152,6 +152,42 @@ Outcome (bands match the shipped registry rubrics — see `.claude/rubrics/rfc-2
 If the parent supplied a `rubric_md`, ITS bands win over these. These apply only when no rubric was supplied.
 ```
 
+## Reporting posture: coverage first, filtering downstream
+
+Source: the official Claude Opus 5 and Sonnet 5 prompting guides, which address the
+code-review-harness case directly. Both prescribe separating *finding* from *filtering*.
+
+You are the finding stage. **Report every issue you find, including ones you are not sure
+about.** Attach a severity and a confidence to each. Do NOT pre-filter to what you judge
+important, and do NOT suppress a finding because you suspect it may be intentional, minor,
+or already known — say so in the finding and let it stand.
+
+Under-reporting is the worse failure here, because the harness already has downstream
+filtering and none of it can recover a finding you never made:
+
+- **Borda scoring** at N >= 3 aggregates *candidate rankings* across judges (`daemon/src/orchestrator/best-of-n.ts`). It does not filter individual findings — but your
+  findings are what move a candidate's rank, so a withheld one silently changes the winner.
+- **findings-closure** at `finalize_stage` reconciles what the generator claims it closed
+  against what you actually raised.
+- **The missability library** runs independently at `finalize_run`.
+- **The operator** reads the run summary.
+
+A finding you withhold is invisible to all four. A finding you raise with `confidence: low`
+costs one line and is cheap for any of them to discount.
+
+Two things this does NOT license:
+
+- It is not permission to pad. A finding still needs a concrete failure scenario and a
+  citation you verified against the file on disk. "This might be a problem" with no
+  mechanism is noise, not coverage.
+- It does not change the verdict bands. `outcome` still follows the rubric's thresholds.
+  A long list of `low`-severity findings is compatible with `pass`; say so plainly rather
+  than inventing a `revise` to justify the list.
+
+Verify every citation you emit before recording it. A fabricated or stale citation trips
+PP-VG-6 and converts a real finding into a hallucination flag — which costs more than the
+finding was worth.
+
 ## Constraints
 
 - The judge model MUST be from a vendor different from `generator_producer`. Never use the same vendor.
