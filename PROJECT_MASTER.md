@@ -76,9 +76,22 @@ _To be populated by harness runs._
 
 ## 12. Interfaces and contracts
 
-_To be populated by harness runs._
+
+### Run run_z4V5xI8SlOIp — 2026-09-06
+- Request: Phase B of cc-standards-alignment (GitHub #44, epic #42) — MCP published-contract surface and result-size metadata.
+- Artifacts:
+  - code: `.harness/run_z4V5xI8SlOIp/daemon/src/mcp/harness-server.ts` 
+  - code: `.harness/run_z4V5xI8SlOIp/daemon/src/mcp/codex-server.ts`
+  - code: `.harness/run_z4V5xI8SlOIp/daemon/src/mcp/agy-server.ts`
+- Summary: All three MCP servers now pass a server-level `instructions` string — pp_harness 1225 bytes, pp_codex 782, pp_agy 780, under a self-imposed 2048-byte budget. Result-size annotation added: `_meta["anthropic/maxResultSizeChars"]` on `get_run` at 300,000 chars to surface large payloads (largest measured 137,255 chars, exceeding default 25,000-token cap). `replay` deliberately not annotated (largest 23,588 chars, subset of get_run; would be dead configuration).
+- Key decisions:
+  - Governance identifiers in MCP instructions are validated by regex extraction from the strings themselves rather than SHA binding — catches identifier disappearance but not semantic drift.
+  - pp_codex deliberately omits any claim about session semantics, avoiding the need to document the current resume behavior as contract (a documented defect).
+  - `hook_` prefix reserved for Phase L (#53) to avoid future contract edits for that scope.
+
 
 ## 13. Engineering standards and delivery model
+
 
 
 
@@ -133,6 +146,14 @@ _To be populated by harness runs._
   - **Codex lane is being hardened**, not fixed—at runtime it was correct due to sub-cli-sessions invariants, but the derivation now stands on its own.
   - **listHookHandlers() enables auditability**: dispatcher now exposes the handler registry so operational hooks can be verified against config.
 
+### Run run_z4V5xI8SlOIp — 2026-09-06
+- Request: MCP contract surface and metadata support for operational visibility.
+- Artifacts:
+  - diff: `.harness/run_z4V5xI8SlOIp/daemon/src/mcp/` (ToolDef, tools/list handler)
+- Summary: ToolDef type gained an optional `metadata` field to support result-size annotation. The `tools/list` MCP handler was updated to project this field on each tool definition. Implementation required two edits; either alone would have shipped silently (contract surface and metadata plumbing are independent, but both are required for the capability to be discoverable).
+- Key decisions:
+  - Metadata is ToolDef-scoped, not MCP-service-scoped, to allow per-tool overrides and future extensibility (e.g., rate-limit metadata per endpoint).
+
 
 ## 14. Security, privacy, and compliance
 
@@ -162,6 +183,7 @@ _To be populated by harness runs._
 
 
 ## 15. Test and verification strategy
+
 
 
 
@@ -197,8 +219,18 @@ _To be populated by harness runs._
   - **Test naming**: `resumed-argv-truth` follows the naming pattern established by `ws7-tracked-git` (module name in test file name).
   - **Both allowances are temporary and documented** in the test so Phase D can find them easily.
 
+### Run run_z4V5xI8SlOIp — 2026-09-06
+- Request: Verification of MCP instructions surface — deterministic fixture, governance-identifier extraction, and result-size enforcement.
+- Artifacts:
+  - test_strategy: `.harness/run_z4V5xI8SlOIp/daemon/test/mcp-instructions.unit.mjs` (45 subtests)
+  - test_strategy: `.harness/run_z4V5xI8SlOIp/daemon/test/fixtures/run-fixture.mjs` (committed fixture builder)
+- Summary: New unit test suite validates MCP `instructions` strings, governance-identifier regex extraction, and metadata projection. Committed a deterministic fixture builder (previously a throwaway measurement script) to support ongoing MCP contract validation. Test suite total: 343 → 387; reporting correction (conversion from hand-rolled assertions with process.exit to real subtests made the count honest; only 2 of 45 are genuinely new coverage).
+- Key decisions:
+  - Fixture builder committed to `daemon/test/fixtures/` because the equivalent measurement artifact from the prior phase was a throwaway; capturing it as reusable infrastructure prevents re-measurement per run.
+
 
 ## 16. Operations and support model
+
 
 
 
@@ -277,6 +309,14 @@ _To be populated by harness runs._
   - **Record this as known state, not a defect**: the hooks are correctly implemented; the wiring is a configuration decision, not code.
   - **Three open defects filed** (GitHub #55, #56, #57) covering judge resumption asymmetry, override_source provenance, and test timeout brittleness.
 
+### Run run_z4V5xI8SlOIp — 2026-09-06
+- Request: Operational visibility into MCP payload sizes for capacity planning and observability.
+- Artifacts:
+  - slo_doc: `.harness/run_z4V5xI8SlOIp/daemon/src/mcp/harness-server.ts` (get_run result-size metadata)
+- Summary: `get_run` MCP tool annotated with `_meta["anthropic/maxResultSizeChars"]` at 300,000 chars. Largest measured payload: 137,255 chars (exceedance of default 25,000-token cap is now visible upstream for clients to configure buffer sizes and timeouts). `replay` not annotated — measured largest 23,588 chars (~5,897 tokens), ratio never exceeds 0.28 vs get_run; annotation would be dead configuration.
+- Key decisions:
+  - Annotation scope limited to `get_run` (the primary discovery/browsing endpoint) rather than all harness tools. Other large-payload endpoints (e.g., for artifact streaming) can be annotated incrementally as needed.
+
 
 ## 17. Team operating model and governance
 
@@ -332,6 +372,7 @@ _To be populated by harness runs._
 _To be populated by harness runs._
 
 ## Appendices
+
 
 
 
@@ -447,4 +488,16 @@ shims. Interactive Google Sign-In (system keyring) remains the default path, whi
   - **Changelog captures Phase A progress and defects**, not phase-by-phase roadmap (that lives in `specs/cc-standards-alignment.html`).
   - **Runbook is operator-facing**, detailing hook audit procedures and escalation paths.
   - **Retry backoff doc unifies prior scattered notes** on the budget, timeout ceiling, and verdict token—formalizes the bridge/daemon contract.
+
+### Run run_z4V5xI8SlOIp — 2026-09-06 — Phase B changelog (GitHub #44, epic #42)
+- **MCP published-contract surface (4.7, 4.8).** All three MCP servers now pass server-level `instructions` strings under a self-imposed 2048-byte budget. Content is navigational only: lifecycle entrypoint order, gate-eligible-judges as routing entrypoint, cross-vendor requirement at every gate, judge-same-vendor as supplementary-only, JUDGE-1a override channels. Governance identifiers validated by regex extraction from the strings themselves. pp_codex deliberately says nothing about session semantics (cannot claim statelessness; must not enshrine defect as contract). hook_ prefix reserved for Phase L (#53).
+- **Result-size annotation (4.7, 4.12).** `_meta["anthropic/maxResultSizeChars"]` on `get_run` at 300,000 chars. Required two edits: ToolDef metadata field + tools/list projection. Largest measured payload 137,255 chars, exceeding 25,000-token default cap. `replay` deliberately not annotated (largest 23,588 chars, subset; would be dead configuration).
+- **Verification (4.10).** New daemon/test/mcp-instructions.unit.mjs (45 subtests) and committed fixture builder daemon/test/fixtures/run-fixture.mjs. Suite total 343 → 387 reported as corrections, not new coverage (2 of 45 subtests genuinely new; conversion from hand-rolled assertions to real subtests made the count honest).
+
+#### Known state — governance findings
+
+- **#59 (S2).** PP-VG-5 has two defects: bypassed when archive_artifact omits optional stage_id (how prior phase's code stage passed it), and unsatisfiable in mode="single" with stage_id (requires best-of-N candidate_index that single-mode never allocates). This run's code stage surfaced (not unverified — cross-vendor pass at all dims 0.95, green suite, 18-assertion runtime check executed).
+- **resumed fix.** Correct in source and dist/; MCP server process predated build, so envelopes reported resumed: true throughout run. Verified by unit test.
+- **Judge-reliability signal.** agy fabricated two of three platform-documentation quotes at confidence 1.0 earlier in campaign; returned zero-finding rubber stamp on this run's docs stage (cross-vendor pass) while an overclaim was present. Repo claims consistently accurate (refuted two wrong counts). Platform-doc questions should be verified first-hand, not delegated.
+- **Incorrect counts (campaign tally).** Four counts produced and corrected: tools 76 (claimed ~76 then 78); missability checks 57 (AGENTS.md:11 says 56, spec said 58). AGENTS.md still stale and fenced for follow-up.
 

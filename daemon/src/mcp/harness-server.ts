@@ -569,6 +569,35 @@ const BrowserValidationFinalizeSchema = z.object({
   // expected_statuses for each route/step that intentionally returns non-2xx.
 });
 
+// ─── Server instructions (Phase B / R1.1-R1.30) ───────────────────────────
+//
+// Delivered at `initialize`, before any `tools/list` — the only protocol
+// channel that reaches a session before tool search defers the full surface.
+// Budget is a SELF-IMPOSED design ceiling of 2048 bytes UTF-8, NOT a
+// documented platform limit (U-1) — see R1.7. Content is navigational only
+// (R1.10/R1.11): no step-by-step procedure, no rubric text, no tool counts
+// (R1.12). Governance identifiers cited below (JUDGE-1, JUDGE-1a, JUDGE-2,
+// Article V) are checked verbatim against the live CONSTITUTION.md by the
+// guard test's R1.30 drift guard — no content SHA is embedded here (R1.15,
+// §4.3.2: a static SHA has no comparison mechanism and only produces a
+// false-red on the next amendment).
+export const HARNESS_INSTRUCTIONS =
+  "pp_harness drives the pair-programmer run lifecycle over SQLite state and per-run artifacts " +
+  "under <project>/.harness/<run_id>/.\n\n" +
+  "Entrypoint order: start_run → start_stage → record_attempt → record_verdict → " +
+  "finalize_stage → finalize_run. A downstream call is invalid without the upstream id.\n\n" +
+  "Judging: call gate_eligible_judges first — it is the routing entrypoint, and its filtered " +
+  "producer list is authoritative over any team-yaml model_pref or prose preference. Cross-vendor " +
+  "judging is required at every gate (JUDGE-1; CONSTITUTION.md Article V). A same-vendor verdict is " +
+  "supplementary and can never close a stage (JUDGE-2). Deviating from the pinned vendor/model/effort " +
+  "is legal only through the JUDGE-1a channels (cli, team_yaml, hydra), each requiring " +
+  "judge_model_source plus a judge_override_reason on the verdict; an override is never inferred from " +
+  "prose. escalate and model are mutually exclusive.\n\n" +
+  "Discovery: this surface is large and deferred — search for the capability you need rather than " +
+  "guessing a name. Tools named hook_* are invoked by the hook dispatcher, not by you; do not call " +
+  "them directly.\n\n" +
+  "Procedure lives in tool descriptions and .claude/commands/pp/run.md. This text replaces neither.";
+
 // ─── Tool registry ───────────────────────────────────────────────────────
 
 type ToolDef = {
@@ -576,6 +605,10 @@ type ToolDef = {
   description: string;
   schema: z.ZodTypeAny;
   handler: (args: unknown) => Promise<unknown> | unknown;
+  // Phase B (R2.1): optional per-tool protocol metadata, propagated to the
+  // wire as `_meta` in the tools/list response entry (R2.2). Absent on all
+  // but `get_run` today — do not add without a direct measurement (R2.4a).
+  meta?: Record<string, unknown>;
 };
 
 const TOOLS: ToolDef[] = [
@@ -717,6 +750,23 @@ const TOOLS: ToolDef[] = [
       "Return the full tree for a run: run row, all stages, all attempts, all verdicts, all artifacts.",
     schema: GetRunSchema,
     handler: (args) => getRun(GetRunSchema.parse(args).run_id),
+    // Phase B / R2.4, R2.7: `get_run` is the ONE tool in this surface measured
+    // over the client's 25,000-token default result cap (verdicts.critique_md
+    // via SELECT * dominates payload size — F-6). Ceiling derived by
+    // min(DOCUMENTED_MAX, roundUpTo50k(2 * largest_measured)) = min(500000,
+    // roundUpTo50k(2 * 137255)) = 300000 (R2.7). `replay` is deliberately NOT
+    // annotated — its largest measured payload is 23,588 chars, nowhere near
+    // the cap (R2.4a) — do not "complete the set" by adding it here (RK-7).
+    //
+    // R2.7b — EXPECTED, NOT A DEFECT: the client warns whenever an MCP tool
+    // result exceeds 10,000 tokens, and that warning threshold is fixed and
+    // separate from the 25,000-token default limit this annotation raises.
+    // So a large `get_run` result will still print a size warning even with
+    // the ceiling in place — that is the steady state, not a sign the 300,000
+    // annotation failed. The annotation buys freedom from TRUNCATION; it
+    // cannot and does not silence the warning. Do not "fix" the warning by
+    // raising, lowering, or removing this value.
+    meta: { "anthropic/maxResultSizeChars": 300000 },
   },
   {
     name: "list_prior_critiques",
@@ -1342,18 +1392,52 @@ const TOOLS: ToolDef[] = [
 
 // ─── Server ──────────────────────────────────────────────────────────────
 
+// Phase B / R3.1: side-effect-free surface projection so a unit test can
+// read tool name/description/_meta without starting a server or touching
+// zodToJsonSchema. Mirrors listHookHandlers (dispatcher.ts) precedent.
+// Derived directly from TOOLS — never a hand-maintained duplicate — and is
+// the same { name, description, _meta } shape the ListTools handler emits
+// (minus inputSchema), so an assertion against it is an assertion about the
+// wire (R2.2, RK-8).
+//
+// Import side effects (spec F-7 is only half true): importing this module
+// pulls in util/logger.ts, whose top-level `ensureDirs()` DOES create the
+// <PP_HOME>/.pair-programmer/ directory. No SQLite work happens — `db()` is
+// lazy — so a test asserting "importing opens no database" must target the
+// absence of `state.db`, not the absence of the directory.
+export function describeToolSurface(): Array<{
+  name: string;
+  description: string;
+  _meta?: Record<string, unknown>;
+}> {
+  return TOOLS.map(t => {
+    const entry: { name: string; description: string; _meta?: Record<string, unknown> } = {
+      name: t.name,
+      description: t.description,
+    };
+    if (t.meta) entry._meta = t.meta;
+    return entry;
+  });
+}
+
 export async function runHarnessMcpServer(): Promise<void> {
   const server = new Server(
     { name: "pp_harness", version: "0.1.0" },
-    { capabilities: { tools: {} } }
+    { capabilities: { tools: {} }, instructions: HARNESS_INSTRUCTIONS }
   );
 
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
-    tools: TOOLS.map(t => ({
-      name: t.name,
-      description: t.description,
-      inputSchema: zodToJsonSchema(t.schema),
-    })),
+    tools: TOOLS.map(t => {
+      const entry: { name: string; description: string; inputSchema: unknown; _meta?: Record<string, unknown> } = {
+        name: t.name,
+        description: t.description,
+        inputSchema: zodToJsonSchema(t.schema),
+      };
+      // R2.2: propagate per-tool meta to the wire as `_meta`; omit the key
+      // entirely (not `_meta: {}`) for tools that declare none.
+      if (t.meta) entry._meta = t.meta;
+      return entry;
+    }),
   }));
 
   server.setRequestHandler(CallToolRequestSchema, async (req) => {
