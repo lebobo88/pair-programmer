@@ -61,13 +61,15 @@ Write **self-contained unit tests** (`daemon/test/<name>.unit.mjs`): temp SQLite
 ```
 node --test --test-timeout=60000 daemon/test/<name>.unit.mjs
 ```
+**Running the FULL suite needs a larger timeout:** use `--test-timeout=120000` for `daemon/test/*.unit.mjs`. `node --test` runs files concurrently, and `finalize-gates-a.unit.mjs` takes ~33 s alone, so it intermittently exceeds a 60 s per-test ceiling under parallel load — verified 341/1 fail at 60 s, 342/0 pass at 120 s, and passing again at 60 s on a re-run (GitHub #57). The failure surfaces as a bare `'test failed'` at `:1:1` with no assertion text, so an agent following the single-file command above cannot distinguish this flake from its own regression. 60 s remains correct for one file.
+
 **Prefer `*.unit.mjs` over `npm test` or `*.smoke.mjs` in automated agent contexts.** The `npm test` script includes `eights-integration.smoke.mjs` (needs an external TheEights peer) and `smoke.mjs` (spawns a daemon) — making the full suite slower and flakier for automated agents. Confirmed against `daemon/package.json` (the `test` script) and `daemon/test/eights-integration.smoke.mjs` (header: "spawns C:\AiAppDeployments\TheEights\daemon\dist\index.js").
 
 ### git-plumbing
 In-flight git ops use `trackedExeca` (abortable on shutdown). Teardown-path git ops use `trackedExecaNoRefuse` (registered, not refused after seal). Destructive FS ops are guarded by `isShuttingDown()` — a shutdown-killed op must never trigger a destructive fallback. See `daemon/test/ws7-tracked-git.unit.mjs` for the test surface.
 
 ### parallel-default-sequential-fallback
-Parallel Task dispatch is the default for best-of-N — `/pp:best-of` mandates parallel fan-out (best-of.md:20). On Windows/PowerShell, parallel spawn can be unreliable due to process-group limits and pipe contention; fall back to sequential dispatch if parallel hangs or produces incomplete results (run.md:170). Sequential is the fallback, not the default.
+Parallel Task dispatch is the default for best-of-N — `/pp:best-of` mandates parallel fan-out (best-of.md:20). On Windows/PowerShell, parallel spawn can be unreliable due to process-group limits and pipe contention; fall back to sequential dispatch if parallel hangs or produces incomplete results (run.md:271-277). Sequential is the fallback, not the default.
 
 ### correct-module-before-edit
 Before editing a module, verify it is the one that actually implements the behavior — not a stale copy, compiled output, or similarly-named file. Editing the wrong module is a silent no-op.
@@ -94,3 +96,11 @@ Large outputs should be written to a file with a short inline summary. Do not in
 - `.claude/skills/judge-policy.md` — tiered cross-vendor vs same-vendor judge policy (gate-type table, keyword upgrades, profile upgrades, Fable tier, escalated judging).
 - `daemon/src/config.ts` — model tiers, judge defaults (`DEFAULT_MODELS`), `TIER_ORDER`, status constants.
 - `daemon/src/mcp/harness-server.ts` — MCP tool surface (`start_run`, `start_stage`, `record_attempt`, `record_verdict`, `finalize_stage`, `finalize_run`, `archive_artifact`, `start_best_of_stage`, `archive_winner_and_losers`, etc.).
+
+## Coding conventions
+
+- **Reported values must derive from the decision source of truth, not a proxy.** When a reported field depends on a decision or state change (e.g., `resumed: true` from `--continue` argv, `override_source: "cli"` from an override decision), read from the decision source itself, not from a correlate (e.g., session-row existence). Proxy derivation masks state drifts and creates silent data integrity defects. See `antigravity-server.ts:228` (agy lane), `codex-server.ts:446` (codex lane), and GitHub #56 (`override_source`).
+
+## Notes from the harness
+
+- Run `run_7tbXaLHTJU1x` — appended to `docs/agents-md-history.md`.

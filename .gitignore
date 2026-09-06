@@ -50,3 +50,10 @@ verification-report*.md
 # Hydra workflow trace/checkpoint state (per-machine, not source)
 .hydra/
 .harness/
+
+# Scratch dirs written by resumed-argv-truth.unit.mjs. These must live under
+# daemon/ (the child script bare-imports @modelcontextprotocol/sdk, which
+# resolves from the importing file's directory, not cwd), so they cannot be
+# moved to the OS temp dir. The test removes them in a finally block; this
+# entry only stops a killed run from leaving litter in a tracked tree.
+daemon/.pp-test-tmp-*/

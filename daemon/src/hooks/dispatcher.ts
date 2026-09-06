@@ -801,6 +801,27 @@ const HANDLERS: Record<string, Record<string, (input: HookInput) => Promise<void
   },
 };
 
+/**
+ * Side-effect-free inventory of every implemented hook handler, derived
+ * directly from `HANDLERS` (never a hand-maintained duplicate — a duplicate
+ * list is precisely the drift class this export exists to let a test catch;
+ * R2.6). Importing this module and calling this function executes no hook
+ * body and touches no database — it only reads the keys of the `HANDLERS`
+ * object that `runHookDispatcher` itself indexes at dispatch time (R2.7).
+ *
+ * Consumed by `daemon/test/hook-inventory.unit.mjs` to assert parity against
+ * `.claude/settings.template.json` and `hooks.json`.
+ */
+export function listHookHandlers(): Array<{ event: string; name: string }> {
+  const pairs: Array<{ event: string; name: string }> = [];
+  for (const [event, handlersForEvent] of Object.entries(HANDLERS)) {
+    for (const name of Object.keys(handlersForEvent)) {
+      pairs.push({ event, name });
+    }
+  }
+  return pairs;
+}
+
 export async function runHookDispatcher(args: string[]): Promise<void> {
   const event = args[0];
   const name = args[1];

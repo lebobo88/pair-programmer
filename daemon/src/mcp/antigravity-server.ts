@@ -220,7 +220,13 @@ async function agyGenerate(args: z.infer<typeof GenerateSchema>): Promise<Antigr
   //   `--continue` returned SUCCESS immediately.
   //
   // So callers that need a stateless turn pass fresh_session.
-  if (existing && !args.fresh_session) cliArgs.push("--continue");
+  //
+  // `didResume` is the single source of truth for both the argv decision
+  // AND the `resumed` telemetry field below (R1.1/R1.2) — the field is a
+  // strict superset predicate (`!!existing`) reading only history was the
+  // defect (see `resumed` assignment further down for the incident record).
+  const didResume = !!existing && !args.fresh_session;
+  if (didResume) cliArgs.push("--continue");
 
   // 2026-08-23. The prompt goes over STDIN, not as an argv value.
   //
@@ -311,7 +317,13 @@ async function agyGenerate(args: z.infer<typeof GenerateSchema>): Promise<Antigr
     wall_ms: run.wall_ms,
     exit_code: run.exit_code,
     session_id: run.exit_code === 0 ? "continue" : undefined,
-    resumed: !!existing,
+    // `resumed` describes THIS invocation's argv, not the project's history
+    // (R1.2/R1.3). Previously `!!existing` alone, which was `true` on every
+    // critique call because `agyCritique` always sets `fresh_session: true`
+    // to enforce statelessness — the argv correctly omitted `--continue`
+    // while the envelope claimed `resumed: true`. Reported here as the same
+    // `didResume` local that gated `--continue` above, per R1.1.
+    resumed: didResume,
     attempts: run.attempts,
     failure_archive_path: run.failure_archive_path,
   };

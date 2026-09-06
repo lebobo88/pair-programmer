@@ -55,7 +55,20 @@ _To be populated by harness runs._
 
 ## 10. Domain and data model
 
-_To be populated by harness runs._
+
+### Run run_7tbXaLHTJU1x — 2026-09-05
+
+**Phase A: cc-standards-alignment campaign (#42, #43)**
+
+- Request: Establish ground truth for telemetry field derivations; inventory hook dispatcher handlers and identify inert subsystems.
+- Artifacts:
+  - code: `.harness/run_7tbXaLHTJU1x/daemon/src/mcp/antigravity-server.ts` — single-source-of-truth fix for `resumed` telemetry field (line 228)
+  - code: `.harness/run_7tbXaLHTJU1x/daemon/src/mcp/codex-server.ts` — argv-derivation hardening for codex lane (line 446)
+- Summary: Corrected telemetry reporting in the agy critique bridge. The `resumed` field was reporting whether a prior session *row existed*, not whether the conversation was *resumed*; a fresh_session guard prevented resumed conversations in critique but the telemetry was inverted. Now `didResume` is the single source of truth for both the `--continue` argv push and the reported flag. The codex lane's telemetry derivation is hardened to read from argv rather than rely on sub-cli-sessions invariants, though values remain accurate at runtime.
+- Key decisions:
+  - **Latent defect, not runtime defect**: codex telemetry was accurate by accident of invariants in `sub-cli-sessions.ts`; hardening its derivation is guard-strengthening, not a bug fix.
+  - **agy lane was broken**: every agy critique reported `resumed: true` while being correctly stateless due to the fresh_session guard—a silent data integrity defect in the ledger.
+
 
 ## 11. Architecture and technical strategy
 
@@ -66,6 +79,7 @@ _To be populated by harness runs._
 _To be populated by harness runs._
 
 ## 13. Engineering standards and delivery model
+
 
 
 
@@ -103,6 +117,22 @@ _To be populated by harness runs._
 - Artifacts:
   - `.harness/run_tYE0v6WrwFWs/diffstat.md` (diff)
 
+### Run run_7tbXaLHTJU1x — 2026-09-05
+
+**Phase A: cc-standards-alignment campaign (#42, #43)**
+
+- Request: Establish ground truth for telemetry field derivations; inventory hook dispatcher handlers and identify inert subsystems.
+- Artifacts:
+  - code: `.harness/run_7tbXaLHTJU1x/daemon/src/mcp/antigravity-server.ts` — telemetry correctness (resumed field, line 228)
+  - code: `.harness/run_7tbXaLHTJU1x/daemon/src/mcp/codex-server.ts` — derivation hardening (line 446)
+  - code: `.harness/run_7tbXaLHTJU1x/daemon/src/hooks/dispatcher.ts` — hook inventory export (line 815)
+  - code: `.harness/run_7tbXaLHTJU1x/daemon/test/resumed-argv-truth.unit.mjs` — regression suite: 2x2 truth table for resumed semantics
+- Summary: Hardened telemetry derivations in both sub-CLI bridges (agy and codex) so that each provenance field reads from its canonical source. Added `listHookHandlers()` export from dispatcher to enable observability-layer audits. Regression test validates the resumed flag's truth table for both agy (fresh vs continued) and codex (explicit --resume flag states).
+- Key decisions:
+  - **agy resumed was a silent defect** that the fresh_session guard masked; now `didResume` controls both argv and reporting.
+  - **Codex lane is being hardened**, not fixed—at runtime it was correct due to sub-cli-sessions invariants, but the derivation now stands on its own.
+  - **listHookHandlers() enables auditability**: dispatcher now exposes the handler registry so operational hooks can be verified against config.
+
 
 ## 14. Security, privacy, and compliance
 
@@ -134,6 +164,7 @@ _To be populated by harness runs._
 ## 15. Test and verification strategy
 
 
+
 ### Run run_jc1UxeCMvyZR — 2026-08-22
 
 **Request:** Deliver unit test coverage for three critical defects and TDD gate structural fix
@@ -152,8 +183,23 @@ _To be populated by harness runs._
 - Four pre-existing failing unit suites documented as out-of-scope: agents-md, fable-tier, finalize-gates-a, shutdown (proven pre-existing at HEAD~1).
 - All new unit tests pass; `npm run build` clean.
 
+### Run run_7tbXaLHTJU1x — 2026-09-05
+
+**Phase A: cc-standards-alignment campaign (#42, #43)**
+
+- Request: Establish ground truth for telemetry field derivations; inventory hook dispatcher handlers and identify inert subsystems.
+- Artifacts:
+  - test: `.harness/run_7tbXaLHTJU1x/daemon/test/hook-inventory.unit.mjs` — dispatcher handler inventory validation against `.claude/settings.template.json` and root `hooks.json`; timeout coverage
+  - test: `.harness/run_7tbXaLHTJU1x/daemon/test/resumed-argv-truth.unit.mjs` — regression suite: 2x2 truth table for agy+codex resumed states
+- Summary: New guard test validates that dispatcher handlers, template settings, and root hooks.json are synchronized; asserts all handlers are wired and named correctly. Regression test covers the resumed flag's truth table across all bridge states. Two allowances issued: `PENDING_WIRING` (TheEights episodic recall) and `PENDING_TIMEOUT_EXEMPT_FILES` (template timeout mismatch), both Phase D work.
+- Key decisions:
+  - **Hook inventory is now measurable**: 29 handler pairs exist in dispatcher, but only 26 are wired in the operational config (the delta is the three TheEights episodic-recall hooks).
+  - **Test naming**: `resumed-argv-truth` follows the naming pattern established by `ws7-tracked-git` (module name in test file name).
+  - **Both allowances are temporary and documented** in the test so Phase D can find them easily.
+
 
 ## 16. Operations and support model
+
 
 
 
@@ -217,8 +263,23 @@ _To be populated by harness runs._
   - `.harness/run_kUPtCqHotdYn/retry_backoff_doc.md` (retry_backoff_doc)
   - `.harness/run_kUPtCqHotdYn/decision_record.md` (decision_record)
 
+### Run run_7tbXaLHTJU1x — 2026-09-05
+
+**Phase A: cc-standards-alignment campaign (#42, #43)**
+
+- Request: Establish ground truth for telemetry field derivations; inventory hook dispatcher handlers and identify inert subsystems.
+- Artifacts:
+  - observability: `.harness/run_7tbXaLHTJU1x/daemon/src/hooks/dispatcher.ts` — `listHookHandlers()` export for hook inventory audits (line 815)
+  - doc: `.harness/run_7tbXaLHTJU1x/specs/cc-standards-alignment.html` — Phase A progress; Phase D lists known open items (#46)
+- Summary: Made hook inventory observable so operators can audit handler registration against config. Dispatcher exports **29** handler pairs; `.claude/settings.template.json` and root `hooks.json` each wire **26**. The delta is exactly three: `SessionStart/eights-recall-project`, `PreToolUse/eights-recall-stage`, `UserPromptSubmit/eights-recall-request`—**TheEights episodic recall is currently inert despite being implemented**. Also identified: template sets zero hook timeouts while `hooks.json` sets 30s on all 26 (both are Phase D, fenced out).
+- Key decisions:
+  - **Hook timeout mismatch is documented and auditable now**: the three-hook gap makes the inert subsystem measurable; Phase D can close it with full visibility.
+  - **Record this as known state, not a defect**: the hooks are correctly implemented; the wiring is a configuration decision, not code.
+  - **Three open defects filed** (GitHub #55, #56, #57) covering judge resumption asymmetry, override_source provenance, and test timeout brittleness.
+
 
 ## 17. Team operating model and governance
+
 
 
 
@@ -246,6 +307,17 @@ _To be populated by harness runs._
 - Artifacts:
   - `.harness/run_kUPtCqHotdYn/postmortem.md` (postmortem)
 
+### Run `run_7tbXaLHTJU1x` — Fix the false `resumed` telemetry field in the agy bridge and add a hook-invento
+
+- Date: 2026-09-06
+- Mode: single
+- Status: complete
+- Artifacts:
+  - `.harness/run_7tbXaLHTJU1x/profile_snapshot.yaml` (profile_snapshot)
+  - `.harness/run_7tbXaLHTJU1x/tier_decisions.json` (tier_decisions)
+  - `.harness/run_7tbXaLHTJU1x/judge_decisions.json` (judge_decisions)
+  - `.harness/run_7tbXaLHTJU1x/judge_decisions.json` (judge_decisions)
+
 
 ## 18. Risks, assumptions, and open questions
 
@@ -260,6 +332,7 @@ _To be populated by harness runs._
 _To be populated by harness runs._
 
 ## Appendices
+
 
 
 
@@ -359,4 +432,19 @@ headless credential, alongside `"modelProvider": "gemini"` in
 accepted by the daemon but are undocumented upstream and should be treated as compatibility
 shims. Interactive Google Sign-In (system keyring) remains the default path, which is why
 `PP_DISABLE_AGY` defaults OFF.
+
+### Run run_7tbXaLHTJU1x — 2026-09-05
+
+**Phase A: cc-standards-alignment campaign (#42, #43)** — Documentation & Defect Registry
+
+- Request: Establish ground truth for telemetry field derivations; inventory hook dispatcher handlers and identify inert subsystems.
+- Artifacts:
+  - changelog: `.harness/run_7tbXaLHTJU1x/changelog.md` — summary of Phase A fixes, test additions, and open defects
+  - runbook: `.harness/run_7tbXaLHTJU1x/runbook.md` — operator guide for hook inventory audits, defect escalation paths, and Phase D work
+  - doc: `.harness/run_7tbXaLHTJU1x/retry_backoff_doc.md` — retry budget, 300 s-per-attempt ceiling, bridge error non-verdicts, `record_verdict` idempotency token
+- Summary: Documented Phase A outcomes, operator runbooks, and the retry subsystem contract. Three defects filed (GitHub #55: codex judge resumption vs agy statelessness asymmetry; #56: override_source provenance erasure; #57: finalize-gates-a.unit.mjs timeout brittleness). The retry backoff doc formalizes the bridge-error semantics: a CLI failure is never a model verdict, and `record_verdict` is idempotent via token.
+- Key decisions:
+  - **Changelog captures Phase A progress and defects**, not phase-by-phase roadmap (that lives in `specs/cc-standards-alignment.html`).
+  - **Runbook is operator-facing**, detailing hook audit procedures and escalation paths.
+  - **Retry backoff doc unifies prior scattered notes** on the budget, timeout ceiling, and verdict token—formalizes the bridge/daemon contract.
 

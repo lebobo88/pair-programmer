@@ -436,7 +436,14 @@ async function codexGenerate(
     wall_ms: run.wall_ms,
     exit_code: run.exit_code,
     session_id: parsed.session_id,
-    resumed: !!existing,
+    // `resumed` is read from the argv actually issued (`cliArgs`, built by
+    // `buildCodexExecArgs` above), not from `existing`/`resumeSessionId`.
+    // `!!existing` happened to agree with "`--resume` is in argv" only via
+    // two invariants in other modules (setSession refuses empty ids;
+    // buildCodexExecArgs gates on `opts.resumeSessionId` truthiness) that no
+    // test asserted — the same proxy shape that made the agy `resumed` field
+    // wrong the moment `fresh_session` was introduced there (R1.13/R1.14/R1.15).
+    resumed: cliArgs.includes("--resume"),
     attempts: run.attempts,
     failure_archive_path: run.failure_archive_path,
   };
