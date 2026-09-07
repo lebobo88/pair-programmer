@@ -91,6 +91,17 @@ review first.
 
 **Derive every count from the filesystem or the database. Six wrong hardcoded counts have shipped here.**
 
+**Normalize line endings at the read, and prove it against the construct that actually breaks.**
+`core.autocrlf=true` is the Windows default, so tracked files arrive CRLF — and an LF working file hashes to
+the same blob, so `git status` stays clean and nothing shows the difference until the next checkout.
+Nineteen assertions across three guards passed for that reason and went red on a fresh checkout of the same
+commit. **A bare `/^heading$/m` anchor is not the failure mode** — CR is a LineTerminator in ECMAScript, so
+`$` matches before it. What breaks is an explicit `\n` in a pattern (`/^---\n/`) and `.split("\n")`, which
+strands a `\r` on every element. Assert both in **both directions** — raw must fail, normalized must pass —
+or the proof cannot tell a working normalizer from a tolerant regex. See the "read boundary is line-ending
+agnostic" suite in `rules-mirror.unit.mjs`.
+
+
 **Every positive invariant needs a falsifiability proof** — a mutation that turns it red — via a
 temp-directory or in-memory fixture. **Never mutate a real tracked file from inside the suite.** If you must
 mutate one out of band, verify it byte-identical afterward with a checksum, and do **not** use
