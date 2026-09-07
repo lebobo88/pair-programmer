@@ -522,6 +522,7 @@ all 37 hooks stay in their working command form — but none of the 16 adapters 
 
 
 
+
 ### Run run_jc1UxeCMvyZR — 2026-08-22
 
 **Request:** Deliver unit test coverage for three critical defects and TDD gate structural fix
@@ -688,6 +689,35 @@ all 37 hooks stay in their working command form — but none of the 16 adapters 
 - **v10 migration test lost its v10 subject**: background daemon backing MCP calls opened the database first, triggering automatic migration. Phase is unaffected (fixture is pre-checked-in and separate).
 - **Validator budget fully consumed**: remaining documentation findings closed without independent verdict. Six earlier phases fit inside budget; this one did not. Consequence: corrections in changelog carry no independent verdict.
 - **Test plan line tables became stale during code stage**: a ~70-line helper inserted after line-count documentation. AC-H49/H50/H53/H54 audited through titles (declared authoritative locators) with mapping-recovery instruction.
+
+### Best-of-N fan-out: the two paths are equivalent by protocol, not by output (run_nVMYeWksDqhG)
+
+Two real `/pp:best-of 3` runs on throwaway fixture projects — one driven by the prose steps in
+`.claude/commands/pp/best-of.md`, one with step 6 replaced by `.claude/workflows/pp-best-of-fanout.js` —
+agreed on every protocol observable: 3 candidates in 3 pre-allocated slots, every `attempt_id` equal to its
+`attempt_slot_id`, zero dispatch failures, three `skipped` smoke rows reaching step 6.5, Codex closing lane
+plus the mandatory agy second Borda lane, 6 verdicts, `merged`, 2 losers archived, teardown `ok`.
+
+**"Byte-identical winner across the workflow and prose paths" is retired as untestable.** The candidates are
+written by non-deterministic generators, so two independent fan-outs produce different code by design; the
+two runs' winners differ in their null guard and are both correct. The testable property is the one above.
+
+The workflow touches **nothing past step 6** and returns `not_done_here` enumerating 6.5–11.
+`daemon/test/workflow-scripts.unit.mjs` asserts statically that it references none of those tools; the
+fixture runs confirm the behaviour.
+
+### A test's name is not evidence about what it tests
+
+The same run found that `pp-best-of-fanout.js` had been **unrunnable since the day it was written** — its
+`meta` joined strings with `+`, which the workflow runtime rejects outright. The guard written specifically
+to catch that asserted "meta is a pure literal" but implemented `new Function(...)()`: **evaluability, not
+literalness.** Concatenation evaluates fine, so the check could never fail on the failing case. Two rounds of
+cross-vendor review, a purpose-built suite and a full 814-test sweep all passed it. Executing it caught it in
+seconds.
+
+The fix, `nonLiteralMetaTokens()`, checks the structural property: it skips quoted spans and inspects only
+what lies outside strings. Skipping strings is load-bearing — a character blacklist would reject the real
+deliverable's own prose and force it rewritten to satisfy the checker.
 
 
 ## 16. Operations and support model

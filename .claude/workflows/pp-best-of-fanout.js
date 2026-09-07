@@ -1,11 +1,7 @@
 export const meta = {
   name: 'pp-best-of-fanout',
   description: 'Best-of-N step 6 ONLY: dispatch N Claude engineer candidates into pre-made worktrees',
-  whenToUse:
-    'Opt-in replacement for step 6 of /pp:best-of (the N-candidate fan-out) and nothing else. The prose ' +
-    'driver in .claude/commands/pp/best-of.md keeps steps 1-5 and 6.5-14, including smoke collection, ' +
-    'diff entropy, judge routing, the second Borda lane and the smoke post-filter. NOT a best-of-N ' +
-    'lifecycle: invoking this alone produces N candidates and no winner.',
+  whenToUse: 'Opt-in replacement for step 6 of /pp:best-of (the N-candidate fan-out) and nothing else. The prose driver in .claude/commands/pp/best-of.md keeps steps 1-5 and 6.5-14, including smoke collection, diff entropy, judge routing, the second Borda lane and the smoke post-filter. NOT a best-of-N lifecycle: invoking this alone produces N candidates and no winner.',
   phases: [
     {
       title: 'Fan out',
@@ -13,6 +9,26 @@ export const meta = {
     },
   ],
 }
+
+// `meta` MUST BE A PURE LITERAL — no concatenation, and that is not pedantry.
+//
+// `whenToUse` above is one long single-quoted string rather than several joined
+// with `+`, because the runtime rejects the script outright:
+//
+//     Invalid workflow script: meta must be a pure literal:
+//     non-literal node type in meta: BinaryExpression
+//
+// The first version of this file used `+` to wrap that sentence across lines and
+// was therefore UNRUNNABLE — discovered only when the campaign's final gate
+// actually executed it, several phases after it was written and "verified". The
+// docs also warn that a non-literal `meta` makes Claude Code drop `/<name>` from
+// autocomplete, so the failure mode without the hard error would have been a
+// command that silently did not exist.
+//
+// The Phase K guard did not catch it: it checked that `meta` was *evaluable*
+// (`new Function("return (" + src + ")")`), and concatenation evaluates
+// perfectly. Evaluability is not literalness. `workflow-scripts.unit.mjs` now
+// tests the structural property instead.
 
 // NAME: `pp-best-of-fanout`, deliberately NOT `pp-best-of`.
 //

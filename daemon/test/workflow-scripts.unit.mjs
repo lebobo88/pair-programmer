@@ -219,6 +219,75 @@ function extractMetaSource(src) {
 }
 
 /**
+ * Structural non-literal tokens in a `meta` block — the check that actually
+ * matters, and the one this file originally got wrong.
+ *
+ * ── WHY EVALUABILITY IS NOT LITERALNESS ─────────────────────────────────────
+ *
+ * The first version of this guard proved `meta` was a "pure literal" by
+ * evaluating it: `new Function("return (" + metaSrc + ")")()`. That accepts
+ * string concatenation, function calls, ternaries and template literals — every
+ * one of which evaluates fine and none of which is a literal. So the guard
+ * passed a `meta` whose `whenToUse` joined three strings with `+`, and the
+ * runtime then refused the entire script:
+ *
+ *     Invalid workflow script: meta must be a pure literal:
+ *     non-literal node type in meta: BinaryExpression
+ *
+ * `pp-best-of-fanout.js` was therefore UNRUNNABLE from the day it was written,
+ * through two cross-vendor review rounds and this guard, until the campaign's
+ * final gate actually executed it. The docs add that a non-literal `meta` makes
+ * Claude Code drop `/<name>` from autocomplete — so absent the hard error, the
+ * symptom would have been a command that silently did not exist.
+ *
+ * ── HOW THIS CHECKS IT ──────────────────────────────────────────────────────
+ *
+ * Scanning OUTSIDE string literals is the whole difficulty, and is why the lazy
+ * version of this check (blacklist `+` and `(`) would be wrong: a legitimate
+ * `description` contains both — this very file's deliverable has
+ * "(the N-candidate fan-out)" in its description. So the scanner walks the
+ * source, skips quoted spans (single, double and backtick, honouring backslash
+ * escapes), and inspects only the STRUCTURAL remainder, which for a pure
+ * literal may contain nothing but `{}[]:,`, whitespace, bare identifier keys,
+ * `true`/`false`/`null`, and numbers.
+ *
+ * Backticks are reported even though a template literal with no `${}` is
+ * arguably a literal: the runtime's own error message names TemplateLiteral,
+ * and there is no reason to use one in `meta`.
+ *
+ * Returns the offending characters; empty means structurally literal.
+ */
+function nonLiteralMetaTokens(metaSrc) {
+  let structural = "";
+  let i = 0;
+  let quote = null;
+  while (i < metaSrc.length) {
+    const c = metaSrc[i];
+    if (quote) {
+      if (c === "\\") { i += 2; continue; }
+      if (c === quote) quote = null;
+      i += 1;
+      continue;
+    }
+    if (c === "'" || c === '"' || c === "`") {
+      // A backtick is itself disqualifying — record it before skipping the span.
+      if (c === "`") structural += "`";
+      quote = c;
+      i += 1;
+      continue;
+    }
+    structural += c;
+    i += 1;
+  }
+
+  const residue = structural
+    .replace(/[A-Za-z_$][A-Za-z0-9_$]*/g, " ")   // identifier keys, true/false/null
+    .replace(/-?\d+(\.\d+)?/g, " ")              // numeric literals
+    .replace(/[{}[\]:,\s]/g, "");                // the punctuation a literal may use
+  return residue.length ? [...new Set(residue.split(""))] : [];
+}
+
+/**
  * Validate the meta block. Returns { ok, problems: string[], meta? }.
  * Claude Code drops `/<name>` from autocomplete when meta is not a pure
  * literal, so a non-literal meta is a silent loss of the command.
@@ -229,6 +298,19 @@ function checkMeta(src) {
   if (!metaSrc) return { ok: false, problems: ["no isolatable `export const meta = {...}` literal"] };
   if (/\$\{/.test(metaSrc)) problems.push("template interpolation inside meta");
   if (/\.\.\./.test(metaSrc)) problems.push("spread inside meta");
+
+  // THE CHECK THAT WAS MISSING. Everything below it proves `meta` EVALUATES;
+  // none of it proves `meta` is a LITERAL, and the runtime demands the latter.
+  // A `whenToUse` built by joining strings with `+` sailed through this
+  // function and made the whole script unrunnable. See nonLiteralMetaTokens.
+  const nonLiteral = nonLiteralMetaTokens(metaSrc);
+  if (nonLiteral.length) {
+    problems.push(
+      `meta is not a pure literal — structural token(s) ${JSON.stringify(nonLiteral)} found outside ` +
+        `string literals. The runtime refuses the script ("meta must be a pure literal") and a ` +
+        `non-literal meta also drops /<name> from autocomplete.`,
+    );
+  }
 
   let meta;
   try {
@@ -619,6 +701,67 @@ describe("workflow-scripts (Phase K, GitHub #52)", () => {
         r.problems.some(p => /not evaluable/.test(p)),
         `expected an evaluability problem, got: ${r.problems.join("; ")}`,
       );
+    });
+
+    test("STRING CONCATENATION in meta is caught — the defect that shipped", () => {
+      // The exact shape that made pp-best-of-fanout.js unrunnable. It EVALUATES
+      // perfectly, which is why the old evaluability check passed it, and the
+      // runtime rejects it with "non-literal node type in meta: BinaryExpression".
+      const r = checkMeta(
+        "export const meta = {\n" +
+          "  name: 'x',\n" +
+          "  description: 'a description '\n    + 'continued on the next line',\n" +
+          "}\n",
+      );
+      assert.ok(!r.ok, "concatenation must be rejected");
+      assert.ok(
+        r.problems.some(p => /not a pure literal/.test(p)),
+        `expected a purity problem, got: ${r.problems.join("; ")}`,
+      );
+    });
+
+    test("every non-literal form is caught by nonLiteralMetaTokens", () => {
+      const cases = {
+        concatenation: "{\n  name: 'a' + 'b',\n}",
+        "function call": "{\n  name: makeName(),\n}",
+        ternary: "{\n  name: flag ? 'a' : 'b',\n}",
+        "template literal": "{\n  name: `plain`,\n}",
+        "template interpolation": "{\n  name: `a${x}b`,\n}",
+        spread: "{\n  ...base,\n  name: 'a',\n}",
+        "arrow function": "{\n  name: () => 'a',\n}",
+      };
+      for (const [label, src] of Object.entries(cases)) {
+        assert.ok(
+          nonLiteralMetaTokens(src).length > 0,
+          `${label} was NOT detected as non-literal: ${src.replace(/\n/g, " ")}`,
+        );
+      }
+    });
+
+    test("a genuinely literal meta with punctuation-heavy strings is NOT flagged (contrast case)", () => {
+      // The reason the scan must skip quoted spans rather than blacklisting
+      // characters. Every one of these strings contains `+`, `(`, `)`, `.`,
+      // `/`, `-` and `:` — and the real deliverable's description does too.
+      const src =
+        "{\n" +
+        "  name: 'pp-best-of-fanout',\n" +
+        '  description: "Best-of-N step 6 ONLY: dispatch N candidates (1+) into pre-made worktrees.",\n' +
+        "  whenToUse: 'Replaces step 6 of /pp:best-of — see .claude/commands/pp/best-of.md (steps 6.5-14 stay).',\n" +
+        "  phases: [\n    { title: 'Fan out', detail: 'N agents; 2 <= N <= 8' },\n  ],\n" +
+        "}";
+      assert.deepEqual(
+        nonLiteralMetaTokens(src),
+        [],
+        "a literal meta whose strings contain operator characters must not be flagged",
+      );
+    });
+
+    test("the real deliverable's meta is structurally literal (regression pin)", () => {
+      // Pins the fix itself: this is the file that shipped unrunnable.
+      const src = readFileSync(join(WORKFLOW_DIR, "pp-best-of-fanout.js"), "utf8");
+      const metaSrc = extractMetaSource(src);
+      assert.ok(metaSrc, "could not isolate the deliverable's meta");
+      assert.deepEqual(nonLiteralMetaTokens(metaSrc), [], "the deliverable's meta must be a pure literal");
     });
 
     test("a spread inside meta is caught by checkMeta", () => {
