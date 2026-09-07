@@ -119,7 +119,7 @@ figure:has(img) .fig-pending { display: none; }
   <summary>Metadata</summary>
   <dl>
     <dt>created</dt><dd>2026-08-24</dd>
-    <dt>modified</dt><dd>2026-09-07 — <b>campaign complete (A–M).</b> Phase M landed; it caused a regression an earlier guard caught, and found a correctness bug in something it was not looking at</dd>
+    <dt>modified</dt><dd>2026-09-07 — <b>campaign complete (A–M) and final gate run.</b> All 13 phases landed; the gate’s two <code>/pp:best-of 3</code> fixture runs found Phase K’s deliverable had been unrunnable since it was written, and the guard written to catch that could never have failed on the failing case</dd>
     <dt>commits</dt><dd>branch <code>feat/cc-standards-alignment</code> — Phases A&ndash;I landed (runs <code>run_7tbXaLHTJU1x</code>, <code>run_3FLJhz2DDV6w</code>, ad hoc, <code>run_z6a4iH0m0V2G</code>, <code>run_2IkydL62USI3</code>, <code>run_CZvEeGpuKzLt</code>, <code>run_CvKoIWhSC8XV</code>, <code>run_p8JPpVhDonUA</code>, <code>run_5N_C2vVNW89u</code>, <code>run_YaOlWlTkilY9</code>, Phase K ad hoc, <code>run_Q69wXDpuWW4P</code>, <code>run_vU_JqUkQDAjf</code>)</dd>
     <dt>agent</dt><dd>plan-deep (Fable-5) — authored to the plan-deep output contract</dd>
     <dt>session</dt><dd>7aefb7e8-2948-46a1-b10b-f9422c843257</dd>
@@ -1058,11 +1058,26 @@ figure:has(img) .fig-pending { display: none; }
       left without one</b> — so adding a pattern without a fixture fails rather than passing quietly. A
       clean-fixture contrast case must pass every check, which is what keeps the negative fixtures from
       being trivially satisfiable.</li>
-      <li><code class="status" data-st="f">[f]</code> <b>Not run — and it needs a real best-of-N run, not a
-      workflow launch.</b> <s>Winner selection is byte-identical across both paths on a fixture run.</s> The
-      workflow was authored and statically verified; executing it requires an actual
-      <code>/pp:best-of 3</code> with live candidate worktrees, which is the campaign's <b>final gate</b>
-      rather than this phase's. Recorded there, not claimed here.</li>
+      <li><code class="status" data-st="x">[x]</code> <b>Run at the final gate — and it found this
+      workflow was unrunnable.</b> <s>Winner selection is byte-identical across both paths on a fixture
+      run.</s> Two real <code>/pp:best-of 3</code> runs on throwaway projects, one per path. The first
+      attempt to launch this file failed outright: <code>meta.whenToUse</code> joined three strings with
+      <code>+</code>, and the runtime refuses a non-literal <code>meta</code>. <b>It had been broken since
+      the day it was written</b> — through two rounds of cross-vendor review, a purpose-built 41-assertion
+      guard for exactly this class, and Phase M's full-suite sweep — because nothing ever executed it. The
+      guard asserted <em>"meta is a pure literal"</em> and implemented <code>new Function(…)()</code>:
+      <b>evaluability, not literalness</b>. Concatenation evaluates fine. Both are fixed
+      (<code>32b8cb6</code>).
+      <b>And the plan's wording is retired as untestable rather than claimed satisfied:</b> candidates are
+      written by non-deterministic generators, so two independent fan-outs produce different code by design
+      — the two winners differ in their null guard and are both correct. What was measured is <b>protocol
+      equivalence</b>, which is what this phase's own criterion described, and it holds on every observable:
+      3 candidates in 3 pre-allocated slots, every <code>attempt_id</code> equal to its
+      <code>attempt_slot_id</code>, zero dispatch failures, zero index-echo mismatches, three
+      <code>skipped</code> smoke rows reaching 6.5, Codex closing lane plus the mandatory agy second Borda
+      lane, 6 verdicts, Borda 5/4/3&nbsp;→&nbsp;c1, <code>merged</code>, 2 losers archived, teardown
+      <code>ok</code>. The workflow touched nothing past step 6 and said so in its own return.
+      See <code>.harness/run_nVMYeWksDqhG/docs/changelog.md</code>.</li>
       <li><code class="status" data-st="x">[x]</code> <b>No HITL gate falls inside step 6</b>, so the
       no-mid-run-input limit costs nothing: the interactive points in <code>best-of.md</code> are the
       profile bootstrap (step 1) and the judge-override STOPs (steps 1.5, 8), all outside the fan-out.</li>
@@ -1284,11 +1299,11 @@ figure:has(img) .fig-pending { display: none; }
 <section id="validation">
   <h2>Global validation commands — final gate (run after all phases show [x])</h2>
   <ul class="checklist">
-    <li><code class="status">[]</code> <code>cd daemon &amp;&amp; npm run build &amp;&amp; npm run typecheck</code></li>
-    <li><code class="status">[]</code> <code>node --test --test-timeout=60000 daemon/test/*.unit.mjs</code> — all <b>48</b> suites (corrected from 37 on 2026-09-05) plus the four new guards this plan adds. Prefer <code>*.unit.mjs</code> over <code>npm test</code>, which pulls in <code>eights-integration.smoke.mjs</code> and needs an external TheEights peer. <b>The pre-existing <code>producer-validation.unit.mjs</code> failure this warned about is fixed</b> — the test now accepts both phrasings (<code>:192</code>).</li>
-    <li><code class="status">[]</code> <code>/pp:doctor</code> — daemon reachable, sub-CLIs installed, vendor matrix intact, JUDGE-1 pin unchanged.</li>
-    <li><code class="status">[]</code> A full <code>/pp:best-of 3</code> fixture run completes and picks the same winner as the pre-change baseline.</li>
-    <li><code class="status">[]</code> <code>/context</code> compared against the Phase A baseline — net context cost has not increased.</li>
+    <li><code class="status" data-st="x">[x]</code> <code>cd daemon &amp;&amp; npm run build &amp;&amp; npm run typecheck</code> — clean.</li>
+    <li><code class="status" data-st="x">[x]</code> <code>node --test --test-timeout=<b>180000</b> daemon/test/*.unit.mjs</code> — <b>818 passed / 0 failed / 108 suites</b>, from 341 at the campaign's start. The <b>48</b> figure was itself a correction of 37 and is now stale in the other direction; the count comes from the glob, not from a list. <b>The timeout is not the 60000 written here</b> — <code>node --test</code> runs files concurrently and the ceiling is a function of total parallel load, so 120&nbsp;s failed once ten suites were added and 180&nbsp;s passed. Phase M raised it to 240&nbsp;s off one passing run to "fix" what turned out to be a <em>named</em> assertion, and reverted. Prefer <code>*.unit.mjs</code> over <code>npm test</code>, which pulls in <code>eights-integration.smoke.mjs</code> and needs an external TheEights peer.</li>
+    <li><code class="status" data-st="x">[x]</code> <code>/pp:doctor</code> — daemon reachable, sub-CLIs installed, <code>cross_vendor_ready: true</code>, both JUDGE-1 pins intact, <code>unserved_allowlist: []</code>, <code>unpriced_models: []</code>, and agy's critique smoke resolving to the requested <code>gemini-3.8-flash-medium</code> — the blocker Phase A opened on.</li>
+    <li><code class="status" data-st="x">[x]</code> <b>Two</b> full <code>/pp:best-of 3</code> fixture runs completed, one per fan-out path, both merging a winner whose own tests pass in the merged tree. <s>picks the same winner as the pre-change baseline</s> — <b>retired as untestable, not claimed.</b> Non-deterministic generators cannot produce a byte-identical winner across two independent fan-outs, and no baseline of that kind exists to compare against. Replaced by the protocol-equivalence result under Phase K, which is what the phase's own criterion asked for. The runs also caught Phase K's deliverable being unrunnable, and a guard that could never have failed on the failing case.</li>
+    <li><code class="status" data-st="f">[f]</code> <b><code>/context</code> not measured.</b> The <code>pp_harness</code> surface grew 76&nbsp;→&nbsp;92 tools, so context measurably changed and the figure was not taken. The framing may also be wrong: Phase I established that path-scoped rules load <em>conditionally</em>, so there is no single number to compare — and Phase A already recorded <code>/context</code> as having no programmatic accessor.</li>
   </ul>
   <p class="legend">Same loop discipline as per-phase checks: nothing is done until every command here passes.</p>
 </section>
@@ -2037,6 +2052,92 @@ figure:has(img) .fig-pending { display: none; }
     same-phase fix. <b>The latency saving is argued, not measured</b>: the plan asked for a per-event-cycle
     delta and there is none. And existing installs keep 37 command hooks until <code>npm run build</code>
     then <code>scripts/install-user.ps1</code> are run, in that order — safe, but unconverted.</p>
+  </details>
+
+  <details class="amend" open>
+    <summary>2026-09-07 — Final gate: two fixture runs, one broken deliverable, one criterion retired</summary>
+
+    <p>The campaign's last item was the plan's own final gate: <em>"a full <code>/pp:best-of 3</code> fixture
+    run completes and picks the same winner as the pre-change baseline (byte-identical across workflow and
+    prose paths)"</em>. It ran twice, on two throwaway projects — once through the prose steps in
+    <code>best-of.md</code>, once with step 6 replaced by Phase K's workflow.</p>
+
+    <h4>Phase K's entire deliverable was unrunnable, and had been from the day it was written</h4>
+    <p>The first launch failed outright:
+    <code>meta must be a pure literal: non-literal node type in meta: BinaryExpression</code>.
+    <code>meta.whenToUse</code> joined three strings with <code>+</code> to wrap a sentence across lines. It
+    survived <b>two rounds of cross-vendor review on Phase K</b>, a <b>purpose-built 41-assertion guard
+    written specifically for this class</b>, and <b>Phase M's full 814-test sweep</b>. Nothing caught it
+    because nothing ever executed it. The docs add that a non-literal <code>meta</code> also drops the
+    workflow from <code>/</code> autocomplete — so without the hard error the symptom would have been a
+    saved command that silently did not exist.</p>
+
+    <p><b>Why the guard passed it.</b> The assertion was named <em>"meta is a pure literal"</em> and
+    implemented <code>meta = new Function("return (" + metaSrc + ")")()</code> — it asked whether the source
+    <em>evaluates</em>. <b>Evaluability is not literalness.</b> Concatenation evaluates perfectly, and so do
+    calls, ternaries, templates and spreads: every form the runtime rejects. The check tested a property
+    <em>implied by</em> the one required, so it could never fail on the failing case.</p>
+
+    <p><b>This is a sixth vacuity shape, distinct from the five this campaign catalogued in
+    <code>AGENTS.md</code>.</b> The assertion iterated real files, drove a real function, and would have
+    failed on genuinely malformed input. It simply <b>asked the wrong question under a name that claimed the
+    right one</b> — and the name is what three reviews read. A test's name is not evidence about what it
+    tests.</p>
+
+    <p><b>The fix.</b> <code>nonLiteralMetaTokens()</code> checks the structural property: it walks the
+    source, <b>skips quoted spans</b> honouring backslash escapes, and inspects only what lies outside
+    strings — which for a literal may contain nothing but <code>{}[]:,</code>, whitespace, identifier keys,
+    <code>true</code>/<code>false</code>/<code>null</code> and numbers. Skipping strings is the whole
+    difficulty: blacklisting <code>+</code> and <code>(</code> would have rejected the real deliverable,
+    whose own description reads <em>"dispatch N Claude engineer candidates into pre-made worktrees"</em> and
+    whose <code>whenToUse</code> contains <em>"(the N-candidate fan-out)"</em> and <em>"6.5-14"</em> — forcing
+    the prose to be rewritten to satisfy the checker, which is the failure Phase J recorded. Seven
+    falsification fixtures, a punctuation-dense contrast case that must produce no findings, and a
+    regression pin on the shipped file.</p>
+
+    <h4>"Byte-identical winner across paths" is retired as untestable</h4>
+    <p>It is not a property this system has or should have: the candidates are written by non-deterministic
+    agents, so two independent fan-outs produce different code by design. Run 1's winner is a 19-line regex
+    pipeline; run 2's is a 21-line one with a different null guard. Both are correct. There is also no
+    "pre-change baseline" run of that kind to compare against.</p>
+
+    <p><b>What is testable is protocol equivalence</b> — which is what Phase K's own acceptance criterion
+    actually described — and it held on every observable: 3 candidates in 3 pre-allocated slots; every
+    <code>attempt_id</code> equal to its <code>attempt_slot_id</code>; zero dispatch failures and zero
+    <code>candidate_index</code> echo mismatches; three <code>skipped</code> smoke rows reaching 6.5; Codex
+    closing lane plus the mandatory agy second Borda lane, 6 verdicts each; Borda
+    5/4/3&nbsp;→&nbsp;c1; no step-9.5 override; <code>merged</code>; 2 losers archived; teardown
+    <code>ok</code>; the winner's own tests passing in the merged tree. Step 7 entropy ran identically and
+    returned 0.143 against 0.318 — different because the code is different, which is the point. The workflow
+    <b>touched nothing past step 6</b> and said so in its return, <code>not_done_here</code> enumerating
+    6.5&nbsp;→&nbsp;11. Parallelism was real: all three agents queued in the same millisecond, 171&nbsp;s
+    wall against a 256&nbsp;s sequential sum.</p>
+
+    <h4>Two things the fixtures taught that the harness did not know</h4>
+    <p><b>The seed steers diversity; it does not guarantee it.</b> The identical
+    <code>devils-advocate</code> seed in the identical rotation slot produced a character-scan state machine
+    in run 1 and, in run 2, a regex pipeline differing from candidate 1 only in spelling
+    <code>=== null || === undefined</code> instead of <code>== null</code>. Diff entropy <em>saw</em> the
+    convergence — 0.318 for that pair, the highest of either run against 0.128/0.122 elsewhere — and
+    correctly did not warn, since the threshold is 0.9.</p>
+
+    <p><b>Borda earned its place in both runs.</b> The lanes disagreed every time, and in run 2 they
+    <em>inverted</em> on one candidate: Codex ranked it first for having the only documented and tested
+    non-string contract; agy ranked it last for editing an unrequested file and inventing unrequested
+    Unicode folding — adding a correctness cost Codex missed, that naive combining-mark stripping is wrong
+    for languages where diacritics are distinct letters. Same three facts, opposite weighting, neither
+    wrong. Averaging the scores would have destroyed that information. Both lanes also independently found,
+    in both runs, a defect the rubric asked about without naming the answer; agy's line on run 2's pair is
+    the one worth keeping — <em>"both test suites lack complete specification coverage"</em>. Two suites,
+    15 assertions, no discriminating power against their nearest neighbour: the same lesson this campaign
+    kept learning about its own guards, reached by judges with no knowledge of that history.</p>
+
+    <h4>Residuals</h4>
+    <p><code>/context</code> was never compared against the Phase A baseline, and the plan's framing may be
+    the wrong test. The fixture projects are disposable and not in the repository — the durable record is
+    <code>.harness/run_nVMYeWksDqhG/docs/changelog.md</code> and the two run summaries. Neither fixture run
+    spent Reflexion: both closing lanes returned <code>revise</code> with real defects and both stages closed
+    <code>surfaced</code> on merit.</p>
   </details>
 
 </section>
