@@ -781,7 +781,7 @@ const TOOLS: ToolDef[] = [
   {
     name: "request_strategic_framing",
     description:
-      "T3 — Phase E. Emit a C_SUITE_DECISION_PACKET envelope to the executive squad asking for strategic framing on a major-tier request. When Hydra+TheEights are running, ExecutiveSuite's boardroom picks this up and the reply (a PRD envelope) lands in TheEights' envelope store keyed by workflow_id; poll via hydra_envelope_query. When TheEights is offline, recorded=false but envelope_id is still allocated — the driver may fall back to spawning the local `boardroom` agent directly via Task. Call this BEFORE spec-author on profiles enterprise|ai-agentic|data-product when triage returns scope=major.",
+      "T3 — Phase E. Emit a C_SUITE_DECISION_PACKET envelope to the executive squad asking for strategic framing on a major-tier request. When Hydra+TheEights are running, ExecutiveSuite's boardroom picks this up and the reply (a PRD envelope) lands in TheEights' envelope store keyed by workflow_id; poll via hydra_envelope_query. When TheEights is offline, recorded=false but envelope_id is still allocated — no local `boardroom` agent ships in this repo, so there is no local fallback — the ecosystem dispatch is the only path, and the driver MUST surface the unavailability rather than substitute an agent. Call this BEFORE spec-author on profiles enterprise|ai-agentic|data-product when triage returns scope=major.",
     schema: RequestStrategicFramingSchema,
     handler: async (args) => {
       const p = RequestStrategicFramingSchema.parse(args);

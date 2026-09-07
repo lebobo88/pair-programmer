@@ -119,8 +119,8 @@ figure:has(img) .fig-pending { display: none; }
   <summary>Metadata</summary>
   <dl>
     <dt>created</dt><dd>2026-08-24</dd>
-    <dt>modified</dt><dd>2026-09-06 — Phase D landed; <code>if:</code> predicates dropped, see Amendments</dd>
-    <dt>commits</dt><dd>branch <code>feat/cc-standards-alignment</code> — Phases A&ndash;D landed (runs <code>run_7tbXaLHTJU1x</code>, <code>run_3FLJhz2DDV6w</code>, ad hoc, <code>run_z6a4iH0m0V2G</code>)</dd>
+    <dt>modified</dt><dd>2026-09-07 — Phase E landed; 83 files deleted, Q1 closed, see Amendments</dd>
+    <dt>commits</dt><dd>branch <code>feat/cc-standards-alignment</code> — Phases A&ndash;E landed (runs <code>run_7tbXaLHTJU1x</code>, <code>run_3FLJhz2DDV6w</code>, ad hoc, <code>run_z6a4iH0m0V2G</code>, <code>run_2IkydL62USI3</code>)</dd>
     <dt>agent</dt><dd>plan-deep (Fable-5) — authored to the plan-deep output contract</dd>
     <dt>session</dt><dd>7aefb7e8-2948-46a1-b10b-f9422c843257</dd>
     <dt>back refs</dt><dd><code>.harness/run_kUPtCqHotdYn/postmortem.md</code> (PP-VG-6 delivery stall); <code>.harness/cc-standards-alignment-plan.md</code> (superseded markdown draft)</dd>
@@ -436,20 +436,94 @@ figure:has(img) .fig-pending { display: none; }
   </div>
 
   <div class="phase">
-    <h3 id="phase-e">Phase E — Pointer-stub cleanup <code class="status">[]</code> <span class="legend"><a href="https://github.com/lebobo88/pair-programmer/issues/38">#38</a></span></h3>
-    <p><b>New 2026-09-05 — replaces the refuted Phase 5.1.</b> The finding that 33 agents held an over-broad tool surface was wrong; those files are dangling pointers. This is the defect that was actually there, and it had already been filed independently as #38 on 2026-09-03.</p>
+    <h3 id="phase-e">Phase E — Pointer-stub cleanup <code class="status" data-st="x">[x]</code> <span class="legend"><a href="https://github.com/lebobo88/pair-programmer/issues/38">#38</a></span></h3>
+    <p><b>New 2026-09-05 — replaces the refuted Phase 5.1.</b> The finding that 33 agents held an over-broad tool
+    surface was wrong; those files are dangling pointers. This is the defect that was actually there, and it had already
+    been filed independently as #38 on 2026-09-03.</p>
+    <p><b>Landed 2026-09-07</b> as run <code>run_2IkydL62USI3</code> — 83 deletions, six modifications, one new guard.
+    Closed <code>surfaced</code>: PP-VG-5 (<a href="https://github.com/lebobo88/pair-programmer/issues/59">#59</a>)
+    surfaced the code stage for the third phase running, and the docs stage spent Reflexion&nbsp;×1 without reaching a
+    <code>pass</code>. Guard 45/45; full suite 432/432 across 62 suites; missability 6 pass / 0 fail / 51 n/a.
+    <b>The judges found four things this phase that the driver did not</b> — see the Amendments entry.</p>
     <h4>Tasks</h4>
     <ul class="checklist">
-      <li><code class="status">[]</code> Repair or remove all <b>50</b> stubs — <b>33</b> in <code>.claude/agents/</code> and <b>17</b> in <code>.claude/skills/</code>. Each contains only an absolute path into a sibling checkout.</li>
-      <li><code class="status">[]</code> <b>#38 undercounts at 33.</b> It scoped to dangling <em>ExecutiveSuite</em> links; <code>C:/AiAppDeployments/AgentSmith</code> is missing too, so the true count is 50.</li>
-      <li><code class="status">[]</code> Decide per family: regenerate the overlay for this machine, or delete it — and drop the mirrored <code>.github</code> copies that #38 notes were left in place. <b>Do not touch the targets</b>; only this checkout's pointers.</li>
-      <li><code class="status">[]</code> Sequence before Phase F. <code>.claude/skills/</code> has <b>zero directories</b> today, so the SKILL.md migration would otherwise create them alongside 17 dangling pointers.</li>
+      <li><code class="status" data-st="x">[x]</code> <b>Removed, not repaired — repair was never available.</b>
+      All <b>50</b> stubs deleted: 33 under <code>.claude/agents/</code>, 17 under <code>.claude/skills/</code>. Both
+      target repos are absent, so regenerating an overlay would have needed sources that do not exist on this machine.
+      The 17 skills stubs were <b>extensionless</b> — no <code>.md</code> at all — so they could never have loaded even
+      with the targets present. 75 agents &rarr; <b>42</b>; the 11 real skills untouched.</li>
+      <li><code class="status" data-st="x">[x]</code> <b>Confirmed: #38 undercounted at 33.</b> It scoped to dangling
+      <em>ExecutiveSuite</em> links; <code>C:/AiAppDeployments/AgentSmith</code> is missing too. 24 of the agent stubs
+      pointed at ExecutiveSuite and 9 at AgentSmith; all 17 skills stubs split across both.</li>
+      <li><code class="status" data-st="x">[x]</code> <b>Deleted, and the 33 <code>.github</code> mirrors with them.</b>
+      24 had already been silently truncated to bare path strings by the sync script; 9 still held real content generated
+      when AgentSmith was present. Targets untouched throughout — only this checkout's pointers.
+      <b>This is the S2 part:</b> <code>readableSource()</code>
+      (<code>scripts/sync-copilot-assets.mjs:74-78</code>) guards only on <code>existsSync</code>, and a stub is a
+      regular file that reads cleanly — so the documented sync read the stub, treated the bare path as the agent body,
+      overwrote a mirror holding real content, printed one success line and exited 0. ~673 deletions across nine files,
+      visible only in <code>git diff</code>. The reported symptom on #38 was a loud ENOENT; the actual behaviour was
+      quiet data loss.</li>
+      <li><code class="status" data-st="x">[x]</code> <b>Sequenced before Phase F as planned.</b>
+      <code>.claude/skills/</code> now holds 11 real <code>.md</code> files and nothing else, so F's
+      <code>&lt;name&gt;/SKILL.md</code> migration lands on a clean directory rather than alongside 17 dangling
+      pointers.</li>
+      <li><code class="status" data-st="x">[x]</code> <b>Rewrote the one live consumer (unplanned).</b>
+      <code>.claude/commands/forge/council.md</code> dispatched <code>architect</code> + <code>cto</code> +
+      <code>ciso</code> + <code>cdo</code> and applied the <code>debate-protocol</code> skill — three of those agents and
+      the skill were stubs. It now dispatches <code>architect</code>, <code>security-reviewer</code>,
+      <code>data-modeler</code> and <code>strategy-author</code> with the deliberation sequence inlined.
+      <b>A genuine scope change, C-suite panel to engineering panel</b>, and the <code>description:</code>
+      frontmatter — all an operator sees in a command list — says so.</li>
+      <li><code class="status" data-st="x">[x]</code> <b>De-claimed the deleted <code>boardroom</code> agent in two
+      <code>daemon/src</code> sites (unplanned; found by the spec judge).</b>
+      <code>harness-server.ts:784</code> is a <em>live tool description</em>, not a comment — instruction text the model
+      reads at tool-selection time — and it told the driver it "may fall back to spawning the local
+      <code>boardroom</code> agent directly via Task". The spec's own acceptance criterion grepped for the phrase
+      <code>local boardroom</code>, which matched <b>neither</b> that site nor
+      <code>hydra-envelopes.ts:28</code>. Closed by spec Amendment 1 (R16). Comment- and description-only; no executable
+      line changed.</li>
+      <li><code class="status" data-st="x">[x]</code> <b>Corrected count drift, including drift that predated the
+      deletions.</b> <code>README.md</code> 75 sub-agents &rarr; 42, and <b>8 skills &rarr; 11</b> — 8 was already
+      wrong, and the list named <code>frontend-design</code>, a Claude Code built-in with no file under
+      <code>.claude/skills/</code>. <code>docs/USER_GUIDE.md</code> §17 heading, TOC, anchor, surface-table row and
+      glossary, including deletion of the now-false claim that pp's sub-agents include "executive-suite personas,
+      governance authors, and AgentSmith watchers"; §17's subtotals summed to 41 against a heading of 42 because
+      <code>agents-md-author</code> appeared in no subsection. The four MCP-tool <code>75</code>s were deliberately left
+      alone — <code>README.md:146</code> and <code>:147</code> are adjacent lines carrying different 75s.</li>
     </ul>
     <h4>Testing strategy — loop until every check passes before advancing</h4>
     <ul class="checklist">
-      <li><code class="status">[]</code> <code>git grep -rn "C:/AiAppDeployments" .claude/</code> returns nothing.</li>
-      <li><code class="status">[]</code> <code>scripts/sync-copilot-assets.mjs</code> completes without the ENOENT abort described in #38.</li>
-      <li><code class="status">[]</code> The 42 real agents and 11 real skills all still resolve.</li>
+      <li><code class="status" data-st="x">[x]</code> Zero <code>AiAppDeployments</code> references under
+      <code>.claude/</code> or <code>.github/</code> — and now <b>guarded</b>, not just checked once.
+      <code>daemon/test/no-dangling-pointers.unit.mjs</code> (45 assertions / 10 suites, ~105 ms) fails if a pointer
+      file or dangling reference reappears. Classification is <b>content-based, not extension-based</b>, so the
+      extensionless shape that produced 17 of the 50 is covered; forbidden literals are assembled at runtime from
+      fragments with a source self-check; every count is derived from the filesystem and compared relationally.</li>
+      <li><code class="status" data-st="f">[f]</code> <b>Not verified — and deliberately not attempted.</b>
+      <s><code>scripts/sync-copilot-assets.mjs</code> completes without the ENOENT abort described in #38.</s> With no
+      stubs left it can no longer truncate a mirror from a stub, but running it is <em>still</em> unsafe: it hardcodes
+      <code>timeoutSec: 30</code> and would flatten Phase D's 16 INFORMATIONAL hooks from 20&nbsp;s. Phase D's parity
+      guard catches that — see the next item for why it would not have. Hardening the script is
+      <a href="https://github.com/lebobo88/pair-programmer/issues/47">Phase F (#47)</a>.</li>
+      <li><code class="status" data-st="x">[x]</code> <b>The 42 real agents and 11 real skills all still resolve</b>, and
+      no inbound reference was left dangling — verified across <code>.claude/</code>, <code>.github/</code>,
+      <code>daemon/src/</code>, <code>daemon/test/</code>, <code>docs/</code>, <code>scripts/</code> and the root
+      markdown, in both directions, watching for the <code>cto</code>-inside-<code>refactor</code> substring trap.</li>
+      <li><code class="status" data-st="x">[x]</code> <b><code>npm test</code> ran only 32 of 52 unit suites
+      (unplanned; found by the docs judge).</b> <code>daemon/package.json</code>'s <code>test</code> script was a
+      hand-maintained filename list, and the three guards Phases A, B and D built <em>and declared must-run-in-CI</em> —
+      <code>hook-inventory</code>, <code>mcp-instructions</code>, <code>resumed-argv-truth</code> — were not in it.
+      Their protection was decorative outside a hand-typed <code>node --test</code>. Replaced with a glob, which forced
+      <code>engines.node</code> from <code>&gt;=20.0.0</code> to <code>&gt;=22.0.0</code> (Node 20 lacks glob expansion
+      in <code>node --test</code> arguments, and npm runs scripts through <code>cmd.exe</code> on Windows, which does
+      not expand it either). Node 20 LTS is already end-of-life.</li>
+      <li><code class="status" data-st="x">[x]</code> <b>Three assertions in the new guard shipped vacuous and were
+      caught by the judge.</b> The non-emptiness checks guarded <code>visitedCount</code>, which increments
+      <em>before</em> the filters, while the content assertions iterate the post-filter list; AC-E53's empty-skills
+      fixture asserted <code>assert.ok(0 &gt; 0)</code> on a hand-built <code>Set</code>, exercising
+      <code>node:assert</code> rather than the function; the <code>node_modules</code> skip check scanned two roots that
+      contain no <code>node_modules</code>. All three fixed, each mutation-proved, file restored byte-identical.</li>
     </ul>
     <p class="legend">If a check cannot be made to pass after reasonable effort, mark the phase
       <code class="status" data-st="f">[f]</code> and record why in Notes rather than looping forever.</p>
@@ -921,6 +995,100 @@ figure:has(img) .fig-pending { display: none; }
     <code>mode="single"</code> — it resolves the winning attempt's <code>candidate_index</code> and looks for a
     best-of-N smoke row a single-mode stage never writes (reproduced identically in Phase B). And PP-VG-2
     blocks a <code>complete</code> on the profile's required <code>runbook</code>, which belongs to Phase A.</p>
+  </details>
+
+  <details class="amend" open>
+    <summary>2026-09-07 — Phase E: 83 files deleted, Q1 closed, and four defects the judges found that the driver did not</summary>
+
+    <p>Phase E removed all 50 dangling pointer stubs and the 33 <code>.github</code> mirrors that shadowed them, as
+    run <code>run_2IkydL62USI3</code>. The deletions went as planned. What is worth recording is everything the
+    cross-vendor judges caught around them.</p>
+
+    <h4>Four findings the driver missed</h4>
+    <ol>
+      <li><b>The spec's "one live dependency" claim was false.</b> The spec judge found
+        <code>harness-server.ts:784</code> — a <em>live tool description</em>, instruction text the model reads at
+        tool-selection time, not a comment — telling the driver it "may fall back to spawning the local
+        <code>boardroom</code> agent directly via Task", plus <code>hydra-envelopes.ts:28</code> outside the range the
+        spec had scoped. Worse, the spec's own acceptance criterion grepped for the literal phrase
+        <code>local boardroom</code>, which matched <b>neither</b> site: one reads "local <code>boardroom</code> agent",
+        the other "local boardroom-agent fallback". The criterion would have passed while both stayed broken. Closed by
+        spec Amendment 1 (R16).</li>
+      <li><b>Three assertions in the new guard shipped vacuous.</b> The non-emptiness checks guarded
+        <code>visitedCount</code>, which increments <em>before</em> the name-skip, binary-extension and size filters,
+        while the content assertions iterate the post-filter list — a filter misconfiguration would have left the scan
+        green with nothing inspected. AC-E53's empty-skills fixture built <code>new Set()</code> by hand and asserted
+        that <code>assert.ok(0 &gt; 0)</code> throws, exercising <code>node:assert</code> rather than
+        <code>skillBundleNames()</code>. And the <code>node_modules</code> skip check scanned two roots that contain no
+        <code>node_modules</code>, so it was green whether or not the skip-list was honoured. All three fixed, each
+        mutation-proved, the file restored byte-identical.</li>
+      <li><b><code>npm test</code> ran only 32 of 52 unit suites.</b> The docs judge showed a residual in this run's own
+        changelog was false without it: <code>daemon/package.json</code>'s <code>test</code> script was a
+        hand-maintained list of filenames, and it had drifted. Missing from it were <code>hook-inventory</code>,
+        <code>mcp-instructions</code> and <code>resumed-argv-truth</code> — the three guards Phases A, B and D built and
+        <em>declared must-run-in-CI</em>. Their protection was decorative outside a hand-typed <code>node --test</code>.
+        Replaced with a glob, which cannot drift. <b>This is the same defect class as the six wrong hardcoded counts
+        this campaign has produced:</b> a hand-maintained list standing in for something derivable.</li>
+      <li><b>The glob is not portable to Node 20.</b> The retry judge caught it immediately: glob expansion in
+        <code>node --test</code> positional arguments is unavailable there, and npm runs scripts through
+        <code>cmd.exe</code> on Windows, which does not expand it either — so on Node 20 the script would receive
+        <code>test/*.unit.mjs</code> as a literal path and fail. <code>engines.node</code> raised
+        <code>&gt;=20.0.0</code> &rarr; <code>&gt;=22.0.0</code>, with <code>AGENTS.md</code> and
+        <code>docs/INSTALL.md</code> updated. Node 20 LTS is already end-of-life, so this narrows nothing.</li>
+    </ol>
+
+    <h4>Scope added in flight, outside the approved spec</h4>
+    <p>Recorded because the spec did not authorise it: the <code>test</code>-script glob, the
+    <code>engines.node</code> bump, and the <code>AGENTS.md</code> / <code>docs/INSTALL.md</code> edits that follow.
+    Each was added because a cross-vendor judge demonstrated a claim in this run's own artifacts was false without it.
+    None changes runtime behaviour.</p>
+
+    <h4>What the deletions actually closed</h4>
+    <p>Not clutter. <code>readableSource()</code> (<code>scripts/sync-copilot-assets.mjs:74-78</code>) guards only on
+    <code>existsSync</code>, and a pointer stub is a regular file that exists and reads cleanly — so the documented sync
+    read the stub, treated the bare path as the agent body, wrote it over a mirror holding real content, printed one
+    success line and exited 0. #38 reported the symptom as a loud <code>ENOENT</code>; the actual behaviour was quiet
+    data loss, ~673 deletions across nine files, visible only in <code>git diff</code>.</p>
+
+    <h4>Q1 — closed</h4>
+    <p>Flat-namespace collision between pp's agents and the sibling overlays is <b>moot</b>: the sibling agents are gone
+    and the guard fails if they return as pointers. Reopening triggers: either sibling repo being installed and its
+    overlay regenerated as real files; an overlay mechanism that copies rather than points; or Phase G (#48) adopting
+    agent subdirectories, which changes how names resolve. <b>Residual, unaddressed:</b> pp's own 42 agent names still
+    share one flat namespace, and a new agent colliding on a short name is unguarded by anything.</p>
+
+    <h4>Missability answered rather than waived</h4>
+    <p>Two checks failed first. <code>nfrs-declared</code> failed because the spec's five NFRs described their
+    constraints in prose the check's vocabulary does not recognise; rather than reword, <b>NFR6</b> was added with the
+    numbers pinned — guard p95 under 1&nbsp;s (measured 108/103/108&nbsp;ms), a 180&nbsp;s per-test and 120&nbsp;s total
+    ceiling for the sweep, and an explicit <b>zero marginal token cost</b> because no test in this phase calls a model,
+    a vendor CLI, or the network. It also records that the per-test ceiling is a function of <em>total parallel load</em>,
+    so a future phase should raise it <em>before</em> adding suites rather than after finding the flake.
+    <code>browser-validation-evidence</code> was answered <code>not_applicable</code> with justification: pp has no web
+    UI, and its only HTTP surface is the read-only JSON GET API at <code>127.0.0.1:7878</code>.</p>
+
+    <h4>Residuals carried forward</h4>
+    <ul>
+      <li><b><code>sync-copilot-assets.mjs</code> will revert Phase D's timeout classes.</b>
+        <code>normalizeHooks()</code> (<code>:265-292</code>) reads the right source but hardcodes
+        <code>timeoutSec: 30</code>. Phase D's parity guard catches it — and, as of this run, actually runs under
+        <code>npm test</code>. Its dropping of <code>statusMessage</code> is <b>correct</b>, not a defect: AC-D33
+        positively requires <code>hooks.json</code> to carry none. Phase F (#47) owns the script.</li>
+      <li><b><code>.github/</code> is not a faithful mirror of <code>.claude/</code>.</b> Seven mirrors whose sources
+        changed in Phases C and D were never regenerated; reverted rather than folded into this diff.</li>
+      <li><b>The guard's scope restriction is correct-today and fragile-by-construction.</b> It scans only
+        <code>.claude/</code> and <code>.github/</code> because zero legitimate <code>AiAppDeployments</code> references
+        live there. A future prose mention under <code>.claude/</code> would fail it, and the remedy then is an
+        allow-list, not a weakened pattern.</li>
+      <li><b>The corrected counts are not themselves guarded.</b> Spec AC-E34 was left unimplemented under its own
+        <code>MAY</code>, so they can drift again — which is how they got wrong.</li>
+      <li><b><code>hook-inventory.unit.mjs</code> reports at file granularity.</b> A hand-rolled harness ending in
+        <code>process.exit</code>, not <code>node:test</code>, so a failure reds the file without a per-assertion
+        reporter line.</li>
+      <li><b>PP-VG-5 surfaced a code stage for the third phase running</b>
+        (<a href="https://github.com/lebobo88/pair-programmer/issues/59">#59</a>). Not worked around: writing a second
+        attempt purely to carry a <code>candidate_index</code> would manufacture a generation that did not happen.</li>
+    </ul>
   </details>
 </section>
 

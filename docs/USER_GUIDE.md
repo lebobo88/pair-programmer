@@ -26,7 +26,7 @@ This guide is the single canonical reference for using the harness day-to-day. T
 14. [Best-of-N — the why and the how](#14-best-of-n--the-why-and-the-how)
 15. [Visual regression](#15-visual-regression)
 16. [Design templates](#16-design-templates)
-17. [Sub-agents (75)](#17-sub-agents-75)
+17. [Sub-agents (42)](#17-sub-agents-42)
 18. [Hooks (29)](#18-hooks-29)
 19. [MCP tools reference (79)](#19-mcp-tools-reference-79)
 20. [HTTP control plane](#20-http-control-plane)
@@ -84,7 +84,7 @@ For lower-stakes gates (`code_style`, `docs_polish`, `lint_class`) the harness p
 | Surface | Count |
 |---|---|
 | Slash commands | 19 |
-| Sub-agents | 75 |
+| Sub-agents | 42 |
 | Specialized teams | 25 |
 | Project profiles | 16 |
 | Standard-aligned rubrics | 25 |
@@ -1116,9 +1116,9 @@ The current `getDesignTemplate(kind)` implementation reads from the in-process `
 
 ---
 
-## 17. Sub-agents (75)
+## 17. Sub-agents (42)
 
-Verified against `.claude/agents/*.md` (75 files). Direct invocation of these is rare — the orchestrator routes for you. The tables below cover the engineering / lifecycle / judging agents most users delegate to; the roster also includes the executive-suite personas (CEO/CFO/CTO/CISO/…), governance authors, and AgentSmith watchers (sentinel/archivist/quarantine/replicator/inspector) that round the directory out to 75.
+Verified against `.claude/agents/*.md` (42 files). Direct invocation of these is rare — the orchestrator routes for you. The subsection counts below sum to 42 and cover every agent in the directory.
 
 ### Generic generators (19)
 
@@ -1162,9 +1162,9 @@ Activated under any `game-dev*` profile. Each reads the matching `.claude/gotcha
 | `live-ops-manager` | Season plans, event cadences, store-page A/B plans, hotfix flow, retention-KPI plans. |
 | `game-accessibility-specialist` | GAG/XAG/AbleGamers/IGDA-GASIG-aligned accessibility plans (richer than generic web a11y). |
 
-### Lifecycle (5)
+### Lifecycle (6)
 
-`triage`, `profile-loader`, `taxonomy-mapper`, `missability-inspector`, `master-plan-patcher`.
+`triage`, `profile-loader`, `taxonomy-mapper`, `missability-inspector`, `master-plan-patcher`, `agents-md-author`.
 
 ### Judging (3)
 
@@ -1779,7 +1779,7 @@ You should only need the manual flag when calling the Codex CLI yourself outside
 | **same-vendor judge** | Judge whose vendor matches the generator. Always a **different** model id — identical generator/judge ids are rejected for every producer — and always supplementary: a same-vendor verdict never closes a stage (JUDGE-2). |
 | **sandbox** | Codex's `read-only | workspace-write | danger-full-access` flag. Mapped per stage kind. |
 | **stage** | One slot in a run's pipeline (e.g. `spec`, `code`, `tests`). |
-| **sub-agent** | Specialized Claude Code agent invoked via the Task tool. 75 ship in `.claude/agents/` — engineering/lifecycle/judging generators plus executive-suite personas, governance authors, and AgentSmith watchers. |
+| **sub-agent** | Specialized Claude Code agent invoked via the Task tool. 42 ship in `.claude/agents/` — engineering/lifecycle/judging generators. |
 | **surfaced** | Run/stage status meaning "automated checks couldn't approve; humans take it from here." |
 | **taxonomy section** | One of the 16 sections in `taxonomy_blueprint.md` (4.1 through 4.16). |
 | **team** | A YAML pipeline (25 built-ins: 18 generic + 7 game-dev) with stage list + gate types + generator/judge bindings. Run via `/pp:team`. |

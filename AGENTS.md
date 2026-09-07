@@ -41,7 +41,11 @@ See `README.md` for the full capability table and quick-start.
 
 ## Engineering Standards
 
-- **Language**: TypeScript (strict mode), Node 20+. Daemon in `daemon/src/`.
+- **Language**: TypeScript (strict mode), **Node 22+**. Daemon in `daemon/src/`. The floor moved from 20 to 22 on
+  2026-09-07: `npm test`'s unit portion is the glob `test/*.unit.mjs`, and glob expansion in `node --test`
+  positional arguments is not available on Node 20 — npm runs scripts through `cmd.exe` on Windows, which does not
+  expand it either, so on Node 20 the script would receive the pattern as a literal path and fail. Node 20 LTS is
+  already past end-of-life, so this narrows nothing in practice.
 - **Build**: `cd daemon && npm run build` (runs `tsc`). Typecheck only: `npm run typecheck`.
 - **Runtime**: Node built-in test runner (`node --test`). Key scripts in `daemon/package.json`:
   - `npm run build` — compile
@@ -61,9 +65,9 @@ Write **self-contained unit tests** (`daemon/test/<name>.unit.mjs`): temp SQLite
 ```
 node --test --test-timeout=60000 daemon/test/<name>.unit.mjs
 ```
-**Running the FULL suite needs a larger timeout:** use `--test-timeout=120000` for `daemon/test/*.unit.mjs`. `node --test` runs files concurrently, and `finalize-gates-a.unit.mjs` takes ~33 s alone, so it intermittently exceeds a 60 s per-test ceiling under parallel load — verified 341/1 fail at 60 s, 342/0 pass at 120 s, and passing again at 60 s on a re-run (GitHub #57). The failure surfaces as a bare `'test failed'` at `:1:1` with no assertion text, so an agent following the single-file command above cannot distinguish this flake from its own regression. 60 s remains correct for one file.
+**Running the FULL suite needs a larger timeout:** use `--test-timeout=180000` for `daemon/test/*.unit.mjs`. `node --test` runs files concurrently, and `finalize-gates-a.unit.mjs` takes ~26-33 s alone, so it intermittently exceeds the per-test ceiling under parallel load — verified 341/1 fail at 60 s, 342/0 pass at 120 s, and passing again at 60 s on a re-run (GitHub #57). **120 s stopped being enough on 2026-09-07**, when Phase E of cc-standards-alignment added 10 suites (`no-dangling-pointers.unit.mjs`): 429/1 fail at 120 s with the same bare `'test failed'`, then 430/0 pass at 180 s (432/0 after the guard was hardened), and `finalize-gates-a.unit.mjs` passing alone at 60 s in between. The ceiling is a function of total parallel load, not of any one file, so it will need raising again as suites are added. The failure surfaces as a bare `'test failed'` at `:1:1` with no assertion text, so an agent following the single-file command above cannot distinguish this flake from its own regression. 60 s remains correct for one file.
 
-**Prefer `*.unit.mjs` over `npm test` or `*.smoke.mjs` in automated agent contexts.** The `npm test` script includes `eights-integration.smoke.mjs` (needs an external TheEights peer) and `smoke.mjs` (spawns a daemon) — making the full suite slower and flakier for automated agents. Confirmed against `daemon/package.json` (the `test` script) and `daemon/test/eights-integration.smoke.mjs` (header: "spawns C:\AiAppDeployments\TheEights\daemon\dist\index.js").
+**Prefer `*.unit.mjs` over `npm test` or `*.smoke.mjs` in automated agent contexts.** The `npm test` script includes `eights-integration.smoke.mjs` (needs an external TheEights peer) and `smoke.mjs` (spawns a daemon) — making the full suite slower and flakier for automated agents. As of 2026-09-07 its unit portion is the glob `node --test --test-timeout=180000 test/*.unit.mjs`, so a new `*.unit.mjs` file is picked up automatically; before that it was a hand-maintained list of filenames that had silently drifted to 32 of 52 files, omitting three guards that were declared must-run-in-CI. Do not reintroduce an explicit list. Confirmed against `daemon/package.json` (the `test` script) and `daemon/test/eights-integration.smoke.mjs` (header: "spawns C:\AiAppDeployments\TheEights\daemon\dist\index.js").
 
 ### git-plumbing
 In-flight git ops use `trackedExeca` (abortable on shutdown). Teardown-path git ops use `trackedExecaNoRefuse` (registered, not refused after seal). Destructive FS ops are guarded by `isShuttingDown()` — a shutdown-killed op must never trigger a destructive fallback. See `daemon/test/ws7-tracked-git.unit.mjs` for the test surface.

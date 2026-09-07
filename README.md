@@ -144,14 +144,14 @@ Cross-vendor gates require **two** configured vendors. The `SessionStart.vendor-
 | Category | Count | Highlights |
 |----------|-------|------------|
 | **MCP Tools** | 79 | 75 on `pp_harness` (orchestration, taxonomy, gates, best-of-N, replay, janitor) + 2 on `pp_codex` + 2 on `pp_agy` |
-| **Sub-Agents** | 75 | engineer, architect, judge-cross-vendor, security-reviewer, designer, game-ai-programmer, live-ops-manager, and 68 more |
+| **Sub-Agents** | 42 | engineer, architect, judge-cross-vendor, security-reviewer, designer, game-ai-programmer, live-ops-manager, and 35 more |
 | **Slash Commands** | 19 | `/pp:run`, `/pp:best-of`, `/pp:team`, `/pp:review`, `/pp:constitution`, `/pp:evolution`, and 13 more |
 | **Teams** | 25 | feature, bug-fix, refactor, security-review, ux, design-system, deep-reasoning (Fable-5), game-cert, game-live-ops, and 16 more |
 | **Profiles** | 16 | web-ui, api-platform, enterprise, ai-agentic, mobile, game-dev-unity, game-dev-unreal, and 9 more |
 | **Rubrics** | 25 | WCAG 2.2 AA, OWASP ASVS L1/L2, C4, OpenAPI 3.1, SLSA L2/L3, NIST AI RMF, Game Accessibility Guidelines, and 17 more |
 | **Hooks** | 29 | across 5 events (SessionStart, PreToolUse, PostToolUse, UserPromptSubmit, Stop): `block-destructive-shell`, cost tallying, vendor-matrix check, +3 TheEights recall hooks, and 23 more — all 29 wired in both `.claude/settings.json` (generated from `settings.template.json`) and `hooks.json` |
 | **Missability Checks** | 56 | 23 generic (NFRs, authz, data retention) + 33 game-dev (console TRC, netcode, live-service, accessibility) |
-| **Skills** | 8 | pair-programmer master skill, taxonomy-adherence, master-plan-patching, game-design, frontend-design, and 3 more |
+| **Skills** | 11 | pair-programmer master skill, taxonomy-adherence, master-plan-patching, game-design, design-discovery, and 6 more |
 
 ---
 
@@ -227,12 +227,12 @@ pair-programmer/
     test/                         # smoke tests (MCP roundtrip)
     package.json
   .claude/
-    agents/                       # 75 sub-agent definitions
+    agents/                       # 42 sub-agent definitions
     commands/pp/                  # 19 slash commands
     teams/                        # 25 specialized team pipelines (incl. deep-reasoning-team)
     profiles/                     # 16 project profile templates
     rubrics/                      # rubric markdown mirrors
-    skills/                       # 8 domain skills
+    skills/                       # 11 domain skills
     settings.json                 # permissions + 29 hook commands
   .github/                        # generated Copilot CLI assets
   docs/

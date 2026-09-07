@@ -98,6 +98,7 @@ _To be populated by harness runs._
 
 
 
+
 ### Run run_jc1UxeCMvyZR — 2026-08-22
 
 **Request:** Fix four daemon defects and establish no-secondary-vendor architectural constraint
@@ -170,6 +171,22 @@ _To be populated by harness runs._
   - `statusMessage` is added to template only; Copilot CLI support is unverified (Q8) and the guard now asserts absence rather than omitting the check.
   - `daemon-up` fail-open residual is documented as accepted (FU-1) — a timeout kill converts its fail-closed liveness guard into fail-open in precisely the case it was written to detect, per Claude Code hook docs.
 
+### Run run_2IkydL62USI3 — 2026-09-06
+
+- Request: Phase E of cc-standards-alignment campaign (#38, #42) — remove 50 dangling pointer stubs and close S2 silent-data-loss exposure.
+- Artifacts:
+  - spec: `.harness/run_2IkydL62USI3/spec.md` (6a56c8b7)
+  - test_plan: `.harness/run_2IkydL62USI3/tests/test_plan.md` (9fce2b14)
+  - diff: `.harness/run_2IkydL62USI3/diff.patch` (03c1a2df)
+  - changelog: `.harness/run_2IkydL62USI3/docs/changelog.md` (a7d52e1f)
+- Summary: Deleted 50 dangling pointer stubs (33 agent shims + 17 extensionless skill stubs) that pointed to absent sibling repos (ExecutiveSuite, AgentSmith). These posed an S2 exposure: the documented maintenance operation `node scripts/sync-copilot-assets.mjs` treated stubs as readable files and overwrote mirrors holding real content, visible only in `git diff`. Rewrote `.claude/commands/forge/council.md` from a C-suite panel (cto/ciso/cdo, deleted) to an engineering council (architect, security-reviewer, data-modeler, strategy-author — all real). Fixed tool descriptions and comments in `daemon/src/` that promised a local `boardroom` fallback agent now deleted. Added `daemon/test/no-dangling-pointers.unit.mjs` (45 assertions, 10 suites) to prevent pointer stubs from reappearing.
+- Key decisions:
+  - Guard classifies pointer files by content (CRLF/BOM/trim → one line, no frontmatter, absolute path shape), not extension — catches the 17 extensionless skill stubs.
+  - Forbidden literals (vendor-root + sibling-repo names) assembled at runtime from fragments; guard self-checks that its own source contains no contiguous literal (AC-E28/E29).
+  - Guard asserts non-emptiness of every count before comparing (visitedCount > 0, agent/skill/mirror sets > 0) so zero-match regexes cannot pass vacuously (R11, AC-E30/E53).
+  - No transcribed counts in guard (no hardcoded 42/11/33/75); all counts derived from filesystem and compared relationally (R12).
+  - Test script replaced hand-maintained filelist with glob (`node --test --test-timeout=180000 test/*.unit.mjs`), which exposed that `npm test` was not running 20 of 52 unit suites, including guards from Phases A/B/D. Node 20 lacks glob expansion in `node --test` arguments on Windows, so engines.node raised to >=22.0.0.
+
 
 ## 14. Security, privacy, and compliance
 
@@ -199,6 +216,7 @@ _To be populated by harness runs._
 
 
 ## 15. Test and verification strategy
+
 
 
 
@@ -258,6 +276,20 @@ _To be populated by harness runs._
   - arity assertion on `buildFileReport` (`buildFileReport.length === 4`) prevents silent re-introduction of an exemption parameter, since any future exemption-add must fail loudly.
   - TIMEOUT_CLASS map is hand-written classification; coverage is derived and asserted set-equal to `implementedPairKeys` so a handler reclassified in `dispatcher.ts` leaves the map stale (MED-1, raised for future auto-derivation).
   - Textual self-checks (AC-D21, AC-D21b) use substring-absence searches to prevent stale references in comments and docstring prose, not just in live constants.
+
+### Run run_2IkydL62USI3 — 2026-09-06
+
+- Request: Phase E quality assurance — add comprehensive guard test to prevent dangling-pointer regressions.
+- Artifacts:
+  - test_plan: `.harness/run_2IkydL62USI3/tests/test_plan.md` (9fce2b14)
+  - spec (R10–R13, NFR1–NFR6): `.harness/run_2IkydL62USI3/spec.md` (lines 234–475)
+  - new test: `daemon/test/no-dangling-pointers.unit.mjs` (sha in diff)
+- Summary: Added `daemon/test/no-dangling-pointers.unit.mjs`, a self-contained unit test (45 assertions, 10 suites, ~100 ms per run) that fails immediately if any pointer file or dangling `C:/AiAppDeployments` reference reappears under `.claude/` or `.github/`. Classification is content-based (one-line absolute path with no YAML frontmatter), not extension-based, catching the 17 extensionless skill stubs. Guard includes link-integrity checks: every agent/skill dispatched or applied in `.claude/commands/` must exist in the filesystem. Full test suite now 432 tests / 62 suites (was 387 / 52); suite timeout raised in `AGENTS.md` from 120 s to 180 s due to added load. Guard latency is p95 < 1 s, p100 < 5 s. Discovered and fixed via mutation control: non-emptiness assertions could pass vacuously (fixed to assert both visitedCount and post-filter collections); skill-half could iterate empty set (now asserts count > 0); skip-list was untested (now builds temp tree with `node_modules` to verify skip).
+- Key decisions:
+  - Guard built for Windows + POSIX: normalizes CRLF to LF, path separators, and uses stable sorting; fixture-tested on both drive-letter and POSIX absolute-path shapes.
+  - Forbidden literals (vendor-root `AiAppDeployments` + sibling names `ExecutiveSuite`, `AgentSmith`) assembled at runtime from three fragments each, with explicit self-check: reading `import.meta.url`'s own file and asserting no contiguous forbidden literal exists there (R11, AC-E28/E29).
+  - All expected counts derived from filesystem (readdirSync.length, not hardcoded): agent/skill/mirror sets compared via relational setDiff, no transcribed 42/11/33/75 literals anywhere (R12, AC-E32).
+  - Scope limited to `.claude/` and `.github/` to avoid false-positives: legitimate references live in `daemon/src/`, `specs/`, root governance docs, and prose descriptions; guard only scans under those two roots and skips `node_modules`, `.git`, `.harness`, symlinks, `.env*`, `settings.local.json`, binary files >1 MiB.
 
 
 ## 16. Operations and support model
@@ -423,6 +455,7 @@ _To be populated by harness runs._
 
 
 
+
 ### Run run_jc1UxeCMvyZR — 2026-08-22 — Changelog and known issues
 
 **Artifacts:**
@@ -560,4 +593,17 @@ shims. Interactive Google Sign-In (system keyring) remains the default path, whi
   - PLAN.md is left untouched as a dated artifact (§8); only live user-facing docs are corrected (§7.2).
   - Subsection heading counts in USER_GUIDE.md are re-derived from the handler inventory and mechanically verified (R5.7, AC-D19a).
   - Changelog captures both the fixes and the known residuals (daemon-up fail-open, if: abstention, installer-propagation gap, TIMEOUT_CLASS drift) so readers understand what is and is not settled.
+
+### Run run_2IkydL62USI3 — 2026-09-06
+
+- Request: Phase E documentation updates — correct agent/skill roster counts and delete false claims about executive overlay.
+- Artifacts:
+  - changelog: `.harness/run_2IkydL62USI3/docs/changelog.md` (lines 5–60, known residuals)
+  - spec (R5, R6, R8): `.harness/run_2IkydL62USI3/spec.md` (lines 159–220)
+- Summary: Corrected documentation counts drifted by the 50-stub deletions and one pre-existing error. `.claude/agents/` now 42 real agents (was 75 including stubs); `.claude/skills/` now 11 real skills (was 8, already wrong). Updated `README.md` sections 147, 154, 230, 235 and `docs/USER_GUIDE.md` sections 29, 87, 1119, 1121, 1265, 1267, 1782 to reflect actual roster. Deleted now-false claims that pp's sub-agents include "executive-suite personas, governance authors, and AgentSmith watchers" (§17 in USER_GUIDE). Deliberately kept MCP-tool count 75 untouched across all references (README.md:18, :146, :219, USER_GUIDE.md:1267) — these count tools, not agents; R7 forbade substitution.
+- Key decisions:
+  - Skills count correction from 8 to 11 included replacing nonexistent `frontend-design` (Claude Code built-in) with real skill `design-discovery`.
+  - Anchor change `#17-sub-agents-75` → `#17-sub-agents-42` required re-scanning repo for back-references; only `.claude/` TOC link found and fixed.
+  - Sub-agent subsection subtotals (41 initially) corrected by adding `agents-md-author` to Lifecycle subsection (now 6 agents, sum 42).
+  - R7's strict distinction between MCP-tool counts (75, preserved) and sub-agent counts (42, corrected) caught by spec's adjacent-line warning: README.md:146 and :147 carry different 75s.
 
