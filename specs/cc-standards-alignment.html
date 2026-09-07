@@ -119,8 +119,8 @@ figure:has(img) .fig-pending { display: none; }
   <summary>Metadata</summary>
   <dl>
     <dt>created</dt><dd>2026-08-24</dd>
-    <dt>modified</dt><dd>2026-09-07 — Phase G landed; the plan was wrong about the platform three times, see Amendments</dd>
-    <dt>commits</dt><dd>branch <code>feat/cc-standards-alignment</code> — Phases A&ndash;G landed (runs <code>run_7tbXaLHTJU1x</code>, <code>run_3FLJhz2DDV6w</code>, ad hoc, <code>run_z6a4iH0m0V2G</code>, <code>run_2IkydL62USI3</code>, <code>run_CZvEeGpuKzLt</code>, <code>run_CvKoIWhSC8XV</code>)</dd>
+    <dt>modified</dt><dd>2026-09-07 — Phase H landed; #58 closed, and the run exhausted its validator budget</dd>
+    <dt>commits</dt><dd>branch <code>feat/cc-standards-alignment</code> — Phases A&ndash;H landed (runs <code>run_7tbXaLHTJU1x</code>, <code>run_3FLJhz2DDV6w</code>, ad hoc, <code>run_z6a4iH0m0V2G</code>, <code>run_2IkydL62USI3</code>, <code>run_CZvEeGpuKzLt</code>, <code>run_CvKoIWhSC8XV</code>, <code>run_p8JPpVhDonUA</code>)</dd>
     <dt>agent</dt><dd>plan-deep (Fable-5) — authored to the plan-deep output contract</dd>
     <dt>session</dt><dd>7aefb7e8-2948-46a1-b10b-f9422c843257</dd>
     <dt>back refs</dt><dd><code>.harness/run_kUPtCqHotdYn/postmortem.md</code> (PP-VG-6 delivery stall); <code>.harness/cc-standards-alignment-plan.md</code> (superseded markdown draft)</dd>
@@ -666,19 +666,87 @@ figure:has(img) .fig-pending { display: none; }
   </div>
 
   <div class="phase">
-    <h3 id="phase-h">Phase H — Execution events and missing hook events <code class="status">[]</code> <span class="legend"><a href="https://github.com/lebobo88/pair-programmer/issues/49">#49</a> · schema v11</span></h3>
+    <h3 id="phase-h">Phase H — Execution events and missing hook events <code class="status" data-st="x">[x]</code> <span class="legend"><a href="https://github.com/lebobo88/pair-programmer/issues/49">#49</a> · schema v11</span></h3>
     <p>Round 2 rejected the original framing outright. Corrected principle: <b>these are recovery
     observations, never manufactured ledger rows.</b> A failed <em>critique</em> is not a generation
     <em>attempt</em>; conflating them corrupts the ledger's meaning.</p>
+    <p><b>Landed 2026-09-07</b> as run <code>run_p8JPpVhDonUA</code>, the campaign's largest phase and the
+    only one to <b>exhaust its validator budget</b> — the final Reflexion retry was refused with
+    <code>loop ceiling reached: 6/6 validator calls in this run</code>. Full suite 680/680 across 90 suites;
+    missability 12 pass / 0 fail / 45 n/a with all five required checks passing. Closed <code>surfaced</code>:
+    every stage but the spec closed on a <code>revise</code> or <code>fail</code> verdict with Reflexion&nbsp;×1
+    spent. <b>Closes <a href="https://github.com/lebobo88/pair-programmer/issues/58">#58</a>, both halves.</b></p>
     <h4>Tasks</h4>
     <ul class="checklist">
-      <li><code class="status">[]</code> Add a new idempotent <b>execution-event</b> record (call key, tool, run/stage correlation, status, cost), distinct from the <code>attempts</code> table, surfaced in <code>replay</code> and budget reporting.</li>
-      <li><code class="status">[]</code> <code>PostToolUseFailure</code> on <code>mcp__pp_codex__.*|mcp__pp_agy__.*</code> → writes an execution-event. Today <code>record-attempt</code>/<code>cost-tally</code> fire only on success, so every failed critique is invisible. <b>Evidence corrected 2026-09-05:</b> the claim that <code>.harness/critique_failures/</code> "exists because of this gap" is false as to causation — that directory is deliberate bridge archival written by <code>cli-runner.ts:674-777</code> on final non-zero exit, independent of hooks (Codex: PARTIALLY CORRECT). The blind spot is real, and now has a live example: the agy critique that failed during this validation cost <b>$0.27 over 600 s</b> and appears in no <code>budget_status</code>.</li>
-      <li><code class="status">[]</code> <code>StopFailure</code> (<code>rate_limit|overloaded|authentication_failed</code>) → mark an API-killed run <code>surfaced</code> with the reason instead of leaving it <code>running</code>. Two such runs are pending in this repo now.</li>
-      <li><code class="status">[]</code> <code>PreCompact</code>/<code>PostCompact</code> → re-inject active <code>run_id</code>/<code>stage_id</code> via <code>additionalContext</code>.</li>
-      <li><code class="status">[]</code> <code>FileChanged</code> (<code>CONSTITUTION.md</code>) → drift <b>detector</b> only. Explicitly not enforcement.</li>
-      <li><code class="status">[]</code> <b>Blocked on a correlation model:</b> <code>SubagentStop</code> (matcher <code>engineer</code>). In best-of-N every candidate is <code>producer="claude"</code>, so no <code>mcp__pp_codex__*</code> PostToolUse ever fires. But <code>runs.ts:449-475</code> (cited as <code>:433</code> when this was written) returns the existing slot row <em>without updating it</em> — a stop-handler that writes first permanently discards the engineer's real metadata, and one without the <code>attempt_slot_id</code> writes a second row. Prerequisite: persist a dispatch-time correlation record (subagent/task id → <code>run_id, stage_id, attempt_slot_id</code>), then have <code>SubagentStop</code> write a recovery observation reconciled later.</li>
-      <li><code class="status">[]</code> <b>Reinstated for review 2026-09-05:</b> <code>SessionEnd</code> cleanup was dropped over a 1.5 s shared budget, but that budget <b>extends to match a longer per-hook <code>timeout</code>, up to 60 s</b>. Judge it on merit rather than on the stale limit.</li>
+      <li><code class="status" data-st="x">[x]</code> <b>Done, as schema v11.</b>
+      <code>execution_events</code> — idempotent on a deterministic <code>call_key</code>, carrying tool,
+      producer, run/stage correlation, status, tokens, cost and wall time. <b>Distinct from
+      <code>attempts</code> by construction:</b> the module writes only <code>execution_events</code> and
+      <code>budgets</code>, with no <code>attempts</code>/<code>verdicts</code>/<code>stages</code> DML and no
+      <code>recordAttempt</code>/<code>tallyBudgets</code> call. Surfaced in <code>replay</code> and under
+      <b>separate <code>failed:</code> budget scopes</b>, so no total silently mixes real and failed spend.
+      A second schema object came with it — <b><code>runs.surfaced_reason</code></b>: <code>runs</code> had
+      <code>acked_at</code>/<code>acked_reason</code>, the operator's <em>acknowledgement</em>, but no column
+      for the <em>cause</em>.</li>
+      <li><code class="status" data-st="x">[x]</code> <b><code>PostToolUseFailure</code> done — and #58's
+      second half was worse than this plan said.</b> The plan noted <code>record-attempt</code> and
+      <code>cost-tally</code> "fire only on success". True, but <code>cost-tally</code> wrote <b>nothing at
+      all, on success or failure</b> — it <code>console.log</code>ged tokens and cost and never touched the
+      database. Vendor critique spend had <em>never</em> reached <code>budgets</code>. The plan's evidence
+      correction was also confirmed: <code>.harness/critique_failures/</code> is deliberate bridge archival
+      written on final non-zero exit, independent of hooks, so it never was evidence of the hook gap.</li>
+      <li><code class="status" data-st="x">[x]</code> <b><code>StopFailure</code> done, and it front-runs an
+      existing mechanism rather than replacing one.</b> The plan's two named pending runs were <b>already
+      surfaced</b> — its evidence was stale. The real population is <b>17 <code>crashed</code> runs</b>, and
+      <code>crashed</code> already existed: set only by the janitor's sweep of runs alive more than six hours,
+      recording <b>no cause at all</b>. So an API-killed run used to look alive for up to six hours and then
+      go terminal unexplained. It is now <code>surfaced</code> within seconds <em>with</em> its reason, which
+      is the status <code>/pp:retry</code> operates on. The janitor is unchanged, and the 17 existing rows are
+      <b>deliberately not back-filled</b> — inventing a cause the daemon never observed would manufacture
+      provenance.</li>
+      <li><code class="status" data-st="x">[x]</code> <b><code>PreCompact</code>/<code>PostCompact</code> done
+      — but not by the mechanism this plan named.</b> <code>additionalContext</code> is <b>not documented
+      anywhere</b> on the hooks page; the driver checked. The documented channel is stdout under the
+      exit-code-0 parsing rule, and that is what shipped. A later phase must not rebuild on the assumption.</li>
+      <li><code class="status" data-st="x">[x]</code> <b><code>FileChanged</code> on
+      <code>CONSTITUTION.md</code> done, detector only</b> — it never blocks, reverts, or writes. Hard Rule 1
+      still governs; this notices drift and says so.</li>
+      <li><code class="status" data-st="x">[x]</code> <b>No longer blocked — the correlation model existed
+      after all, and half of it shipped.</b> <code>SubagentStart</code> is a documented event and
+      <code>agent_id</code> is a common input field, which is exactly the dispatch key this plan said did not
+      exist. The <b>observation ledger ships</b>, because an execution-event row never touches
+      <code>attempts</code> and so never engages the hazard. Degradation is mandatory and tested: absent,
+      zero-match or multi-match <code>agent_id</code> → <code>unreconciled</code> with NULL correlation, and
+      <b>no inference from recency, <code>agent_type</code>, or the sole open stage</b> — the guard builds the
+      fixture a recency heuristic <em>would</em> match and asserts NULL.
+      <b>The plan's own success test is <code class="status" data-st="f">[f]</code></b>, on verified grounds
+      rather than effort: <code>recordAttempt</code> has <b>no UPDATE path at all</b>, so whichever writer
+      lands first permanently wins, and there is no ordering guarantee between a hook process and a
+      subagent's own MCP call. The property is already delivered by the engineer's own
+      <code>record_attempt(attempt_slot_id=…)</code>; a hook cannot improve on it without causing the data
+      loss this plan identified.</li>
+      <li><code class="status" data-st="x">[x]</code> <b><code>SessionEnd</code> reinstated and shipped.</b>
+      The docs confirm this plan's note exactly: <em>"<code>SessionEnd</code> hooks share a 1.5-second budget;
+      if your settings set a longer per-hook <code>timeout</code>, Claude Code raises the budget to match, up
+      to 60 seconds"</em> — so the 1.5&nbsp;s figure the task was originally dropped over was never the real
+      ceiling.</li>
+      <li><code class="status" data-st="f">[f]</code> <b>Budget rebaseline NOT performed, on merit.</b> #58's
+      pricing bug is fixed — but eight rates in <code>daemon/prices.json</code> carry
+      <code>CONSERVATIVE PLACEHOLDER</code> notes covering every current-generation id this campaign routes
+      to. Rebaselining against placeholder rates compounds two unknowns and yields a number that looks
+      authoritative and is not. The judge's ruling: vendor-confirmed rates are outside this phase regardless
+      of what the pricing fix builds, so no implementation here makes the rebaseline honest.</li>
+      <li><code class="status" data-st="x">[x]</code> <b>#58 closed, and a latent third defect found.</b>
+      <code>recordAttempt</code> wrote <code>cost_usd ?? null</code> while <code>computeCost</code> sat
+      imported and used only inside <code>unpricedJudgeModels</code>; it now derives cost, while respecting an
+      explicit <code>0</code> <em>verbatim</em>, because <code>undefined</code> versus <code>0</code> is the
+      only signal separating <em>unknown</em> from <em>free</em>. And <code>computeCost</code> iterated every
+      top-level key of <code>prices.json</code> with no <code>isPriceEntry</code> guard, while
+      <code>_pricing_notes</code> holds model-id-shaped keys with <b>string</b> values — so a hit there
+      yielded <code>NaN</code>, with only vendor-block key order masking it.
+      <b>And <code>unpriced_models: []</code> was never evidence of anything:</b> it probes only the pinned
+      judge ids, so an empty list means "the table has rates", not "cost was computed" — it structurally
+      could not see either half of #58.</li>
     </ul>
     <h4>Testing strategy — loop until every check passes before advancing</h4>
     <ul class="checklist">
