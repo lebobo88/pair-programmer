@@ -8,7 +8,7 @@ argument-hint: <forum> [--scope files|stage|run|project]
 
 You are about to drive a `/pp:review` invocation. Follow the `pair-programmer` skill protocol exactly. Parse `$ARGUMENTS` as `<forum>` (one of: framing, scope, design, architecture, contract, threat, test-readiness, release-readiness, incident, service) followed by optional `--scope <files|stage|run|project>` and any free-text context.
 
-**Delegation contract:** All MCP tool access flows through sub-agent delegation per the Delegation Contract in `pair-programmer.md` (the master skill). Do not bypass. `PP_ALLOW_AD_HOC=1` is daemon-developer-debug only and MUST NOT be proposed as a remedy in this lifecycle.
+**Delegation contract:** All MCP tool access flows through sub-agent delegation per the Delegation Contract in the `pair-programmer` skill (the master skill). Do not bypass. `PP_ALLOW_AD_HOC=1` is daemon-developer-debug only and MUST NOT be proposed as a remedy in this lifecycle.
 
 ## CLI-flag pre-parse
 

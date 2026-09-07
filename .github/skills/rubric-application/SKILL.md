@@ -1,9 +1,10 @@
 ---
 name: rubric-application
 description: How to invoke a rubric and emit structured rubric scores. Loaded by judge agents. The 13 standard-aligned rubrics live in the daemon registry; mirror copies under `.claude/rubrics/<id>.md` are generated via `pp-daemon dump-rubrics`.
+user-invocable: false
 ---
 
-<!-- Generated from .claude\skills\rubric-application.md. Edit the .claude source file and rerun node scripts/sync-copilot-assets.mjs. -->
+<!-- Generated from .claude\skills\rubric-application\SKILL.md. Edit the .claude source file and rerun node scripts/sync-copilot-assets.mjs. -->
 
 # Rubric application
 

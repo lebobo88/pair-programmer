@@ -226,6 +226,19 @@ function mapAgentTools(rawTools) {
   return [...mapped];
 }
 
+// skills-mirror-decision (R7.5, MED-2 carried forward from Phase F commit 2's
+// judge, verdict on 93a64db): the whitelist below (name/model/description/
+// target/tools) has NO unknown-key passthrough, so a source frontmatter's
+// `skills:` key -- added by R7 to seven .claude/agents/*.md files -- is
+// silently dropped from every .github/agents/*.agent.md mirror. That is
+// deliberate, option (b) from R7.5: (1) extending this whitelist means
+// touching this script, which Phase F's ordering constraint (R18.1/AC-F-A7)
+// reserved for commit 1 only -- commit 2 (the migration) and commit 3 (this
+// comment) are not allowed to extend it; (2) Copilot skill preloading is
+// unverified platform behaviour (spec R14), so silently carrying an
+// unverified capability into the mirror is higher risk than naming the gap
+// here, beside the whitelist itself, rather than only in a commit message
+// nobody re-reads.
 function renderAgent(sourcePath) {
   const content = readText(sourcePath);
   const { frontmatter, body } = splitFrontmatter(content);
@@ -830,12 +843,34 @@ if (invokedDirectly) {
 // fixture is one of the vacuity shapes this campaign has already shipped three
 // times. If commit 3 lands without importing one of the five, that export is
 // dead surface and should be removed then.
+//
+// R3-tail retry (2026-09-07): `syncMirrorEntry` is a second, explicitly
+// authorised generator export for this same reason -- the ONLY further export
+// this retry adds (`pruneStaleMirrorFiles` is deliberately NOT exported here;
+// the guard drives a scaffolding equivalent instead, see the comment above
+// `pruneStaleMirrorFilesLocal` in skill-discovery.unit.mjs for why that is
+// still a faithful check of the real invariant). The prior version of the
+// guard only drove `isPointerFile()` and `writeMirrorSafely()` separately with
+// hand-glued control flow standing in for `syncMirrorEntry`'s real decision
+// order -- so the two lines that actually make a pointer-skip survive the
+// prune pass (`keepSet.add(targetPath)` and `pointerSkipSet.add(targetPath)`
+// inside the pointer branch above) were never exercised by any test. That is
+// the exact shape of the ~673-line incident: the skip itself worked, but
+// nothing proved the skip's target was protected from the prune pass that
+// runs immediately afterward in every real sync.
 export {
   preservedFrontmatterComments,
   isDirectInvocation,
   enumerateSkillSources,
   normalizeHooks,
   writeMirrorSafely,
+  syncMirrorEntry,
+  // Exported for the same reason as syncMirrorEntry: the guard's scaffold
+  // reproduction of this walked the target dir only one level deep, while the
+  // real function delegates to the RECURSIVE listMarkdownFiles -- and the
+  // skills mirror's targets are nested at <name>/SKILL.md. A scaffold that
+  // cannot reach the nested case cannot prove the nested case survives.
+  pruneStaleMirrorFiles,
   MIRROR_SHRINK_THRESHOLD,
   ALLOW_SHRINK_FLAG,
 };

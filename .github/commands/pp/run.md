@@ -8,7 +8,7 @@ argument-hint: <free-text request>
 
 You are about to drive a `/pp:run` invocation through the pair-programmer harness. Follow the `pair-programmer` skill protocol exactly. This command runs in `mode="single"`. For multi-candidate runs, use `/pp:best-of`. For team-driven pipelines, use `/pp:team`. For governance reviews, use `/pp:review`.
 
-**Delegation contract:** All MCP tool access flows through sub-agent delegation per the Delegation Contract in `pair-programmer.md` (the master skill). Do not bypass. `PP_ALLOW_AD_HOC=1` is daemon-developer-debug only and MUST NOT be proposed as a remedy in this lifecycle.
+**Delegation contract:** All MCP tool access flows through sub-agent delegation per the Delegation Contract in the `pair-programmer` skill (the master skill). Do not bypass. `PP_ALLOW_AD_HOC=1` is daemon-developer-debug only and MUST NOT be proposed as a remedy in this lifecycle.
 
 User request: $ARGUMENTS
 

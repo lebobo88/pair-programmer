@@ -6,7 +6,7 @@ argument-hint: <run_id> <stage_id>
 
 <!-- Generated from .claude\commands\pp\gate.md. Edit the .claude source file and rerun node scripts/sync-copilot-assets.mjs. -->
 
-**Delegation contract:** All MCP tool access flows through sub-agent delegation per the Delegation Contract in `pair-programmer.md` (the master skill). Do not bypass. `PP_ALLOW_AD_HOC=1` is daemon-developer-debug only and MUST NOT be proposed as a remedy in this lifecycle.
+**Delegation contract:** All MCP tool access flows through sub-agent delegation per the Delegation Contract in the `pair-programmer` skill (the master skill). Do not bypass. `PP_ALLOW_AD_HOC=1` is daemon-developer-debug only and MUST NOT be proposed as a remedy in this lifecycle.
 
 ## CLI-flag pre-parse
 
