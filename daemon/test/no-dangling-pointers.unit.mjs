@@ -16,8 +16,11 @@
  * loud test failure instead of a discovery in `git diff`.
  *
  * This test also enforces R4's link-integrity requirement: every agent
- * dispatched, and every skill applied, from `.claude/commands/**\/*.md` MUST
- * resolve to a real file under `.claude/agents/` or `.claude/skills/`.
+ * dispatched from `.claude/commands/**\/*.md` MUST resolve to a real file
+ * under `.claude/agents/`. (Phase F, commit 2/3, R9.1(a): the sibling
+ * skill-applied-by-path half of this requirement is retired below — see the
+ * comment above SKILL_PATH_RE's removal site for why, and where skill
+ * linkage is guarded instead.)
  *
  * SCOPE: only `.claude/` and `.github/` are walked. `daemon/` is never
  * scanned, so the legitimate well-known-sibling-peer references in
@@ -216,19 +219,41 @@ const INVOKE_DIRECT_RE = new RegExp(`\\binvoke (?:the )?\`(${KEBAB_TOKEN})\``, "
 const INVOKE_PAREN_RE = /\binvoke the [a-z ]*\(([^)]*)\)/g;
 const TASK_TOOL_LIST_RE = /Task tool:\s*((?:`[a-z][a-z0-9-]*`,?\s*)+)/g;
 const KEBAB_BACKTICK_RE = new RegExp(`\`(${KEBAB_TOKEN})\``, "g");
-const SKILL_PATH_RE = /`\.claude\/skills\/([a-z0-9-]+)\.md`/g;
+// Phase F (commit 2/3), R9.1(a) (pre-move site `:219`, `SKILL_PATH_RE`, and
+// its two dependent assertions at pre-move `:619-621` and `:635-649`):
+// SKILL_PATH_RE used to extract a skill name from the literal path form
+// `` `.claude/skills/<name>.md` `` wherever it appeared in
+// `.claude/commands/**/*.md`, and two assertions were built on that
+// extraction -- a non-emptiness check, and a per-name resolution check
+// against `.claude/skills/<name>.md`. R8 (this same phase) rewrites every
+// such literal-path reference in the command tree to a name-based one (there
+// was exactly one, `.claude/commands/forge/council.md`'s "MAY apply
+// `.claude/skills/rubric-application.md`"), which is the whole point of R8 --
+// so this extraction now degrades to the empty set, and the non-emptiness
+// assertion built on it would fail. That failure would not mean skill
+// linkage broke; it would mean the flat-path literal the regex looked for
+// no longer exists anywhere it should exist. Per R9.1(a) (the preferred
+// option: remove the now-dead extraction rather than keep a regex alive for
+// a form the repo no longer uses), SKILL_PATH_RE, the skill-name half of
+// extractCommandLinks(), and both dependent assertions are removed in this
+// commit. Skill linkage is instead guarded by the new
+// `daemon/test/skill-discovery.unit.mjs` (R10.9), which asserts every
+// agent's `skills:` frontmatter member resolves to a real
+// `.claude/skills/<name>/SKILL.md` bundle -- landing in commit 3 of this
+// phase, not yet checked in as of this commit. This is CONSTITUTION.md
+// FORBIDDEN-3's documented replacement for this deletion. The agent-linkage
+// half of this describe block (Task-tool dispatch name resolution,
+// immediately below) is untouched and still guards agent names.
 
 /**
  * Pure function: given the text content of one `.claude/commands/**\/*.md`
- * file, return the set of agent names it dispatches via the Task tool and
- * the set of skill names it applies. Exercised both against the real
- * command tree and, in isolation, against synthetic fixture strings (so
- * AC-E27's "nonexistent agent" negative control never has to mutate a
- * tracked file).
+ * file, return the set of agent names it dispatches via the Task tool.
+ * Exercised both against the real command tree and, in isolation, against
+ * synthetic fixture strings (so AC-E27's "nonexistent agent" negative
+ * control never has to mutate a tracked file).
  */
 function extractCommandLinks(content) {
   const agentNames = new Set();
-  const skillNames = new Set();
 
   let m;
   INVOKE_DIRECT_RE.lastIndex = 0;
@@ -248,10 +273,7 @@ function extractCommandLinks(content) {
     while ((mm = KEBAB_BACKTICK_RE.exec(m[1]))) agentNames.add(mm[1]);
   }
 
-  SKILL_PATH_RE.lastIndex = 0;
-  while ((m = SKILL_PATH_RE.exec(content))) skillNames.add(m[1]);
-
-  return { agentNames, skillNames };
+  return { agentNames };
 }
 
 /** List `.md` files under `dir`, recursively, skipping SKIP_DIR_NAMES. */
@@ -530,7 +552,16 @@ describe("non-emptiness fails loudly on an empty or missing root (AC-E30, AC-E53
 describe("set equality between sources and mirrors (R12, filesystem-derived)", () => {
   const claudeAgentNames = basenamesWithSuffix(CLAUDE_AGENTS_DIR, ".md");
   const githubAgentNames = basenamesWithSuffix(GITHUB_AGENTS_DIR, ".agent.md");
-  const claudeSkillNames = basenamesWithSuffix(CLAUDE_SKILLS_DIR, ".md");
+  // Phase F (commit 2/3), R9.1 site `:535` (pre-move line number): this used
+  // to be `basenamesWithSuffix(CLAUDE_SKILLS_DIR, ".md")`, which derives the
+  // empty set now that R2 has moved every skill source into a
+  // `<name>/SKILL.md` bundle directory -- there are no more loose `.md`
+  // files at the skills root for that helper to find. Replaced with
+  // `skillBundleNames(CLAUDE_SKILLS_DIR)`, the helper this file already
+  // defines and already uses for the `.github/` side (below), so both sides
+  // of the comparison are now derived the same way instead of one side using
+  // a helper built for a layout that no longer exists.
+  const claudeSkillNames = skillBundleNames(CLAUDE_SKILLS_DIR);
   const githubSkillBundleNames = skillBundleNames(GITHUB_SKILLS_DIR);
 
   it("both agent sets are nonempty before being compared", () => {
@@ -538,7 +569,7 @@ describe("set equality between sources and mirrors (R12, filesystem-derived)", (
     assert.ok(githubAgentNames.size > 0, ".github/agents/*.agent.md derived set is empty");
   });
   it("both skill sets are nonempty before being compared", () => {
-    assert.ok(claudeSkillNames.size > 0, ".claude/skills/*.md derived set is empty");
+    assert.ok(claudeSkillNames.size > 0, ".claude/skills/*/SKILL.md derived set is empty");
     assert.ok(githubSkillBundleNames.size > 0, ".github/skills/*/SKILL.md derived set is empty");
   });
 
@@ -549,7 +580,11 @@ describe("set equality between sources and mirrors (R12, filesystem-derived)", (
     assert.deepEqual(onlyInGithub, [], `orphan Copilot mirror(s) with no .claude/agents/ source: ${onlyInGithub.join(", ")}`);
   });
 
-  it("R18/AC-E5-equivalent: real .claude/skills/*.md basenames equal .github/skills/*/SKILL.md bundle names", () => {
+  // R9.1 site `:552-559` (pre-move): both sides are now bundle-directory
+  // names (`<name>/SKILL.md`), not flat `<name>.md` basenames -- title and
+  // messages updated to say so; the set-equality logic itself (setDiff both
+  // ways) is unchanged, per R9.3 (surviving assertions MUST NOT be weakened).
+  it("Phase F R2/R9: .claude/skills/*/SKILL.md bundle names equal .github/skills/*/SKILL.md bundle names", () => {
     const onlyInClaude = setDiff(claudeSkillNames, githubSkillBundleNames);
     const onlyInGithub = setDiff(githubSkillBundleNames, claudeSkillNames);
     assert.deepEqual(onlyInClaude, [], `skill(s) missing a Copilot SKILL.md bundle: ${onlyInClaude.join(", ")}`);
@@ -577,14 +612,12 @@ describe("mutation control: orphaned mirror is caught by name (AC-E33)", () => {
 describe("command-file link integrity (R4, R10, R11, R18)", () => {
   const commandFiles = listMarkdownFiles(CLAUDE_COMMANDS_DIR);
   const allAgentNames = new Set();
-  const allSkillNames = new Set();
   const perFile = [];
   for (const f of commandFiles) {
     const content = readFileSync(f, "utf8");
-    const { agentNames, skillNames } = extractCommandLinks(content);
-    perFile.push({ file: f, agentNames, skillNames });
+    const { agentNames } = extractCommandLinks(content);
+    perFile.push({ file: f, agentNames });
     for (const n of agentNames) allAgentNames.add(n);
-    for (const n of skillNames) allSkillNames.add(n);
   }
 
   it("visited a nonzero number of command files", () => {
@@ -599,10 +632,12 @@ describe("command-file link integrity (R4, R10, R11, R18)", () => {
     const invokeFixture = "Use the Task tool to invoke the `triage` sub-agent.";
     const { agentNames: fromInvoke } = extractCommandLinks(invokeFixture);
     assert.deepEqual([...fromInvoke], ["triage"]);
-
-    const skillFixture = "The command MAY apply `.claude/skills/rubric-application.md` during synthesis.";
-    const { skillNames: fromSkill } = extractCommandLinks(skillFixture);
-    assert.deepEqual([...fromSkill], ["rubric-application"]);
+    // R9.1(a)/R9.2 (Phase F, commit 2/3): the skillFixture case that used to
+    // sit here drove SKILL_PATH_RE, which is removed above -- this fixture
+    // assertion is dead weight without the function it exercised (R9.2: "a
+    // fixture exercising a deleted function is dead weight") and is removed
+    // with it, not left behind to appear to guard something it no longer
+    // guards.
   });
 
   it("extraction does not pick up unrelated backtick-quoted return-value fields on the same line as 'invoke' (false-positive guard)", () => {
@@ -614,9 +649,13 @@ describe("command-file link integrity (R4, R10, R11, R18)", () => {
   it("R11: extracted at least one agent name from the real command tree before asserting link integrity", () => {
     assert.ok(allAgentNames.size > 0, "link-integrity extraction found zero agent names across .claude/commands/**/*.md — extraction regexes likely stale");
   });
-  it("R18/AC-E53-equivalent: extracted at least one skill name from the real command tree before asserting link integrity", () => {
-    assert.ok(allSkillNames.size > 0, "link-integrity extraction found zero skill names across .claude/commands/**/*.md — extraction regexes likely stale, or the skill half would iterate an empty set and pass vacuously");
-  });
+  // R9.1(a) (Phase F, commit 2/3): the sibling non-emptiness check on
+  // extracted skill names ("R18/AC-E53-equivalent: extracted at least one
+  // skill name...") stood here. It is removed together with SKILL_PATH_RE
+  // and allSkillNames above -- see the comment at extractCommandLinks() for
+  // the full FORBIDDEN-3 replacement rationale. Skill linkage is now
+  // guarded by daemon/test/skill-discovery.unit.mjs (R10.9), landing in
+  // commit 3 of this phase.
 
   it("AC-E8: every dispatched agent name resolves to a file under .claude/agents/", () => {
     const missing = [];
@@ -632,19 +671,16 @@ describe("command-file link integrity (R4, R10, R11, R18)", () => {
     assert.deepEqual(missing, [], `Task-dispatched agent name(s) with no .claude/agents/<name>.md: ${missing.join(", ")}`);
   });
 
-  it("applied skill names resolve to a file under .claude/skills/", () => {
-    const missing = [];
-    for (const { file, skillNames } of perFile) {
-      for (const name of skillNames) {
-        try {
-          statSync(join(CLAUDE_SKILLS_DIR, `${name}.md`));
-        } catch {
-          missing.push(`${name} (applied from ${relative(REPO_ROOT, file).split(sep).join("/")})`);
-        }
-      }
-    }
-    assert.deepEqual(missing, [], `applied skill name(s) with no .claude/skills/<name>.md: ${missing.join(", ")}`);
-  });
+  // R9.1(a) (Phase F, commit 2/3): the "applied skill names resolve to a
+  // file under .claude/skills/" test stood here, resolving names extracted
+  // by SKILL_PATH_RE against the flat `.claude/skills/<name>.md` shape. Both
+  // the extraction and the resolution it depended on are removed together
+  // (see extractCommandLinks()'s comment for the full rationale). This is
+  // the FORBIDDEN-3 replacement, not a silent deletion: skill-name
+  // resolution is reasserted, against the bundle shape and against every
+  // agent's `skills:` frontmatter key rather than the command-tree prose,
+  // by daemon/test/skill-discovery.unit.mjs (R10.9) in commit 3 of this
+  // phase.
 
   it("AC-E27 (negative control, in-memory fixture): a Task dispatch of a nonexistent agent name fails link integrity", () => {
     const scratchFixture = "Use the Task tool to invoke the `totally-nonexistent-agent-xyz` sub-agent.";

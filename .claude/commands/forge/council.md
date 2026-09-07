@@ -16,6 +16,6 @@ This is a **manual orchestration** path invoked directly by the operator or driv
    2. **Cross-examination** — each agent is shown the other three positions and may challenge or question them directly; challenges and responses are recorded verbatim.
    3. **Dissent** — any agent that still disagrees with the emerging consensus after cross-examination records its dissent explicitly, with reasoning. Dissent is never silently dropped, even in the final synthesis.
    4. **Synthesis** — the driving agent (or the invoking operator) synthesizes the four positions plus any recorded dissent into a single decision, citing which seat's concern drove which part of the decision.
-4. The command MAY apply `.claude/skills/rubric-application.md` during synthesis to score tradeoffs consistently.
+4. The command MAY apply the `rubric-application` skill during synthesis to score tradeoffs consistently.
 5. Write the synthesized decision (including the recorded dissent) to `<cwd>/.harness/council/<timestamp>-decision.md`. If a pp run is active, also archive it under that run's artifact dir.
 6. If TheEights is reachable, the architect's eights-write hook will already have recorded the decision as `type=decision-record, cell=influence` — no extra work needed.

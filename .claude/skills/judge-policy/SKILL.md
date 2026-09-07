@@ -1,6 +1,7 @@
 ---
 name: judge-policy
 description: Tiered cross-vendor vs same-vendor judge policy. Read this before invoking any judge so the gate is enforced correctly. Loaded on demand by the `pair-programmer` skill. Authoritative source is `mcp__pp_harness__gate_eligible_judges`; this document explains why the policy is the way it is.
+user-invocable: false
 ---
 
 # Judge policy (tiered + content-aware + profile-aware)
@@ -166,10 +167,10 @@ Mirror checklist:
 - `ARCHITECTURE.md` §5.1 / §5.2 (including the mermaid and ascii diagrams)
 - `docs/USER_GUIDE.md`
 - `docs/validator-policy.md`
-- `.claude/skills/judge-policy.md` (this file)
-- `.claude/skills/pair-programmer.md`
-- `.claude/skills/profile-aware-gating.md`
-- `.claude/skills/rubric-application.md`
+- `.claude/skills/judge-policy/SKILL.md` (this file)
+- `.claude/skills/pair-programmer/SKILL.md`
+- `.claude/skills/profile-aware-gating/SKILL.md`
+- `.claude/skills/rubric-application/SKILL.md`
 - `.claude/agents/judge-cross-vendor.md`
 - `.claude/agents/judge-same-vendor.md`
 - `.claude/agents/judge-router.md`

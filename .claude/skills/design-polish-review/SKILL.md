@@ -1,6 +1,6 @@
 ---
 name: design-polish-review
-description: Self-review procedure that catches generic "AI-slop" tropes, hierarchy/rhythm/spacing-scale problems, and incomplete interaction states before a design artifact is archived. Adapted from claude-design-system-prompt's ai-slop-check + hierarchy-rhythm-review + interaction-states-pass + polish-pass skills. Operational procedure behind the design-polish@1 rubric. Invoked by designer and design-system-curator as a self-check before archiving, and by the judge when applying design-polish@1.
+description: Self-review catching generic "AI-slop" tropes, hierarchy/rhythm/spacing problems, and incomplete interaction states before a design artifact is archived. Adapted from claude-design-system-prompt. The procedure behind the design-polish@1 rubric. Invoked by designer and design-system-curator as a self-check, and by the judge applying that rubric.
 ---
 
 # Design polish review

@@ -284,7 +284,7 @@ Every `/pp:*` command follows this lifecycle (some phases are skipped for `/pp:s
 - **Run status:** `complete | surfaced | aborted | crashed`. (`crashed` is set by the janitor for runs >6h old that never finalized.)
 - **Verdict outcome:** `pass | revise | fail`. `fail` triggers Reflexion ×1; `pass` advances the stage; `revise` is a soft band where Reflexion is most likely to help.
 
-> Source: [`.claude/skills/pair-programmer.md`](../.claude/skills/pair-programmer.md).
+> Source: [`.claude/skills/pair-programmer/SKILL.md`](../.claude/skills/pair-programmer/SKILL.md).
 
 ---
 
@@ -370,7 +370,7 @@ For best-of-2, the driver asks the judge for a structured rubric score per candi
 
 When a supplementary same-vendor judge is in play, the generator and judge MUST use **different model ids** — there is no longer any exemption, the agy degenerate lane having been removed once agy gained a distinct escalated critique id. `pp_codex.critique` defaults to `gpt-5.6-terra` and `pp_agy.critique` to `gemini-3.8-flash-medium`; a same-vendor read on a generator that already used the default id must run another allow-listed id (normally the escalated lane, `gpt-5.6-sol` / `gemini-3.1-pro-high`), otherwise `gate_eligible_judges` routes the verdict cross-vendor. The daemon's `record_verdict` path rejects a judge model outside the producer's allow-list, a `default`/`escalated` source whose id does not match the pin, and an override source of `cli`/`team_yaml`/`hydra` without a reason of ≥ 8 characters — so a stale prompt cannot claim a model the wrapper did not actually use.
 
-> Deep-dive: [`docs/validator-policy.md`](validator-policy.md), [`.claude/skills/judge-policy.md`](../.claude/skills/judge-policy.md), source: [`daemon/src/orchestrator/gates.ts`](../daemon/src/orchestrator/gates.ts).
+> Deep-dive: [`docs/validator-policy.md`](validator-policy.md), [`.claude/skills/judge-policy/SKILL.md`](../.claude/skills/judge-policy/SKILL.md), source: [`daemon/src/orchestrator/gates.ts`](../daemon/src/orchestrator/gates.ts).
 
 ---
 
@@ -1574,7 +1574,7 @@ On MCP transport disconnect (`stdin` end / `transport.onclose`), SIGTERM/SIGINT,
 
 This guarantees the harness never strands a half-written run or orphans a Codex/agy subprocess when Claude Code (or the gateway) disconnects.
 
-> Source: [`.claude/skills/artifact-conventions.md`](../.claude/skills/artifact-conventions.md), [`daemon/src/orchestrator/janitor.ts`](../daemon/src/orchestrator/janitor.ts), [`daemon/src/util/shutdown.ts`](../daemon/src/util/shutdown.ts), [`daemon/src/config.ts`](../daemon/src/config.ts), [`mesh-manifest.yaml`](../mesh-manifest.yaml).
+> Source: [`.claude/skills/artifact-conventions/SKILL.md`](../.claude/skills/artifact-conventions/SKILL.md), [`daemon/src/orchestrator/janitor.ts`](../daemon/src/orchestrator/janitor.ts), [`daemon/src/util/shutdown.ts`](../daemon/src/util/shutdown.ts), [`daemon/src/config.ts`](../daemon/src/config.ts), [`mesh-manifest.yaml`](../mesh-manifest.yaml).
 
 ---
 

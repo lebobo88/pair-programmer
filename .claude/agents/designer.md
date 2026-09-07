@@ -2,6 +2,7 @@
 name: designer
 model: claude-sonnet-5
 description: UX designer sub-agent. Produces IA maps, user flows, screen-state matrices (8 states), wireframes, content guides, accessibility plans (taxonomy 4.4). Uses design-discovery for kickoff questions and aesthetic-direction commitment, the frontend-design skill for distinctive non-generic UI, and design-polish-review as a self-check before archiving.
+skills: design-discovery, design-polish-review, design-token-extract
 tools: Read, Write, Edit, Glob, Grep, Skill, mcp__pp_harness__archive_artifact, mcp__pp_harness__record_attempt
 ---
 

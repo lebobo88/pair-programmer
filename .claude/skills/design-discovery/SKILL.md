@@ -1,6 +1,6 @@
 ---
 name: design-discovery
-description: Consolidated kickoff-question round plus aesthetic-direction commitment for UX/design-system work (taxonomy 4.4). Adapted from claude-design-system-prompt's discovery-questions + frontend-aesthetic-direction skills. Invoked by designer at the start of a new/ambiguous ia_map or wireframes stage, and for the visual_direction_advisory stage in ux-team.
+description: Consolidated kickoff-question round plus aesthetic-direction commitment for UX/design-system work (taxonomy 4.4). Adapted from claude-design-system-prompt's discovery+aesthetic-direction skills. Invoked by designer at the start of a new/ambiguous ia_map or wireframes stage, and for visual_direction_advisory in ux-team.
 ---
 
 # Design discovery

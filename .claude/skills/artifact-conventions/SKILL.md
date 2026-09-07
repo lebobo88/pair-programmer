@@ -1,6 +1,7 @@
 ---
 name: artifact-conventions
-description: File layout under `<project>/.harness/<run_id>/` and the kinds of artifacts produced by each stage. Loaded on demand by the `pair-programmer` skill. Every file written under .harness/ MUST go through `mcp__pp_harness__archive_artifact` UNLESS it lives inside an active best-of-N candidate worktree (those files are tracked via git inside the worktree, not via the artifacts table).
+description: File layout under `<project>/.harness/<run_id>/` and the artifacts each stage produces. Loaded on demand by the `pair-programmer` skill. Every file written under `.harness/` MUST go through `mcp__pp_harness__archive_artifact` UNLESS it is inside an active best-of-N candidate worktree (tracked via git, not the artifacts table).
+user-invocable: false
 ---
 
 # Artifact conventions

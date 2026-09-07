@@ -7,6 +7,7 @@ name: judge-same-vendor
 # judge / haiku generator → sonnet judge). Codex/Antigravity (agy) branches likewise pick
 # their own model id from the agent body rather than inheriting frontmatter.
 description: Same-vendor different-model judge for the pair-programmer harness. Dispatches to the matching vendor's critique tool — Codex for codex generators, agy for agy generators, Claude (via direct reasoning) for claude generators — using a different model id from the generator. Used at code_style / docs_polish / lint_class gates and at any team stage that explicitly requests `judge.tier: same_vendor`.
+skills: judge-policy, rubric-application
 tools: mcp__pp_codex__critique, mcp__pp_agy__critique, mcp__pp_harness__record_verdict, mcp__pp_harness__get_rubric, Read
 ---
 

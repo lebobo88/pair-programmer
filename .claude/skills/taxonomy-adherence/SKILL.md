@@ -1,6 +1,7 @@
 ---
 name: taxonomy-adherence
 description: Reusable policy text the master skill injects into every stage. Every task maps to ≥1 of the 16 taxonomy sections. Trivial tasks reduce to a changelog entry; standard tasks produce required artifacts; major tasks invoke a team. Loaded on demand by the `pair-programmer` skill.
+user-invocable: false
 ---
 
 # Taxonomy adherence

@@ -27,7 +27,7 @@ Do the routing and execution yourself. Do **not** bounce the user back with "ple
 
 ## Source of truth
 
-- `.claude/skills/pair-programmer.md` — master lifecycle + delegation contract for harness flows
+- the `pair-programmer` skill — master lifecycle + delegation contract for harness flows
 - `.claude/commands/pp/*.md` — the canonical behavior for each `/pp:*` command
 
 Before executing a route, read the relevant command file. For `run`, `best-of`, `team`, `review`, `retry`, and `gate`, also read the master skill and follow its delegation contract.
@@ -102,7 +102,7 @@ If the user clearly wants multiple candidate implementations but does not specif
 1. Decide the route.
 2. If you are executing a command/workflow, tell the user in **one short line** what route you chose (for example: `Routing to pp:team security-review-team.`).
 3. Read the matching command file from `.claude/commands/pp/`.
-4. For `run`, `best-of`, `team`, `review`, `retry`, and `gate`, also read `.claude/skills/pair-programmer.md` first and obey it.
+4. For `run`, `best-of`, `team`, `review`, `retry`, and `gate`, also read the `pair-programmer` skill first and obey it.
 5. Execute the chosen route yourself using the existing command/skill contract.
 
 ## Constraints

@@ -8,6 +8,7 @@ name: judge-cross-vendor
 # override these per JUDGE-1a — see "Operator override" below. A frontmatter
 # `model:` would mislead anyone reading the file.
 description: Cross-vendor judge for the pair-programmer harness. Used when gate_eligible_judges returns required_cross_vendor=true (spec/design/security/contract gates, or any gate when profile=enterprise, or any gate whose prompt contains concurrency/security/data-integrity keywords). MUST use a different vendor from the generator.
+skills: judge-policy, rubric-application
 tools: mcp__pp_codex__critique, mcp__pp_agy__critique, mcp__pp_harness__record_verdict, mcp__pp_harness__get_rubric, Read
 ---
 
