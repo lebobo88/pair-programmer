@@ -119,8 +119,8 @@ figure:has(img) .fig-pending { display: none; }
   <summary>Metadata</summary>
   <dl>
     <dt>created</dt><dd>2026-08-24</dd>
-    <dt>modified</dt><dd>2026-09-07 — Phase E landed; 83 files deleted, Q1 closed, see Amendments</dd>
-    <dt>commits</dt><dd>branch <code>feat/cc-standards-alignment</code> — Phases A&ndash;E landed (runs <code>run_7tbXaLHTJU1x</code>, <code>run_3FLJhz2DDV6w</code>, ad hoc, <code>run_z6a4iH0m0V2G</code>, <code>run_2IkydL62USI3</code>)</dd>
+    <dt>modified</dt><dd>2026-09-07 — Phase F landed; skills load for the first time, see Amendments</dd>
+    <dt>commits</dt><dd>branch <code>feat/cc-standards-alignment</code> — Phases A&ndash;F landed (runs <code>run_7tbXaLHTJU1x</code>, <code>run_3FLJhz2DDV6w</code>, ad hoc, <code>run_z6a4iH0m0V2G</code>, <code>run_2IkydL62USI3</code>, <code>run_CZvEeGpuKzLt</code>)</dd>
     <dt>agent</dt><dd>plan-deep (Fable-5) — authored to the plan-deep output contract</dd>
     <dt>session</dt><dd>7aefb7e8-2948-46a1-b10b-f9422c843257</dd>
     <dt>back refs</dt><dd><code>.harness/run_kUPtCqHotdYn/postmortem.md</code> (PP-VG-6 delivery stall); <code>.harness/cc-standards-alignment-plan.md</code> (superseded markdown draft)</dd>
@@ -530,26 +530,89 @@ figure:has(img) .fig-pending { display: none; }
   </div>
 
   <div class="phase">
-    <h3 id="phase-f">Phase F — Skills migration <code class="status">[]</code> <span class="legend"><a href="https://github.com/lebobo88/pair-programmer/issues/47">#47</a> · (D3)</span></h3>
+    <h3 id="phase-f">Phase F — Skills migration <code class="status" data-st="x">[x]</code> <span class="legend"><a href="https://github.com/lebobo88/pair-programmer/issues/47">#47</a> · (D3)</span></h3>
     <p>The 11 files in <code>.claude/skills/</code> are not skills. Loose <code>.md</code> at the skills root
     is not a documented layout, and this session's own skill listing confirms none of them load — while
     <code>run.md</code> still instructs "Follow the <code>pair-programmer</code> skill protocol exactly."</p>
+    <p><b>Landed 2026-09-07</b> as run <code>run_CZvEeGpuKzLt</code> across three commits —
+    <code>0a925bb</code> (generator), <code>6ec13d8</code> (migration), <code>11f6e57</code> (guard +
+    regeneration). Guard 91/91; full suite 521/521 across 80 suites; missability 7 pass / 0 fail / 50 n/a.
+    Closed <code>surfaced</code>: three of four stages closed on a <code>revise</code> or <code>fail</code>
+    verdict with Reflexion&nbsp;×1 already spent, and PP-VG-5
+    (<a href="https://github.com/lebobo88/pair-programmer/issues/59">#59</a>) surfaced both code stages.</p>
+    <p><b>It works, and that was observed rather than inferred: all 11 skills now appear in the session's own
+    skill listing. Before the migration, none did.</b> The plan called this the round-2 condition and was
+    right that a unit test cannot prove it.</p>
     <h4>Tasks</h4>
     <ul class="checklist">
-      <li><code class="status">[]</code> <b>FIRST change <code>scripts/sync-copilot-assets.mjs</code></b> — <code>normalizeSkill</code> (<code>:240-250</code>), the path-rewrite regex table (<code>~:26</code>), and <code>:381-390</code>. <code>.github/skills/&lt;name&gt;/SKILL.md</code> already exists but is <b>generated from</b> these loose files: it is the shape target, not a migration source. Treating this phase as a file move breaks the generator's input (Codex flagged it as dangerous).</li>
-      <li><code class="status">[]</code> <b>Then</b> move each of the 11 real loose files to <code>.claude/skills/&lt;name&gt;/SKILL.md</code>. Note <code>.claude/skills/</code> currently holds <b>28 entries: 17 broken pointer stubs, 11 real files, zero directories</b> — Phase E must clear the stubs first.</li>
-      <li><code class="status">[]</code> Update path references: <code>AGENTS.md:26</code> and <code>:94</code>, <code>run.md</code>, and the mirror tests <code>sync-copilot-comments.unit.mjs</code> / <code>sync-comment-injection.unit.mjs</code>.</li>
-      <li><code class="status">[]</code> <code>user-invocable: false</code> on the six harness-internal ones (judge-policy, rubric-application, taxonomy-adherence, artifact-conventions, master-plan-patching, profile-aware-gating): hidden from the <code>/</code> menu, still model-invocable, still preloadable.</li>
-      <li><code class="status">[]</code> Do <b>not</b> use <code>disable-model-invocation</code> here — it blocks subagent preloading, which is the entire point.</li>
-      <li><code class="status">[]</code> Add <code>skills:</code> preload to consuming agents: judge-cross-vendor / judge-same-vendor / judge-router → judge-policy + rubric-application; master-plan-patcher → master-plan-patching; taxonomy-mapper → taxonomy-adherence; designer / design-system-curator → the design-* set.</li>
-      <li><code class="status">[]</code> Remove the now-dead "Read this file by path" instructions from those agent bodies.</li>
-      <li><code class="status">[]</code> Land atomically: valid frontmatter, stable <code>name</code>, updated preload references, all in one commit.</li>
+      <li><code class="status" data-st="x">[x]</code> <b>Done first, and the ordering is now enforceable from
+      git history rather than asserted in prose.</b> The generator was rewritten and <em>exercised while the
+      sources were still flat</em>, proven idempotent, in a commit that touches no path under
+      <code>.claude/skills/</code>. The spec's own ordering requirement turned out to be <b>advisory</b> — the
+      cross-vendor judge found no acceptance criterion would have failed if an implementer moved the files
+      first and fixed the script afterwards; one criterion became <em>unevaluable</em> rather than failing.
+      Replaced with three ordered commits, a no-skills-path check on the first, and an idempotency proof
+      recorded at the time it was produced, because it cannot be reconstructed later.</li>
+      <li><code class="status" data-st="x">[x]</code> <b>Then moved all 11</b> to
+      <code>.claude/skills/&lt;name&gt;/SKILL.md</code> via <code>git mv</code>, each bundle's <code>name</code>
+      frontmatter equal to its directory. Phase E had already cleared the 17 pointer stubs, so the move landed
+      on a clean directory as planned.</li>
+      <li><code class="status" data-st="x">[x]</code> <b>Every path reference updated</b>, and the sweep found
+      more than the plan listed. <code>.claude/agents/pair-programmer-orchestrator.md</code> is the <em>only</em>
+      agent that read a skill by path — every other agent already referenced skills by name and was correctly
+      left alone. Plus <code>forge/council.md</code>, four self-references inside <code>judge-policy</code>, one
+      in <code>profile-aware-gating</code>, <code>AGENTS.md</code> and <code>docs/USER_GUIDE.md</code>.</li>
+      <li><code class="status" data-st="x">[x]</code> <code>user-invocable: false</code> on exactly the six
+      harness-internal skills, verified absent from the other five.</li>
+      <li><code class="status" data-st="x">[x]</code> <code>disable-model-invocation</code> appears nowhere, and
+      the spec forbids it normatively so a later cleanup cannot "simplify" it into existence.</li>
+      <li><code class="status" data-st="x">[x]</code> <b><code>skills:</code> preload on all seven consuming
+      agents</b>, every member resolving to a real bundle. <b>Not carried into the Copilot mirrors, by recorded
+      decision:</b> <code>renderAgent</code> (<code>scripts/sync-copilot-assets.mjs:229</code>) rebuilds mirror
+      frontmatter from a <code>name</code>/<code>model</code>/<code>description</code>/<code>target</code>/<code>tools</code>
+      whitelist with no unknown-key passthrough, so the key would be <em>silently dropped</em>. Extending it was
+      forbidden by the ordering constraint at the time, and Copilot-side preloading is unverified either way — a
+      comment now sits beside the whitelist so the gap is where a maintainer looks.</li>
+      <li><code class="status" data-st="x">[x]</code> Read-a-skill-by-path instructions removed from the one
+      agent that had them.</li>
+      <li><code class="status" data-st="x">[x]</code> Landed atomically per commit, valid frontmatter, stable
+      names, descriptions capped at <b>350 bytes</b> — total 3408, down from 3707 before the migration.</li>
+      <li><code class="status" data-st="x">[x]</code> <b>Two defect fixes the previous phases handed this one
+      (unplanned).</b> <code>normalizeHooks</code> hardcoded <code>timeoutSec: 30</code> and would have flattened
+      Phase D's 16 INFORMATIONAL hooks from 20&nbsp;s on the next sync; it now carries each entry's declared
+      timeout and throws on a missing one. And <code>readableSource</code> guarded only on
+      <code>existsSync</code>, so a future one-line pointer stub would still have been read and written over a
+      mirror as an agent body — now a genuine skip, plus shrink refusal behind an explicit flag, a count
+      summary, and a non-zero exit on any skip.</li>
     </ul>
     <h4>Testing strategy — loop until every check passes before advancing</h4>
     <ul class="checklist">
-      <li><code class="status">[]</code> <b>Discovery test against the pinned Claude Code version</b> — each migrated skill actually appears. Round-2 condition.</li>
-      <li><code class="status">[]</code> No agent body still references a skill by filesystem path.</li>
-      <li><code class="status">[]</code> <code>/context</code> compared against the Phase A baseline; 11 new skill descriptions have not blown the listing budget. The per-entry description cap is real, so keep descriptions tight.</li>
+      <li><code class="status" data-st="x">[x]</code> <b>Round-2 condition met, and by observation rather
+      than assertion: all 11 skills appear in the session's skill listing; before the migration none did.</b> The
+      static half — bundle shape, frontmatter validity, stable names — is asserted by
+      <code>daemon/test/skill-discovery.unit.mjs</code> (91 tests / 18 suites). The runtime half cannot be
+      asserted from inside a unit test and is recorded as an operator observation, which is what it is.</li>
+      <li><code class="status" data-st="x">[x]</code> <b>No agent body references a skill by filesystem path</b>
+      — and the guard now link-checks name-based references in command <em>prose</em> too, which is what caught
+      the live defect below.</li>
+      <li><code class="status" data-st="f">[f]</code> <b>Not measured.</b> <s><code>/context</code> compared
+      against the Phase A baseline.</s> The description cap is enforced and the aggregate <em>fell</em> (3707 →
+      3408 bytes), so the budget moved in the right direction — but <code>/context</code> is operator-only and
+      was not run, so this is an argument, not a measurement. The spec records it as operator-verification
+      rather than an acceptance criterion.</li>
+      <li><code class="status" data-st="x">[x]</code> <b>The guard was green while a real defect was live — and
+      that is how it was found.</b> The first mention pattern matched only the two phrasings already in the tree,
+      missing <code>`pair-programmer.md` (the master skill)</code>, which pointed at a file the migration had
+      deleted. <b>Seven</b> command files carried it, not the two the judge found. The pattern was broadened,
+      proved red against the unfixed tree naming all seven, the files repaired, and proved green.</li>
+      <li><code class="status" data-st="x">[x]</code> <b>Four vacuity classes shipped inside tests written to
+      prevent vacuity, all caught by the judges and closed.</b> Two "mutation controls" that controlled nothing;
+      four tautologies; one assertion that could never fail; one hand-transcribed count in a file whose own
+      header claimed count discipline; a "Self-check:" block containing no code; a pointer-skip test that omitted
+      the two lines which <em>are</em> the data-loss vector; a replacement scaffold that called itself "a
+      faithful, byte-for-byte-behaviour reproduction" while walking one level against a recursive original; and a
+      shrink threshold exercised only by comparing two hand-written lambdas to each other. Each is now driven
+      against real production code and mutation-proved.</li>
     </ul>
     <p class="legend">If a check cannot be made to pass after reasonable effort, mark the phase
       <code class="status" data-st="f">[f]</code> and record why in Notes rather than looping forever.</p>
@@ -1088,6 +1151,103 @@ figure:has(img) .fig-pending { display: none; }
       <li><b>PP-VG-5 surfaced a code stage for the third phase running</b>
         (<a href="https://github.com/lebobo88/pair-programmer/issues/59">#59</a>). Not worked around: writing a second
         attempt purely to carry a <code>candidate_index</code> would manufacture a generation that did not happen.</li>
+    </ul>
+  </details>
+
+  <details class="amend" open>
+    <summary>2026-09-07 — Phase F: the skills load for the first time, and a guard was green while a real defect was live</summary>
+
+    <p>Phase F migrated the 11 real skills from loose <code>.claude/skills/&lt;name&gt;.md</code> files to
+    <code>&lt;name&gt;/SKILL.md</code> bundles, as run <code>run_CZvEeGpuKzLt</code> across three commits. The
+    migration itself went as planned. Everything worth recording is what the cross-vendor judges found around
+    it.</p>
+
+    <h4>The outcome, observed rather than inferred</h4>
+    <p><b>All 11 skills now appear in the session's own skill listing. Before the migration, none did.</b> The
+    plan called this the "round-2 condition" and was right that a <code>*.unit.mjs</code> test can assert the
+    on-disk layout but cannot observe what actually loaded. The observation arrived for free the moment the
+    migration commit landed.</p>
+
+    <h4>The ordering requirement was advisory — and is now checkable</h4>
+    <p><code>.github/skills/&lt;name&gt;/SKILL.md</code> is <em>generated from</em> the
+    <code>.claude/skills</code> sources, so it is the shape target, not a migration source; moving the files
+    first breaks the generator's input. Codex flagged treating this as a file move as dangerous, and the plan
+    said so. But the spec's ordering requirement <b>would not have failed if anyone ignored it</b>: one
+    acceptance criterion became <em>unevaluable</em> rather than failing once the move happened, and another
+    permitted the script edit and the move in the same commit. An ordering requirement that only fails when
+    someone is already following it is not a requirement. Replaced with three ordered commits, a
+    no-skills-path check on the first, and an idempotency proof recorded at the time it was produced — because
+    that is the one artifact a move-first implementation cannot forge afterwards.</p>
+
+    <h4>A guard was green while a real defect was live in the tree</h4>
+    <p>The new guard's skill-mention pattern matched exactly the two phrasings already present and nothing
+    else. It missed <code>`pair-programmer.md` (the master skill)</code> — a reference to a file the migration
+    had just deleted. <b>Seven</b> command files carried it, not the two the judge found:
+    <code>doctor</code>, <code>gate</code>, <code>replay</code>, <code>retry</code>, <code>review</code>,
+    <code>run</code>, <code>team</code>. A link-checker that only matches the phrasing already in use is not a
+    link-checker. Broadened, proved red against the unfixed tree naming all seven, files repaired, proved
+    green. The false-positive premise that made the broadened patterns safe — that every real skill name
+    contains a hyphen — was itself stated only in a comment, and is now asserted.</p>
+
+    <h4>Four vacuity classes shipped inside tests written to prevent vacuity</h4>
+    <ul>
+      <li>Two "mutation controls" that asserted only that a fixture name did not accidentally exist, never
+        running the loop they claimed to control.</li>
+      <li>Four tautologies — build a string containing X, assert it contains X — plus two that tested a local
+        helper rather than the invariant, and one predicate that could never fail.</li>
+      <li>A hand-transcribed count, in a file whose own header claimed count discipline. And a
+        <code>"Self-check:"</code> block containing <b>no code at all</b>.</li>
+      <li>The pointer-skip test omitted <code>keepSet.add</code> and <code>pointerSkipSet.add</code> — the two
+        lines that stop <code>pruneStaleMirrorFiles</code>' <code>rmSync</code> from deleting the mirror a skip
+        just preserved, which is the ~673-line incident. Its <em>replacement</em> then described itself as "a
+        faithful, byte-for-byte-behaviour reproduction" while walking one level against a recursive original,
+        so it structurally could not reach the nested <code>&lt;name&gt;/SKILL.md</code> case that matters. And
+        the shrink threshold was "tested" by comparing two hand-written lambdas to each other, which proves
+        <code>&lt;</code> differs from <code>&lt;=</code> — arithmetic, not a test of production code.</li>
+    </ul>
+    <p><b>The lesson worth keeping: a guard's own assertions need the same adversarial review as the code they
+    protect.</b> Every one of these was written deliberately, by an agent that had been told about the
+    preceding three, and each was caught by a cross-vendor judge rather than by its author.</p>
+
+    <h4>The judge lane failed, and the substitution is stated</h4>
+    <p><b>agy failed 2-for-2</b> on this run's first code artifact and no verdict was recorded there: attempt 1
+    <code>exit_code 1</code> "malformed JSON", attempt 2 <code>exit_code 1</code> "missing outcome", both from
+    emitting <code>score_entries</code> instead of a flat <code>score</code>, the second producing
+    token-level-invalid JSON. The judge agent refused to record a verdict from a failed bridge even though its
+    prose said <code>pass</code>. Every subsequent code and tests stage routed to <b>Codex
+    <code>gpt-5.6-terra</code></b> — the plan's named fallback and the JUDGE-1 default, so a
+    <code>default</code> pin, not a JUDGE-1a override. Separately: <b>Codex's sandbox cannot read this repo on
+    this machine</b> — three calls returned an all-zero "cannot verify" payload at exit 0 with every read
+    rejected. That is infrastructure, not a judgement, and was never recorded; future code stages on that lane
+    must embed evidence in the prompt rather than pointing at paths.</p>
+
+    <h4>Two defects the previous phases handed this one</h4>
+    <ul>
+      <li><code>normalizeHooks</code> hardcoded <code>timeoutSec: 30</code> and would have flattened Phase D's
+        16 INFORMATIONAL hooks from 20&nbsp;s on the next sync. It now carries each declared timeout and throws
+        on a missing one. Its emitting no <code>statusMessage</code> is <b>correct</b> and was deliberately not
+        "fixed" — the Phase D guard positively requires <code>hooks.json</code> to carry none.</li>
+      <li><code>readableSource</code> guarded only on <code>existsSync</code>, so a future pointer stub would
+        still have been read and written over a mirror as an agent body. Phase E closed the exposure by
+        deleting every stub; this phase closed the mechanism.</li>
+    </ul>
+
+    <h4>Residuals</h4>
+    <ul>
+      <li><b><code>skills:</code> is not carried into the Copilot mirrors, by decision.</b>
+        <code>renderAgent</code> has no unknown-key passthrough; a comment now sits beside the whitelist.</li>
+      <li><b>Whether <code>frontend-design</code> is a Claude Code built-in or a dangling reference is still
+        open.</b> The driver will not delegate a platform-documentation question after an agy critique in this
+        campaign fabricated two of three platform quotes at confidence 1.0. Until settled, R17 forbids touching
+        any of those references.</li>
+      <li><b>One acceptance criterion is a defect in the spec, not the work</b> — a line-level grep cannot tell
+        a <code>frontend-design</code> reference from a comment <em>about</em> one.</li>
+      <li>Nothing asserts the prune/rewrite interaction across a <em>future</em> source change, so today's
+        mirror correctness is not protected tomorrow.</li>
+      <li><b>One unidentified full-suite failure</b> appeared once and did not reproduce across four subsequent
+        runs. Disclosed with the two signatures that distinguish GitHub #57 from a fixture of this phase's own.
+        <b>The judge would have blocked on it; the driver did not</b> — that disagreement is recorded rather
+        than left implicit.</li>
     </ul>
   </details>
 </section>

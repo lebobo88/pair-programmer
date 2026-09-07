@@ -99,6 +99,7 @@ _To be populated by harness runs._
 
 
 
+
 ### Run run_jc1UxeCMvyZR — 2026-08-22
 
 **Request:** Fix four daemon defects and establish no-secondary-vendor architectural constraint
@@ -187,6 +188,35 @@ _To be populated by harness runs._
   - No transcribed counts in guard (no hardcoded 42/11/33/75); all counts derived from filesystem and compared relationally (R12).
   - Test script replaced hand-maintained filelist with glob (`node --test --test-timeout=180000 test/*.unit.mjs`), which exposed that `npm test` was not running 20 of 52 unit suites, including guards from Phases A/B/D. Node 20 lacks glob expansion in `node --test` arguments on Windows, so engines.node raised to >=22.0.0.
 
+### Run run_CZvEeGpuKzLt — 2026-09-07
+
+**Phase F: cc-standards-alignment campaign (#47, epic #42) — skill discovery migration**
+
+**Request:** Migrate `.claude/skills/` from flat `.md` files to bundle layout (`<name>/SKILL.md`); repair generator to carry declared hook timeouts and detect pointer files; add `user-invocable` policy and `skills:` preload wiring.
+
+**Artifacts:**
+- spec: `.harness/run_CZvEeGpuKzLt/spec.md` (phases F-0 through F-19, NFR1-NFR8)
+- diff (3 commits): 
+  - `0a925bb` — generator rewrite (R3, R5, R6)
+  - `6ec13d8` — layout migration + frontmatter wiring (R2, R4, R7, R8)
+  - `11f6e57` (aebaddc) — guard test + mirror regen (R10, R11, R12, R15)
+- changelog: `.harness/run_CZvEeGpuKzLt/docs/changelog.md` (judge findings + residuals)
+- test_plan: `.harness/run_CZvEeGpuKzLt/tests/test_plan.md` (skill-discovery guard surface)
+
+**Summary:** Three-commit migration established ordered prerequisites: commit 1 rewrites the generator while sources remain flat (proving idempotency); commit 2 moves the 11 skill files and adds frontmatter; commit 3 adds the guard test and regenerates mirrors. Generator (`scripts/sync-copilot-assets.mjs`) now enumerates directories under `.claude/skills/` and reads `<dir>/SKILL.md` as the source. Fixed defect A (R5): `normalizeHooks` now propagates each declared `timeout` to `timeoutSec` instead of hardcoding 30, restoring Phase D's 16 INFORMATIONAL hook timeouts (20s) that would have been flattened. Fixed defect B (R6): pointer-file detection (content-based, not extension-based) genuinely skips files, shrink-refusal refuses mirrors shrinking below 50% without `--allow-shrink`, count summaries report skips, and exit non-zero on any skip. Skills layout: 11 files moved from `.claude/skills/<name>.md` to `.claude/skills/<name>/SKILL.md`; directory contains only bundles at root. Six harness-internal skills marked `user-invocable: false` (judge-policy, rubric-application, taxonomy-adherence, artifact-conventions, master-plan-patching, profile-aware-gating); five user-facing skills carry no such key (pair-programmer, game-design, design-discovery, design-polish-review, design-token-extract). Seven agents carry `skills:` preload frontmatter (judge-cross-vendor, judge-same-vendor, judge-router, master-plan-patcher, taxonomy-mapper, designer, design-system-curator). Flat-path read-by-filesystem instructions removed from two sites (pair-programmer-orchestrator.md); all other agent references were already by name. Repo-wide search of `.claude/agents/` found only one file with filesystem-path instructions (correction to campaign plan). Skill descriptions capped at 350-byte budget per-skill, with aggregate non-increase enforced; discriminating-ness (each skill has unique 4+ char token) validated. Generator idempotent: two consecutive `node scripts/sync-copilot-assets.mjs` runs produce byte-identical output.
+
+**Key decisions and constraints:**
+- **Ordering is checkable from git history** — three commits in strict order, commit 1 touches no `.claude/skills/` path, commit 1's idempotency evidence recorded at time of production (cannot be reconstructed).
+- **`skills:` not mirrored to Copilot** — `renderAgent` (scripts/sync-copilot-assets.mjs:229) rebuilds mirror frontmatter from a whitelist with no unknown-key passthrough. Extending the whitelist meant touching the generator, forbidden by ordering constraint in commit 2; Copilot skill preloading is unverified behaviour. Decision recorded in a comment beside the whitelist so the gap is visible where a maintainer reads.
+- **Description trimming forced real reduction** — 350-byte cap is below current maximum (~500 chars), above current minimum (~230), leaves room for purpose sentence plus routing hint. Budget is self-imposed, not platform-enforced.
+- **No `disable-model-invocation` permitted** — that key blocks preloading, which is the purpose of R7; future simplification cannot collapse the two concepts.
+
+**Test execution and residuals:**
+- Cross-vendor judge (Codex `gpt-5.6-terra`) found seven classes of defect the driver did not (advisory ordering requirement, whitelist passthrough, double-count skip, description scope trimmed, guard green while real defect live, fake mutation controls, pointer-skip test omitted data-loss vector). All closed by retry.
+- All 11 skills now appear in the session's skill listing. Before migration, none did (runtime observation, not inferred).
+- Mirrors regenerated: 13 real content changes (1 agent mirror for path cleanup + 1 hooks mirror for timeout fix + 11 skill mirrors for bundle sources and R8/R12 edits). No net deletions.
+- `daemon/package.json` test script and `engines.node` were already corrected in Phase E. Phase F added three authorised generator exports (`syncMirrorEntry`, `pruneStaleMirrorFiles`, whitelist comment).
+
 
 ## 14. Security, privacy, and compliance
 
@@ -216,6 +246,7 @@ _To be populated by harness runs._
 
 
 ## 15. Test and verification strategy
+
 
 
 
@@ -290,6 +321,46 @@ _To be populated by harness runs._
   - Forbidden literals (vendor-root `AiAppDeployments` + sibling names `ExecutiveSuite`, `AgentSmith`) assembled at runtime from three fragments each, with explicit self-check: reading `import.meta.url`'s own file and asserting no contiguous forbidden literal exists there (R11, AC-E28/E29).
   - All expected counts derived from filesystem (readdirSync.length, not hardcoded): agent/skill/mirror sets compared via relational setDiff, no transcribed 42/11/33/75 literals anywhere (R12, AC-E32).
   - Scope limited to `.claude/` and `.github/` to avoid false-positives: legitimate references live in `daemon/src/`, `specs/`, root governance docs, and prose descriptions; guard only scans under those two roots and skips `node_modules`, `.git`, `.harness`, symlinks, `.env*`, `settings.local.json`, binary files >1 MiB.
+
+### Run run_CZvEeGpuKzLt — 2026-09-07
+
+**Phase F: Quality assurance for skill discovery and bundle-layout validation**
+
+**Request:** Add comprehensive guard test preventing skill-layout regressions; validate bundle frontmatter, `user-invocable` policy, and description-length budget; cover cross-vendor judge findings.
+
+**Artifacts:**
+- test_plan: `.harness/run_CZvEeGpuKzLt/tests/test_plan.md` (89 tests / 17 suites, AC-to-assertion map)
+- new_test: `daemon/test/skill-discovery.unit.mjs` (self-contained, no daemon/MCP/network)
+- changelog: `.harness/run_CZvEeGpuKzLt/docs/changelog.md` (judge findings and defect classes closed)
+
+**Summary:** New guard `daemon/test/skill-discovery.unit.mjs` (89 tests / 17 suites, ~330-420ms deterministic runtime) validates the bundle layout, frontmatter structure, `user-invocable` policy, agent `skills:` preload map, and description-length budget. Each of 10 invariants (R10.2–R10.11) includes a positive assertion against the real tree and a mutation/falsifiability control using `mkdtempSync` fixtures (never the tracked tree). Drives five real `scripts/sync-copilot-assets.mjs` exported functions: `enumerateSkillSources`, `normalizeHooks`, `writeMirrorSafely`, plus `MIRROR_SHRINK_THRESHOLD` and `ALLOW_SHRINK_FLAG` constants, and `isDirectInvocation`. Tests propagated hook timeouts (fixture with distinct 20/45s values; missing timeout throws naming the pair), pointer-skip leaves mirrors byte-identical and warns both paths, shrink refusal at boundary, and shared pointer-file predicate with 12-case fixture table (CRLF/LF/BOM/whitespace/POSIX/Windows absolute/frontmatter/multi-line/relative/prose-containing-path/empty/whitespace-only). Validates R4.1 `user-invocable` set exactly (six names), absence of `disable-model-invocation`, R7.1 agent→skills mapping, resolution of every `skills:` member, and `docs/USER_GUIDE.md` relative skill links. Description budget: per-skill cap 350 chars, aggregate non-increase (measured via `git show` pre-migration), discriminating-ness (each skill has ≥1 unique ≥4-char lowercase token vs others). Prose skill references in `.claude/commands/**/*.md` extracted and resolved (carried-forward HIGH-1 remediation); fixture with in-memory mutated council.md proves detection goes red when referenced name doesn't exist.
+
+**Non-vacuity controls enforced (R11):**
+- Forbidden literals (`disable-model-invocation`, `timeoutSec: 30`) assembled at runtime from fragments; guard self-checks that its own source (`__filename`) contains no contiguous literal (AC-F44), with mutation control proving the check rejects synthetic source containing one.
+- Every `describe` block iterating a collection asserts that collection's non-emptiness before iterating (AC-F45). Counter: 10 invariants with mutation controls.
+- No transcribed counts of skills/agents/mirrors/hooks/commands (R11.4, AC-F46). All counts derived from filesystem (readdirSync, git show for pre-migration baseline).
+- Every falsifiability proof uses `mkdtempSync` with `finally` cleanup, never tracks real files (R11.6, AC-F48). Verified by grep showing all write targets traceable to `tmp` variable.
+
+**Cross-vendor judge findings closed:**
+1. **Ordering was advisory** — spec's acceptance criteria unevaluable after file move. Closed by R18 (commit sequence checkable from git history, commit 1 touches no `.claude/skills/`, idempotency proof at production time).
+2. **Whitelist passthrough would drop `skills:` from mirrors** — `renderAgent` rebuilds from fixed whitelist. Recorded decision not to mirror (documented in comment).
+3. **Double-count skip** — `syncMirrorEntry` and `rewriteGeneratedCopilotMirrors` both incremented on same pointer. Fixed by exporting and testing real `syncMirrorEntry`.
+4. **Description trimming cut scope** — "Every file MUST go through archive_artifact" became "every file MUST". Restored full clause and assertion.
+5. **Guard green while defect live** — seven command files referenced deleted `pair-programmer.md` file. Broadened pattern, proved red against unfixed tree, fixed files, proved green.
+6. **Fake mutation controls** — two assertions only checked fixture names never existed; three tautologies. Replaced with real function exports and falsifiability fixtures.
+7. **Pointer-skip test omitted vector** — `keepSet.add` and `pointerSkipSet.add` stop `pruneStaleMirrorFiles` delete. Test now drives real prune with nested fixture proving nested mirror survives.
+
+**Test metrics:**
+- **NFR1 (single-file latency):** ~330-420ms, well under 10s ceiling (R13.1).
+- **NFR2 (full-suite latency):** `node --test --test-timeout=180000 daemon/test/*.unit.mjs` passes 521 / 0 failed / 80 suites (delta +73 tests / +15 suites from this file; NFR2 ceiling remains 180s).
+- **NFR3 (test-script coverage):** automatic via glob `test/*.unit.mjs` in `daemon/package.json`; no explicit filename list reintroduced (forbidden per AGENTS.md).
+- **Build and typecheck:** clean; no new diagnostics.
+
+**Residuals and open items:**
+- **AC-F55/AC-F57 (operator-only steps):** `/context` capture and fresh-session per-skill observation explicitly out of scope for automated tests per R14.3.
+- **AC-F65 (rollback on scratch worktree):** not this commit's obligation (commit 1/2 scoped to R16.1/R16.2).
+- **`frontend-design` reference:** still open; R17 forbids touching until settled. Guard does not mention it (scoped to command tree only, where it doesn't appear).
+- **One unidentified full-suite failure:** appeared once, did not reproduce across four subsequent runs. Disclosed with signatures distinguishing GitHub #57 from phase-specific fixture issue.
 
 
 ## 16. Operations and support model
@@ -456,6 +527,7 @@ _To be populated by harness runs._
 
 
 
+
 ### Run run_jc1UxeCMvyZR — 2026-08-22 — Changelog and known issues
 
 **Artifacts:**
@@ -606,4 +678,62 @@ shims. Interactive Google Sign-In (system keyring) remains the default path, whi
   - Anchor change `#17-sub-agents-75` → `#17-sub-agents-42` required re-scanning repo for back-references; only `.claude/` TOC link found and fixed.
   - Sub-agent subsection subtotals (41 initially) corrected by adding `agents-md-author` to Lifecycle subsection (now 6 agents, sum 42).
   - R7's strict distinction between MCP-tool counts (75, preserved) and sub-agent counts (42, corrected) caught by spec's adjacent-line warning: README.md:146 and :147 carry different 75s.
+
+### Run run_CZvEeGpuKzLt — 2026-09-07 — Phase F documentation and observation
+
+**Phase F: cc-standards-alignment campaign (#47, epic #42) — skill discovery and bundle layout**
+
+**Artifacts:**
+- changelog: `.harness/run_CZvEeGpuKzLt/docs/changelog.md` (three-commit narrative with judge findings and residuals)
+- spec: `.harness/run_CZvEeGpuKzLt/spec.md` (R0–R19, acceptance criteria, NFRs)
+- test_plan: `.harness/run_CZvEeGpuKzLt/tests/test_plan.md` (guard surface and Reflexion retry details)
+- browser_validation: `.harness/run_CZvEeGpuKzLt/browser-validation/report.md` (not_applicable — no web UI touched)
+
+**The migration demonstrably works — observed, not inferred:**
+
+After commit `6ec13d8` (the layout migration), **all 11 skills appear in the session's own skill listing. Before the migration, none did.** The spec explicitly stated that a `*.unit.mjs` test can assert the on-disk layout but cannot observe what actually loaded—that is the runtime half, and it arrived for free. This is the substance of the phase: the skills bundle shape is now real, active, and discoverable.
+
+**Three-commit ordering is load-bearing and now checkable from git history:**
+
+| Commit | Purpose |
+|---|---|
+| `0a925bb` | Generator rewrite (R3, R5, R6), exercised while skill sources were **still flat**. `normalizeHooks` now carries declared `timeout` instead of hardcoding `timeoutSec: 30`. Pointer-file detection that genuinely skips. Shrink refusal behind an explicit flag. Count summary with non-zero exit on any skip. Idempotency proven at production time. |
+| `6ec13d8` | The migration: 11 skills from `.claude/skills/<name>.md` to `.claude/skills/<name>/SKILL.md`. `user-invocable: false` on six harness-internal ones. `skills:` preload on seven consuming agents. Every path reference updated. Descriptions capped at 350 bytes. |
+| `11f6e57` (aebaddc) | The `skill-discovery` guard (91 tests / 18 suites after Reflexion retry), `.github/` mirror regeneration (13 files, all insertions >= deletions), and carried-forward judge findings. |
+
+`.github/skills/<name>/SKILL.md` is **generated from** the `.claude/skills` sources, so it is the shape target, not a migration source—moving the files first would have broken the generator's input. The spec's ordering requirement was found to be advisory (no acceptance criterion would have failed if an implementer moved first), and was replaced by one that makes git history the evidence.
+
+**Mirror regeneration: 13 real content changes**
+
+`git diff --ignore-all-space --stat` against HEAD shows real content changes in exactly 13 files:
+- 1 agent mirror: `.github/agents/pair-programmer-orchestrator.agent.md` (R8 path-reference cleanup)
+- 1 hooks mirror: `.github/hooks/pair-programmer.json` (R5 `timeoutSec` fix + Phase D eights-recall handlers)
+- 11 skill mirrors: all `.github/skills/*/SKILL.md` bundles (banner now names bundle source path + R8/R12 body edits)
+
+Root `hooks.json` shows zero real diff (already current from earlier verification). All 13 rows have insertions ≥ deletions; **none is a net deletion** (R15.2 — no shrink-refusal case triggered). ~62 other files `git status` initially flagged `M` are pure CRLF/LF checkout-normalisation noise; after `git add`, they collapse back to no-op in `git diff --cached --stat`.
+
+**Generator idempotency proven:**
+
+Two consecutive `node scripts/sync-copilot-assets.mjs` runs from the repo root by its real path. Both runs reported: `agents synced: 42, commands synced: 19, skills synced: 11, mirrors rewritten: 19, entries skipped: 0, rewrite skips honoured: 0`, exit 0. MD5sums of every file under `.github/` and `hooks.json` after run 2 and run 3 are byte-identical.
+
+**What the cross-vendor judges caught that the driver and its agents did not:**
+
+Seven classes of defect, each previously shipped in this campaign:
+
+1. **Advisory ordering requirement became checkable.** Spec's order was advisory; no criterion would fail if implementer moved first. Closed by R18: three commits in order, commit 1 touches no `.claude/skills/` path, commit 1's idempotency proof recorded at production time (cannot be reconstructed).
+2. **`normalizeAgent` whitelist would silently drop `skills:` key.** `renderAgent` rebuilds mirror frontmatter from fixed whitelist with no passthrough. Extending meant touching generator (forbidden by ordering). Copilot skill preloading is unverified. Recorded decision in comment beside whitelist.
+3. **Single skip counted twice.** `syncMirrorEntry` and `rewriteGeneratedCopilotMirrors` both incremented on pointer skip. Fixed by exporting real `syncMirrorEntry` and testing both paths.
+4. **Trimming description to byte cap cut scope.** "Every file written under `.harness/` MUST go through `archive_artifact`" became "every file MUST go through …" (universal rule). Restored full clause.
+5. **Guard was green while real defect was live.** Seven command files referenced `` `pair-programmer.md` `` (file commit 2 deleted). First pattern matched only the two phrasings already present. Broadened, proved red against unfixed tree, files repaired, proved green.
+6. **Two "mutation controls" controlled nothing; four assertions were tautologies.** One could never fail. One hand-transcribed a count while header claimed count discipline. One "Self-check:" block contained no code. All deleted or replaced with real function exports and falsifiability fixtures.
+7. **Pointer-skip test omitted the actual data-loss vector.** `keepSet.add` and `pointerSkipSet.add` are what stop `pruneStaleMirrorFiles`' `rmSync` from deleting the mirror a skip preserves. Test's local glue omitted both and asserted byte-identity inside an `if/else` that guaranteed it. Fixed by exporting real `syncMirrorEntry` and nested fixture proving nested mirror survives.
+
+**Residuals that MUST survive into the master plan:**
+
+1. **`skills:` is not carried into the Copilot mirrors, by decision.** `renderAgent` rebuilds mirror frontmatter from a `name`/`model`/`description`/`target`/`tools` whitelist with no unknown-key passthrough. Extending it was forbidden by the ordering constraint at the time, and Copilot-side skill preloading is unverified either way; a comment now sits beside the whitelist so the gap is visible where a maintainer looks.
+2. **Whether `frontend-design` is a Claude Code built-in or a dangling reference is still open.** Spec R17 forbids touching any of those references until it is settled. The driver will not delegate the question after an agy critique in this campaign fabricated two of three platform-documentation quotes at confidence 1.0.
+3. **`AC-F-A2` is a defect in the spec, not in the work** — ruled so by the judge. A line-level grep cannot distinguish a `frontend-design` reference from a comment *about* one.
+4. **Nothing asserts the prune/rewrite interaction across a future source change**, so today's mirror correctness is not protected tomorrow.
+5. **One unidentified full-suite failure** appeared once and did not reproduce across four subsequent runs. Disclosed with the two signatures that distinguish GitHub #57 from a fixture of this phase's own; the judge would have blocked on it and the driver did not.
+6. **Two spec acceptance criteria are operator-only and not automatable** (AC-F55, AC-F57), and AC-F65's rollback demonstration was out of this commit's scope.
 
