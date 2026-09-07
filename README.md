@@ -253,11 +253,11 @@ pair-programmer/
 
 | Env var | Effect |
 |---------|--------|
-| `PP_ENFORCE_ACTIVE_RUN=1` | PreToolUse hook hard-blocks Edit/Write outside an active run |
-| `PP_ALLOW_DANGER=1` | Allows `--sandbox=danger-full-access` on Codex calls (off by default) |
+| `PP_ALLOW_AD_HOC=1` | Escape hatch for `enforce-active-run` (`daemon/src/hooks/dispatcher.ts`), which **hard-blocks** Edit/Write/NotebookEdit/MultiEdit outside an active run by default — there is no advisory mode, and no PP\_ENFORCE\_ACTIVE\_RUN flag exists to opt into one (that name is not read anywhere in the daemon; corrected 2026-09-07, Phase J of cc-standards-alignment, issue #51) |
+| `PP_ALLOW_DANGER=1` | Allows `--sandbox=danger-full-access` on Codex calls; **blocked by default** (i.e. `PP_ALLOW_DANGER` unset already gives the hardened behavior — there is no need to set it to `0`) |
 | `PP_LOG_LEVEL=debug` | Verbose pino logs |
 | `PP_DEBUG=1` | Include stack traces in MCP error responses |
-| `PP_STRICT_AGENT_TYPE=1` | Reject `record_attempt` calls with `agent_type='general-purpose'` |
+| `PP_STRICT_AGENT_TYPE=0` | Opt out of the **default-on** rejection of `record_attempt` calls with `agent_type='general-purpose'` (strict is the default; `=1` is a no-op) |
 
 ---
 

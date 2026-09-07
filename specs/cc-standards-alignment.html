@@ -119,8 +119,8 @@ figure:has(img) .fig-pending { display: none; }
   <summary>Metadata</summary>
   <dl>
     <dt>created</dt><dd>2026-08-24</dd>
-    <dt>modified</dt><dd>2026-09-07 — Phase I landed; the phase broke its own mirror-not-extract rule twice</dd>
-    <dt>commits</dt><dd>branch <code>feat/cc-standards-alignment</code> — Phases A&ndash;I landed (runs <code>run_7tbXaLHTJU1x</code>, <code>run_3FLJhz2DDV6w</code>, ad hoc, <code>run_z6a4iH0m0V2G</code>, <code>run_2IkydL62USI3</code>, <code>run_CZvEeGpuKzLt</code>, <code>run_CvKoIWhSC8XV</code>, <code>run_p8JPpVhDonUA</code>, <code>run_5N_C2vVNW89u</code>)</dd>
+    <dt>modified</dt><dd>2026-09-07 — Phase J landed; three documents were found to be actively false, and two of this phase’s own additions were written to pass a checker</dd>
+    <dt>commits</dt><dd>branch <code>feat/cc-standards-alignment</code> — Phases A&ndash;I landed (runs <code>run_7tbXaLHTJU1x</code>, <code>run_3FLJhz2DDV6w</code>, ad hoc, <code>run_z6a4iH0m0V2G</code>, <code>run_2IkydL62USI3</code>, <code>run_CZvEeGpuKzLt</code>, <code>run_CvKoIWhSC8XV</code>, <code>run_p8JPpVhDonUA</code>, <code>run_5N_C2vVNW89u</code>, <code>run_YaOlWlTkilY9</code>)</dd>
     <dt>agent</dt><dd>plan-deep (Fable-5) — authored to the plan-deep output contract</dd>
     <dt>session</dt><dd>7aefb7e8-2948-46a1-b10b-f9422c843257</dd>
     <dt>back refs</dt><dd><code>.harness/run_kUPtCqHotdYn/postmortem.md</code> (PP-VG-6 delivery stall); <code>.harness/cc-standards-alignment-plan.md</code> (superseded markdown draft)</dd>
@@ -853,23 +853,108 @@ figure:has(img) .fig-pending { display: none; }
   </div>
 
   <div class="phase">
-    <h3 id="phase-j">Phase J — settings.json <code class="status">[]</code> <span class="legend"><a href="https://github.com/lebobo88/pair-programmer/issues/51">#51</a></span></h3>
+    <h3 id="phase-j">Phase J — settings.json <code class="status" data-st="x">[x]</code> <span class="legend"><a href="https://github.com/lebobo88/pair-programmer/issues/51">#51</a></span></h3>
     <p>Two of roughly two hundred keys are in use. Round 2 insisted each item below is its own
     security/product decision rather than config hygiene, so they land separately.</p>
+    <p><b>Landed 2026-09-07</b> as run <code>run_YaOlWlTkilY9</code>. Guard 16/16; full suite 736/736 across
+    99 suites; missability 10 pass / 1 fail / 46 n/a with all three required checks passing. Closed
+    <code>surfaced</code> on <b>PP-VG-5</b> (unsatisfiable in <code>mode="single"</code>, #59 — the sixth
+    consecutive phase) plus the one non-required missability fail.</p>
+    <p><b>The finding that mattered most was a lie in our own documentation.</b>
+    <code>PP_ENFORCE_ACTIVE_RUN</code> was documented in three places as the way to harden the PreToolUse
+    blockers and is <b>read nowhere in <code>daemon/src</code></b>. The same sentence claimed the blockers
+    "default to advisory" — false, <code>enforce-active-run</code> hard-blocks via
+    <code>reply(false, …)</code> — and advised <code>PP_ALLOW_DANGER=0</code>, a no-op, since the real check
+    is <code>!== "1"</code>. An operator would have believed a guard was off and reached for a switch that
+    does not exist to turn on something already on. <b>A security control documented wrongly is worse than
+    one left undocumented</b>, because the wrong text is load-bearing in someone's mental model.</p>
+    <p><b>The docs judge caught a false claim, and this campaign had created it.</b> Both artifacts said the
+    deny rule is "the only Claude-side guard on the constitution". It is not: a <code>FileChanged</code> hook
+    running <code>constitution-drift-detect</code> was added by <b>Phase H of this same campaign</b>. agy
+    found it by reading the template the driver had just edited. The right framing is <b>preventative vs
+    reactive</b>, and the reactive hook stays necessary precisely because the deny rule reaches only Claude's
+    own edit tools. The driver then found <em>the same false sentence in the live template
+    <code>_comment</code></em> — the copy that ships — which the judge had not flagged.</p>
+    <p><b>And two things in this phase were written to pass a checker.</b> Answering a failing missability
+    check rather than waiving it is this campaign's standing practice; this phase found its failure mode. Two
+    additions to the threat model were keyword-shaped rather than substantive — an <em>invented</em> STRIDE
+    category ("information disclosure via misinformation", when information disclosure means data access) and
+    a passage on judge-lane rate-limiting about a subsystem this change does not touch. Both cut. The lesson
+    is not to stop answering checks — the other five answers were real — but that <em>answering</em> and
+    <em>satisfying a regex</em> are distinguishable, and only a judge told them apart here.</p>
     <h4>Tasks</h4>
     <ul class="checklist">
-      <li><code class="status">[]</code> <code>permissions.deny</code> on <code>CONSTITUTION.md</code> writes. Explicitly <b>defense in depth, not inviolability</b> — it constrains Claude's tool calls only, not a human or a shell. The daemon gate stays primary. Validate the exact path-rule syntax against the pinned version first.</li>
-      <li><code class="status">[]</code> <code>env</code> block for the <code>PP_*</code> flags currently described only in a settings <code>_comment</code>, plus <code>MAX_MCP_OUTPUT_TOKENS</code> alongside Phase B.</li>
-      <li><code class="status">[]</code> <b>DEMOTED 2026-09-05.</b> <code>CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH</code> / <code>CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS</code> were framed as "the platform answer to the Windows parallel-spawn fragility". They are not: default concurrency already exceeds best-of-N's maximum N=8, so the caps change nothing for this workload, and the documented failure at <code>run.md:271-277</code> (cited as <code>:170</code> above) is process-group limits <b>and pipe contention</b>, which caps do not address. Codex judged this PARTIALLY CORRECT and <b>dangerous to act on</b> as a cure for Windows hangs. Add for hygiene if wanted; do not present as the fix.</li>
-      <li><code class="status">[]</code> <code>PP_DISABLE_AGY</code> stays <b>unset</b> (default OFF = agy enabled); setting it would change the default vendor matrix, which is a product decision.</li>
-      <li><code class="status">[]</code> <code>statusLine</code>/<code>subagentStatusLine</code>. Depends on the Phase H correlation work — it needs a durable way to identify the active run/stage, and must be fast and failure-tolerant. <b>Note:</b> a <code>statusLine</code> already exists at user scope but is broken — it points at <code>bash /Users/robob/.claude/statusline-command.sh</code>, a macOS path on a Windows host. Fix or replace it rather than assuming the slot is empty.</li>
-      <li><code class="status">[]</code> <b>Dropped:</b> <code>enableAllProjectMcpServers</code> — changes the trust boundary, and is ignored in an untrusted folder anyway.</li>
+      <li><code class="status" data-st="x">[x]</code> <code>permissions.deny: ["Edit(./CONSTITUTION.md)"]</code>.
+      <b>Validating the syntax first was the right instruction and it changed the answer.</b> Claude Code
+      consults file-permission path rules written as <code>Edit(path)</code> and <code>Read(path)</code>
+      <b>only</b>; a rule written for <code>Write</code>, <code>MultiEdit</code>, <code>NotebookEdit</code> or
+      <code>Glob</code> is accepted syntactically and <em>never evaluated</em>. A
+      <code>Write(./CONSTITUTION.md)</code> rule would have read as protective and never fired — the worst
+      outcome for a security control, because it also stops anyone looking harder. <code>Edit</code> rules
+      cover every built-in file-editing tool. A <code>Read</code> deny would have been <em>worse</em> than
+      nothing: <code>start_run</code> reads the file's SHA every run.</li>
+      <li><code class="status" data-st="x">[x]</code> <b>Defence in depth, not inviolability</b> — stated in
+      the comment along with what it cannot stop: a shell command, another CLI, or a hand edit. The daemon
+      gate and Hard Rule 1 remain primary. <b>Corrected mid-phase:</b> this is not the <em>only</em>
+      Claude-side control, it is the only <em>preventative</em> one; Phase H's
+      <code>constitution-drift-detect</code> is the reactive half and neither subsumes the other.</li>
+      <li><code class="status" data-st="x">[x]</code> <b><code>env</code> block added and deliberately
+      <em>empty</em></b> — all fifteen daemon-read <code>PP_*</code> flags documented beside it, none set.
+      Doing this literally would have been a mistake: an <code>env</code> value applies to every session
+      <em>and its subprocesses</em>, so a pre-set <code>PP_ALLOW_*</code>/<code>PP_DISABLE_*</code> in a
+      checked-in file would permanently disable a guard for every contributor. Machine-specific paths break
+      other contributors' daemon and peer discovery; <code>PP_STRICT_*</code> are already strict when unset.
+      A guard asserts no escape hatch is ever pre-set.</li>
+      <li><code class="status" data-st="f">[f]</code> <b><code>MAX_MCP_OUTPUT_TOKENS</code> — recorded as
+      unverified, not set.</b> <s>Add alongside Phase B.</s> Not found documented on the settings-reference
+      page during verification, and the daemon does not read it. Recorded in the <code>_comment</code> with
+      no claimed default rather than asserting a name and number that could not be cited.</li>
+      <li><code class="status" data-st="x">[x]</code> <b>Demotion upheld.</b>
+      <code>CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH</code> / <code>CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS</code>
+      not added: default concurrency already exceeds N=8, and the documented Windows failure is process-group
+      limits <b>and pipe contention</b>, which caps do not address. Adding them would have looked like a fix
+      for a problem they do not touch.</li>
+      <li><code class="status" data-st="x">[x]</code> <code>PP_DISABLE_AGY</code> stays <b>unset</b>, on its
+      own grounds as well as the escape-hatch rule: setting it changes the default cross-vendor judge matrix,
+      a product decision rather than a client-settings default.</li>
+      <li><code class="status" data-st="f">[f]</code> <b>The <code>statusLine</code> defect is real,
+      verified, and deliberately <em>not fixed</em>.</b> <code>~/.claude/settings.json</code> points at
+      <code>bash /Users/robob/.claude/statusline-command.sh</code>; the script <em>does</em> exist at
+      <code>C:\Users\robob\.claude\statusline-command.sh</code>, but MSYS maps the drive as
+      <code>/c/Users/…</code>, so the path does not resolve. The one-line fix is in the changelog for the
+      operator to apply. <b>Not applied because <code>~/.claude/settings.json</code> is user-scope config
+      affecting every project on the machine</b>, not repository state — a repo-scoped campaign should not
+      change the operator's global environment as a side effect. <code>subagentStatusLine</code> was gated on
+      Phase H's correlation work, which came out <code>[f]</code>, so nothing is blocked by leaving it.</li>
+      <li><code class="status" data-st="x">[x]</code> <b>Dropped as planned:</b>
+      <code>enableAllProjectMcpServers</code> — changes the trust boundary, and is ignored in an untrusted
+      folder anyway.</li>
+      <li><code class="status" data-st="x">[x]</code> <b>Unplanned, and the phase's real work: three
+      documents were actively false and are corrected</b>, with
+      <code>daemon/test/settings-policy.unit.mjs</code> (16 assertions) asserting the <code>Edit(</code> form,
+      that every <code>env</code> key is a variable derived from <code>daemon/src</code> rather than
+      transcribed, that no escape hatch is pre-set, and that <b>no <code>.md</code> in the repo names a
+      <code>PP_*</code> variable the daemon does not read</b>.</li>
     </ul>
     <h4>Testing strategy — loop until every check passes before advancing</h4>
     <ul class="checklist">
-      <li><code class="status">[]</code> A write to <code>CONSTITUTION.md</code> via Edit/Write is denied; the daemon gate independently still refuses.</li>
-      <li><code class="status">[]</code> Spawn caps verified to bound a best-of-N fan-out at N=8 without breaking it.</li>
-      <li><code class="status">[]</code> Status line degrades silently when no run is active.</li>
+      <li><code class="status" data-st="x">[x]</code> The deny rule's <b>form</b> is asserted, not its
+      presence — with a failure message that explains why the other path-rule forms are inert, so a future
+      maintainer who "fixes" it to <code>Write(…)</code> is told why that is wrong rather than just told no.
+      The daemon gate independently still refuses, unchanged.</li>
+      <li><code class="status" data-st="f">[f]</code> <b>Not run.</b> <s>Spawn caps verified to bound a
+      best-of-N fan-out at N=8 without breaking it.</s> No caps were added, so there is nothing to bound —
+      see the demotion above.</li>
+      <li><code class="status" data-st="f">[f]</code> <b>Not applicable.</b> <s>Status line degrades silently
+      when no run is active.</s> The status line was reported rather than repaired; there is no new code to
+      degrade.</li>
+      <li><code class="status" data-st="x">[x]</code> <b>Falsifiable in both directions, on temp-directory
+      fixtures rather than tracked files:</b> an absent deny rule is caught; a dead <code>env</code> key is
+      caught; a pre-set <code>PP_ALLOW_*</code> and a pre-set <code>PP_DISABLE_*</code> are each caught; a
+      reintroduced phantom-flag mention in a real fixture is caught; and a fixture naming <em>only</em> a
+      genuinely daemon-read variable produces zero violations — the contrast case that proves the scan
+      discriminates rather than firing on any <code>PP_</code> token. The doc scanner also asserts it visits
+      a non-zero number of real files.</li>
     </ul>
     <p class="legend">If a check cannot be made to pass after reasonable effort, mark the phase
       <code class="status" data-st="f">[f]</code> and record why in Notes rather than looping forever.</p>
@@ -1483,6 +1568,73 @@ figure:has(img) .fig-pending { display: none; }
         the evidence originally offered for it was not.</li>
     </ul>
   </details>
+
+  <details class="amend" open>
+    <summary>2026-09-07 — Phase J: a security control documented wrongly, and a threat model written to pass a regex</summary>
+
+    <p><b>Landed</b> as run <code>run_YaOlWlTkilY9</code>, closed <code>surfaced</code>. Guard 16/16; full
+    suite 736/736 across 99 suites; missability 10 pass / 1 fail / 46 n/a.</p>
+
+    <p><b>The plan asked for an <code>env</code> block. The right answer was an empty one.</b> All fifteen
+    daemon-read <code>PP_*</code> flags are documented beside it and none are set. An <code>env</code> value
+    applies to every session <em>and its subprocesses</em>, so a pre-set
+    <code>PP_ALLOW_*</code>/<code>PP_DISABLE_*</code> in a checked-in file silently and permanently disables
+    a guard for every contributor — the exact opposite of an opt-in escape hatch. Machine-specific paths
+    break other people's daemon discovery, and <code>PP_STRICT_*</code> are already strict when unset. So
+    doing the task literally would have been the mistake, and the guard now asserts the invariant that
+    matters: no escape hatch is ever pre-set.</p>
+
+    <p><b>Three documents were actively false, which is worse than silent.</b>
+    <code>PP_ENFORCE_ACTIVE_RUN</code> was documented in <code>README.md</code>, the template
+    <code>_comment</code>, and the installer-generated <code>settings.json</code> as the way to harden the
+    PreToolUse blockers — and is <b>read nowhere in <code>daemon/src</code></b>. The same sentence said the
+    blockers "default to advisory" (false: <code>enforce-active-run</code> hard-blocks via
+    <code>reply(false, …)</code>) and advised <code>PP_ALLOW_DANGER=0</code> (a no-op: the real check is
+    <code>!== "1"</code>, so the guard is hardened when unset). The failure mode is not a missing control but
+    a <em>misinformed operator</em> — someone who read the docs, set a flag that did nothing, and concluded
+    they had hardened something. A guard now asserts no <code>.md</code> in the repo names a
+    <code>PP_*</code> variable the daemon does not read.</p>
+
+    <p><b>The <code>Edit(</code> form is load-bearing, and "validate the syntax first" is why we know.</b>
+    Claude Code consults path rules written as <code>Edit(path)</code> and <code>Read(path)</code>
+    <b>only</b>; a <code>Write(…)</code>, <code>MultiEdit(…)</code> or <code>NotebookEdit(…)</code> path rule
+    is accepted and <em>never consulted</em>. A <code>Write(./CONSTITUTION.md)</code> rule would have read as
+    protective and never fired — the worst outcome for a security control, because it also stops anyone
+    looking harder.</p>
+
+    <p><b>The docs judge caught a false claim this campaign had itself created.</b> Both artifacts asserted
+    the deny rule is "the only Claude-side guard on the constitution". It is not: a <code>FileChanged</code>
+    hook running <code>constitution-drift-detect</code> at <code>timeout: 20</code> was added by <b>Phase H
+    of this same campaign</b>, three phases earlier. agy found it by reading the template the driver had
+    just edited. The accurate framing is <b>preventative vs reactive</b> — the deny rule refuses the write,
+    the hook reports one that landed — and the reactive half stays necessary precisely because the deny rule
+    reaches only Claude's own edit tools. The driver then found <em>the same false sentence in the live
+    template <code>_comment</code></em>, the copy that ships to operators, which the judge had not
+    flagged.</p>
+
+    <p><b>And the campaign's own practice produced a defect worth recording.</b> Answering a failing
+    missability check rather than waiving it has been the standing rule since Phase D, and it is still the
+    right rule — five of this phase's answers were substantive. But two were not: an <em>invented</em> STRIDE
+    category ("information disclosure via misinformation", when information disclosure means unauthorized
+    access to data) and a passage on judge-lane rate-limiting and backoff about a subsystem this change does
+    not touch. Both existed to satisfy a keyword regex, and the cross-vendor judge said so bluntly when the
+    rubric invited it to. Both cut. <b>The distinction to hold onto: <em>answering a check</em> and
+    <em>satisfying its regex</em> are different acts, and here only a judge told them apart.</b></p>
+
+    <p><b>A verdict contrast worth reading.</b> The code stage scored a flat 1.0 on all five dimensions from
+    agy, and the judge flagged its own flatness as unusual. The docs stage went to the <em>same vendor,
+    model and effort</em> and returned 0.58&ndash;0.72 with findings on every dimension — including the false
+    claim above, which was already on disk while the code stage was being judged. The flat 1.0 is therefore
+    best read as a shallow pass on that lane, and the code stage's conclusions rest on driver verification
+    plus the guard rather than on that verdict. This is not a claim that the code stage is wrong.</p>
+
+    <p><b>The <code>statusLine</code> defect was verified and deliberately not fixed.</b>
+    <code>~/.claude/settings.json</code> points at a macOS path that does not resolve on this host, and the
+    script it wants exists elsewhere. Reported with the one-line fix rather than applied, because
+    <code>~/.claude/settings.json</code> is user-scope config affecting every project on the machine — a
+    repo-scoped campaign should not change the operator's global environment as a side effect.</p>
+  </details>
+
 </section>
 
 </div>

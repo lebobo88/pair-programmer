@@ -319,6 +319,7 @@ _To be populated by harness runs._
 ## 14. Security, privacy, and compliance
 
 
+
 ### Run run_jc1UxeCMvyZR — 2026-08-22
 
 **Request:** Document all controls defending cross-vendor judge integrity; identify residual gaps
@@ -341,6 +342,56 @@ _To be populated by harness runs._
 - Provenance verification remains position-blind (Gap 2); line numbers are captured but not validated (runs.ts:718 is substring-only).
 - Shadowing `vendorFor()` in `gates.ts:314-319` returns "unknown" for copilot; `config.ts:164-171` returns "openai" (two functions, same name, divergent answers).
 - findings_provenance fix is unit-tested but NOT proven in live bridge round-trip (MCP server was pre-fix during run).
+
+### Claude-side controls on `CONSTITUTION.md` (Phase J, run `run_YaOlWlTkilY9`, 2026-09-07)
+
+Two controls now exist on the Claude Code side, and they are **not** redundant:
+
+| Control | Kind | Where | Reaches |
+|---|---|---|---|
+| `permissions.deny: ["Edit(./CONSTITUTION.md)"]` | **preventative** — refuses the write | `.claude/settings.template.json` | Claude's own edit tools only (`Edit`, `Write`, `MultiEdit`, `NotebookEdit`) |
+| `FileChanged` → `constitution-drift-detect` (`timeout: 20`) | **reactive** — reports after the write lands | same file, added Phase H | any writer, including a shell command or another CLI |
+
+Neither subsumes the other. The reactive hook remains necessary precisely because the deny rule reaches only
+Claude's own tool calls. **The daemon-side control stays primary**: Hard Rule 1 plus `start_run`'s SHA pin.
+This is defence in depth, explicitly not inviolability.
+
+**The `Edit(` form is load-bearing, not stylistic.** Claude Code consults file-permission path rules written
+as `Edit(path)` and `Read(path)` **only**; a rule written for `Write`, `MultiEdit`, `NotebookEdit` or `Glob`
+is accepted syntactically and never evaluated. `Edit` rules cover every built-in file-editing tool, so
+`Edit(./CONSTITUTION.md)` is the one form that actually applies. A `Read` deny would be *worse* than nothing
+here — `start_run` reads the file's SHA on every run, so denying reads would break the harness rather than
+harden it.
+
+### Configuration hardening: the documented flag set is now guarded
+
+`.claude/settings.template.json` carries an intentionally **empty** `env: {}` with all fifteen daemon-read
+`PP_*` variables documented beside it and none set. An `env` value applies to every session and its
+subprocesses, so a pre-set `PP_ALLOW_*` / `PP_DISABLE_*` in a checked-in file would permanently disable a
+guard for every contributor — the opposite of an opt-in escape hatch. Machine-specific paths (`PP_HOME`,
+`PP_DB_PATH`, `PP_EIGHTS_DAEMON`) would break other contributors' daemon and peer discovery, and
+`PP_STRICT_*` are already strict when unset.
+
+**Three documents actively misinformed operators about this and were corrected.** `PP_ENFORCE_ACTIVE_RUN`
+was documented in `README.md`, the template `_comment`, and the installer-generated `.claude/settings.json`
+as the way to harden the PreToolUse blockers — and is **read nowhere in `daemon/src`**. The same sentence
+claimed the blockers "default to advisory", which was false: `enforce-active-run` hard-blocks via
+`reply(false, ...)` with `PP_ALLOW_AD_HOC=1` as its only escape hatch. And `PP_ALLOW_DANGER=0` was a no-op —
+the real check is `!== "1"`, so the guard is hardened when the variable is unset. **A security control that
+is documented wrongly is worse than one left undocumented**, because the wrong text becomes load-bearing in
+an operator's mental model.
+
+`daemon/test/settings-policy.unit.mjs` (16 assertions) asserts the `Edit(` form with a failure message
+explaining why the other forms are inert, that every `env` key is a variable derived from `daemon/src`
+rather than transcribed, that no escape hatch is pre-set, and that no `.md` in the repo names a `PP_*`
+variable the daemon does not read.
+
+**Residuals.** The phantom-flag scan covers `.md` only; the installer-generated `.claude/settings.json` is
+JSON, git-ignored, and regenerated from the template whose `_comment` *is* scanned. The deny rule protects
+one file, and whether anything else warrants equivalent Claude-side protection is unanswered — each
+addition removes a capability and needs its own justification. A user-scope `statusLine` defect was verified
+and deliberately **reported rather than fixed**: `~/.claude/settings.json` is user-scope config affecting
+every project on the machine, not repository state.
 
 
 ## 15. Test and verification strategy
