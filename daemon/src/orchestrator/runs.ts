@@ -545,6 +545,25 @@ export function recordAttempt(input: RecordAttemptInput): RecordAttemptOutput {
     );
   }
 
+  // R15 (Phase H, GitHub #58 first half — diagnosed in §1.5/D1). `undefined`
+  // means "the caller never computed a cost"; an explicit `0` is the
+  // caller's claim and MUST be respected verbatim (R15a) — vendor bridges
+  // already pass a real computed cost that can legitimately be 0, and
+  // conflating that with "derive it" would break them. The derivation MUST
+  // run before the tally guard below (R15c) so a tokens-only attempt now
+  // tallies a non-zero cost instead of silently staying at 0 forever, which
+  // was the entirety of #58's first half.
+  let costUsd = input.cost_usd;
+  if (costUsd === undefined && ((input.tokens_in ?? 0) > 0 || (input.tokens_out ?? 0) > 0)) {
+    costUsd = computeCost(input.model_id, input.tokens_in ?? 0, input.tokens_out ?? 0);
+    if (costUsd === 0) {
+      // R15b: a derived 0 means computeCost missed the price table for this
+      // model_id, not that the call was free. Silence here is exactly what
+      // let #58 go undetected — surface it.
+      log.warn({ model_id: input.model_id }, "record_attempt: derived cost_usd=0 - model_id not found in price table");
+    }
+  }
+
   txImmediate(() => {
     db()
       .prepare(
@@ -563,7 +582,7 @@ export function recordAttempt(input: RecordAttemptInput): RecordAttemptOutput {
         input.artifact_path ?? null,
         input.tokens_in ?? null,
         input.tokens_out ?? null,
-        input.cost_usd ?? null,
+        costUsd ?? null,
         input.wall_ms ?? null,
         input.retry_index ?? 0,
         input.parent_attempt_id ?? null,
@@ -574,14 +593,31 @@ export function recordAttempt(input: RecordAttemptInput): RecordAttemptOutput {
         now()
       );
 
-    if (input.tokens_in || input.tokens_out || input.cost_usd) {
+    // R28.1 / HIGH-2 fix (run_p8JPpVhDonUA retry): a pp_codex/pp_agy tool
+    // call's spend is tallied EXCLUSIVELY by the `cost-tally` PostToolUse
+    // hook (dispatcher.ts), which observes the real envelope for every such
+    // call regardless of whether it is an agent-driven judge critique or
+    // the `direct_cli` backstop. `recordAttempt` therefore skips its own
+    // tally for producers "codex" and "agy" so the same vendor spend can
+    // never be counted by both writers — this is a producer-domain split,
+    // not a "this path shouldn't also fire" assumption: `recordAttempt`
+    // still derives and stores `attempts.cost_usd` for those producers
+    // (R15's cost-derivation half is unaffected, only the BUDGET TALLY is
+    // skipped), so the attempts row itself remains accurate for anyone
+    // reading it directly. "claude" (and any future non-vendor-CLI
+    // producer) is unaffected: no pp_codex/pp_agy tool call underlies that
+    // spend, so cost-tally never observes it, and this remains the only
+    // writer for it.
+    const vendorNorm = normalizeProducer(input.producer);
+    const isVendorCliTallied = vendorNorm === "codex" || vendorNorm === "agy";
+    if (!isVendorCliTallied && (input.tokens_in || input.tokens_out || costUsd)) {
       tallyBudgets(
         stage.run_id,
         input.model_id,
         tier ?? null,
         input.tokens_in ?? 0,
         input.tokens_out ?? 0,
-        input.cost_usd ?? 0,
+        costUsd ?? 0,
       );
     }
   });
@@ -3617,6 +3653,14 @@ export async function doctor(opts: DoctorOptions = {}): Promise<unknown> {
   // so an unpriced pin bills nothing and no budget scope ever moves.
   const unpriced_models = unpricedJudgeModels();
 
+  // R18 (Phase H, SHOULD): unpricedJudgeModels() probes only the pinned
+  // judge ids (D3, spec.md §1.5) — an empty result there says nothing
+  // about whether ANY attempt has ever priced at zero. This sibling field
+  // reports model ids that actually appear in `attempts` with positive
+  // tokens and a recorded cost of 0 or NULL, which is the population #58's
+  // bug (D1) actually hit.
+  const unpriced_attempt_models = unpricedAttemptModels();
+
   const notes: string[] = [];
   if (agy_pin.note) notes.push(agy_pin.note);
   if (codex_pin.codex_pin_served === false && codex_pin.note) notes.push(codex_pin.note);
@@ -3625,6 +3669,14 @@ export async function doctor(opts: DoctorOptions = {}): Promise<unknown> {
       `Unpriced judge model(s): ${unpriced_models.join(", ")}. computeCost() ` +
       `returns 0 for these, so every call bills nothing and budget scopes stay ` +
       `flat. Add input/output rates to daemon/prices.json (and ~/.pair-programmer/prices.json).`,
+    );
+  }
+  if (unpriced_attempt_models.length) {
+    notes.push(
+      `Unpriced attempt model(s): ${unpriced_attempt_models.join(", ")}. These ` +
+      `appear in attempts with positive tokens and cost_usd of 0/NULL -- add ` +
+      `input/output rates to daemon/prices.json, or these attempts will keep ` +
+      `pricing at zero even after record_attempt's R15 derivation (GitHub #58).`,
     );
   }
 
@@ -3646,6 +3698,7 @@ export async function doctor(opts: DoctorOptions = {}): Promise<unknown> {
       note:           codex_pin.note,
     },
     unpriced_models,
+    unpriced_attempt_models,
     notes,
     agy_disabled: !agyEnabled(),
     cross_vendor_ready: vendorCount >= 2,
@@ -3780,6 +3833,24 @@ export function evaluateCodexPin(
  * fine: a truly free judge model does not exist on either vendor today, so a
  * zero here always means "add the rate to daemon/prices.json".
  */
+/**
+ * R18 (Phase H, SHOULD, GitHub #58 D3): distinct model ids that appear on
+ * `attempts` rows with positive tokens and a recorded `cost_usd` of 0 or
+ * NULL. Unlike `unpricedJudgeModels` (which probes only the pinned judge
+ * ids and structurally cannot see the D1/D2 bug class), this reads the
+ * actual ledger population the bug hit.
+ */
+export function unpricedAttemptModels(): string[] {
+  const rows = db()
+    .prepare(
+      `SELECT DISTINCT model_id FROM attempts
+        WHERE (tokens_in > 0 OR tokens_out > 0) AND (cost_usd IS NULL OR cost_usd = 0)
+        ORDER BY model_id ASC`,
+    )
+    .all() as Array<{ model_id: string }>;
+  return rows.map(r => r.model_id);
+}
+
 export function unpricedJudgeModels(): string[] {
   const ids: string[] = [];
   for (const vendor of Object.keys(JUDGE_MODEL_POLICY) as Array<keyof typeof JUDGE_MODEL_POLICY>) {

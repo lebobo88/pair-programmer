@@ -27,6 +27,16 @@ import { evaluateGate, type GateType, type Profile } from "../orchestrator/gates
 import { agyEnabled } from "../config.js";
 import { evaluateShellSafety } from "./bash-safety.js";
 import { recallProjectContext, recallByQuery, listPriorCritiques } from "../ecosystem/eights-writes.js";
+import { computeCost } from "../util/prices.js";
+import {
+  deriveCallKey,
+  writeExecutionEvent,
+  tallyFailedSpend,
+  tallySuccessSpend,
+  classifyStopFailureReason,
+  findSubagentDispatchMatch,
+  markDispatchReconciled,
+} from "../orchestrator/execution-events.js";
 
 type HookInput = {
   hook_event_name?: string;
@@ -37,6 +47,25 @@ type HookInput = {
   cwd?: string;
   session_id?: string;
   transcript_path?: string;
+  // R10 (Phase H): fields platform docs describe as present "when running
+  // with --agent or inside a subagent" (agent_id, agent_type), plus the
+  // per-turn identifiers used to derive an idempotent call_key
+  // (prompt_id), and two fields carried by several of the newer event
+  // types (permission_mode, effort). normalizeHookInput previously dropped
+  // every field it did not name (R10's whole reason for existing) — a
+  // silent drop here is exactly the R27 vacuity class this phase names,
+  // so every one of these is now named explicitly rather than left to fall
+  // through.
+  agent_id?: string;
+  agent_type?: string;
+  prompt_id?: string;
+  permission_mode?: string;
+  effort?: string;
+  // FileChanged (R8): the watched file's path. Not documented under a
+  // single canonical field name, so both plausible spellings are read.
+  file_path?: string;
+  // StopFailure (R7): the platform's classification of why the turn ended.
+  reason?: string;
 };
 
 let CURRENT_EVENT = "";
@@ -79,8 +108,19 @@ function normalizeHookInput(raw: unknown): HookInput {
     cwd: input.cwd as string | undefined,
     session_id: (input.session_id ?? input.sessionId) as string | undefined,
     transcript_path: (input.transcript_path ?? input.transcriptPath) as string | undefined,
+    // R10: carried through undefined (never null/"") when the envelope omits
+    // them, matching every other optional field's contract above.
+    agent_id: (input.agent_id ?? input.agentId) as string | undefined,
+    agent_type: (input.agent_type ?? input.agentType) as string | undefined,
+    prompt_id: (input.prompt_id ?? input.promptId) as string | undefined,
+    permission_mode: (input.permission_mode ?? input.permissionMode) as string | undefined,
+    effort: input.effort as string | undefined,
+    file_path: (input.file_path ?? input.filePath ?? input.path) as string | undefined,
+    reason: input.reason as string | undefined,
   };
 }
+
+export { normalizeHookInput };
 
 async function readStdin(): Promise<string> {
   return await new Promise<string>((resolve) => {
@@ -509,9 +549,101 @@ const HANDLERS: Record<string, Record<string, (input: HookInput) => Promise<void
     "cost-tally": (input) => {
       const tool = input.tool_name ?? "";
       if (!/pp_(codex|agy)/.test(tool)) return reply(true);
-      const resp = input.tool_response as { tokens_in?: number; tokens_out?: number; cost_usd?: number; model?: string } | undefined;
+      const resp = input.tool_response as
+        | { direct_cli?: boolean; tokens_in?: number; tokens_out?: number; cost_usd?: number; model?: string; wall_ms?: number }
+        | undefined;
       if (resp && (resp.tokens_in || resp.tokens_out || resp.cost_usd)) {
         console.log(`[pp] +${resp.tokens_in ?? 0}/${resp.tokens_out ?? 0} tok, $${(resp.cost_usd ?? 0).toFixed(4)} (${resp.model ?? "?"})`);
+      }
+      // R16/R28 (Phase H, GitHub #58 second half; HIGH-2 fix,
+      // run_p8JPpVhDonUA retry). Ownership: `cost-tally` is now the
+      // EXCLUSIVE tallier of every pp_codex/pp_agy PostToolUse call's spend
+      // into the ordinary run:/day:/model: scopes, on every path —
+      // `direct_cli` and agent-driven alike. Earlier this hook only tallied
+      // the `direct_cli` backstop path, on the theory that an agent-driven
+      // flow would separately tally the same spend via `recordAttempt`. That
+      // theory was false: `pp_codex`/`pp_agy` `generate` is deprecated, so
+      // almost every one of these calls is a judge CRITIQUE, which is
+      // recorded via `recordVerdict` — a function that takes no tokens or
+      // cost and never tallies anything. Gating the tally on `direct_cli`
+      // therefore left ALL agent-driven critique spend permanently outside
+      // `budgets`, which is exactly what HIGH-2 caught.
+      //
+      // Double-tally is made structurally impossible, not merely avoided,
+      // two ways:
+      //  (1) `writeExecutionEvent`'s `call_key` is unique-indexed with
+      //      `ON CONFLICT DO NOTHING` (R2). `.inserted` tells us whether
+      //      THIS invocation is the one that won the race for that call —
+      //      the budget tally below only runs when it did, so a hook that
+      //      fires twice for the same underlying call (retry, duplicate
+      //      dispatch) tallies once, not twice.
+      //  (2) `recordAttempt` (runs.ts) now excludes producers "codex" and
+      //      "agy" from its own R15 cost-derivation tally, precisely
+      //      because THIS hook already owns that spend for those two
+      //      producers — see the comment at the `tallyBudgets` call site in
+      //      runs.ts for the other half of this split. `recordAttempt`
+      //      still tallies "claude" (and any future non-vendor-CLI
+      //      producer) spend, which this hook never observes (no
+      //      `pp_codex`/`pp_agy` tool call underlies it), so the two
+      //      writers' domains are disjoint by producer, not by a "shouldn't
+      //      also fire" assumption.
+      // The sibling `record-attempt` backstop handler below intentionally
+      // still performs a non-tallying raw INSERT into `attempts` for
+      // `direct_cli` calls (audit trail only) — it has no `tallyBudgets`
+      // call and this comment is not asserting it needs one.
+      try {
+        const producer = /pp_codex/.test(tool) ? "codex" : "agy";
+        const projectPath = input.cwd;
+        const runId = activeRunForProject(projectPath);
+        const tokensIn = resp?.tokens_in ?? 0;
+        const tokensOut = resp?.tokens_out ?? 0;
+        let costUsd = resp?.cost_usd ?? 0;
+        if (!costUsd && resp?.model && (tokensIn || tokensOut)) {
+          costUsd = computeCost(resp.model, tokensIn, tokensOut);
+        }
+        if (tokensIn || tokensOut || costUsd) {
+          const callKey = deriveCallKey({
+            hook_event_name: "PostToolUse:cost-tally",
+            session_id: input.session_id,
+            tool_name: tool,
+            prompt_id: input.prompt_id,
+            agent_id: input.agent_id,
+            detail: JSON.stringify({ tool, model: resp?.model, tokensIn, tokensOut, costUsd }),
+          });
+          const written = writeExecutionEvent({
+            call_key: callKey,
+            event_kind: "tool_success_spend",
+            status: "observed",
+            tool_name: tool,
+            producer,
+            run_id: runId,
+            session_id: input.session_id ?? null,
+            agent_id: input.agent_id ?? null,
+            tokens_in: tokensIn || null,
+            tokens_out: tokensOut || null,
+            cost_usd: costUsd || null,
+            wall_ms: resp?.wall_ms ?? null,
+          });
+          // Only the invocation that WON the call_key insert race tallies —
+          // see point (1) above.
+          tallySuccessSpend(written.inserted, runId, resp?.model ?? null, tokensIn, tokensOut, costUsd);
+        }
+      } catch (err) {
+        // NEW-3 (judge verdict_i4RtSb1C7X): cost-tally is now the SOLE writer
+        // of pp_codex/pp_agy spend into `budgets`, so a swallowed throw here
+        // loses that spend with nothing else to catch it -- the same class of
+        // invisibility GitHub #58 reports. A PostToolUse hook MUST NOT block
+        // the tool call that already succeeded, so this cannot throw onward;
+        // instead it is made LOUD and self-describing, naming itself as the
+        // sole writer so the message says what was lost rather than only that
+        // something failed.
+        const msg = err instanceof Error ? err.message : String(err);
+        console.error(
+          `[pp] cost-tally FAILED TO PERSIST vendor spend and is the only writer for it — ` +
+          `this call's tokens/cost are now absent from budgets and budget_status will under-report. ` +
+          `tool=${tool} session=${input.session_id ?? "?"} ` +
+          `tokens=${resp?.tokens_in ?? 0}/${resp?.tokens_out ?? 0} cost=${resp?.cost_usd ?? "?"} — ${msg}`,
+        );
       }
       reply(true);
     },
@@ -673,6 +805,344 @@ const HANDLERS: Record<string, Record<string, (input: HookInput) => Promise<void
         console.log(`[pp] master-plan backstop patched ${runId}.`);
       } catch (err) {
         console.error(`[pp] update-master-plan hook failed: ${err instanceof Error ? err.message : String(err)}`);
+      }
+      reply(true);
+    },
+  },
+
+  // R6: fires when an MCP tool call to a vendor critique lane exits
+  // non-zero / times out / returns an unparseable response. This is the
+  // ledger row that closes GitHub #58's second half AND makes the
+  // `.harness/critique_failures/` bridge archives (already written today
+  // by cli-runner.ts independent of any hook — see spec.md §1.3)
+  // discoverable from budget_status/replay instead of being invisible
+  // text files on disk.
+  PostToolUseFailure: {
+    "record-execution-failure": (input) => {
+      const tool = input.tool_name ?? "";
+      if (!/pp_(codex|agy)/.test(tool)) return reply(true);
+      try {
+        const producer = /pp_codex/.test(tool) ? "codex" : "agy";
+        const resp = input.tool_response as
+          | { tokens_in?: number; tokens_out?: number; cost_usd?: number; wall_ms?: number; failure_archive_path?: string; error?: string; model?: string }
+          | undefined;
+        const runId = activeRunForProject(input.cwd);
+        let stageId: string | null = null;
+        if (runId) {
+          const stage = db()
+            .prepare(`SELECT id FROM stages WHERE run_id = ? AND status = 'open' ORDER BY started_at DESC LIMIT 1`)
+            .get(runId) as { id: string } | undefined;
+          stageId = stage?.id ?? null;
+        }
+        // R6b: derive cost from tokens when the response omits cost_usd,
+        // same reasoning as R15 — an unpriced/absent cost should not read
+        // as "this call was free".
+        let costUsd = resp?.cost_usd;
+        if (costUsd === undefined && resp?.model && ((resp?.tokens_in ?? 0) || (resp?.tokens_out ?? 0))) {
+          costUsd = computeCost(resp.model, resp.tokens_in ?? 0, resp.tokens_out ?? 0);
+        }
+        // R6a: cross-reference the on-disk archive path so the ledger row
+        // and the archive point at each other.
+        const detailParts: string[] = [];
+        if (resp?.error) detailParts.push(`error: ${resp.error}`);
+        if (resp?.failure_archive_path) detailParts.push(`failure_archive_path: ${resp.failure_archive_path}`);
+        const detail = detailParts.length ? detailParts.join(" | ") : null;
+
+        const callKey = deriveCallKey({
+          hook_event_name: "PostToolUseFailure",
+          session_id: input.session_id,
+          tool_name: tool,
+          prompt_id: input.prompt_id,
+          agent_id: input.agent_id,
+          detail: JSON.stringify({ tool, error: resp?.error, path: resp?.failure_archive_path }),
+        });
+        writeExecutionEvent({
+          call_key: callKey,
+          event_kind: "tool_failure",
+          status: "failed",
+          tool_name: tool,
+          producer,
+          run_id: runId,
+          stage_id: stageId,
+          session_id: input.session_id ?? null,
+          agent_id: input.agent_id ?? null,
+          reason: resp?.error ? String(resp.error).slice(0, 200) : null,
+          detail,
+          tokens_in: resp?.tokens_in ?? null,
+          tokens_out: resp?.tokens_out ?? null,
+          cost_usd: costUsd ?? null,
+          wall_ms: resp?.wall_ms ?? null,
+        });
+        // R4b: failed spend is visible AND distinguishable from attempt
+        // spend, hence the `failed:` scope prefix rather than run:/day:/model:.
+        tallyFailedSpend(runId, resp?.model ?? null, resp?.tokens_in ?? 0, resp?.tokens_out ?? 0, costUsd ?? 0);
+      } catch (err) {
+        console.error(`[pp] record-execution-failure failed: ${err instanceof Error ? err.message : String(err)}`);
+      }
+      // R6/NFR9: a failed hook MUST NOT be able to block a turn.
+      reply(true);
+    },
+  },
+
+  // R8: detector only. See R8a — MUST NOT block, revert, abort, surface,
+  // or write to CONSTITUTION.md. Hard Rule 1 forbids editing that file; the
+  // job here ends at noticing the SHA moved and saying so on stdout.
+  FileChanged: {
+    "constitution-drift-detect": (input) => {
+      try {
+        const path = input.file_path;
+        if (!path || !existsSync(path)) return reply(true);
+        const runId = activeRunForProject(input.cwd);
+        if (!runId) return reply(true);
+        const run = db()
+          .prepare(`SELECT constitution_sha FROM runs WHERE id = ?`)
+          .get(runId) as { constitution_sha: string | null } | undefined;
+        const recordedSha = run?.constitution_sha ?? null;
+        const content = readFileSync(path, "utf8");
+        const currentSha = createHash("sha256").update(content).digest("hex");
+        if (!recordedSha || recordedSha === currentSha) return reply(true);
+
+        const callKey = deriveCallKey({
+          hook_event_name: "FileChanged:constitution-drift-detect",
+          session_id: input.session_id,
+          tool_name: null,
+          detail: `${recordedSha}:${currentSha}`,
+        });
+        writeExecutionEvent({
+          call_key: callKey,
+          event_kind: "constitution_drift",
+          status: "observed",
+          run_id: runId,
+          session_id: input.session_id ?? null,
+          detail: `recorded_sha=${recordedSha} current_sha=${currentSha}`,
+        });
+        console.log(`[pp] CONSTITUTION.md drift detected: recorded_sha=${recordedSha.slice(0, 12)}… current_sha=${currentSha.slice(0, 12)}…. HITL required — this detector never edits the file. Use /pp:constitution amend.`);
+      } catch (err) {
+        console.error(`[pp] constitution-drift-detect failed: ${err instanceof Error ? err.message : String(err)}`);
+      }
+      reply(true);
+    },
+  },
+
+  // R9: PreCompact/PostCompact are wired as a save/reinject pair. Neither
+  // may reference `additionalContext` (R9a — not documented on the hooks
+  // page); the reinject side emits plain text on stdout at exit 0 via
+  // reply(true, message), which is the documented channel.
+  PreCompact: {
+    "run-context-save": (input) => {
+      // Nothing to persist beyond what's already in the DB — the active
+      // run/stage is looked up fresh at reinject time. This handler exists
+      // as the paired hook name PreCompact/PostCompact conventionally
+      // wants, and is a pure advisory no-op today.
+      reply(true);
+    },
+  },
+  PostCompact: {
+    "run-context-reinject": (input) => {
+      try {
+        const runId = activeRunForProject(input.cwd);
+        // R9b: no active run -> emit nothing.
+        if (!runId) return reply(true);
+        const stage = db()
+          .prepare(`SELECT id FROM stages WHERE run_id = ? AND status = 'open' ORDER BY started_at DESC LIMIT 1`)
+          .get(runId) as { id: string } | undefined;
+        // R9c: does not begin with "{" so Claude Code's documented parsing
+        // rule treats it as plain text, not an attempted JSON parse.
+        const message = `[pp] active run: ${runId}${stage ? ` (stage: ${stage.id})` : ""}`;
+        return reply(true, message);
+      } catch {
+        return reply(true);
+      }
+    },
+  },
+
+  // R7: an API-killed run today sits `running` for up to six hours until
+  // the janitor's time-based sweep marks it `crashed` with no cause
+  // recorded (janitor.ts:38). This surfaces it within seconds, with a
+  // reason, as `surfaced` — the operator-actionable status that already
+  // appears in the SessionStart banner and that /pp:retry operates on.
+  // MUST NOT touch RUN_STATUS, MUST NOT touch the janitor's crashed sweep.
+  StopFailure: {
+    "surface-api-killed-run": (input) => {
+      try {
+        const classified = classifyStopFailureReason(input.reason);
+        if (!input.cwd) return reply(true);
+        const run = db()
+          .prepare(
+            `SELECT id, status FROM runs WHERE project_path = ? AND status IN ('pending','running') ORDER BY started_at DESC LIMIT 1`,
+          )
+          .get(input.cwd) as { id: string; status: string } | undefined;
+
+        // HIGH-3 fix (run_p8JPpVhDonUA retry): R7b still forbids surfacing
+        // the run on an unclassified reason (no status/surfaced_reason
+        // mutation below), but "not evidence of an API kill" is not the
+        // same as "not worth recording". An unclassified reason is now
+        // written as an observation carrying the RAW text, so an operator
+        // can see a run died of something this classifier does not
+        // recognize yet, and so the classifier's blind spots are
+        // discoverable from data (R27) rather than a bug report. No DB
+        // write happens when there is no reason at all, and none happens
+        // when there is no run to correlate against, matching AC-H19's
+        // "execution_events count unchanged" expectation for that case.
+        if (!classified) {
+          if (input.reason && run) {
+            const callKey = deriveCallKey({
+              hook_event_name: "StopFailure",
+              session_id: input.session_id,
+              tool_name: null,
+              detail: `unclassified:${run.id}:${input.reason}`,
+            });
+            writeExecutionEvent({
+              call_key: callKey,
+              event_kind: "api_stop_failure",
+              status: "observed",
+              run_id: run.id,
+              session_id: input.session_id ?? null,
+              reason: null,
+              detail: `unclassified StopFailure reason: ${input.reason}`,
+            });
+          }
+          return reply(true);
+        }
+        if (!run) return reply(true);
+
+        const callKey = deriveCallKey({
+          hook_event_name: "StopFailure",
+          session_id: input.session_id,
+          tool_name: null,
+          detail: `${run.id}:${classified}`,
+        });
+        txImmediate(() => {
+          db()
+            .prepare(`UPDATE runs SET status = 'surfaced', surfaced_reason = ? WHERE id = ? AND status IN ('pending','running')`)
+            .run(classified, run.id);
+        });
+        writeExecutionEvent({
+          call_key: callKey,
+          event_kind: "api_stop_failure",
+          status: "observed",
+          run_id: run.id,
+          session_id: input.session_id ?? null,
+          reason: classified,
+        });
+        console.log(`[pp] run ${run.id} surfaced (reason=${classified}) — an API error killed the turn. /pp:retry ${run.id} to resume.`);
+      } catch (err) {
+        console.error(`[pp] surface-api-killed-run failed: ${err instanceof Error ? err.message : String(err)}`);
+      }
+      reply(true);
+    },
+  },
+
+  // R12/R13: the observation ledger half of SubagentStart/SubagentStop
+  // correlation. See R14 for why "one attempt row with the engineer's
+  // metadata intact" is [f] rather than built here — a hook cannot own
+  // that invariant.
+  SubagentStart: {
+    "subagent-dispatch-record": (input) => {
+      try {
+        const runId = activeRunForProject(input.cwd);
+        let stageId: string | null = null;
+        if (runId) {
+          const stage = db()
+            .prepare(`SELECT id FROM stages WHERE run_id = ? AND status = 'open' ORDER BY started_at DESC LIMIT 1`)
+            .get(runId) as { id: string } | undefined;
+          stageId = stage?.id ?? null;
+        }
+        const callKey = deriveCallKey({
+          hook_event_name: "SubagentStart",
+          session_id: input.session_id,
+          tool_name: null,
+          agent_id: input.agent_id,
+          detail: input.agent_type ?? null,
+        });
+        writeExecutionEvent({
+          call_key: callKey,
+          event_kind: "subagent_dispatch",
+          status: "observed",
+          run_id: runId,
+          stage_id: stageId,
+          session_id: input.session_id ?? null,
+          agent_id: input.agent_id ?? null,
+          producer: null,
+          reason: input.agent_type ?? null,
+        });
+      } catch (err) {
+        console.error(`[pp] subagent-dispatch-record failed: ${err instanceof Error ? err.message : String(err)}`);
+      }
+      reply(true);
+    },
+  },
+  SubagentStop: {
+    "subagent-stop-observe": (input) => {
+      try {
+        const match = findSubagentDispatchMatch(input.session_id, input.agent_id);
+        const callKey = deriveCallKey({
+          hook_event_name: "SubagentStop",
+          session_id: input.session_id,
+          tool_name: null,
+          agent_id: input.agent_id,
+          detail: match ? match.event_id : "unmatched",
+        });
+        if (match) {
+          // R13a: exactly one dispatch match -> reconciled, carrying the
+          // dispatch row's correlation. Both rows are execution_events
+          // rows; neither touches attempts.
+          writeExecutionEvent({
+            call_key: callKey,
+            event_kind: "subagent_stop",
+            status: "reconciled",
+            run_id: match.run_id,
+            stage_id: match.stage_id,
+            attempt_slot_id: match.attempt_slot_id,
+            session_id: input.session_id ?? null,
+            agent_id: input.agent_id ?? null,
+          });
+          markDispatchReconciled(match.event_id);
+        } else {
+          // R13b: agent_id absent, or zero/multiple matches -> unreconciled
+          // with NULL correlation. Never inferred from recency, agent_type,
+          // or the sole open stage.
+          writeExecutionEvent({
+            call_key: callKey,
+            event_kind: "subagent_stop",
+            status: "unreconciled",
+            run_id: null,
+            stage_id: null,
+            attempt_slot_id: null,
+            session_id: input.session_id ?? null,
+            agent_id: input.agent_id ?? null,
+          });
+        }
+      } catch (err) {
+        console.error(`[pp] subagent-stop-observe failed: ${err instanceof Error ? err.message : String(err)}`);
+      }
+      reply(true);
+    },
+  },
+
+  // R11: judged on merit — the raised SessionEnd budget (documented as 1.5s
+  // shared, raised to match a longer declared per-hook timeout up to 60s)
+  // makes a Node cold start + SQLite open viable at timeout>=20.
+  SessionEnd: {
+    "session-orphan-sweep": (input) => {
+      try {
+        if (input.session_id) {
+          // NFR3: at most 2 prepare() calls in this handler body.
+          db()
+            .prepare(
+              `UPDATE execution_events SET status = 'unreconciled'
+                WHERE event_kind = 'subagent_dispatch' AND status = 'observed' AND session_id = ?`,
+            )
+            .run(input.session_id);
+        }
+        if (input.cwd) {
+          const row = db()
+            .prepare(`SELECT id FROM runs WHERE project_path = ? AND status IN ('pending','running') ORDER BY started_at DESC LIMIT 1`)
+            .get(input.cwd) as { id: string } | undefined;
+          if (row?.id) console.log(`[pp] session ending with run ${row.id} still open (pending/running).`);
+        }
+      } catch (err) {
+        console.error(`[pp] session-orphan-sweep failed: ${err instanceof Error ? err.message : String(err)}`);
       }
       reply(true);
     },

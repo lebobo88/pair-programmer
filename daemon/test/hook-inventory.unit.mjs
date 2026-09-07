@@ -1,9 +1,16 @@
 // ─── Hook-inventory parity guard (GitHub #43, Phase A; hardened GitHub #46, Phase D) ──
 //
-// WHAT THIS GUARDS: daemon/src/hooks/dispatcher.ts implements 29 hook
-// handlers (HANDLERS, keyed by event then name). All 29 are wired in EACH
-// of the two runtime settings files (.claude/settings.template.json for
-// Claude Code, hooks.json at the repo root for the Copilot CLI plugin).
+// WHAT THIS GUARDS: daemon/src/hooks/dispatcher.ts implements a set of hook
+// handlers (HANDLERS, keyed by event then name) -- 29 as of Phase D (GitHub
+// #46), 37 as of Phase H (GitHub #49, execution-events ledger: eight new
+// handlers across PostToolUseFailure, StopFailure, FileChanged, PreCompact,
+// PostCompact, SessionEnd, SubagentStart, SubagentStop). The exact count is
+// never transcribed as an assertion (R26) -- EXPECTED_IMPLEMENTED below is
+// the single enumerated source of truth, and the length comparison against
+// listHookHandlers() is what actually gates. Every entry in that
+// enumeration is wired in EACH of the two runtime settings files
+// (.claude/settings.template.json for Claude Code, hooks.json at the repo
+// root for the Copilot CLI plugin).
 // Before this test existed, that inventory drift was invisible: nothing
 // compared the two inventories, so a handler could be fully implemented and
 // reachable by name yet silently dead in both runtimes.
@@ -384,6 +391,11 @@ const EXPECTED_IMPLEMENTED = [
   ["UserPromptSubmit", "taxonomy-nudge"], ["UserPromptSubmit", "team-suggester"], ["UserPromptSubmit", "risk-flag"],
   ["UserPromptSubmit", "surfaced-run-reminder"], ["UserPromptSubmit", "profile-aware-nudge"], ["UserPromptSubmit", "eights-recall-request"],
   ["Stop", "decision-log-required"], ["Stop", "summary-format-check"],
+  // Phase H (GitHub #49, execution-events ledger) -- eight new (event, name) pairs.
+  ["PostToolUseFailure", "record-execution-failure"], ["StopFailure", "surface-api-killed-run"],
+  ["FileChanged", "constitution-drift-detect"], ["PreCompact", "run-context-save"],
+  ["PostCompact", "run-context-reinject"], ["SessionEnd", "session-orphan-sweep"],
+  ["SubagentStart", "subagent-dispatch-record"], ["SubagentStop", "subagent-stop-observe"],
 ];
 
 let implementedPairKeys;
@@ -808,6 +820,22 @@ const TIMEOUT_CLASS = {
   "UserPromptSubmit profile-aware-nudge": 20,
   "UserPromptSubmit eights-recall-request": 20,
   "Stop summary-format-check": 20,
+  // RECOVERY (Phase H, GitHub #49): both handlers write a ledger row in
+  // direct response to a failure (a vendor-CLI tool failure, an API-killed
+  // turn) -- same consequence-of-kill class as the other RECOVERY entries
+  // above, so 30 not 20.
+  "PostToolUseFailure record-execution-failure": 30,
+  "StopFailure surface-api-killed-run": 30,
+  // INFORMATIONAL (Phase H): detectors/observers with no gating role.
+  // session-orphan-sweep's 20 additionally satisfies R11's declared >=20
+  // floor against the documented SessionEnd budget (1.5s shared, raised to
+  // match a longer per-hook timeout, up to 60s).
+  "FileChanged constitution-drift-detect": 20,
+  "PreCompact run-context-save": 20,
+  "PostCompact run-context-reinject": 20,
+  "SessionEnd session-orphan-sweep": 20,
+  "SubagentStart subagent-dispatch-record": 20,
+  "SubagentStop subagent-stop-observe": 20,
 };
 
 function findClassMismatches(templateJsonArg, hooksJsonJsonArg) {

@@ -56,6 +56,7 @@ _To be populated by harness runs._
 ## 10. Domain and data model
 
 
+
 ### Run run_7tbXaLHTJU1x — 2026-09-05
 
 **Phase A: cc-standards-alignment campaign (#42, #43)**
@@ -68,6 +69,33 @@ _To be populated by harness runs._
 - Key decisions:
   - **Latent defect, not runtime defect**: codex telemetry was accurate by accident of invariants in `sub-cli-sessions.ts`; hardening its derivation is guard-strengthening, not a bug fix.
   - **agy lane was broken**: every agy critique reported `resumed: true` while being correctly stateless due to the fresh_session guard—a silent data integrity defect in the ledger.
+
+### Run run_p8JPpVhDonUA — 2026-09-07
+
+**Phase H: Execution events, recovery observations, and honest cost**
+
+**Request:** Add schema v11 with `execution_events` table and `runs.surfaced_reason` column; fix GitHub #58 (pricing bug + vendor critique spend ingestion); implement eight hook handlers for recovery observations.
+
+**Artifacts:**
+- spec: `.harness/run_p8JPpVhDonUA/spec.md` (requirements R1–R15, acceptance criteria AC-H1–AC-H55)
+- changelog: `.harness/run_p8JPpVhDonUA/docs/changelog.md` (phase narrative, design decisions, residuals)
+- semantics_doc: `.harness/run_p8JPpVhDonUA/ops/semantics-and-support.md` (execution events analytics and supportability model)
+
+**Summary:** Schema evolved to v11 with two new objects: (1) `execution_events` table with deterministic `call_key` idempotency, carrying tool, producer, run/stage/agent correlation, status, tokens, cost, and wall time—**distinct from `attempts` by construction** (no DML of attempts/verdicts/stages, no recordAttempt/tallyBudgets calls); (2) `runs.surfaced_reason` column to record the cause (rate_limit, overloaded, authentication_failed) of API-killed runs. Governing principle: **a failed critique produces one execution_events row and zero attempts rows**. Execution events are surfaced in `replay` and under separate `failed:` budget scopes, preventing silent conflation of real spend with money spent on failed calls. GitHub #58 fixed on both halves: `recordAttempt` now derives cost via `computeCost` while respecting explicit 0 (unknown vs free), and `cost-tally` hook now writes to `budgets`; before this, vendor critique spend reached execution_events and never budgets. Migration is additive, guarded per-column, idempotent, and rewrites no row; v10 databases migrate in place automatically on first open.
+
+**Key decisions:**
+- **Recovery observations, never manufactured ledger rows**: execution events record platform lifecycle events (tool failure, stop reason, subagent dispatch/stop), not generation attempts. The idempotency key is deterministic (prompt_id → agent_id → detail hash + timestamp), preventing replayed hooks from duplicating rows.
+- **Producer-domain split on cost tally**: `cost-tally` is the sole writer of vendor spend across all paths; `recordAttempt` skips its own tally for codex/agy while deriving and storing cost_usd for attempts rows. Double-tally prevented by call_key uniqueness and producer split.
+- **`runs.surfaced_reason` front-runs janitor sweep**: API-killed runs transition to `surfaced` status with reason within seconds, appearing in session banner for operator decision, rather than remaining `running` for up to 6 hours before the janitor marks `crashed` with no cause.
+- **Eight hook handlers wired**: PostToolUseFailure (record-execution-failure), StopFailure (surface-api-killed-run), PreCompact/PostCompact (run-context-save/reinject), FileChanged (constitution-drift-detect), SubagentStart/Stop (record-subagent-dispatch/reconcile-subagent-stop), SessionEnd (session-orphan-sweep). Hook inventory: 29 → 37.
+- **No `additionalContext` assumption**: PreCompact/PostCompact use stdout per documented parsing rule; additionalContext is undocumented and not assumed.
+
+**Residuals and open items:**
+- **Coverage regression on vendor-call tally**: a codex/agy call whose PostToolUse hook does not run (hook disabled, non-Claude-Code runtime, Copilot CLI path) is now tallied by nobody; it was previously covered by recordAttempt. This is a supported configuration and needs a correlation key between tool call and later attempt row. Closing it requires future work.
+- **A v10 database migrates in place automatically** on first open by any daemon process—no opt-out, no pre-migration backup. The migration is additive and idempotent, but take a v10 copy before opening the database if needed for any reason.
+- **The 17 existing `crashed` runs are deliberately left alone** and will not gain a cause. `StopFailure` front-runs the janitor sweep with a reason for API-killed runs; the janitor remains the fallback for runs nothing reported on.
+- **`cost-tally` failure is non-fatal by necessity**: a PostToolUse hook must not block a call that already succeeded. Its catch is loud and self-describing, but the spend is still lost.
+- **Placeholder rates remain in prices.json**: eight rates carry CONSERVATIVE PLACEHOLDER notes; vendor-confirmed rates are outside this phase, so no rebaseline is honest.
 
 
 ## 11. Architecture and technical strategy
@@ -91,6 +119,7 @@ _To be populated by harness runs._
 
 
 ## 13. Engineering standards and delivery model
+
 
 
 
@@ -254,6 +283,38 @@ _To be populated by harness runs._
 - Generator idempotent; deliberate collision aborts with `.github/` unchanged.
 - Mutation proofs on undocumented color, `maxTurns` on engineer, misspelled effort_level, `max_turns : 5`, and skewed `maxTurns=N` comment.
 
+### Run run_p8JPpVhDonUA — 2026-09-07
+
+**Phase H: Execution events, recovery observations, and honest cost**
+
+**Request:** Implement eight hook handlers for recovery observations; fix GitHub #58 cost derivation and vendor critique tally; add cost-derivation test suite.
+
+**Artifacts:**
+- spec: `.harness/run_p8JPpVhDonUA/spec.md` (R6–R11: handler requirements and acceptance criteria AC-H14–AC-H55)
+- code_changes: committed to feat/cc-standards-alignment branch (schema-v11-migration.ts, execution-events.ts, dispatcher.ts updates)
+- hook_config: `.harness/run_p8JPpVhDonUA/spec.md` section 1.2 (hook surface verification)
+
+**Summary:** Eight hook handlers implemented across eight previously-unused events: `PostToolUseFailure` (record-execution-failure), `StopFailure` (surface-api-killed-run), `PreCompact` / `PostCompact` (run-context-save / run-context-reinject), `FileChanged` (constitution-drift-detect), `SubagentStart` (record-subagent-dispatch), `SubagentStop` (reconcile-subagent-stop), `SessionEnd` (session-orphan-sweep). All wired in `.claude/settings.template.json` and `hooks.json`. GitHub #58 fixed on both halves: (1) `recordAttempt` now calls `computeCost` to derive cost from tokens and price table, while respecting explicit `0` as "free" vs `undefined` as "unknown"; (2) `cost-tally` hook now writes the computed cost to `budgets` table via `tallyBudgets`, closing the ingestion path vendor critiques had no connection to. Latent third bug: `computeCost` iterates all price-table keys without checking `isPriceEntry`, so `_pricing_notes` block containing string-valued model-id-shaped keys would yield NaN; now guarded per-key. `listHookHandlers()` expanded 29 → 37 entries.
+
+**Key decisions:**
+- **Hook handlers are recovery observers, not decision-makers**: every handler calls `reply(true)` in all paths including on database error—a failed hook must not block a turn. FileChanged is a detector only and never blocks or reverts.
+- **Cost derivation respects both 0 and undefined**: The bridges may pass `cost_usd: 0` for model-specific free tiers or testing; `recordAttempt` tallies `input.cost_usd ?? 0` before this fix was `input.cost_usd ?? 0` but *also* tried to tally `input.cost_usd` which for undefined vendors would have failed; now uses computed value when input lacks it.
+- **Producer-domain split prevents double-tally**: `cost-tally` is the sole writer of vendor spend; `recordAttempt` skips its own tally for codex/agy, preventing overlap while preserving cost_usd in attempts rows for direct readers.
+- **Context reinject uses stdout, not undocumented additionalContext**: PreCompact/PostCompact handlers emit to stdout per documented parsing rule; additionalContext is not on the hooks page and is not assumed.
+- **SubagentStop degrades on absent agent_id**: the hook field is undocumented; absent or multi-match results in status='unreconciled' with NULL correlation, never guessing from recency or sole open stage.
+- **StopFailure transitions to `surfaced` status when reason classifies**: rate_limit, overloaded, authentication_failed are recognized; unrecognized reasons produce no row and no state change. Run appears in session banner for operator decision, not in terminal `crashed` state.
+- **FileChanged is a detector for Hard Rule 1 compliance**: CONSTITUTION.md drift emits advisory and writes event; never blocks, reverts, or writes to the constitution.
+
+**Test coverage:**
+- mutation proofs (manual, reverted, byte-identical): record-execution-failure path tested against schema constraint (AC-H7 governs: a failed critique produces 1 execution_events row and 0 attempts rows); tallySuccessSpend idempotency gate tested by reverting; classifyStopFailureReason ordering tested by reverting to array order.
+- R27 vacuity guard: comment-stripper and code-usage scanner now route through shared implementation with assertions on what was stripped (distinguishing "stripped nothing" from "nothing to strip"). Wildcard price filter names discarded keys.
+- Build and typecheck: clean.
+
+**Residuals:**
+- **Copilot CLI runtime outside hook coverage**: the Copilot CLI is a shipped configuration whose vendor calls now reach execution_events but bypass cost-tally (no PostToolUse hook). Budget_status is a lower bound for that path until a correlation key exists between tool call and later attempt.
+- **SubagentStop reconciliation has no UPDATE path**: recordAttempt has no UPDATE, so whichever writer lands first wins permanently. Observation ledger ships; success test does not (marked `[f]` on verified grounds).
+- **deriveCallKey fallback mixes in coarse timestamp**: two distinct calls within the same second with identical detail still collide; rare, but makes execution_events a floor on event count, not exact.
+
 
 ## 14. Security, privacy, and compliance
 
@@ -283,6 +344,7 @@ _To be populated by harness runs._
 
 
 ## 15. Test and verification strategy
+
 
 
 
@@ -425,8 +487,42 @@ _To be populated by harness runs._
 - **Real function imports over reimplements**: guard drives actual `enumerateAgentSources()` from the generator, not a copy; `enumerateSkillSources` proved falsifiable by real-tree splices.
 - **No agent/skill counts transcribed**: all counts derived from filesystem at test-run time; set-equality against real collections prevents vacuous passes.
 
+### Run run_p8JPpVhDonUA — 2026-09-07
+
+**Phase H: Execution events, recovery observations, and honest cost**
+
+**Request:** Add test suite for execution events, cost derivation, and schema v11 migration; ensure R27 vacuity discipline on guard's own assertions.
+
+**Artifacts:**
+- test_plan: `.harness/run_p8JPpVhDonUA/tests/test_plan.md` (acceptance criteria AC-H1–AC-H55 coverage map, 77 new assertions, R27 falsifiability cases)
+- new_tests: `.harness/run_p8JPpVhDonUA/` contains three test file contents (execution-events.unit.mjs: 56 assertions, cost-derivation.unit.mjs: 14 assertions, schema-v11-migration.unit.mjs: 7 assertions)
+- browser_validation: `.harness/run_p8JPpVhDonUA/browser-validation/report.md` (not_applicable: no UI touched)
+
+**Summary:** Three new test files ship with this phase: (1) `daemon/test/execution-events.unit.mjs` (56 assertions, 0 failed) covering R1–R14 and R27 applied to the guard itself (PreCompact/PostCompact additionalContext scan, DROP/RENAME scan both route through shared scanners with assertions on rejection sets); (2) `daemon/test/cost-derivation.unit.mjs` (14 assertions, 0 failed) covering R15–R18 and D4 (computeCost now checks isPriceEntry before reading); (3) `daemon/test/schema-v11-migration.unit.mjs` (7 assertions, 0 failed) covering R1/R5, AC-H10–H13, testing migration from v10 fixture (v10 DDL pre-checked-in, opened through production db() path, rows untouched, version 10→11, surfaced_reason NULL everywhere initially). Cross-vendor judge imposed two priority assertions: classifyStopFailureReason ordering (earliest string position wins; authentication_failed before rate_limit) and tallySuccessSpend gate (replayed call's tally delta is zero). Full suite: **680 passed / 0 failed / 90 suites** (delta +77 tests, +3 suites from this phase). Non-vacuity controls enforced (R27 explicitly named as fifth class after Phase G's falsifiability failures): comment-stripper and code-usage scanner route through one shared implementation; assertions on stripped sets distinguish "nothing stripped" from "nothing to strip"; wildcard price filter names discarded keys; all positive tests paired with real mutation controls (not just fixture naming checks); forbidden literals assembled at runtime with self-check of guard's own source.
+
+**Key decisions:**
+- **R27 vacuity discipline applied to guard itself**: a fifth class identified—an assertion over a filtered population where the filter silently discards exactly what the assertion exists to find. Phase G's frontmatter parser and this phase's comment-stripper both hit it; now R27 is enforced in the guard's own assertions with shared scanner implementations.
+- **Cost derivation test mutates prices.json in isolation**: computeCost reads from a temp copy; mutation proof weakens isPriceEntry and watches suite go red, then reverts and verifies byte-identical.
+- **Schema migration test uses pre-checked-in v10 fixture**: not live database, not regenerated; fixture built from v10 DDL snapshot, opened through production db() path twice to prove idempotency.
+- **Validator budget exhaustion**: this phase consumed all 6 validator retry calls available in a run. Reflexion retry on the changelog was refused with "loop ceiling reached: 6/6 validator calls in this run". Four findings above were closed by driver without independent verdict; budget_override was not used—ceiling is a designed limit.
+- **Manual mutation proofs reverted and byte-identical**: record-execution-failure path tested against AC-H7 (AC-H7 red when path inserts attempts row); tallySuccessSpend tested by removing gate; classifyStopFailureReason tested by reverting to array order. All proofs verified with `diff` against pre-mutation backup before final clean build.
+
+**Test results:**
+- Single-file latency: execution-events.unit.mjs ~50–80ms, cost-derivation.unit.mjs ~20ms, schema-v11-migration.unit.mjs ~15ms; all well under 10s ceiling.
+- Full suite: `node --test --test-timeout=180000 daemon/test/*.unit.mjs` — **680 passed / 0 failed / 90 suites**
+- NFR2 (ceiling 180s): total suite latency under 45s when run in parallel; well within budget.
+- Build and typecheck: clean; no new compiler diagnostics.
+- Mutation proofs: three tracked files mutated in isolation, each proving target assertion goes red, then reverted and byte-verified.
+
+**Residuals and open items:**
+- **One pre-existing test failure in finalize-gates-a.unit.mjs**: not caused by this phase; confirmed failing at HEAD~1 before any changes.
+- **v10 migration test lost its v10 subject**: background daemon backing MCP calls opened the database first, triggering automatic migration. Phase is unaffected (fixture is pre-checked-in and separate).
+- **Validator budget fully consumed**: remaining documentation findings closed without independent verdict. Six earlier phases fit inside budget; this one did not. Consequence: corrections in changelog carry no independent verdict.
+- **Test plan line tables became stale during code stage**: a ~70-line helper inserted after line-count documentation. AC-H49/H50/H53/H54 audited through titles (declared authoritative locators) with mapping-recovery instruction.
+
 
 ## 16. Operations and support model
+
 
 
 
@@ -528,6 +624,32 @@ _To be populated by harness runs._
   - Hook inventory drift is owned by `daemon/test/hook-inventory.unit.mjs` (test failure); timeout-class drift is owned by the same guard's TIMEOUT_CLASS map (hand-written, with coverage assertion); installed-vs-repo divergence is owned by the operator running `scripts/install-user.ps1` (unautomated, undiscovered).
   - `daemon-up` fail-open residual (FU-1) is accepted and cites platform documentation verbatim — operator's own `doctor` call is the compensating control (per AGENTS.md Hard Rule 1).
 
+### Run run_p8JPpVhDonUA — 2026-09-07
+
+**Phase H: Execution events, recovery observations, and honest cost**
+
+**Request:** Document execution events analytics semantics, supportability model, and operator workflows for recovery observations.
+
+**Artifacts:**
+- ops_semantics: `.harness/run_p8JPpVhDonUA/ops/semantics-and-support.md` (analytics definitions, supportability ownership, diagnostic states, correlation IDs)
+- spec: `.harness/run_p8JPpVhDonUA/spec.md` (section 1.2: hook surface facts; section 1.7: platform facts from code.claude.com/docs)
+
+**Summary:** Execution events are recovery observations, not generation attempts. A row attests only that an event occurred, never that work was produced. Event kinds: `tool_failure` (vendor call failed, cost already charged), `tool_success_spend` (successful call, spend has a home), `api_stop_failure` (turn ended on API error, run may move to `surfaced`), `subagent_dispatch` / `subagent_stop` (correlation observations; `unreconciled` means honest absence of correlation, not a failure), `constitution_drift` (CONSTITUTION.md changed on disk), `session_end_sweep` (session termination observation). Three rules for querying: (1) never UNION or SUM attempts and execution_events (both carry tokens/cost—use budgets reconciled surface); (2) failed spend lives under `failed:`-prefixed scopes; (3) row counts are not attempt counts. Supportability: `budget_status` under-reports → check `execution_events` for tool_success_spend rows and budgets for matching scope (if rows exist but scope doesn't, cost-tally persist failed); run sat running hours then crashed → check execution_events for api_stop_failure (if no row, hook unwired or runtime not Claude Code); run surfaced with no obvious cause → check runs.surfaced_reason (new in v11; rate_limit/overloaded retryable as-is, authentication_failed needs credentials); subagent_stop rows unreconciled → agent_id may not be arriving on SubagentStop (undocumented field); CONSTITUTION.md changed unexpectedly → check execution_events for constitution_drift (detector only, never blocks). Correlation-id chain: call_key correlates one vendor call, session_id traces Claude Code session, run_id and stage_id tie to harness lifecycle, agent_id ties to subagent dispatch. Diagnostic states: `status='failed'` (call errored, cost real and charged), `status='observed'` (worth recording, no judgement), `status='unreconciled'` (honest absence of correlation). Idempotency on call_key prevents replayed hooks from duplicating rows; call_key derivation (prompt_id → agent_id → detail hash + whole-second timestamp) means two genuinely distinct calls within same second with identical detail collide—rare, making table a floor on event count.
+
+**Key decisions:**
+- **Supportability model follows domain ownership**: cost-tally is sole writer of vendor spend and must not throw (non-fatal by necessity); its failure is logged loudly naming itself and reporting lost spend, but loss still occurs. Budget_status is authoritative for successfully recorded spend; operations reading it must treat as lower bound when Copilot CLI or non-Claude-Code vendor calls in use (the coverage gap).
+- **Failed spend segregation prevents silent misreporting**: budgets has separate `failed:` scopes so dashboard summing run/day/model totals must explicitly add failed scopes or silently misreport. Hazard comment in both schema files.
+- **Reconciliation is defensive**: SubagentStop cannot update attempts (no UPDATE path), so reconciliation is observation-only. Absent agent_id, zero-match, multi-match → unreconciled with NULL correlation, never inferring from recency or sole open stage.
+- **StopFailure front-runs janitor sweep**: API-killed runs surface within seconds with classified reason, appearing in session banner for immediate operator action, rather than remaining `running` for up to 6 hours before janitor marks `crashed` with no cause.
+- **FileChanged detector is Hard Rule 1 compliance check**: emits advisory on drift but never blocks, reverts, or writes to the constitution. Drift is an anomaly to investigate, not an operational failure to block on.
+
+**Known gaps and workarounds:**
+- **Coverage regression on vendor-call tally**: a codex/agy call whose PostToolUse hook does not run is now tallied by nobody. This path was previously covered by recordAttempt. It is a supported configuration (Copilot CLI ships in this repo), not a misconfiguration. Until a correlation key exists between tool call and later attempt, treat budget_status as a lower bound for that path.
+- **cost-tally failure is non-fatal by necessity**: a PostToolUse hook must not block a call that already succeeded. Its catch names itself as sole writer and reports tokens and cost that were lost; loss is visible in log even though not preventable.
+- **One-second timestamp collision on identical detail**: call_key derivation uses whole-second epoch, so two distinct calls within same second with identical detail text collide and the second is dropped. Rare, but makes execution_events a floor, not exact count.
+- **additionalContext is undocumented**: PreCompact/PostCompact use stdout per documented parsing rule; additionalContext field is not on hooks page and must not be assumed to exist. If documented later, revisit.
+- **agent_id presence on SubagentStop is undocumented**: no SubagentStop input schema published. Harness degrades rather than guesses—absent, zero-match, or multi-match results in unreconciled status with NULL correlation.
+
 
 ## 17. Team operating model and governance
 
@@ -583,6 +705,7 @@ _To be populated by harness runs._
 _To be populated by harness runs._
 
 ## Appendices
+
 
 
 
@@ -837,4 +960,50 @@ Three stages, three cross-vendor verdicts all on the agy lane — code (pass), t
 **Process pattern worth recording:**
 
 A guard caught a defect the driver introduced. Raising `triage`'s cap left the justifying comment naming the old number beneath the new value—the shipped justification contradicting the shipped value. Caught by a judge, not an assertion, so an assertion now exists: any frontmatter comment naming `maxTurns=N` must agree with the field beside it. This exemplifies why guard-strengthening requires cross-vendor judgment of the failure—the driver does not see what contradicts.
+
+### Run run_p8JPpVhDonUA — 2026-09-07
+
+**Phase H: Execution events, recovery observations, and honest cost**
+
+**Request:** Document phase narrative, design decisions, residuals, and operational context for schema v11 and hook handlers.
+
+**Artifacts:**
+- changelog: `.harness/run_p8JPpVhDonUA/docs/changelog.md` (phase narrative, design decisions, residuals, what this means for running install, three patterns worth recording)
+- ops_semantics: `.harness/run_p8JPpVhDonUA/ops/semantics-and-support.md` (execution events analytics semantics, supportability model, event definitions, diagnostic states, correlation IDs)
+- spec: `.harness/run_p8JPpVhDonUA/spec.md` (verified ground truth, requirements R1–R15, acceptance criteria AC-H1–AC-H55 with driver amendments AC-H-A2/A5/A7/A9/A10)
+- test_plan: `.harness/run_p8JPpVhDonUA/tests/test_plan.md` (R22–R26 non-vacuity discipline, AC-to-assertion mapping)
+
+**Phase narrative—the governing principle:**
+
+Recovery observations, never manufactured ledger rows. A failed critique is not a generation attempt. The `attempts` table means "a producer generated a candidate artifact"; a vendor CLI that exited non-zero generated nothing. Writing it into `attempts` would make the ledger say a thing that did not happen, corrupting Reflexion retry_index, best-of-N candidate accounting, replay faithfulness, and cross-vendor `cross_vendor` computation. Execution events record platform lifecycle events (tool failure, stop reason, subagent dispatch/stop) in a separate table, idempotent on deterministic call_key, carrying tokens/cost for spend attribution. The governing acceptance criterion is behavioural: a failed critique produces exactly one execution_events row and zero attempts rows (AC-H7).
+
+**Design decisions recorded as designs, not just outcomes:**
+
+**First tally design, false:** cost-tally tallies only direct_cli path, assuming agent-driven flow tallies same spend via recordAttempt. **This was false.** `pp_*` generate is deprecated; nearly every vendor call is a judge critique recorded via recordVerdict (which takes no tokens/cost and never tallies). Agent-driven critique spend reached execution_events and never budgets (GitHub #58 second half).
+
+**Shipped tally design:** producer-domain split. cost-tally is sole tallier of every pp_codex/pp_agy call on every path; recordAttempt skips its own tally for those producers while deriving and storing attempts.cost_usd. Double-tally prevented by call_key uniqueness and producer split. **Residual:** a vendor call whose PostToolUse hook doesn't run (hook disabled, non-Claude-Code runtime, Copilot CLI path) is now tallied by nobody, where it was previously covered. This is a supported configuration and closing it needs a correlation key that does not currently exist.
+
+**What this means for a running install—four consequences:**
+
+1. A v10 database migrates in place automatically on first open by any daemon process—not on explicit upgrade, no opt-out, no pre-migration backup. Migration is additive, guarded, idempotent, rewrites no row. Take a v10 copy before opening database if needed.
+2. The 17 existing `crashed` runs are deliberately left alone and will not gain a cause. Back-filling a reason the daemon never observed would manufacture provenance.
+3. `crashed` already existed (set by janitor's 6-hour sweep). `StopFailure` front-runs that sweep: API-killed run marked `surfaced` within seconds with reason, instead of remaining `running` for up to 6 hours. The two are complementary—janitor remains late fallback for runs nothing reported on.
+4. What to do with a `StopFailure`-surfaced run: it appears in SessionStart surfaced-run list with reason; `/pp:retry <run_id>` operates on it. Check `surfaced_reason` first—rate_limit and overloaded are retryable as-is; authentication_failed means fix credentials before retry.
+
+**Two patterns worth recording as pattern, not just outcome:**
+
+**R27, a fifth vacuity class, was named in this phase's spec and then violated by this phase's own guard.** The class: an assertion over a filtered or parsed population where the filter silently discards exactly the inputs the assertion exists to find. Phase G's frontmatter parser dropped unparseable lines and reported zero violations while satisfying four existing non-vacuity rules. This phase's guard comment-stripper did the same—discarded from first `//` with no string-literal awareness, and four falsifiability cases tested `String.prototype.includes` on poisoned buffer rather than the real scan. Honest falsifiability count was **6 of 10**, not 10. All four now route through real shared scan that reports rejected set; stripper surfaces and asserts what it stripped; pricing-key filter names wildcard keys it discards. **Third phase running that a guard's own assertions needed the same adversarial review as the code they protect.**
+
+**This phase consumed the run's entire validator budget.** Reflexion retry on changelog refused with `loop ceiling reached: 6/6 validator calls in this run`. Four findings above closed by driver directly rather than through judged retry; budget_override was not used—ceiling is designed limit, and overriding it for factual corrections the judge had already specified would spend a guard to buy nothing. **Consequence:** corrections in this section carry no independent verdict. Six phases of campaign fit inside budget; this one did not, which is itself fair measure of rework it needed.
+
+**Residuals that MUST survive into master plan:**
+
+1. Coverage regression on degraded tally path: vendor call whose PostToolUse hook doesn't fire now tallied by nobody. Closing needs correlation key between tool call and later attempt row.
+2. cost-tally sole writer and its failure cannot be fatal: hook must not block call that already succeeded. Catch is loud and self-describing but spend still lost.
+3. v10 database migrates in place automatically on first open—no opt-out, no backup. Additive, guarded, idempotent, rewrites no row.
+4. 17 existing `crashed` runs deliberately not back-filled with cause; `crashed` already existed set by janitor. `StopFailure` front-runs sweep with reason rather than replacing it.
+5. Budget rebaseline is `[f]` on merit: pricing bug fixed but eight rates carry CONSERVATIVE PLACEHOLDER notes covering every current-generation id campaign routes to. Vendor-confirmed rates outside this phase.
+6. SubagentStop reconciliation half is `[f]` on verified grounds: recordAttempt has no UPDATE path, no ordering guarantee between hook and MCP call. Observation ledger ships; success test does not.
+7. deriveCallKey detail-hash fallback mixes whole-second timestamp: two distinct calls within same second with identical detail collide. Table is floor on event count, not exact count.
+8. additionalContext is undocumented: PreCompact/PostCompact use stdout per documented rule. Later phase must not assume additionalContext exists.
 

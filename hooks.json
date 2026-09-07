@@ -148,6 +148,72 @@
         "matcher": "mcp__pp_harness__finalize_run"
       }
     ],
+    "PostToolUseFailure": [
+      {
+        "type": "command",
+        "bash": "node \"daemon/dist/index.js\" hook PostToolUseFailure record-execution-failure",
+        "powershell": "node \"daemon/dist/index.js\" hook PostToolUseFailure record-execution-failure",
+        "timeoutSec": 30,
+        "matcher": "mcp__pp_codex__.*|mcp__pp_agy__.*"
+      }
+    ],
+    "StopFailure": [
+      {
+        "type": "command",
+        "bash": "node \"daemon/dist/index.js\" hook StopFailure surface-api-killed-run",
+        "powershell": "node \"daemon/dist/index.js\" hook StopFailure surface-api-killed-run",
+        "timeoutSec": 30
+      }
+    ],
+    "FileChanged": [
+      {
+        "type": "command",
+        "bash": "node \"daemon/dist/index.js\" hook FileChanged constitution-drift-detect",
+        "powershell": "node \"daemon/dist/index.js\" hook FileChanged constitution-drift-detect",
+        "timeoutSec": 20,
+        "matcher": "CONSTITUTION.md"
+      }
+    ],
+    "PreCompact": [
+      {
+        "type": "command",
+        "bash": "node \"daemon/dist/index.js\" hook PreCompact run-context-save",
+        "powershell": "node \"daemon/dist/index.js\" hook PreCompact run-context-save",
+        "timeoutSec": 20
+      }
+    ],
+    "PostCompact": [
+      {
+        "type": "command",
+        "bash": "node \"daemon/dist/index.js\" hook PostCompact run-context-reinject",
+        "powershell": "node \"daemon/dist/index.js\" hook PostCompact run-context-reinject",
+        "timeoutSec": 20
+      }
+    ],
+    "SessionEnd": [
+      {
+        "type": "command",
+        "bash": "node \"daemon/dist/index.js\" hook SessionEnd session-orphan-sweep",
+        "powershell": "node \"daemon/dist/index.js\" hook SessionEnd session-orphan-sweep",
+        "timeoutSec": 20
+      }
+    ],
+    "SubagentStart": [
+      {
+        "type": "command",
+        "bash": "node \"daemon/dist/index.js\" hook SubagentStart subagent-dispatch-record",
+        "powershell": "node \"daemon/dist/index.js\" hook SubagentStart subagent-dispatch-record",
+        "timeoutSec": 20
+      }
+    ],
+    "SubagentStop": [
+      {
+        "type": "command",
+        "bash": "node \"daemon/dist/index.js\" hook SubagentStop subagent-stop-observe",
+        "powershell": "node \"daemon/dist/index.js\" hook SubagentStop subagent-stop-observe",
+        "timeoutSec": 20
+      }
+    ],
     "UserPromptSubmit": [
       {
         "type": "command",
