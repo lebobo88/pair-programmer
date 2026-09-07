@@ -15,7 +15,7 @@
 
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, dirname } from "node:path";
 import { nanoid } from "nanoid";
 import { db, txImmediate } from "../db/database.js";
 import { scanForSecrets } from "../security/secret-scan.js";
@@ -28,6 +28,14 @@ import { agyEnabled } from "../config.js";
 import { evaluateShellSafety } from "./bash-safety.js";
 import { recallProjectContext, recallByQuery, listPriorCritiques } from "../ecosystem/eights-writes.js";
 import { computeCost } from "../util/prices.js";
+import {
+  formatPreToolUseDeny,
+  formatStopBlock,
+  shapeForMcpTool,
+  COMMAND_ONLY_EVENTS,
+  handlerBlocks,
+  type HookDecisionPayload,
+} from "./decision.js";
 import {
   deriveCallKey,
   writeExecutionEvent,
@@ -134,24 +142,59 @@ async function readStdin(): Promise<string> {
   });
 }
 
+/**
+ * Phase L: thrown by `reply()` when the dispatcher is running IN-PROCESS (as an
+ * `mcp_tool` hook adapter) rather than as a CLI subprocess.
+ *
+ * The 37 handler bodies are written in exit style — every one of them ends in
+ * `reply(...)`, whose declared return type is `never`. Rewriting all of them to
+ * return a value would have been a 37-site refactor of live security controls
+ * for no behavioural gain. Throwing a sentinel satisfies `never` exactly as
+ * `process.exit` does, so **not one handler body changes** and both transports
+ * run the same code.
+ *
+ * Caught only by `runHookInProcess`. It must never escape to the MCP layer: an
+ * escaped throw becomes `isError: true`, which the hook docs make a
+ * *non-blocking* error — so a leaked denial would permit the action it meant to
+ * stop.
+ */
+class HookDecisionSignal extends Error {
+  readonly decision: HookDecisionPayload;
+  constructor(decision: HookDecisionPayload) {
+    super(decision.allow ? "[pp] hook allowed" : (decision.message ?? "[pp] blocked by hook"));
+    this.name = "HookDecisionSignal";
+    this.decision = decision;
+  }
+}
+
+/**
+ * Transport mode. `"cli"` writes stdout and exits (the historical behaviour);
+ * `"in_process"` throws a `HookDecisionSignal` for `runHookInProcess` to shape.
+ * Module-level like `CURRENT_EVENT`, and restored in a `finally` so a crashing
+ * in-process handler cannot leave the CLI path throwing instead of exiting.
+ */
+let HOOK_MODE: "cli" | "in_process" = "cli";
+
 function reply(allow: boolean, message?: string, jsonExtras?: Record<string, unknown>): never {
+  if (HOOK_MODE === "in_process") {
+    throw new HookDecisionSignal({ allow, message, extras: jsonExtras });
+  }
   const structuredPreToolUse = CURRENT_EVENT === "PreToolUse";
   const structuredStop = CURRENT_EVENT === "Stop";
   if (!allow) {
     if (structuredPreToolUse) {
-      process.stdout.write(JSON.stringify({
-        permissionDecision: "deny",
-        permissionDecisionReason: message ?? "[pp] blocked by hook",
-        ...(jsonExtras ?? {}),
-      }));
+      // Phase L: the documented NESTED shape, via the shared formatter. The
+      // previous bare `{permissionDecision, …}` was undocumented, and an
+      // object the client cannot validate is a NON-BLOCKING error in which
+      // "the action proceeds" — a denial that permits. See decision.ts.
+      process.stdout.write(JSON.stringify(formatPreToolUseDeny(message, jsonExtras)));
       process.exit(0);
     }
     if (structuredStop) {
-      process.stdout.write(JSON.stringify({
-        decision: "block",
-        reason: message ?? "[pp] blocked by hook",
-        ...(jsonExtras ?? {}),
-      }));
+      // Deliberately unchanged: Stop's decision schema could not be retrieved
+      // verbatim, and changing a possibly-working control on a guess is the
+      // same class of risk. See formatStopBlock.
+      process.stdout.write(JSON.stringify(formatStopBlock(message, jsonExtras)));
       process.exit(0);
     }
     if (message) {
@@ -169,13 +212,95 @@ function reply(allow: boolean, message?: string, jsonExtras?: Record<string, unk
   }
 }
 
+/**
+ * The newest active run owning `project_path` — or owning any ANCESTOR of it.
+ *
+ * ── WHY THE ANCESTOR WALK EXISTS (Phase L, #53) ─────────────────────────────
+ *
+ * This was an exact string match, and that made `enforce-active-run` block
+ * legitimate edits. A run is started with `project_path` = the repo root, but
+ * the hook is handed the SESSION's `cwd`, which is wherever the operator or an
+ * agent happens to be. Run a single `cd daemon` — entirely normal in this
+ * monorepo, and what every `npm --prefix`-less build command does — and the
+ * lookup compares `H:\pair-programmer\daemon` against `H:\pair-programmer`,
+ * finds nothing, and reports "no active run owns this edit" for an edit that a
+ * perfectly valid active run does own.
+ *
+ * It was found the hard way: the guard fired on this very phase, refusing an
+ * edit to `daemon/test/hook-inventory.unit.mjs` while `run_Q69wXDpuWW4P` was
+ * `running` on the repo root. The failure mode is the annoying-but-safe
+ * direction (a false refusal, not a false permit), which is exactly why it
+ * could sit here unnoticed: the operator's fix is to re-run from the root, or —
+ * far worse and much likelier — to set `PP_ALLOW_AD_HOC=1` and disable the
+ * guard wholesale for the rest of the session. **A guard that misfires teaches
+ * people to switch it off.**
+ *
+ * Ancestor-ownership is also the correct semantics rather than merely the
+ * convenient one: a run owns a project TREE. And the nearest ancestor wins, so
+ * a nested project with its own run keeps precedence over the outer repo —
+ * which is not hypothetical here, since `daemon/test/` builds fixture projects
+ * that start their own runs.
+ *
+ * Deliberately unchanged: a path with NO active ancestor is still refused. The
+ * scratchpad refusal that first drew attention to this was correct and stays
+ * correct.
+ */
+/**
+ * Canonical form for comparing two filesystem paths that should denote the same
+ * directory.
+ *
+ * Separators are normalized to `/` and Windows paths are lowercased. Both
+ * halves are needed and both were hit while fixing this: `start_run` stored
+ * `H:\pair-programmer` (backslashes, from the MCP caller) while tooling in this
+ * very phase passed `H:/pair-programmer/daemon` (forward slashes), so an
+ * ancestor walk that compared raw strings still refused a legitimate edit even
+ * after the walk itself was correct. On Windows those are the same directory;
+ * on POSIX, case matters and is preserved.
+ *
+ * A trailing separator is dropped so `H:\repo\` and `H:\repo` compare equal,
+ * except for a bare root.
+ */
+function canonicalPath(p: string): string {
+  const slashed = p.replace(/\\/g, "/");
+  const cased = process.platform === "win32" ? slashed.toLowerCase() : slashed;
+  return cased.length > 1 && cased.endsWith("/") ? cased.slice(0, -1) : cased;
+}
+
 function activeRunForProject(project_path?: string): string | null {
   if (!project_path) return null;
   try {
-    const row = db()
-      .prepare(`SELECT id FROM runs WHERE project_path = ? AND status IN ('pending','running') ORDER BY started_at DESC LIMIT 1`)
-      .get(project_path) as { id: string } | undefined;
-    return row?.id ?? null;
+    // Read the active runs once and compare canonically, rather than issuing a
+    // SQL equality per ancestor: SQLite's `=` is byte comparison, which is the
+    // separator/case trap above. The active set is small by construction (a
+    // handful at most), so this is cheaper than the walk it replaces.
+    const rows = db()
+      .prepare(
+        `SELECT id, project_path FROM runs WHERE status IN ('pending','running') ORDER BY started_at DESC`,
+      )
+      .all() as Array<{ id: string; project_path: string }>;
+    if (!rows.length) return null;
+
+    const byPath = new Map<string, string>();
+    for (const r of rows) {
+      // First wins: the query is newest-first, so the newest run owning a given
+      // path is the one reported.
+      const key = canonicalPath(r.project_path);
+      if (!byPath.has(key)) byPath.set(key, r.id);
+    }
+
+    // Nearest ancestor first, so a nested project with its own run keeps
+    // precedence over the outer repo — not hypothetical, since daemon/test/
+    // builds fixture projects that start their own runs.
+    let dir = canonicalPath(project_path);
+    for (let guard = 0; guard < 64; guard += 1) {
+      const hit = byPath.get(dir);
+      if (hit) return hit;
+      const parent = canonicalPath(dirname(dir));
+      // `dirname` is a fixed point at the root ("C:/" -> "C:/", "/" -> "/").
+      if (!parent || parent === dir) break;
+      dir = parent;
+    }
+    return null;
   } catch { return null; }
 }
 
@@ -1295,6 +1420,183 @@ export function listHookHandlers(): Array<{ event: string; name: string }> {
     }
   }
   return pairs;
+}
+
+/**
+ * Every wired handler as `{ event, name }`, derived from `HANDLERS` rather than
+ * listed. Phase D and Phase H both shipped a hardcoded hook count that drifted
+ * from reality (24 → 26 → 29 → 37), and the settings template's own `_comment`
+ * still enumerated 12 events summing to 36 while the file held 37 across 13.
+ * Deriving it means the count cannot be wrong, only the file.
+ */
+/**
+ * Drop `${…}` values that the hook runtime did not substitute.
+ *
+ * An `mcp_tool` hook receives only what its `input` map declares, and the docs
+ * state that "String values support `${path}` substitution from the hook's JSON
+ * input". What they do NOT state is what happens to a placeholder whose path is
+ * absent from the envelope — whether it becomes `""`, `null`, or survives as the
+ * literal `"${tool_name}"`. That could not be established from the
+ * documentation, and it varies per event: `PostToolUse` has a `tool_name`,
+ * `UserPromptSubmit` does not.
+ *
+ * Rather than bet on one behaviour, treat an unsubstituted placeholder as
+ * ABSENT. That is correct under every possibility: if the runtime substitutes
+ * empty strings we never see these, and if it leaves the literal we do not hand
+ * a handler the string `"${tool_name}"` as a tool name — which would sail past
+ * `normalizeToolName` (it returns unknown names unchanged) and be compared
+ * against `"Bash"`, or worse, be written into a ledger row as if it were real
+ * data. **Manufacturing a row from a placeholder is the ledger-integrity
+ * failure this repo has a working agreement against.**
+ *
+ * Only exact `${…}` values are dropped, never substrings: a real path or prompt
+ * that happens to contain `${` keeps it.
+ */
+export function stripUnsubstitutedPlaceholders(raw: unknown): Record<string, unknown> {
+  if (!raw || typeof raw !== "object") return {};
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(raw as Record<string, unknown>)) {
+    if (typeof v === "string" && /^\$\{[^}]*\}$/.test(v.trim())) continue;
+    out[k] = v;
+  }
+  return out;
+}
+
+export function hookInventory(): Array<{ event: string; name: string }> {
+  const out: Array<{ event: string; name: string }> = [];
+  for (const event of Object.keys(HANDLERS)) {
+    for (const name of Object.keys(HANDLERS[event]!)) out.push({ event, name });
+  }
+  return out;
+}
+
+/**
+ * True when this handler may be wired as an `mcp_tool` hook.
+ *
+ * ── THE RULE: NO BLOCKING HANDLER CONVERTS. ─────────────────────────────────
+ *
+ * The saving this phase chases is real — a command hook pays a Node cold start
+ * and a SQLite reopen on every event, and `PostToolUse` fires on every single
+ * tool call. But it is not worth buying with a guard that stops guarding, and
+ * the docs are explicit about when that happens:
+ *
+ *   "If the named server is not connected, or the tool returns `isError: true`,
+ *    the hook produces a non-blocking error and execution continues."
+ *
+ * So an `mcp_tool` blocker inherits a **fail-open** failure mode it did not
+ * have before: any moment the stdio server is down, restarting, or slow to
+ * connect, the denial silently becomes an advisory notice and the guarded
+ * action proceeds. For `block-destructive-shell`, `enforce-no-secrets` and
+ * `enforce-sandbox-policy` that is not a refactor, it is a downgrade — and a
+ * downgrade in precisely the circumstances (a sick daemon) where a guard is
+ * most likely to be needed.
+ *
+ * An earlier draft of this function allowed `PreToolUse` and `Stop` blockers to
+ * convert on the grounds that they carry a JSON decision the client parses, so
+ * the *shape* survives the transport. That was true and beside the point: the
+ * shape surviving does not help when the tool call never happens. The rule is
+ * now the simpler and stricter one — **if it can say no, it stays a command
+ * hook** — which also subsumes the exit-code-2 argument rather than needing it
+ * as a separate case.
+ *
+ * The 23 non-blocking handlers carry telemetry, ledger rows and context
+ * injection. A missed one costs an observation, not an enforcement, and they
+ * include every `PostToolUse` hook — where the per-event cold start is paid
+ * most often. That is where the win actually lives.
+ *
+ * `SessionStart` / `Setup` are refused ahead of the blocking test, on the
+ * platform's own statement that they fire before servers finish connecting.
+ * That covers their non-blocking handlers too, which the blocking rule alone
+ * would have let through.
+ */
+export function mcpToolEligible(event: string, blocks: boolean): { eligible: boolean; reason?: string } {
+  const commandOnly = COMMAND_ONLY_EVENTS[event];
+  if (commandOnly) return { eligible: false, reason: commandOnly };
+  if (blocks) {
+    return {
+      eligible: false,
+      reason:
+        "the handler can deny, and a not-connected or erroring mcp_tool hook is a non-blocking error in " +
+        "which execution continues — converting it would give a guard a fail-open failure mode it does " +
+        "not have as a command hook",
+    };
+  }
+  return { eligible: true };
+}
+
+/**
+ * Run a handler IN-PROCESS and return the object an `mcp_tool` hook should
+ * emit as its text content. Never throws, never exits.
+ *
+ * The not-throwing is the contract, not defensiveness: an MCP tool that errors
+ * sets `isError: true`, and the docs make that a *non-blocking* error in which
+ * execution continues. So a thrown denial would silently permit the action it
+ * meant to stop, and a thrown *crash* would silently permit it too. Both are
+ * caught here and turned into a returned value — a crash into a fail-open
+ * acknowledgement that says so in the payload, matching the CLI path, which
+ * also exits 0 on a handler crash rather than blocking.
+ */
+export async function runHookInProcess(
+  event: string,
+  name: string,
+  input: unknown,
+): Promise<Record<string, unknown>> {
+  const handler = HANDLERS[event]?.[name];
+  if (!handler) {
+    return {
+      pp_hook_ok: false,
+      pp_hook_error: `unknown hook ${event}/${name}`,
+      pp_hook_note: "the CLI path prints the same and allows; this transport matches it",
+    };
+  }
+
+  // Enforce eligibility HERE, not only where the adapters are registered.
+  //
+  // `harness-server.ts` filters `hookInventory()` so no ineligible handler ever
+  // becomes a tool, and that is the primary control. But it is the only one, and
+  // an entry point whose safety lives entirely in its callers is one refactor
+  // away from running a security guard on a transport that cannot carry its
+  // denial. Checking here makes the invariant local to the function that would
+  // violate it.
+  //
+  // Refusing is the safe direction: this transport cannot transmit a denial for
+  // these handlers anyway, so running one could only produce a decision nobody
+  // acts on — while still performing whatever side effects the handler has.
+  const eligibility = mcpToolEligible(event, handlerBlocks(event, name));
+  if (!eligibility.eligible) {
+    return {
+      pp_hook_ok: false,
+      pp_hook_error: `${event}/${name} is not eligible for the in-process transport`,
+      pp_hook_reason: eligibility.reason,
+      pp_hook_note:
+        "this handler must run as a command hook. Reaching this line means something called the " +
+        "in-process path directly, bypassing the adapter registration filter — the handler was NOT run.",
+    };
+  }
+
+  const prevEvent = CURRENT_EVENT;
+  const prevMode = HOOK_MODE;
+  CURRENT_EVENT = event;
+  HOOK_MODE = "in_process";
+  try {
+    await handler(normalizeHookInput(stripUnsubstitutedPlaceholders(input ?? {})));
+    // A handler that returned without calling reply() has allowed by omission.
+    return shapeForMcpTool(event, { allow: true });
+  } catch (err) {
+    if (err instanceof HookDecisionSignal) return shapeForMcpTool(event, err.decision);
+    return {
+      pp_hook_ok: false,
+      pp_hook_error: `hook ${event}/${name} crashed: ${err instanceof Error ? err.message : String(err)}`,
+      pp_hook_note:
+        "fail-open, matching the CLI path, which exits 0 on a handler crash rather than blocking",
+    };
+  } finally {
+    // Restore unconditionally: leaving HOOK_MODE at "in_process" would make a
+    // later CLI invocation throw where it must exit, converting a real block
+    // into an unhandled rejection.
+    CURRENT_EVENT = prevEvent;
+    HOOK_MODE = prevMode;
+  }
 }
 
 export async function runHookDispatcher(args: string[]): Promise<void> {

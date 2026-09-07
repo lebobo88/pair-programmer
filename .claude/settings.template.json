@@ -1,6 +1,6 @@
 {
   "$schema": "https://json.schemastore.org/claude-code-settings.json",
-  "_comment": "Template for Phase 10 settings (37 hooks across 10 events: SessionStart 6, PreToolUse 8, PostToolUse 7, PostToolUseFailure 1, FileChanged 1, PreCompact 1, PostCompact 1, SessionEnd 1, SubagentStart 1, SubagentStop 1, UserPromptSubmit 6, Stop 2 -- note the 5-events figure in this file's own name is stale, kept as a filename only). Corrected from a stale count of 24 on 2026-09-05, then from 26 to 29 on Phase D of cc-standards-alignment (issue #46), then from 29 to 37 on Phase H (issue #49, execution-events ledger): every entry now declares a numeric `timeout`, and the three previously-unwired TheEights episodic-recall handlers (eights-recall-project, eights-recall-stage, eights-recall-request) are wired. daemon/test/hook-inventory.unit.mjs asserts the count against this file so it cannot drift again. TIMEOUT CLASSES (seconds, per handler consequence-of-kill): BLOCKING and RECOVERY hooks carry 30 (the sibling `hooks.json` baseline); INFORMATIONAL hooks carry 20 -- a documented deviation from the spec's derived 15: the eights-recall trio's daemon-side worst case is bounded at 14 000 ms (ECOSYSTEM_PROBE_TIMEOUT_MS x2 + ECOSYSTEM_CALL_TIMEOUT_MS, config.ts:450/:459 via daemon/src/ecosystem/eights-client.ts:335/:341/:398); 20 adds headroom for Windows Node cold-start on top of that bound, raised by the cross-vendor judge as LOW-5 on the 15s figure's thin ~1s margin. `daemon-up` is a documented, accepted fail-open residual: a timeout kill converts its fail-closed liveness guard into fail-open in precisely the case it exists to catch, because the Claude Code hook docs state verbatim that a timed-out command/http/mcp_tool hook 'doesn't block the tool call. The call continues through the normal permission flow, so don't count on a stalled hook to act as a gate.' This is not closed by Phase D; see follow-up FU-1. Phase H's eight new hooks (record-execution-failure, surface-api-killed-run, constitution-drift-detect, run-context-save, run-context-reinject, session-orphan-sweep, subagent-dispatch-record, subagent-stop-observe) are all `command` hooks per spec.md §7 (the `mcp_tool` conversion is Phase L, GitHub #53) and none reference `additionalContext` (undocumented on the hooks page; R9a). `session-orphan-sweep`'s timeout (20) satisfies R11's >=20 floor against the documented SessionEnd budget (1.5s shared, raised to match a longer declared per-hook timeout up to 60s). The installer (`scripts/install-user.ps1`) substitutes `__PP_DAEMON__` in TWO ways: (a) USER scope (~/.claude/settings.json) — replaced with the absolute path to daemon/dist/index.js on the installing machine, so hooks fire correctly in every project where $CLAUDE_PROJECT_DIR is not the pair-programmer repo; (b) PROJECT scope (<repo>/.claude/settings.json, git-ignored) — replaced with the literal string `$CLAUDE_PROJECT_DIR/daemon/dist/index.js`, which Claude Code expands at hook-execution time, making the project-local file machine-independent and self-relocating. Each hook calls `node <daemon> hook <event> <name>` which dispatches to a typed handler in `src/hooks/dispatcher.ts`. PHASE J (issue #51, epic #42, 2026-09-07) CORRECTED A FALSE CLAIM HERE: the previous sentence claimed PreToolUse blockers default to advisory and named a second, made-up env var (spelled out, for the historical record, in README.md's corrected 'Hardening & Configuration' table rather than repeated here -- daemon/test/settings-policy.unit.mjs specifically guards against that exact name regressing back into any doc) as the way to harden them, alongside PP_ALLOW_DANGER=0. Both halves were wrong, verified against dispatcher.ts on disk. First, `enforce-active-run` (dispatcher.ts, matcher Edit|Write|MultiEdit|NotebookEdit) HARD-BLOCKS by default when no run owns the edit -- it calls reply(false, ...), not an advisory warning -- and its only escape hatch is PP_ALLOW_AD_HOC=1. The made-up flag is read NOWHERE in daemon/src; it does not exist (it also appeared, equally falsely, in README.md and in the git-ignored, installer-generated .claude/settings.json, which this template is the source of truth for). Second, PP_ALLOW_DANGER's real semantics (dispatcher.ts:402, codex-server.ts:45) are the inverse of 'set to 0 to harden': the danger-full-access sandbox guard already blocks unless PP_ALLOW_DANGER === '1', so the guard is hardened by DEFAULT (unset) and '=0' is a redundant no-op, not a hardening action. PERMISSIONS.DENY: permissions.deny below uses the `Edit(...)` path-rule form, never `Write(...)`/`NotebookEdit(...)`/`MultiEdit(...)`. Per code.claude.com/docs/en/permissions.md, Claude Code checks file-permission path rules against `Edit(path)` and `Read(path)` only -- a `Write(...)` rule is accepted syntactically but never consulted, and Claude Code warns at startup that it's dead. `Edit` rules apply to every built-in tool that edits files (Write, NotebookEdit, MultiEdit included), so `Edit(./CONSTITUTION.md)` is the one form that actually covers all of them. This is DEFENCE IN DEPTH, NOT INVIOLABILITY: it constrains Claude's own tool calls only. It cannot stop a shell command, another CLI (Codex/agy), or a hand-edit outside Claude Code, and it is not a substitute for the daemon-side gate or for Hard Rule 1 in AGENTS.md ('Never edit CONSTITUTION.md... start_run records the constitution SHA... amendments are HITL-only'). It exists because enforce-active-run explicitly PERMITS `.claude/` and `.harness/` edits, so nothing else on the Claude Code side REFUSES a constitution edit outright. CORRECTED 2026-09-07 by the Phase J docs-stage cross-vendor judge (agy gemini-3.8-flash-medium, verdict_YA-l01mObv), which read this very file and found the counter-example: an earlier draft of this sentence claimed nothing else on the Claude Code side guarded the constitution AT ALL, which was false -- the FileChanged hook below (matcher CONSTITUTION.md, handler constitution-drift-detect, timeout 20) was added by Phase H of this same campaign and is Claude-side, client-configured protection on this exact file. The accurate distinction is PREVENTATIVE vs REACTIVE: constitution-drift-detect fires AFTER a write lands and reports drift; this deny rule refuses the write. Neither subsumes the other, and the reactive hook remains necessary precisely because this deny rule reaches only Claude's own edit tools -- a shell command or another CLI still reaches the file, and drift detection is what catches that. PHASE K (issue #52, epic #42, 2026-09-07) ADDED ONE ALLOW ENTRY AND DELIBERATELY DID NOT ADD A SETTING THE PLAN ASKED FOR. permissions.allow gains `Workflow(pp-best-of-fanout)` -- scoped to that one saved workflow by name, never a bare `Workflow` (which would approve EVERY workflow launch, including ad hoc scripts written for unrelated tasks). It is needed because `claude -p` and the Agent SDK never show the workflow approval prompt and instead run the Workflow tool call through normal permission evaluation; interactive sessions are still prompted per permission mode. The workflow it names performs step 6 of /pp:best-of only (the N-candidate engineer fan-out) and is opt-in -- the prose Task-based path in .claude/commands/pp/best-of.md remains the default. WORKFLOWSIZEGUIDELINE IS NOT SET, AND THE PLAN'S REQUESTED VALUE WAS WRONG ON TWO COUNTS. The plan (and GitHub #52) asked for `workflowSizeGuideline: small` 'since N is 2-8'. The key IS real and IS settable in any settings file on Claude Code >= 2.1.219 (installed: 2.1.263), where it takes precedence over /config -- so this is not an unsatisfiable task, it is a wrong one. First, the documented values map to agent counts and `small` means FEWER THAN 5 AGENTS, while best-of-N runs up to N=8; `small` would advise against the workflow's own maximum. `medium` (fewer than 15) is the correct bracket and is already the built-in default, so setting it would change nothing. Second, and decisive: the guideline is advice to Claude about how many agents to aim for WHEN IT WRITES a dynamic workflow. pp-best-of-fanout.js is a saved script whose agent count is already fixed at N by the daemon's candidate array, so the guideline cannot govern it at all. Setting it here would instead constrain every OTHER workflow anyone writes in this project -- a session-wide behaviour change made as a side effect of a best-of-N phase. The runtime caps (16 concurrent, 4096 items per call, 1000 agents per run) apply regardless and already bound N=8 comfortably. ENV BLOCK: the daemon reads exactly fifteen PP_ vars from process.env (re-derived by grep against daemon/src on 2026-09-07, not transcribed from prior docs): PP_ALLOW_AD_HOC, PP_ALLOW_BEST_OF_WITHOUT_JUDGE, PP_ALLOW_DANGER, PP_ALLOW_DESTRUCTIVE, PP_ALLOW_SINGLE_VENDOR, PP_ALLOW_SMOKE_FAILED_WINNER, PP_DB_PATH, PP_DEBUG, PP_DISABLE_AGY, PP_DISABLE_NPX_VALIDATORS, PP_EIGHTS_DAEMON, PP_HOME, PP_LOG_LEVEL, PP_STRICT_AGENT_TYPE, PP_STRICT_PRODUCER. None of them are set below, deliberately: the `PP_ALLOW_*`/`PP_DISABLE_*` names are escape hatches whose entire purpose is opt-in, per-invocation bypass of a guard (PP_DISABLE_AGY above all -- setting it changes the default cross-vendor judge matrix, a product decision, not a client-settings default); baking any of them into a file every session and every subprocess inherits would silently disable that guard for everyone, permanently, which is the opposite of what an escape hatch is for. PP_STRICT_AGENT_TYPE and PP_STRICT_PRODUCER are already strict BY DEFAULT (they read `!== '0'`, i.e. anything but an explicit opt-out stays strict) so setting them to '1' here would be a no-op and setting them to '0' would be the same class of silent-bypass problem. PP_HOME, PP_DB_PATH, and PP_EIGHTS_DAEMON are machine-specific filesystem paths -- hardcoding any of them into a file every contributor's machine shares would break every other contributor's daemon or peer discovery. PP_LOG_LEVEL and PP_DEBUG already default to the correct values in code (paths.ts / logger.ts / helpers.ts) so setting them here would duplicate, not add, a default. Operators who want any of these should set them in the user's shell profile or in the git-ignored, installer-generated `.claude/settings.json` (or `.claude/settings.local.json`), never in this checked-in template -- see the README.md 'Hardening & Configuration' table for the per-flag effect. Separately, `MAX_MCP_OUTPUT_TOKENS` is a name this campaign has seen referenced for the MCP client's default result-size cap (the 25,000-token default cap that `get_run`'s `anthropic/maxResultSizeChars: 300000` annotation exists to raise past, per the Phase B / R2.4-R2.7 comment on that tool) -- but it was NOT found documented on code.claude.com's settings-reference page during this phase's verification pass, it is not read by daemon/src at all (it would be a Claude Code client-side setting, not a daemon one), and no default for it is claimed here. It is intentionally left OUT of the env block below for that reason, not set to any value.",
+  "_comment": "Template for Phase 10 settings (37 hooks across 13 events: SessionStart 6, PreToolUse 8, PostToolUse 7, PostToolUseFailure 1, StopFailure 1, FileChanged 1, PreCompact 1, PostCompact 1, SessionEnd 1, SubagentStart 1, SubagentStop 1, UserPromptSubmit 6, Stop 2 -- PHASE L CORRECTED THIS HEADER: it previously said \"10 events\" over an enumeration of twelve that omitted StopFailure and summed to 36, against a file holding 37 across 13. hook-inventory.unit.mjs asserted only the total, which is why three wrong numbers sat here undetected; it now asserts the per-event breakdown too -- note the 5-events figure in this file's own name is stale, kept as a filename only). Corrected from a stale count of 24 on 2026-09-05, then from 26 to 29 on Phase D of cc-standards-alignment (issue #46), then from 29 to 37 on Phase H (issue #49, execution-events ledger): every entry now declares a numeric `timeout`, and the three previously-unwired TheEights episodic-recall handlers (eights-recall-project, eights-recall-stage, eights-recall-request) are wired. daemon/test/hook-inventory.unit.mjs asserts the count against this file so it cannot drift again. TIMEOUT CLASSES (seconds, per handler consequence-of-kill): BLOCKING and RECOVERY hooks carry 30 (the sibling `hooks.json` baseline); INFORMATIONAL hooks carry 20 -- a documented deviation from the spec's derived 15: the eights-recall trio's daemon-side worst case is bounded at 14 000 ms (ECOSYSTEM_PROBE_TIMEOUT_MS x2 + ECOSYSTEM_CALL_TIMEOUT_MS, config.ts:450/:459 via daemon/src/ecosystem/eights-client.ts:335/:341/:398); 20 adds headroom for Windows Node cold-start on top of that bound, raised by the cross-vendor judge as LOW-5 on the 15s figure's thin ~1s margin. `daemon-up` is a documented, accepted fail-open residual: a timeout kill converts its fail-closed liveness guard into fail-open in precisely the case it exists to catch, because the Claude Code hook docs state verbatim that a timed-out command/http/mcp_tool hook 'doesn't block the tool call. The call continues through the normal permission flow, so don't count on a stalled hook to act as a gate.' This is not closed by Phase D; see follow-up FU-1. Phase H's eight new hooks (record-execution-failure, surface-api-killed-run, constitution-drift-detect, run-context-save, run-context-reinject, session-orphan-sweep, subagent-dispatch-record, subagent-stop-observe) are all `command` hooks per spec.md §7 (the `mcp_tool` conversion is Phase L, GitHub #53) and none reference `additionalContext` (undocumented on the hooks page; R9a). `session-orphan-sweep`'s timeout (20) satisfies R11's >=20 floor against the documented SessionEnd budget (1.5s shared, raised to match a longer declared per-hook timeout up to 60s). The installer (`scripts/install-user.ps1`) substitutes `__PP_DAEMON__` in TWO ways: (a) USER scope (~/.claude/settings.json) — replaced with the absolute path to daemon/dist/index.js on the installing machine, so hooks fire correctly in every project where $CLAUDE_PROJECT_DIR is not the pair-programmer repo; (b) PROJECT scope (<repo>/.claude/settings.json, git-ignored) — replaced with the literal string `$CLAUDE_PROJECT_DIR/daemon/dist/index.js`, which Claude Code expands at hook-execution time, making the project-local file machine-independent and self-relocating. Each hook calls `node <daemon> hook <event> <name>` which dispatches to a typed handler in `src/hooks/dispatcher.ts`. PHASE J (issue #51, epic #42, 2026-09-07) CORRECTED A FALSE CLAIM HERE: the previous sentence claimed PreToolUse blockers default to advisory and named a second, made-up env var (spelled out, for the historical record, in README.md's corrected 'Hardening & Configuration' table rather than repeated here -- daemon/test/settings-policy.unit.mjs specifically guards against that exact name regressing back into any doc) as the way to harden them, alongside PP_ALLOW_DANGER=0. Both halves were wrong, verified against dispatcher.ts on disk. First, `enforce-active-run` (dispatcher.ts, matcher Edit|Write|MultiEdit|NotebookEdit) HARD-BLOCKS by default when no run owns the edit -- it calls reply(false, ...), not an advisory warning -- and its only escape hatch is PP_ALLOW_AD_HOC=1. The made-up flag is read NOWHERE in daemon/src; it does not exist (it also appeared, equally falsely, in README.md and in the git-ignored, installer-generated .claude/settings.json, which this template is the source of truth for). Second, PP_ALLOW_DANGER's real semantics (dispatcher.ts:402, codex-server.ts:45) are the inverse of 'set to 0 to harden': the danger-full-access sandbox guard already blocks unless PP_ALLOW_DANGER === '1', so the guard is hardened by DEFAULT (unset) and '=0' is a redundant no-op, not a hardening action. PERMISSIONS.DENY: permissions.deny below uses the `Edit(...)` path-rule form, never `Write(...)`/`NotebookEdit(...)`/`MultiEdit(...)`. Per code.claude.com/docs/en/permissions.md, Claude Code checks file-permission path rules against `Edit(path)` and `Read(path)` only -- a `Write(...)` rule is accepted syntactically but never consulted, and Claude Code warns at startup that it's dead. `Edit` rules apply to every built-in tool that edits files (Write, NotebookEdit, MultiEdit included), so `Edit(./CONSTITUTION.md)` is the one form that actually covers all of them. This is DEFENCE IN DEPTH, NOT INVIOLABILITY: it constrains Claude's own tool calls only. It cannot stop a shell command, another CLI (Codex/agy), or a hand-edit outside Claude Code, and it is not a substitute for the daemon-side gate or for Hard Rule 1 in AGENTS.md ('Never edit CONSTITUTION.md... start_run records the constitution SHA... amendments are HITL-only'). It exists because enforce-active-run explicitly PERMITS `.claude/` and `.harness/` edits, so nothing else on the Claude Code side REFUSES a constitution edit outright. CORRECTED 2026-09-07 by the Phase J docs-stage cross-vendor judge (agy gemini-3.8-flash-medium, verdict_YA-l01mObv), which read this very file and found the counter-example: an earlier draft of this sentence claimed nothing else on the Claude Code side guarded the constitution AT ALL, which was false -- the FileChanged hook below (matcher CONSTITUTION.md, handler constitution-drift-detect, timeout 20) was added by Phase H of this same campaign and is Claude-side, client-configured protection on this exact file. The accurate distinction is PREVENTATIVE vs REACTIVE: constitution-drift-detect fires AFTER a write lands and reports drift; this deny rule refuses the write. Neither subsumes the other, and the reactive hook remains necessary precisely because this deny rule reaches only Claude's own edit tools -- a shell command or another CLI still reaches the file, and drift detection is what catches that. PHASE K (issue #52, epic #42, 2026-09-07) ADDED ONE ALLOW ENTRY AND DELIBERATELY DID NOT ADD A SETTING THE PLAN ASKED FOR. permissions.allow gains `Workflow(pp-best-of-fanout)` -- scoped to that one saved workflow by name, never a bare `Workflow` (which would approve EVERY workflow launch, including ad hoc scripts written for unrelated tasks). It is needed because `claude -p` and the Agent SDK never show the workflow approval prompt and instead run the Workflow tool call through normal permission evaluation; interactive sessions are still prompted per permission mode. The workflow it names performs step 6 of /pp:best-of only (the N-candidate engineer fan-out) and is opt-in -- the prose Task-based path in .claude/commands/pp/best-of.md remains the default. WORKFLOWSIZEGUIDELINE IS NOT SET, AND THE PLAN'S REQUESTED VALUE WAS WRONG ON TWO COUNTS. The plan (and GitHub #52) asked for `workflowSizeGuideline: small` 'since N is 2-8'. The key IS real and IS settable in any settings file on Claude Code >= 2.1.219 (installed: 2.1.263), where it takes precedence over /config -- so this is not an unsatisfiable task, it is a wrong one. First, the documented values map to agent counts and `small` means FEWER THAN 5 AGENTS, while best-of-N runs up to N=8; `small` would advise against the workflow's own maximum. `medium` (fewer than 15) is the correct bracket and is already the built-in default, so setting it would change nothing. Second, and decisive: the guideline is advice to Claude about how many agents to aim for WHEN IT WRITES a dynamic workflow. pp-best-of-fanout.js is a saved script whose agent count is already fixed at N by the daemon's candidate array, so the guideline cannot govern it at all. Setting it here would instead constrain every OTHER workflow anyone writes in this project -- a session-wide behaviour change made as a side effect of a best-of-N phase. The runtime caps (16 concurrent, 4096 items per call, 1000 agents per run) apply regardless and already bound N=8 comfortably. PHASE L (issue #53, epic #42, 2026-09-07) SPLIT THE HOOK SET ACROSS TWO TRANSPORTS. 16 of the 37 hooks are now `type: \"mcp_tool\"` on the `pp_harness` server, calling `hook_<event>_<name>` adapters that run inside the already-connected daemon instead of paying a Node cold start and a SQLite reopen per event -- a cost paid on EVERY tool call for the seven PostToolUse handlers. The adapters are generated from the daemon handler registry, not listed, so the tool surface cannot disagree with it. THE 21 THAT STAY `command` STAY FOR THREE DOCUMENTED REASONS, none of them about speed. (1) ANY HANDLER THAT CAN DENY stays a command hook: the hooks docs state that if the named server is not connected, or the tool returns isError:true, \"the hook produces a non-blocking error and execution continues\". That would give an mcp_tool guard a FAIL-OPEN failure mode it does not have as a command hook, precisely when the daemon is sick -- which is when a guard matters most. So all seven PreToolUse blockers (block-destructive-shell, enforce-active-run, enforce-vendor-matrix, enforce-sandbox-policy, enforce-no-secrets, enforce-validator-gate, enforce-rfc2119-language) and Stop/decision-log-required remain command hooks. An earlier draft of this phase converted the PreToolUse blockers on the grounds that they carry a JSON decision the client parses; that was true and beside the point, because the shape surviving the transport does not help when the call never happens. (2) SESSIONSTART stays command because the docs say SessionStart and Setup \"typically fire before servers finish connecting, so hooks on those events should expect the not-connected error on first run\" -- which would turn daemon-up, a fail-closed liveness gate, fail-open in exactly the case it exists for. That subsumes the plan's separate daemon-up carve-out: the reason is the event, not just the self-reference of probing the daemon through the daemon. (3) SESSIONEND STAYS COMMAND BECAUSE ITS BUDGET DEPENDS ON A DECLARED `timeout`. The documented SessionEnd budget is 1.5s SHARED across its hooks, raised only to match a longer declared per-hook `timeout` (up to 60s) -- and `timeout` is a command-hook field with no mcp_tool equivalent. Converting session-orphan-sweep therefore silently capped it back at 1.5s and would have had the sweep killed mid-run. This was NOT foreseen when the phase was planned: Phase H's own guard caught it here, asserting the declared timeout is >= 20 in BOTH manifests against a converted entry that declares none. It is the clearest case in this campaign of a guard earning its keep against the author of the next phase. (4) USERPROMPTSUBMIT STAYS COMMAND, REVERTED AFTER THE JUDGE ARGUED THE TRADE BETTER THAN THE DRIVER DID. The same connection window that bars SessionStart catches the FIRST UserPromptSubmit of a session: if pp_harness has not connected, all six handlers become non-blocking errors and their output is dropped. The driver first kept them converted and merely disclosed this, reasoning from FREQUENCY (they fire often, so the cold start is worth removing). The cross-vendor judge reasoned from VALUE AT THE MOMENT OF LOSS, which is the right frame for a once-per-session race: turn 1 is exactly when eights-recall-request (cross-run memory), surfaced-run-reminder and profile-aware-nudge matter most, and losing them biases the whole trajectory of a run. The frequency premise was also simply wrong -- prompt submissions are far rarer than tool calls, so the saving here is small beside PostToolUse, which is where the real win is and which keeps it. Reverted. NO `async: true` ANYWHERE, and not merely by choice -- `async` is a command-hook field, mutually exclusive with mcp_tool, so it cannot appear on the converted 16 at all. That is also what we want: five converted PostToolUse handlers write SQLite, and eventually-consistent telemetry would collide with Phase H's idempotency guarantees. THE `input` MAPS ARE A CONTRACT, NOT BOILERPLATE. An mcp_tool hook receives ONLY the fields its `input` declares (a command hook gets the whole envelope on stdin), so each event declares the fields its handlers read. What the docs do NOT specify is what becomes of a `${path}` whose key is absent from the envelope, so the daemon treats an exact `${...}` value as ABSENT (stripUnsubstitutedPlaceholders, dispatcher.ts) -- correct whether the runtime substitutes an empty string or leaves the literal, and it stops the string \"${tool_name}\" from being written into a ledger row as if it were data. THE SIBLING `hooks.json` (Copilot CLI runtime) IS DELIBERATELY NOT CONVERTED. It uses a different hook schema entirely -- `{type, bash, powershell, timeoutSec}` with no matcher nesting, versus Claude Code's `{matcher, hooks:[{type, command, timeout}]}` -- so `mcp_tool`, `server` and `tool` are Claude Code fields with no established meaning there, and converting on the assumption that they transfer would risk breaking a working runtime for no measured gain. The parity guard therefore asserts that the two files wire the same HANDLER SET while allowing the transport to differ. ENV BLOCK: the daemon reads exactly fifteen PP_ vars from process.env (re-derived by grep against daemon/src on 2026-09-07, not transcribed from prior docs): PP_ALLOW_AD_HOC, PP_ALLOW_BEST_OF_WITHOUT_JUDGE, PP_ALLOW_DANGER, PP_ALLOW_DESTRUCTIVE, PP_ALLOW_SINGLE_VENDOR, PP_ALLOW_SMOKE_FAILED_WINNER, PP_DB_PATH, PP_DEBUG, PP_DISABLE_AGY, PP_DISABLE_NPX_VALIDATORS, PP_EIGHTS_DAEMON, PP_HOME, PP_LOG_LEVEL, PP_STRICT_AGENT_TYPE, PP_STRICT_PRODUCER. None of them are set below, deliberately: the `PP_ALLOW_*`/`PP_DISABLE_*` names are escape hatches whose entire purpose is opt-in, per-invocation bypass of a guard (PP_DISABLE_AGY above all -- setting it changes the default cross-vendor judge matrix, a product decision, not a client-settings default); baking any of them into a file every session and every subprocess inherits would silently disable that guard for everyone, permanently, which is the opposite of what an escape hatch is for. PP_STRICT_AGENT_TYPE and PP_STRICT_PRODUCER are already strict BY DEFAULT (they read `!== '0'`, i.e. anything but an explicit opt-out stays strict) so setting them to '1' here would be a no-op and setting them to '0' would be the same class of silent-bypass problem. PP_HOME, PP_DB_PATH, and PP_EIGHTS_DAEMON are machine-specific filesystem paths -- hardcoding any of them into a file every contributor's machine shares would break every other contributor's daemon or peer discovery. PP_LOG_LEVEL and PP_DEBUG already default to the correct values in code (paths.ts / logger.ts / helpers.ts) so setting them here would duplicate, not add, a default. Operators who want any of these should set them in the user's shell profile or in the git-ignored, installer-generated `.claude/settings.json` (or `.claude/settings.local.json`), never in this checked-in template -- see the README.md 'Hardening & Configuration' table for the per-flag effect. Separately, `MAX_MCP_OUTPUT_TOKENS` is a name this campaign has seen referenced for the MCP client's default result-size cap (the 25,000-token default cap that `get_run`'s `anthropic/maxResultSizeChars: 300000` annotation exists to raise past, per the Phase B / R2.4-R2.7 comment on that tool) -- but it was NOT found documented on code.claude.com's settings-reference page during this phase's verification pass, it is not read by daemon/src at all (it would be a Claude Code client-side setting, not a daemon one), and no default for it is claimed here. It is intentionally left OUT of the env block below for that reason, not set to any value.",
   "permissions": {
     "deny": [
       "Edit(./CONSTITUTION.md)"
@@ -39,67 +39,520 @@
   "env": {},
   "hooks": {
     "SessionStart": [
-      { "hooks": [{ "type": "command", "command": "node \"__PP_DAEMON__\" hook SessionStart daemon-up", "timeout": 30 }] },
-      { "hooks": [{ "type": "command", "command": "node \"__PP_DAEMON__\" hook SessionStart vendor-matrix", "timeout": 30 }] },
-      { "hooks": [{ "type": "command", "command": "node \"__PP_DAEMON__\" hook SessionStart cli-version-pin", "timeout": 20 }] },
-      { "hooks": [{ "type": "command", "command": "node \"__PP_DAEMON__\" hook SessionStart master-plan-load", "timeout": 20 }] },
-      { "hooks": [{ "type": "command", "command": "node \"__PP_DAEMON__\" hook SessionStart surfaced-runs", "timeout": 20 }] },
-      { "hooks": [{ "type": "command", "command": "node \"__PP_DAEMON__\" hook SessionStart eights-recall-project", "timeout": 20 }] }
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"__PP_DAEMON__\" hook SessionStart daemon-up",
+            "timeout": 30
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"__PP_DAEMON__\" hook SessionStart vendor-matrix",
+            "timeout": 30
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"__PP_DAEMON__\" hook SessionStart cli-version-pin",
+            "timeout": 20
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"__PP_DAEMON__\" hook SessionStart master-plan-load",
+            "timeout": 20
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"__PP_DAEMON__\" hook SessionStart surfaced-runs",
+            "timeout": 20
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"__PP_DAEMON__\" hook SessionStart eights-recall-project",
+            "timeout": 20
+          }
+        ]
+      }
     ],
     "PreToolUse": [
-      { "matcher": "Bash|PowerShell", "hooks": [{ "type": "command", "command": "node \"__PP_DAEMON__\" hook PreToolUse block-destructive-shell", "timeout": 30 }] },
-      { "matcher": "Edit|Write|MultiEdit|NotebookEdit", "hooks": [{ "type": "command", "command": "node \"__PP_DAEMON__\" hook PreToolUse enforce-active-run", "timeout": 30 }] },
-      { "matcher": "mcp__pp_codex__.*|mcp__pp_agy__.*", "hooks": [{ "type": "command", "command": "node \"__PP_DAEMON__\" hook PreToolUse enforce-vendor-matrix", "timeout": 30 }] },
-      { "matcher": "mcp__pp_codex__generate", "hooks": [{ "type": "command", "command": "node \"__PP_DAEMON__\" hook PreToolUse enforce-sandbox-policy", "timeout": 30 }] },
-      { "matcher": "Edit|Write|MultiEdit|mcp__pp_harness__archive_artifact", "hooks": [{ "type": "command", "command": "node \"__PP_DAEMON__\" hook PreToolUse enforce-no-secrets", "timeout": 30, "statusMessage": "pp: scanning this write for hardcoded credentials..." }] },
-      { "matcher": "Edit|Write|MultiEdit", "hooks": [{ "type": "command", "command": "node \"__PP_DAEMON__\" hook PreToolUse enforce-validator-gate", "timeout": 30, "statusMessage": "pp: checking the latest verdict before allowing this edit..." }] },
-      { "matcher": "Write|Edit|mcp__pp_harness__archive_artifact", "hooks": [{ "type": "command", "command": "node \"__PP_DAEMON__\" hook PreToolUse enforce-rfc2119-language", "timeout": 30 }] },
-      { "matcher": "mcp__pp_harness__start_stage", "hooks": [{ "type": "command", "command": "node \"__PP_DAEMON__\" hook PreToolUse eights-recall-stage", "timeout": 20 }] }
+      {
+        "matcher": "Bash|PowerShell",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"__PP_DAEMON__\" hook PreToolUse block-destructive-shell",
+            "timeout": 30
+          }
+        ]
+      },
+      {
+        "matcher": "Edit|Write|MultiEdit|NotebookEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"__PP_DAEMON__\" hook PreToolUse enforce-active-run",
+            "timeout": 30
+          }
+        ]
+      },
+      {
+        "matcher": "mcp__pp_codex__.*|mcp__pp_agy__.*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"__PP_DAEMON__\" hook PreToolUse enforce-vendor-matrix",
+            "timeout": 30
+          }
+        ]
+      },
+      {
+        "matcher": "mcp__pp_codex__generate",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"__PP_DAEMON__\" hook PreToolUse enforce-sandbox-policy",
+            "timeout": 30
+          }
+        ]
+      },
+      {
+        "matcher": "Edit|Write|MultiEdit|mcp__pp_harness__archive_artifact",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"__PP_DAEMON__\" hook PreToolUse enforce-no-secrets",
+            "timeout": 30,
+            "statusMessage": "pp: scanning this write for hardcoded credentials..."
+          }
+        ]
+      },
+      {
+        "matcher": "Edit|Write|MultiEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"__PP_DAEMON__\" hook PreToolUse enforce-validator-gate",
+            "timeout": 30,
+            "statusMessage": "pp: checking the latest verdict before allowing this edit..."
+          }
+        ]
+      },
+      {
+        "matcher": "Write|Edit|mcp__pp_harness__archive_artifact",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"__PP_DAEMON__\" hook PreToolUse enforce-rfc2119-language",
+            "timeout": 30
+          }
+        ]
+      },
+      {
+        "matcher": "mcp__pp_harness__start_stage",
+        "hooks": [
+          {
+            "type": "mcp_tool",
+            "server": "pp_harness",
+            "tool": "hook_PreToolUse_eights_recall_stage",
+            "input": {
+              "tool_name": "${tool_name}",
+              "tool_input": "${tool_input}",
+              "cwd": "${cwd}",
+              "session_id": "${session_id}",
+              "transcript_path": "${transcript_path}",
+              "agent_id": "${agent_id}",
+              "agent_type": "${agent_type}",
+              "permission_mode": "${permission_mode}"
+            }
+          }
+        ]
+      }
     ],
     "PostToolUse": [
-      { "matcher": "mcp__pp_codex__.*|mcp__pp_agy__.*", "hooks": [{ "type": "command", "command": "node \"__PP_DAEMON__\" hook PostToolUse cost-tally", "timeout": 20 }] },
-      { "matcher": "mcp__pp_codex__.*|mcp__pp_agy__.*", "hooks": [{ "type": "command", "command": "node \"__PP_DAEMON__\" hook PostToolUse record-attempt", "timeout": 30 }] },
-      { "matcher": "mcp__pp_harness__archive_artifact", "hooks": [{ "type": "command", "command": "node \"__PP_DAEMON__\" hook PostToolUse taxonomy-coverage-update", "timeout": 20 }] },
-      { "matcher": "mcp__pp_harness__archive_artifact", "hooks": [{ "type": "command", "command": "node \"__PP_DAEMON__\" hook PostToolUse hash-artifact", "timeout": 30 }] },
-      { "matcher": "mcp__pp_harness__record_verdict", "hooks": [{ "type": "command", "command": "node \"__PP_DAEMON__\" hook PostToolUse loop-ceiling-tally", "timeout": 20 }] },
-      { "matcher": "mcp__pp_harness__record_verdict", "hooks": [{ "type": "command", "command": "node \"__PP_DAEMON__\" hook PostToolUse verdict-rubric-coverage", "timeout": 20 }] },
-      { "matcher": "mcp__pp_harness__finalize_run", "hooks": [{ "type": "command", "command": "node \"__PP_DAEMON__\" hook PostToolUse update-master-plan", "timeout": 30 }] }
+      {
+        "matcher": "mcp__pp_codex__.*|mcp__pp_agy__.*",
+        "hooks": [
+          {
+            "type": "mcp_tool",
+            "server": "pp_harness",
+            "tool": "hook_PostToolUse_cost_tally",
+            "input": {
+              "tool_name": "${tool_name}",
+              "tool_input": "${tool_input}",
+              "tool_response": "${tool_response}",
+              "cwd": "${cwd}",
+              "session_id": "${session_id}",
+              "transcript_path": "${transcript_path}",
+              "agent_id": "${agent_id}",
+              "agent_type": "${agent_type}",
+              "prompt_id": "${prompt_id}"
+            }
+          }
+        ]
+      },
+      {
+        "matcher": "mcp__pp_codex__.*|mcp__pp_agy__.*",
+        "hooks": [
+          {
+            "type": "mcp_tool",
+            "server": "pp_harness",
+            "tool": "hook_PostToolUse_record_attempt",
+            "input": {
+              "tool_name": "${tool_name}",
+              "tool_input": "${tool_input}",
+              "tool_response": "${tool_response}",
+              "cwd": "${cwd}",
+              "session_id": "${session_id}",
+              "transcript_path": "${transcript_path}",
+              "agent_id": "${agent_id}",
+              "agent_type": "${agent_type}",
+              "prompt_id": "${prompt_id}"
+            }
+          }
+        ]
+      },
+      {
+        "matcher": "mcp__pp_harness__archive_artifact",
+        "hooks": [
+          {
+            "type": "mcp_tool",
+            "server": "pp_harness",
+            "tool": "hook_PostToolUse_taxonomy_coverage_update",
+            "input": {
+              "tool_name": "${tool_name}",
+              "tool_input": "${tool_input}",
+              "tool_response": "${tool_response}",
+              "cwd": "${cwd}",
+              "session_id": "${session_id}",
+              "transcript_path": "${transcript_path}",
+              "agent_id": "${agent_id}",
+              "agent_type": "${agent_type}",
+              "prompt_id": "${prompt_id}"
+            }
+          }
+        ]
+      },
+      {
+        "matcher": "mcp__pp_harness__archive_artifact",
+        "hooks": [
+          {
+            "type": "mcp_tool",
+            "server": "pp_harness",
+            "tool": "hook_PostToolUse_hash_artifact",
+            "input": {
+              "tool_name": "${tool_name}",
+              "tool_input": "${tool_input}",
+              "tool_response": "${tool_response}",
+              "cwd": "${cwd}",
+              "session_id": "${session_id}",
+              "transcript_path": "${transcript_path}",
+              "agent_id": "${agent_id}",
+              "agent_type": "${agent_type}",
+              "prompt_id": "${prompt_id}"
+            }
+          }
+        ]
+      },
+      {
+        "matcher": "mcp__pp_harness__record_verdict",
+        "hooks": [
+          {
+            "type": "mcp_tool",
+            "server": "pp_harness",
+            "tool": "hook_PostToolUse_loop_ceiling_tally",
+            "input": {
+              "tool_name": "${tool_name}",
+              "tool_input": "${tool_input}",
+              "tool_response": "${tool_response}",
+              "cwd": "${cwd}",
+              "session_id": "${session_id}",
+              "transcript_path": "${transcript_path}",
+              "agent_id": "${agent_id}",
+              "agent_type": "${agent_type}",
+              "prompt_id": "${prompt_id}"
+            }
+          }
+        ]
+      },
+      {
+        "matcher": "mcp__pp_harness__record_verdict",
+        "hooks": [
+          {
+            "type": "mcp_tool",
+            "server": "pp_harness",
+            "tool": "hook_PostToolUse_verdict_rubric_coverage",
+            "input": {
+              "tool_name": "${tool_name}",
+              "tool_input": "${tool_input}",
+              "tool_response": "${tool_response}",
+              "cwd": "${cwd}",
+              "session_id": "${session_id}",
+              "transcript_path": "${transcript_path}",
+              "agent_id": "${agent_id}",
+              "agent_type": "${agent_type}",
+              "prompt_id": "${prompt_id}"
+            }
+          }
+        ]
+      },
+      {
+        "matcher": "mcp__pp_harness__finalize_run",
+        "hooks": [
+          {
+            "type": "mcp_tool",
+            "server": "pp_harness",
+            "tool": "hook_PostToolUse_update_master_plan",
+            "input": {
+              "tool_name": "${tool_name}",
+              "tool_input": "${tool_input}",
+              "tool_response": "${tool_response}",
+              "cwd": "${cwd}",
+              "session_id": "${session_id}",
+              "transcript_path": "${transcript_path}",
+              "agent_id": "${agent_id}",
+              "agent_type": "${agent_type}",
+              "prompt_id": "${prompt_id}"
+            }
+          }
+        ]
+      }
     ],
     "PostToolUseFailure": [
-      { "matcher": "mcp__pp_codex__.*|mcp__pp_agy__.*", "hooks": [{ "type": "command", "command": "node \"__PP_DAEMON__\" hook PostToolUseFailure record-execution-failure", "timeout": 30 }] }
+      {
+        "matcher": "mcp__pp_codex__.*|mcp__pp_agy__.*",
+        "hooks": [
+          {
+            "type": "mcp_tool",
+            "server": "pp_harness",
+            "tool": "hook_PostToolUseFailure_record_execution_failure",
+            "input": {
+              "tool_name": "${tool_name}",
+              "tool_input": "${tool_input}",
+              "tool_response": "${tool_response}",
+              "cwd": "${cwd}",
+              "session_id": "${session_id}",
+              "agent_id": "${agent_id}",
+              "agent_type": "${agent_type}",
+              "prompt_id": "${prompt_id}",
+              "reason": "${reason}"
+            }
+          }
+        ]
+      }
     ],
     "StopFailure": [
-      { "hooks": [{ "type": "command", "command": "node \"__PP_DAEMON__\" hook StopFailure surface-api-killed-run", "timeout": 30 }] }
+      {
+        "hooks": [
+          {
+            "type": "mcp_tool",
+            "server": "pp_harness",
+            "tool": "hook_StopFailure_surface_api_killed_run",
+            "input": {
+              "cwd": "${cwd}",
+              "session_id": "${session_id}",
+              "transcript_path": "${transcript_path}",
+              "reason": "${reason}"
+            }
+          }
+        ]
+      }
     ],
     "FileChanged": [
-      { "matcher": "CONSTITUTION.md", "hooks": [{ "type": "command", "command": "node \"__PP_DAEMON__\" hook FileChanged constitution-drift-detect", "timeout": 20 }] }
+      {
+        "matcher": "CONSTITUTION.md",
+        "hooks": [
+          {
+            "type": "mcp_tool",
+            "server": "pp_harness",
+            "tool": "hook_FileChanged_constitution_drift_detect",
+            "input": {
+              "file_path": "${file_path}",
+              "cwd": "${cwd}",
+              "session_id": "${session_id}"
+            }
+          }
+        ]
+      }
     ],
     "PreCompact": [
-      { "hooks": [{ "type": "command", "command": "node \"__PP_DAEMON__\" hook PreCompact run-context-save", "timeout": 20 }] }
+      {
+        "hooks": [
+          {
+            "type": "mcp_tool",
+            "server": "pp_harness",
+            "tool": "hook_PreCompact_run_context_save",
+            "input": {
+              "cwd": "${cwd}",
+              "session_id": "${session_id}",
+              "transcript_path": "${transcript_path}"
+            }
+          }
+        ]
+      }
     ],
     "PostCompact": [
-      { "hooks": [{ "type": "command", "command": "node \"__PP_DAEMON__\" hook PostCompact run-context-reinject", "timeout": 20 }] }
+      {
+        "hooks": [
+          {
+            "type": "mcp_tool",
+            "server": "pp_harness",
+            "tool": "hook_PostCompact_run_context_reinject",
+            "input": {
+              "cwd": "${cwd}",
+              "session_id": "${session_id}",
+              "transcript_path": "${transcript_path}"
+            }
+          }
+        ]
+      }
     ],
     "SessionEnd": [
-      { "hooks": [{ "type": "command", "command": "node \"__PP_DAEMON__\" hook SessionEnd session-orphan-sweep", "timeout": 20 }] }
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"__PP_DAEMON__\" hook SessionEnd session-orphan-sweep",
+            "timeout": 20
+          }
+        ]
+      }
     ],
     "SubagentStart": [
-      { "hooks": [{ "type": "command", "command": "node \"__PP_DAEMON__\" hook SubagentStart subagent-dispatch-record", "timeout": 20 }] }
+      {
+        "hooks": [
+          {
+            "type": "mcp_tool",
+            "server": "pp_harness",
+            "tool": "hook_SubagentStart_subagent_dispatch_record",
+            "input": {
+              "cwd": "${cwd}",
+              "session_id": "${session_id}",
+              "agent_id": "${agent_id}",
+              "agent_type": "${agent_type}",
+              "prompt_id": "${prompt_id}"
+            }
+          }
+        ]
+      }
     ],
     "SubagentStop": [
-      { "hooks": [{ "type": "command", "command": "node \"__PP_DAEMON__\" hook SubagentStop subagent-stop-observe", "timeout": 20 }] }
+      {
+        "hooks": [
+          {
+            "type": "mcp_tool",
+            "server": "pp_harness",
+            "tool": "hook_SubagentStop_subagent_stop_observe",
+            "input": {
+              "cwd": "${cwd}",
+              "session_id": "${session_id}",
+              "agent_id": "${agent_id}",
+              "agent_type": "${agent_type}",
+              "prompt_id": "${prompt_id}"
+            }
+          }
+        ]
+      }
     ],
     "UserPromptSubmit": [
-      { "hooks": [{ "type": "command", "command": "node \"__PP_DAEMON__\" hook UserPromptSubmit taxonomy-nudge", "timeout": 20 }] },
-      { "hooks": [{ "type": "command", "command": "node \"__PP_DAEMON__\" hook UserPromptSubmit team-suggester", "timeout": 20 }] },
-      { "hooks": [{ "type": "command", "command": "node \"__PP_DAEMON__\" hook UserPromptSubmit risk-flag", "timeout": 20 }] },
-      { "hooks": [{ "type": "command", "command": "node \"__PP_DAEMON__\" hook UserPromptSubmit surfaced-run-reminder", "timeout": 20 }] },
-      { "hooks": [{ "type": "command", "command": "node \"__PP_DAEMON__\" hook UserPromptSubmit profile-aware-nudge", "timeout": 20 }] },
-      { "hooks": [{ "type": "command", "command": "node \"__PP_DAEMON__\" hook UserPromptSubmit eights-recall-request", "timeout": 20 }] }
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"__PP_DAEMON__\" hook UserPromptSubmit taxonomy-nudge",
+            "timeout": 20
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"__PP_DAEMON__\" hook UserPromptSubmit team-suggester",
+            "timeout": 20
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"__PP_DAEMON__\" hook UserPromptSubmit risk-flag",
+            "timeout": 20
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"__PP_DAEMON__\" hook UserPromptSubmit surfaced-run-reminder",
+            "timeout": 20
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"__PP_DAEMON__\" hook UserPromptSubmit profile-aware-nudge",
+            "timeout": 20
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"__PP_DAEMON__\" hook UserPromptSubmit eights-recall-request",
+            "timeout": 20
+          }
+        ]
+      }
     ],
     "Stop": [
-      { "hooks": [{ "type": "command", "command": "node \"__PP_DAEMON__\" hook Stop decision-log-required", "timeout": 30 }] },
-      { "hooks": [{ "type": "command", "command": "node \"__PP_DAEMON__\" hook Stop summary-format-check", "timeout": 20 }] }
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"__PP_DAEMON__\" hook Stop decision-log-required",
+            "timeout": 30
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "mcp_tool",
+            "server": "pp_harness",
+            "tool": "hook_Stop_summary_format_check",
+            "input": {
+              "cwd": "${cwd}",
+              "session_id": "${session_id}",
+              "transcript_path": "${transcript_path}"
+            }
+          }
+        ]
+      }
     ]
   }
 }

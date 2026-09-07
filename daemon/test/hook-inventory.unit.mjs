@@ -163,17 +163,94 @@ function hasValidTimeout(v) {
   return typeof v === "number" && Number.isFinite(v) && v > 0;
 }
 
+/**
+ * Phase L (#53): recover `{event, name}` from an `mcp_tool` hook entry.
+ *
+ * A converted entry carries no command text — it names a tool
+ * `hook_<Event>_<handler_with_underscores>` on `pp_harness`. The handler's real
+ * name uses hyphens (`cost-tally`), which MCP tool names cannot contain, so the
+ * mapping back is not a plain split: the event is matched against the known
+ * event list and the remainder is the handler with `_` restored to `-`.
+ *
+ * Matching the event against `MCP_HOOK_EVENTS` rather than splitting on the first
+ * `_` is load-bearing, because several events are themselves multi-word
+ * (`PostToolUseFailure`, `SubagentStart`, `UserPromptSubmit`) and a naive split
+ * would mis-attribute every one of them — inventing a wiring mismatch, or
+ * worse, hiding a real one.
+ */
+/**
+ * Event names, longest first. Longest-first is not cosmetic: `PostToolUse` is a
+ * prefix of `PostToolUseFailure`, so scanning shortest-first would parse
+ * `hook_PostToolUseFailure_record_execution_failure` as event `PostToolUse`
+ * with handler `Failure-record-execution-failure` — a handler that does not
+ * exist, reported as a wiring mismatch that is not real.
+ */
+const MCP_HOOK_EVENTS = [
+  "PostToolUseFailure",
+  "UserPromptSubmit",
+  "SubagentStart",
+  "SubagentStop",
+  "SessionStart",
+  "SessionEnd",
+  "PostToolUse",
+  "PreToolUse",
+  "StopFailure",
+  "FileChanged",
+  "PostCompact",
+  "PreCompact",
+  "Setup",
+  "Stop",
+].sort((a, b) => b.length - a.length);
+
+function parseMcpToolHook(h) {
+  if (h?.type !== "mcp_tool" || typeof h.tool !== "string") return null;
+  const m = h.tool.match(/^hook_(.+)$/);
+  if (!m) return null;
+  const rest = m[1];
+  for (const ev of MCP_HOOK_EVENTS) {
+    const prefix = `${ev}_`;
+    if (rest.startsWith(prefix)) {
+      return { event: ev, name: rest.slice(prefix.length).replace(/_/g, "-"), server: h.server };
+    }
+  }
+  return null;
+}
+
 /** Parse `.claude/settings.template.json`-shaped JSON into flat entries. */
 function extractTemplateEntries(json) {
   const out = [];
   for (const [containingEvent, wrappers] of Object.entries(json.hooks ?? {})) {
     for (const wrapper of wrappers) {
       for (const h of wrapper.hooks ?? []) {
+        const mcp = parseMcpToolHook(h);
         out.push({
           containingEvent,
           command: h.command,
-          parsed: parseHookCommand(h.command),
-          timeout: h.timeout,
+          // An mcp_tool entry is wired just as truly as a command entry. The
+          // parity assertion is about WHICH handlers are wired, not about how
+          // they are transported, so feeding `parsed` from either shape keeps
+          // that one assertion authoritative over both transports instead of
+          // needing a second, driftable copy of it.
+          parsed: mcp ? { event: mcp.event, name: mcp.name } : parseHookCommand(h.command),
+          transport: mcp ? "mcp_tool" : "command",
+          mcpServer: mcp ? mcp.server : undefined,
+          mcpTool: mcp ? h.tool : undefined,
+          mcpInput: mcp ? h.input : undefined,
+          isAsync: Object.prototype.hasOwnProperty.call(h, "async"),
+          // A converted entry declares no `timeout` — that field belongs to
+          // the command-hook shape. Carry it through as `undefined` and let the
+          // timeout assertions SKIP mcp_tool entries explicitly.
+          //
+          // An earlier version of this line reported a synthetic `30` so the
+          // existing assertions would pass unchanged. That was wrong twice
+          // over: it violated this repo's own convention that a reported value
+          // must derive from the decision source rather than a stand-in, and
+          // the fabricated number then had to equal hooks.json's real
+          // `timeoutSec` — which is 20 for the informational class, so it
+          // failed anyway and would have been "fixed" by inventing a second
+          // number. Scoping the check to the transport it is about is the
+          // honest form.
+          timeout: mcp ? undefined : h.timeout,
           statusMessage: h.statusMessage,
           hasIf: Object.prototype.hasOwnProperty.call(h, "if") || Object.prototype.hasOwnProperty.call(wrapper, "if"),
         });
@@ -214,6 +291,7 @@ function reduceTemplateEntries(entries) {
   const unparseable = [];
   const eventMismatches = [];
   const missingTimeout = [];
+  const badMcpShape = [];
   for (const e of entries) {
     if (!e.parsed) {
       unparseable.push(e.command);
@@ -223,11 +301,38 @@ function reduceTemplateEntries(entries) {
       eventMismatches.push({ containingKey: e.containingEvent, commandEvent: e.parsed.event, name: e.parsed.name });
     }
     pairs.add(pairKey(e.containingEvent, e.parsed.name));
+    // Phase L (#53): `timeout` is a command-hook field, so an mcp_tool entry is
+    // required to declare NONE rather than to declare a valid one. The two
+    // requirements are asserted separately and neither is relaxed: the 14
+    // command hooks still need a positive finite timeout unconditionally, and
+    // `badMcpShape` below catches an mcp_tool entry that carries a `timeout`,
+    // an `async`, a stray `command`, or the wrong server. Skipping without that
+    // second check would have turned "no timeout because it is an mcp_tool"
+    // and "no timeout because someone deleted it" into the same silent pass.
+    if (e.transport === "mcp_tool") {
+      if (
+        Object.prototype.hasOwnProperty.call(e, "timeout") && e.timeout !== undefined
+        || e.isAsync
+        || e.command !== undefined
+        || e.mcpServer !== "pp_harness"
+      ) {
+        badMcpShape.push({
+          event: e.containingEvent,
+          name: e.parsed.name,
+          why:
+            e.isAsync ? "declares `async`, which is command-hook-only and mutually exclusive with mcp_tool"
+              : e.command !== undefined ? "kept a `command` alongside `mcp_tool`"
+              : e.mcpServer !== "pp_harness" ? `names server "${e.mcpServer}" instead of pp_harness`
+              : "declares a `timeout`, which is a command-hook field",
+        });
+      }
+      continue;
+    }
     if (!hasValidTimeout(e.timeout)) {
       missingTimeout.push({ event: e.containingEvent, name: e.parsed.name });
     }
   }
-  return { pairs, unparseable, eventMismatches, missingTimeout };
+  return { pairs, unparseable, eventMismatches, missingTimeout, badMcpShape };
 }
 
 /** Mirror of reduceTemplateEntries for hooks.json's bash/powershell schema. */
@@ -317,6 +422,14 @@ function buildFileReport(fileLabel, implementedPairs, wiredPairs, reduced) {
         `[${fileLabel}] event mismatch for handler "${sanitize(m.name)}": containing key says "${sanitize(m.containingKey)}", ` +
         `command text says "${sanitize(m.commandEvent)}"`,
       );
+    }
+  }
+  // Phase L (#53): reported through the same builder as every other class, so
+  // a collected-but-unreported list cannot happen. A finding gathered into an
+  // array that nothing prints is indistinguishable from no finding.
+  if (reduced.badMcpShape && reduced.badMcpShape.length) {
+    for (const m of reduced.badMcpShape) {
+      lines.push(`[${fileLabel}] malformed mcp_tool hook (${sanitize(m.event)}, ${sanitize(m.name)}): ${sanitize(m.why)}`);
     }
   }
   if (reduced.bashPwshMismatches && reduced.bashPwshMismatches.length) {
@@ -564,10 +677,42 @@ it("AC-23: changing only the powershell variant of a hooks.json entry fails, rep
 // ─── AC-24: truncate a command, echo the raw string ───────────────────────
 it("AC-24: truncating a command to omit the handler name fails and echoes the raw command string", () => {
   const mutated = clone(templateJson);
-  const original = mutated.hooks.PostToolUse[0].hooks[0].command;
-  assert.match(original, /hook PostToolUse cost-tally$/);
-  const truncated = original.replace(/cost-tally$/, "").trim();
-  mutated.hooks.PostToolUse[0].hooks[0].command = truncated;
+
+  // Phase L (#53): FIND a surviving command hook rather than naming one.
+  //
+  // This fixture used to mutate `hooks.PostToolUse[0].hooks[0]`, which Phase L
+  // converted to an `mcp_tool` entry carrying no `command` at all. The
+  // truncation then edited a field that does not exist, no unparseable command
+  // was produced, and the test failed — loudly, which is the good outcome. Had
+  // it instead been written to tolerate a missing command, it would have gone
+  // green while testing nothing.
+  //
+  // Deriving the target means the next transport change relocates this fixture
+  // automatically instead of quietly emptying it.
+  let target = null;
+  for (const [event, wrappers] of Object.entries(mutated.hooks)) {
+    for (const wrapper of wrappers) {
+      for (const h of wrapper.hooks ?? []) {
+        if (typeof h.command === "string" && parseHookCommand(h.command)) {
+          target = { event, entry: h, name: parseHookCommand(h.command).name };
+          break;
+        }
+      }
+      if (target) break;
+    }
+    if (target) break;
+  }
+  assert.ok(
+    target,
+    "no command hook remains in the template, so this falsification has nothing to truncate. If every " +
+      "hook is now an mcp_tool, delete this test deliberately with a replacement rather than letting it " +
+      "pass vacuously.",
+  );
+
+  const original = target.entry.command;
+  assert.match(original, new RegExp(`hook ${target.event} ${target.name}$`));
+  const truncated = original.slice(0, original.length - target.name.length).trim();
+  target.entry.command = truncated;
   let threw = null;
   try {
     assertNoFailures(mutated, hooksJsonJson, implementedPairKeys);
@@ -745,10 +890,21 @@ it("AC-D30: every wired entry in both real files declares a positive finite nume
 
 // ─── AC-D31 — template `timeout` equals hooks.json `timeoutSec` for every
 //     (event, name) pair ──────────────────────────────────────────────────
+/**
+ * Timeouts declared in the template, for COMMAND hooks only.
+ *
+ * Phase L (#53): `timeout` is a command-hook field. The 23 converted
+ * `mcp_tool` entries declare none — correctly, since the field has no meaning
+ * on that shape — so they are excluded here rather than given a stand-in
+ * value. The exclusion is narrow and asserted from the other side too: a
+ * separate test requires every mcp_tool entry to carry no `timeout` and no
+ * `async`, so "absent because it is an mcp_tool" and "absent because someone
+ * dropped it" stay distinguishable outcomes.
+ */
 function templateTimeoutMap(json) {
   const out = new Map();
   for (const e of extractTemplateEntries(json)) {
-    if (e.parsed) out.set(pairKey(e.containingEvent, e.parsed.name), e.timeout);
+    if (e.parsed && e.transport === "command") out.set(pairKey(e.containingEvent, e.parsed.name), e.timeout);
   }
   return out;
 }

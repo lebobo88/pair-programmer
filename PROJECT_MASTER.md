@@ -320,6 +320,7 @@ _To be populated by harness runs._
 
 
 
+
 ### Run run_jc1UxeCMvyZR — 2026-08-22
 
 **Request:** Document all controls defending cross-vendor judge integrity; identify residual gaps
@@ -399,6 +400,67 @@ one file, and whether anything else warrants equivalent Claude-side protection i
 addition removes a capability and needs its own justification. A user-scope `statusLine` defect was verified
 and deliberately **reported rather than fixed**: `~/.claude/settings.json` is user-scope config affecting
 every project on the machine, not repository state.
+
+### Hook decision shape and the two hook transports (Phase L, run `run_Q69wXDpuWW4P`, 2026-09-07)
+
+**A PreToolUse denial must be emitted in the documented nested form.** `daemon/src/hooks/decision.ts` is the
+single formatter, used by both transports:
+
+```json
+{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"…"}}
+```
+
+Before this phase the daemon emitted a bare `{"permissionDecision":"deny",…}`, which the documentation does
+not describe. That matters because the hooks docs state that "exit 0 with a parsed object that fails schema
+validation is a non-blocking error: **the action proceeds**". An unrecognised denial therefore permits.
+**Whether the old shape was honoured is unknown** — the full decision-control table could not be retrieved
+— so this is not a finding that the seven PreToolUse blockers were inert, only that they depended on an
+undocumented format whose failure mode is silent and permissive. The nested form is correct either way and
+is now verified live.
+
+`Stop` deliberately keeps the top-level `decision`/`reason` form: its schema could not be retrieved, and
+guessing at the wire format of a control that may work is the same risk pointing the other way.
+
+**The transport split, and the rule that governs it.** 16 of 37 hooks run as `type: "mcp_tool"` on
+`pp_harness` via generated `hook_<event>_<name>` adapters, eliminating a Node cold start and SQLite reopen
+per event — paid on every tool call for the seven `PostToolUse` handlers.
+
+> **Any hook handler that can deny stays a command hook.** A not-connected or erroring `mcp_tool` hook is a
+> non-blocking error in which execution continues, so converting a guard gives it a **fail-open** failure
+> mode it does not have as a command hook — and it fails open precisely when the daemon is unhealthy.
+
+Three further command-only rules, each documented rather than stylistic:
+
+| Event | Why it cannot use `mcp_tool` |
+|---|---|
+| `SessionStart` / `Setup` | fire before MCP servers finish connecting; `daemon-up` is a fail-closed liveness gate that would fail open |
+| `SessionEnd` | its 1.5s budget is **shared** and raised only by a longer *declared* `timeout` — a command-hook field with no mcp_tool equivalent |
+| `UserPromptSubmit` | the same connection window catches the session's **first** prompt, dropping cross-run memory recall and the surfaced-run reminder exactly when they matter most |
+
+An `mcp_tool` hook receives **only** the fields its `input` map declares, so each event declares what its
+handlers read. An exact `${…}` value is treated as **absent** (`stripUnsubstitutedPlaceholders`), since the
+docs do not specify what becomes of a placeholder whose key is missing — and a literal `"${tool_name}"`
+would otherwise pass through `normalizeToolName` unchanged into a ledger row.
+
+`hooks.json` (Copilot runtime) stays entirely command hooks: it uses a different schema
+(`{type, bash, powershell, timeoutSec}`), so `mcp_tool` has no established meaning there.
+
+### `enforce-active-run` owns a project tree, not one exact path
+
+`activeRunForProject` matched `project_path` by byte equality, so a session whose cwd was a **subdirectory**
+— any `cd daemon` — was refused despite a valid active run owning the tree. The failure direction is safe
+(a false refusal), which is why it went unnoticed; the hazard is the operator's likely response,
+`PP_ALLOW_AD_HOC=1`, which disables the guard for the whole session. **A misfiring guard teaches people to
+switch it off.** It now walks to the nearest ancestor and compares canonically (separators normalised,
+Windows case-folded) — both were needed, since `start_run` stores backslashes while tooling often passes
+forward slashes. A path with no active ancestor is still refused.
+
+### Operational note
+
+`.claude/settings.json` is git-ignored and generated from `.claude/settings.template.json`. Pulling this
+change does not rewire an existing install: run `npm run build` in `daemon/` **first** (the adapters live in
+the built server), then `scripts/install-user.ps1`, then reconnect the MCP servers. Doing nothing is safe —
+all 37 hooks stay in their working command form — but none of the 16 adapters are used.
 
 
 ## 15. Test and verification strategy

@@ -6,6 +6,8 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 import { errorContent, jsonContent, zodToJsonSchema } from "./helpers.js";
+import { hookInventory, mcpToolEligible, runHookInProcess } from "../hooks/dispatcher.js";
+import { handlerBlocks } from "../hooks/decision.js";
 import {
   startRun, ensureRun, startStage, recordAttempt, recordVerdict, retractVerdict, finalizeStage,
   finalizeRun, archiveArtifact, listRuns, getRun, budgetStatus, doctor,
@@ -1389,6 +1391,80 @@ const TOOLS: ToolDef[] = [
     },
   },
 ];
+
+// ─── Phase L: hook adapters (GitHub #53) ─────────────────────────────────
+//
+// One `hook_<event>_<name>` tool per hook handler that is eligible for the
+// `mcp_tool` transport, so those hooks call into this already-running server
+// instead of paying a Node cold start and a SQLite reopen per event. That cost
+// is paid most often on `PostToolUse`, which fires on every tool call.
+//
+// GENERATED FROM `hookInventory()`, NOT LISTED. A hand-written list is how six
+// hardcoded counts in this repo drifted from reality, and how the settings
+// template's own `_comment` came to claim "10 events" over an enumeration of
+// twelve summing to 36 while the file held 37 across 13. Deriving the adapters
+// means the tool surface cannot disagree with the handler registry; it can only
+// be wrong about eligibility, which `hook-inventory.unit.mjs` checks separately.
+//
+// ELIGIBILITY IS NARROWER THAN THE PLAN ASSUMED, and deliberately so. Any
+// handler that can deny stays a command hook, because the docs state that a
+// not-connected or erroring mcp_tool hook "produces a non-blocking error and
+// execution continues" — a fail-open failure mode that a command hook does not
+// have. Buying a cold-start saving with a security guard that stops guarding
+// whenever the stdio server hiccups is not a trade worth making. `SessionStart`
+// is refused for a second documented reason: it fires before MCP servers finish
+// connecting. See `mcpToolEligible`.
+//
+// NO `async: true` ANYWHERE, and it is not merely discouraged — `async` is a
+// command-hook field and is mutually exclusive with `mcp_tool`, so it cannot
+// appear on these at all. That happens to be what we want regardless: five of
+// the converted `PostToolUse` handlers write SQLite, and making their writes
+// eventually-consistent would collide with the idempotency guarantees Phase H
+// built.
+//
+// THE ADAPTERS MUST NEVER THROW. An MCP tool that errors sets `isError: true`,
+// which the docs make a *non-blocking* hook error — so a thrown denial would
+// permit the action it meant to stop. `runHookInProcess` catches everything and
+// returns a value; these handlers add no `throw` of their own.
+const HookAdapterSchema = z
+  .object({
+    tool_name: z.string().optional(),
+    tool_input: z.unknown().optional(),
+    tool_response: z.unknown().optional(),
+    prompt: z.string().optional(),
+    cwd: z.string().optional(),
+    session_id: z.string().optional(),
+    transcript_path: z.string().optional(),
+    agent_id: z.string().optional(),
+    agent_type: z.string().optional(),
+    prompt_id: z.string().optional(),
+    permission_mode: z.string().optional(),
+    effort: z.string().optional(),
+    file_path: z.string().optional(),
+    reason: z.string().optional(),
+  })
+  .passthrough();
+
+/** `hook_<event>_<name>` with `-` → `_`, since MCP tool names take no hyphen. */
+export function hookAdapterToolName(event: string, name: string): string {
+  return `hook_${event}_${name}`.replace(/-/g, "_");
+}
+
+/** The adapters, derived from the handler registry. */
+export const HOOK_ADAPTER_TOOLS: ToolDef[] = hookInventory()
+  .filter(({ event, name }) => mcpToolEligible(event, handlerBlocks(event, name)).eligible)
+  .map(({ event, name }) => ({
+    name: hookAdapterToolName(event, name),
+    description:
+      `Hook adapter — invoked by the Claude Code hook dispatcher for ${event}/${name}, NOT by you. ` +
+      `Do not call it directly: it runs a lifecycle side effect (telemetry, a ledger row, or context ` +
+      `injection) whose inputs come from the hook envelope, and calling it out of band writes a row for ` +
+      `an event that did not happen. Returns the object the hook emits as its text content.`,
+    schema: HookAdapterSchema,
+    handler: (args) => runHookInProcess(event, name, args ?? {}),
+  }));
+
+TOOLS.push(...HOOK_ADAPTER_TOOLS);
 
 // ─── Server ──────────────────────────────────────────────────────────────
 

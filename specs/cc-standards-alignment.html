@@ -119,8 +119,8 @@ figure:has(img) .fig-pending { display: none; }
   <summary>Metadata</summary>
   <dl>
     <dt>created</dt><dd>2026-08-24</dd>
-    <dt>modified</dt><dd>2026-09-07 — Phase K landed; the judge caught a schema that would have failed every candidate, then caught the new guard committing the vacuity class this campaign catalogued</dd>
-    <dt>commits</dt><dd>branch <code>feat/cc-standards-alignment</code> — Phases A&ndash;I landed (runs <code>run_7tbXaLHTJU1x</code>, <code>run_3FLJhz2DDV6w</code>, ad hoc, <code>run_z6a4iH0m0V2G</code>, <code>run_2IkydL62USI3</code>, <code>run_CZvEeGpuKzLt</code>, <code>run_CvKoIWhSC8XV</code>, <code>run_p8JPpVhDonUA</code>, <code>run_5N_C2vVNW89u</code>, <code>run_YaOlWlTkilY9</code>, Phase K ad hoc)</dd>
+    <dt>modified</dt><dd>2026-09-07 — Phase L landed; a security control was found riding on an undocumented wire format, and two guards from earlier phases fired on this one</dd>
+    <dt>commits</dt><dd>branch <code>feat/cc-standards-alignment</code> — Phases A&ndash;I landed (runs <code>run_7tbXaLHTJU1x</code>, <code>run_3FLJhz2DDV6w</code>, ad hoc, <code>run_z6a4iH0m0V2G</code>, <code>run_2IkydL62USI3</code>, <code>run_CZvEeGpuKzLt</code>, <code>run_CvKoIWhSC8XV</code>, <code>run_p8JPpVhDonUA</code>, <code>run_5N_C2vVNW89u</code>, <code>run_YaOlWlTkilY9</code>, Phase K ad hoc, <code>run_Q69wXDpuWW4P</code>)</dd>
     <dt>agent</dt><dd>plan-deep (Fable-5) — authored to the plan-deep output contract</dd>
     <dt>session</dt><dd>7aefb7e8-2948-46a1-b10b-f9422c843257</dd>
     <dt>back refs</dt><dd><code>.harness/run_kUPtCqHotdYn/postmortem.md</code> (PP-VG-6 delivery stall); <code>.harness/cc-standards-alignment-plan.md</code> (superseded markdown draft)</dd>
@@ -1077,21 +1077,109 @@ figure:has(img) .fig-pending { display: none; }
   </div>
 
   <div class="phase">
-    <h3 id="phase-l">Phase L — Convert command hooks to <code>type: "mcp_tool"</code> <code class="status">[]</code> <span class="legend"><a href="https://github.com/lebobo88/pair-programmer/issues/53">#53</a></span></h3>
+    <h3 id="phase-l">Phase L — Convert command hooks to <code>type: "mcp_tool"</code> <code class="status" data-st="x">[x]</code> <span class="legend"><a href="https://github.com/lebobo88/pair-programmer/issues/53">#53</a></span></h3>
     <p><b>New 2026-09-05 — promoted from Q3, which had this as a deferred spike.</b> The largest runtime saving identified anywhere in this plan: 26 Node cold-starts and SQLite reopens per event cycle, replaced by calls into the already-running <code>pp_harness</code> stdio server. Lands after Phase H so the write discipline is settled first.</p>
+    <p><b>Landed 2026-09-07</b> as run <code>run_Q69wXDpuWW4P</code>, closed <code>surfaced</code>. Suite
+    799/799 across 106 suites; build and typecheck clean; missability 10 pass / 1 fail / 46 n/a with all six
+    required checks passing. Both stages closed <code>surfaced</code> because each judge round ended
+    <code>revise</code> and <b>Reflexion&nbsp;×1 was spent on the first</b>, so the later fixes were made by
+    the driver and carry no independent verdict.</p>
+    <p><b>The phase found something bigger than its own scope: a security control riding on an undocumented
+    wire format.</b> <code>reply(false, …)</code> emitted a <em>bare</em>
+    <code>{"permissionDecision":"deny",…}</code> for PreToolUse, while the only documented deny shape nests
+    under <code>hookSpecificOutput</code> with a <code>hookEventName</code> — and the docs say that
+    <em>"exit 0 with a parsed object that fails schema validation is a non-blocking error: the action
+    proceeds"</em>. An unrecognised denial <b>permits</b>. Seven PreToolUse blockers depended on that shape,
+    and <b>no test asserted it anywhere in the tree</b>. <b>What is NOT claimed:</b> that the bare form never
+    worked — the full decision-control table could not be retrieved, so it is unknown. The nested form is
+    correct either way, and is now verified live.</p>
+    <p><b>The governing rule turned out narrower than the plan assumed, and for a security reason.</b> A
+    not-connected or erroring <code>mcp_tool</code> hook is a <em>non-blocking</em> error, so converting a
+    guard hands it a <b>fail-open</b> failure mode it does not have as a command hook — arriving exactly
+    when the daemon is sick, which is when a guard matters most. So <b>anything that can deny stays a
+    command hook</b>. An earlier draft converted the PreToolUse blockers because they carry a parseable JSON
+    decision; true, and beside the point, since the shape surviving the transport does not help when the
+    call never happens.</p>
+    <p><b>Two guards fired on this phase and changed it.</b> Phase H's <code>SessionEnd</code> timeout
+    assertion went red against my converted entry, surfacing that SessionEnd's 1.5s <em>shared</em> budget is
+    raised only by a <em>declared</em> <code>timeout</code> — a command-hook field with no mcp_tool
+    equivalent — so converting <code>session-orphan-sweep</code> had silently capped it. And
+    <code>enforce-active-run</code> refused <em>this phase's own edit</em>, exposing that
+    <code>activeRunForProject</code> matched <code>project_path</code> by byte equality, so any
+    <code>cd daemon</code> broke ownership. The failure direction is safe, which is why it survived; the
+    hazard is that an operator's likely response is <code>PP_ALLOW_AD_HOC=1</code>. <b>A misfiring guard
+    teaches people to switch it off.</b></p>
+    <p><b>And the judge overturned two of my decisions across three rounds.</b> It reversed my
+    <code>UserPromptSubmit</code> conversion — I argued from <em>frequency</em>, it argued from <em>value at
+    the moment of loss</em> (turn 1 is when cross-run memory recall matters most) and pointed out my
+    frequency premise was wrong anyway, since prompts are far rarer than tool calls. And it caught my fix
+    for its own HIGH finding being <b>vacuous</b>: a "nearest ancestor wins" test that seeded an outer
+    <em>and</em> an inner run, so it passed whichever matched. Since the hook returns only allow/deny,
+    precedence is unobservable and no honest test here can prove it — the claim was dropped rather than
+    restated.</p>
     <h4>Tasks</h4>
     <ul class="checklist">
-      <li><code class="status">[]</code> <b>Register the ~26 adapters on <code>pp_harness</code></b> (D5), not a new server — they share the daemon's DB handle directly. Accept the tool list growing 76 → ~100, and hold Phase B's <code>instructions</code> to the no-enumeration constraint. Give the adapters a consistent prefix so they stay separable in tool search.</li>
-      <li><code class="status">[]</code> <b>No <code>async: true</code> anywhere</b> (D6). It is command-hook-only and mutually exclusive with <code>mcp_tool</code>, and five PostToolUse hooks write SQLite — <code>cost-tally</code>, <code>record-attempt</code>, <code>loop-ceiling-tally</code>, <code>taxonomy-coverage-update</code>, <code>update-master-plan</code>. Async there would make telemetry eventually-consistent and collide with Phase H's idempotency guarantees.</li>
-      <li><code class="status">[]</code> <b>Carve-out: <code>daemon-up</code> stays a command hook.</b> It is the liveness probe — calling it over MCP is self-referential, since a dead daemon fails the transport rather than reporting cleanly.</li>
-      <li><code class="status">[]</code> Map each handler's CLI payload onto the adapter's MCP input schema. <b>Verify the <code>mcp_tool</code> hook contract carries a deny/allow result</b> — the 7 PreToolUse blockers must still decide synchronously, and stay command hooks if it cannot.</li>
-      <li><code class="status">[]</code> Update <code>.claude/settings.json</code> and <code>hooks.json</code> together; Phase A’s parity test guards the migration.</li>
+      <li><code class="status" data-st="x">[x]</code> <b>Adapters registered on <code>pp_harness</code>,
+      and <em>generated</em> from the handler registry rather than listed</b> — so the tool surface cannot
+      disagree with the handlers it fronts. Tool count 76 → 92. Phase B had already reserved the
+      <code>hook_*</code> namespace in the server <code>instructions</code> and asserted nothing used it yet,
+      with a note that Phase L would flip that assertion; it now does, and the flipped test also asserts the
+      inverse — <b>no denying handler may appear as an adapter</b>.</li>
+      <li><code class="status" data-st="x">[x]</code> <b>No <code>async: true</code> anywhere</b>, and not
+      merely by choice: <code>async</code> is a command-hook field, mutually exclusive with
+      <code>mcp_tool</code>, so it cannot appear on the converted set at all. Which is also what we want —
+      five converted <code>PostToolUse</code> handlers write SQLite.</li>
+      <li><code class="status" data-st="x">[x]</code> <b>The <code>daemon-up</code> carve-out is subsumed by
+      a broader rule.</b> It stays a command hook, but the reason is the <em>event</em>, not the
+      self-reference of probing the daemon through the daemon: <code>SessionStart</code> fires before MCP
+      servers finish connecting, so a not-connected hook would turn a fail-closed liveness gate fail-open in
+      exactly its own case.</li>
+      <li><code class="status" data-st="x">[x]</code> <b>Verified, and it decided the scope.</b> The
+      <code>mcp_tool</code> hook contract <em>does</em> carry a deny/allow result — its output is read
+      "the same way it reads command-hook stdout, following the parsing rule under exit code 0", which parses
+      JSON. <b>But that was not sufficient</b>: a not-connected or erroring mcp_tool hook is a non-blocking
+      error, so every one of the 7 PreToolUse blockers stays a command hook regardless. <b>16 converted, 21
+      kept.</b></li>
+      <li><code class="status" data-st="f">[f]</code> <b><code>hooks.json</code> deliberately NOT
+      converted.</b> <s>Update <code>.claude/settings.json</code> and <code>hooks.json</code> together.</s>
+      The Copilot runtime uses a different hook schema entirely —
+      <code>{type, bash, powershell, timeoutSec}</code> with no matcher nesting — so <code>mcp_tool</code>,
+      <code>server</code> and <code>tool</code> are Claude Code fields with no established meaning there.
+      Converting on the assumption they transfer would risk breaking a working runtime for no measured gain.
+      The parity guard now asserts both files wire the same <b>handler set</b> while allowing the transport
+      to differ.</li>
+      <li><code class="status" data-st="x">[x]</code> <b>Unplanned, and the phase's real finding: the
+      PreToolUse decision shape was undocumented.</b> Fixed via a single shared formatter used by both
+      transports, so the two can never drift. <code>Stop</code> deliberately left alone — its schema could
+      not be retrieved, and guessing at a control that may work is the same risk pointing the other way.</li>
+      <li><code class="status" data-st="x">[x]</code> <b>Unplanned: <code>enforce-active-run</code> now owns
+      a project <em>tree</em>, not one exact path</b> — ancestor-aware, with canonical comparison
+      (separators normalised, Windows case-folded). Both halves were needed:
+      <code>start_run</code> stores backslashes while tooling passes forward slashes. A path with no active
+      ancestor is still refused.</li>
     </ul>
     <h4>Testing strategy — loop until every check passes before advancing</h4>
     <ul class="checklist">
-      <li><code class="status">[]</code> Every converted hook shows identical observable behavior to its command form: same blocks, same telemetry rows, same ordering.</li>
-      <li><code class="status">[]</code> Per-event-cycle latency measured against the Phase A baseline, delta recorded.</li>
-      <li><code class="status">[]</code> <code>hook-inventory.unit.mjs</code> passes with the mixed command/mcp_tool set.</li>
+      <li><code class="status" data-st="x">[x]</code> <b>Falsified by breaking the real code, not by
+      fixture theatre.</b> Reverting <code>reply()</code> to the bare shape goes red; removing a blocker
+      from <code>BLOCKING_HANDLERS</code> goes red in <em>two</em> places; disabling the ancestor walk
+      reddens exactly the two ancestor tests while the refusal tests stay green.</li>
+      <li><code class="status" data-st="x">[x]</code> <b>The blocker census proves its own parser.</b> It
+      runs a single-line scanner alongside the multiline one over the same spans and requires the multiline
+      count to be strictly greater — a one-line <code>reply(false</code> scan finds only <b>4 of 10</b>, the
+      other 6 wrapping across lines. That undercount is vacuity class 5, and it was caught here only because
+      Phase J had documented <code>enforce-active-run</code> as blocking, so a census omitting it was
+      visibly wrong.</li>
+      <li><code class="status" data-st="x">[x]</code> <code>hook-inventory.unit.mjs</code> passes with the
+      mixed command/mcp_tool set. It went <b>red first</b>, naming all converted entries as "implemented but
+      unwired" — the correct behaviour for a guard meeting a shape it does not know.</li>
+      <li><code class="status" data-st="f">[f]</code> <b>NOT MEASURED, and the plan asked for it.</b>
+      <s>Per-event-cycle latency measured against the Phase A baseline, delta recorded.</s> The cold-start
+      saving is argued from the documented mechanism, not demonstrated. Disclosed rather than implied.</li>
+      <li><code class="status" data-st="f">[f]</code> <b>Not observable from a unit test.</b> <s>Every
+      converted hook fires with identical observable behavior to its command form.</s> The adapters are
+      exercised in-process and the wiring asserted structurally, but no test can drive Claude Code's own
+      hook runtime to watch it invoke one.</li>
     </ul>
     <p class="legend">If a check cannot be made to pass after reasonable effort, mark the phase
       <code class="status" data-st="f">[f]</code> and record why in Notes rather than looping forever.</p>
@@ -1785,6 +1873,95 @@ figure:has(img) .fig-pending { display: none; }
     the filesystem. Re-issued with absolute paths and an explicit "use <code>view_file</code>, do not
     search" instruction, it returned in 49 s. <b>A bridge failure is never a verdict</b>, so nothing was
     recorded from those two attempts.</p>
+  </details>
+
+
+  <details class="amend" open>
+    <summary>2026-09-07 — Phase L: a security control was riding on an undocumented wire format, and two guards from earlier phases fired on this one</summary>
+
+    <p><b>Landed</b> as run <code>run_Q69wXDpuWW4P</code>, closed <code>surfaced</code>. Suite 799/799
+    across 106 suites; missability 10 pass / 1 fail / 46 n/a with all six required checks passing. Both
+    stages closed <code>surfaced</code>: each judge round ended <code>revise</code>, Reflexion&nbsp;×1 was
+    spent on the first, and the remaining fixes were therefore made by the driver and carry no independent
+    verdict.</p>
+
+    <p><b>The phase's real finding was larger than its brief.</b> <code>reply(false, …)</code> emitted a
+    <em>bare</em> <code>{"permissionDecision":"deny",…}</code> for PreToolUse, while the only deny shape the
+    docs show nests under <code>hookSpecificOutput</code> with a <code>hookEventName</code>. That matters
+    because of what the docs say happens to a shape the client cannot validate: <em>"exit 0 with a parsed
+    object that fails schema validation is a non-blocking error: <b>the action proceeds</b>."</em> An
+    unrecognised denial <em>permits</em>. Seven PreToolUse blockers — destructive-shell, secret-scanning,
+    sandbox policy, vendor matrix, active-run, validator gate, RFC 2119 — depended on that shape, and
+    <b>no test asserting it was found anywhere in the tree</b>.</p>
+
+    <p><b>What is deliberately NOT claimed: that the bare form never blocked.</b> The full decision-control
+    table could not be retrieved — the docs page truncated on both fetch attempts — so whether it was
+    accepted as a legacy alias is unknown, and now unknowable, since those sessions are gone. The nested
+    form is correct under either possibility, which is why it is the fix rather than a bet, and it is
+    verified live: mid-phase <code>enforce-active-run</code> denied a real Write using the rebuilt binary
+    and the block landed. <b>This forces a second correction on Phase J</b>, which had rewritten
+    <code>README.md</code> to say the blockers hard-block. That was right about <em>intent</em> — but if the
+    bare shape was not honoured, the original wrong text ("default to advisory") was accidentally closer to
+    observed behaviour. The README now states the intent <em>and</em> the unknown, rather than replacing one
+    confident claim with another.</p>
+
+    <p><b>The conversion is narrower than the plan assumed, and the reason is a security one.</b> A
+    not-connected or erroring <code>mcp_tool</code> hook is a <em>non-blocking</em> error in which
+    execution continues, so converting a guard hands it a <b>fail-open</b> failure mode it does not have as
+    a command hook — and it fails open precisely when the daemon is unhealthy, which is when a guard is
+    most needed. So the governing rule became <b>anything that can deny stays a command hook</b>: 16
+    converted, 21 kept. An earlier draft converted the PreToolUse blockers on the grounds that they carry a
+    JSON decision the client parses; that was true and beside the point, since the shape surviving the
+    transport does not help when the call never happens.</p>
+
+    <p><b>Two guards written in earlier phases fired on this one and changed its design.</b> Phase H's
+    assertion that <code>SessionEnd/session-orphan-sweep</code> declares a <code>timeout</code>&nbsp;≥&nbsp;20
+    in <em>both</em> manifests went red against a converted entry declaring none — surfacing that
+    SessionEnd's 1.5&nbsp;s budget is <em>shared</em> and raised only by a <em>declared</em>
+    <code>timeout</code>, a command-hook field with no mcp_tool equivalent. Converting the sweep had
+    silently capped it back at 1.5&nbsp;s. And <code>enforce-active-run</code> <b>refused this phase's own
+    edit</b>, exposing that <code>activeRunForProject</code> compared <code>project_path</code> by byte
+    equality: any <code>cd daemon</code> broke ownership. The failure direction is safe — a false refusal,
+    never a false permit — which is exactly why it survived unnoticed. The hazard is the operator's likely
+    response: <code>PP_ALLOW_AD_HOC=1</code>, which disables the guard for the whole session. <b>A misfiring
+    guard teaches people to switch it off.</b></p>
+
+    <p><b>The judge overturned two of the driver's decisions across three rounds, and was right both
+    times.</b> It reversed the <code>UserPromptSubmit</code> conversion: the driver argued from
+    <em>frequency</em> (they fire often, so remove the cold start) and merely disclosed that the session's
+    first prompt could lose its nudges; the judge argued from <em>value at the moment of loss</em> — turn 1
+    is precisely when cross-run memory recall, the surfaced-run reminder and the profile nudge matter most —
+    and noted the frequency premise was wrong anyway, since prompt submissions are far rarer than tool
+    calls. Reverted, 22&nbsp;→&nbsp;16. <b>And it caught the driver's fix for its own HIGH finding being
+    vacuous:</b> told to replace source-text assertions with behavioural ones, the driver wrote five, and
+    the "nearest ancestor wins" case seeded an outer <em>and</em> an inner run — so it passed whichever
+    matched, and would still pass with the precedence inverted. Since the hook returns only allow/deny,
+    precedence is unobservable and no honest test there can prove it; the claim was <em>dropped</em> rather
+    than restated, replaced by one that is observable and does matter — a run rooted in a subdirectory must
+    not authorise edits in its parent.</p>
+
+    <p><b>It also reversed itself in the driver's favour, which is worth recording because the driver argued
+    rather than complied.</b> Its first review called leaving <code>Stop</code> on the unverified top-level
+    form inconsistent with the fail-open thesis; on re-review it accepted that leaving an unverified,
+    working control alone beats guessing at its schema. The changelog originally quoted that agreement and
+    the docs judge cut it as self-flattering — the engineering reason stands without an endorsement
+    attached.</p>
+
+    <p><b>Three more count errors, in a phase about counting.</b> The template <code>_comment</code> claimed
+    "37 hooks across 10 events" over an enumeration of <em>twelve</em> that omitted <code>StopFailure</code>
+    and summed to <em>36</em>, against a file holding 37 across 13 — three wrong numbers in one sentence,
+    surviving because <code>hook-inventory.unit.mjs</code> asserted only the total. The installer's own
+    synopsis still said "29 hooks". And the changelog itself said a one-line scan finds "4 of 10 blockers,
+    seven wrapping across lines" — 4&nbsp;+&nbsp;7&nbsp;≠&nbsp;10; it is six, and the figure now comes from
+    running both scanners rather than from memory.</p>
+
+    <p><b>Residuals worth carrying forward.</b> A malformed hook envelope still fails open —
+    <code>runHookDispatcher</code> wraps <code>JSON.parse</code> in a silent <code>catch</code> and proceeds
+    with <code>{}</code>, so every guard allows on an unparseable envelope. It predates this phase and
+    fixing it changes all 37 handlers at once, so it is the next hook-hardening item rather than a
+    same-phase fix. <b>The latency saving is argued, not measured</b>: the plan asked for a per-event-cycle
+    delta and there is none. And existing installs keep 37 command hooks until <code>npm run build</code>
+    then <code>scripts/install-user.ps1</code> are run, in that order — safe, but unconverted.</p>
   </details>
 
 </section>

@@ -124,6 +124,15 @@ const describeHarnessSurface = harnessMod.describeToolSurface;
 const describeCodexSurface = codexMod.describeToolSurface;
 const describeAgySurface = agyMod.describeToolSurface;
 
+// Phase L (#53): the hook-adapter expectations are derived from the same
+// registry the server generates them from, so the test cannot hold a second,
+// driftable copy of the eligible set.
+const dispatcherMod = await importDist("hooks/dispatcher.js");
+const decisionMod = await importDist("hooks/decision.js");
+const hookInventory = dispatcherMod.hookInventory;
+const mcpToolEligible = dispatcherMod.mcpToolEligible;
+const handlerBlocks = decisionMod.handlerBlocks;
+
 // ─── R1.3 (corrected) — import side effects ───────────────────────────────
 // F-7 is only half true: importing DOES create <PP_HOME>/.pair-programmer/
 // (util/logger.ts's top-level ensureDirs()), which also mkdirs logs/ and
@@ -363,14 +372,56 @@ test("R1.21: hook-adapter namespace carve-out is a pattern, not a name list", ()
   }
 });
 
-// ─── AC-15 / R1.22 / F-13 — hook_ prefix reservation ──────────────────────
-// Phase L (#53) registers ~26 hook_<event>_<name> adapters and flips this
-// assertion to "every adapter begins with hook_". Until then, zero tools may
-// use the prefix.
-test("AC-15/R1.22: zero pp_harness tools begin with 'hook_' at this merge (Phase L / #53 flips this)", () => {
+// ─── AC-15 / R1.22 / F-13 — hook_ prefix reservation, NOW FLIPPED ─────────
+// Phase B reserved the `hook_` prefix and asserted that nothing used it yet,
+// with a note that Phase L (#53) would flip the assertion. Phase L registers
+// the adapters, so the reservation becomes its enforcement: the namespace is
+// now exactly the hook adapters and nothing else.
+test("AC-15/R1.22 (flipped by Phase L/#53): the hook_ namespace is exactly the hook adapters", () => {
   const surface = describeHarnessSurface();
-  const hookPrefixed = surface.filter(t => t.name.startsWith("hook_"));
-  assert.deepEqual(hookPrefixed.map(t => t.name), [], "no tool may use the reserved hook_ prefix before Phase L (#53)");
+  const hookPrefixed = surface.filter(t => t.name.startsWith("hook_")).map(t => t.name);
+
+  assert.ok(
+    hookPrefixed.length > 0,
+    "Phase L registered hook adapters, so an empty hook_ namespace means the registration regressed — " +
+      "and every assertion below would then pass by iterating nothing",
+  );
+
+  // The adapters are generated from the handler registry, so the authoritative
+  // expectation is that registry filtered by eligibility — never a count and
+  // never a transcribed list, both of which have drifted in this repo before.
+  const expected = hookInventory()
+    .filter(({ event, name }) => mcpToolEligible(event, handlerBlocks(event, name)).eligible)
+    .map(({ event, name }) => `hook_${event}_${name}`.replace(/-/g, "_"))
+    .sort();
+  assert.deepEqual(
+    [...hookPrefixed].sort(),
+    expected,
+    "the hook_ namespace must be exactly the mcp_tool-eligible handlers",
+  );
+
+  // The reservation's other half: no NON-adapter tool may squat the prefix.
+  // Every hook_ tool must resolve back to a real handler, or the model is being
+  // shown a tool whose description tells it not to call something that is not
+  // a hook at all.
+  const known = new Set(hookInventory().map(({ event, name }) => `hook_${event}_${name}`.replace(/-/g, "_")));
+  for (const n of hookPrefixed) {
+    assert.ok(known.has(n), `hook_-prefixed tool "${n}" does not correspond to any registered hook handler`);
+  }
+
+  // And the inverse of the eligibility rule, asserted directly rather than
+  // trusted: no handler that can DENY may appear as an adapter. A blocker
+  // reachable over mcp_tool inherits a fail-open failure mode, which is the
+  // whole reason the split exists.
+  for (const { event, name } of hookInventory()) {
+    if (!handlerBlocks(event, name)) continue;
+    const adapter = `hook_${event}_${name}`.replace(/-/g, "_");
+    assert.ok(
+      !hookPrefixed.includes(adapter),
+      `${event}/${name} can deny, so it must NOT be exposed as an mcp_tool adapter (${adapter}): a ` +
+        `not-connected or erroring mcp_tool hook is a non-blocking error in which execution continues`,
+    );
+  }
 });
 
 // ─── R3.14 — no transcribed count literals: the tool total is derived at
@@ -385,9 +436,34 @@ test("R3.14: pp_harness tool total is derived at test time (runtime surface leng
   assert.ok(closeMatch, "could not locate the TOOLS array's closing `];` in source for an independent count");
   const declEnd = arrayStart + closeMatch.index;
   const arrayBody = src.slice(arrayStart, declEnd);
-  const sourceCount = (arrayBody.match(/^\s{4}name:\s*"/gm) ?? []).length;
+  const literalCount = (arrayBody.match(/^\s{4}name:\s*"/gm) ?? []).length;
+
+  // Phase L (#53): the surface is no longer only the literal array. It is the
+  // literals PLUS the hook adapters, which are GENERATED from the handler
+  // registry (`TOOLS.push(...HOOK_ADAPTER_TOOLS)`) precisely so the tool
+  // surface cannot disagree with the handlers it fronts.
+  //
+  // So the independent count gains a second derived term rather than becoming
+  // a hardcoded total — the point of R3.14 is that no integer is transcribed,
+  // and that still holds: both terms are computed, one from the source text and
+  // one from the registry.
+  const adapterCount = hookInventory()
+    .filter(({ event, name }) => mcpToolEligible(event, handlerBlocks(event, name)).eligible)
+    .length;
+
   assert.ok(runtimeCount > 0, "describeToolSurface() must return a non-empty array");
-  assert.equal(runtimeCount, sourceCount, "runtime TOOLS.length must match an independently-counted source occurrence of top-level `name:` entries");
+  assert.ok(literalCount > 0, "the literal TOOLS array must still contribute entries");
+  assert.ok(
+    adapterCount > 0,
+    "zero eligible hook adapters — either the registration regressed or eligibility rejects everything, " +
+      "and this equality would then pass while asserting nothing about Phase L",
+  );
+  assert.equal(
+    runtimeCount,
+    literalCount + adapterCount,
+    `runtime surface (${runtimeCount}) must equal independently-counted source literals (${literalCount}) ` +
+      `plus generated hook adapters (${adapterCount})`,
+  );
 });
 
 // ─── R1.30 — governance-citation drift guard ──────────────────────────────

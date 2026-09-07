@@ -1,8 +1,15 @@
 <#
 .SYNOPSIS
   Register the pair-programmer harness at user scope so /pp:* commands, the 3
-  MCP servers, the 29 hooks, the sub-agents, and the skills are available in
+  MCP servers, the 37 hooks, the sub-agents, and the skills are available in
   every Claude Code session, regardless of cwd.
+
+  The hook count was stale here at 29 until Phase L (issue #53) — the same
+  count-drift this phase found three times over in the settings template's own
+  header. Of the 37, 16 are `mcp_tool` hooks calling `hook_<event>_<name>`
+  adapters on the pp_harness server, so RUN `npm run build` IN daemon/ BEFORE
+  this script: the regenerated settings reference tools that exist only in a
+  rebuilt server.
 #>
 [CmdletBinding()]
 param(
