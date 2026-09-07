@@ -71,7 +71,13 @@ review first.
    iterated**, never on a correlate. One shipped assertion guarded a counter incremented *before* the filters
    while the assertions iterated the post-filter list.
 3. **A fixture that exercises `node:assert` rather than the function under test.** `assert.ok(0 > 0)` on a
-   hand-built empty `Set` shipped once. Drive the real function.
+   hand-built empty `Set` shipped once. So did a whole falsification block that inlined a *copy* of each
+   check's regex and asserted it against a string literal — passing by exercising V8's regex engine, so
+   that deleting every real check would have left it green.
+   **The structural remedy: make each check a named function, and have the real test and its falsification
+   fixture both call that one function.** Then a red fixture is evidence about the check rather than about
+   JavaScript. The test that a falsification block is real: break the check and confirm the fixture goes
+   red, naming the defect. See `workflow-scripts.unit.mjs` for the working shape.
 4. **An absence assertion whose fixture cannot produce the condition denied.** A `node_modules` skip check
    scanned two roots that contain none.
 5. **A filter or parser that silently discards exactly the inputs the assertion exists to find.** The worst

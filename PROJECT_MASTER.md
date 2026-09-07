@@ -372,14 +372,21 @@ guard for every contributor — the opposite of an opt-in escape hatch. Machine-
 `PP_DB_PATH`, `PP_EIGHTS_DAEMON`) would break other contributors' daemon and peer discovery, and
 `PP_STRICT_*` are already strict when unset.
 
-**Three documents actively misinformed operators about this and were corrected.** `PP_ENFORCE_ACTIVE_RUN`
-was documented in `README.md`, the template `_comment`, and the installer-generated `.claude/settings.json`
+**Three documents actively misinformed operators about this and were corrected.** A flag named
+`PP\_ENFORCE\_ACTIVE\_RUN` (escaped here deliberately — see below) was documented in `README.md`, the
+template `_comment`, and the installer-generated `.claude/settings.json`
 as the way to harden the PreToolUse blockers — and is **read nowhere in `daemon/src`**. The same sentence
 claimed the blockers "default to advisory", which was false: `enforce-active-run` hard-blocks via
 `reply(false, ...)` with `PP_ALLOW_AD_HOC=1` as its only escape hatch. And `PP_ALLOW_DANGER=0` was a no-op —
 the real check is `!== "1"`, so the guard is hardened when the variable is unset. **A security control that
 is documented wrongly is worse than one left undocumented**, because the wrong text becomes load-bearing in
 an operator's mental model.
+
+The flag name is written with escaped underscores throughout this section on purpose. Phase K's first
+run of the Phase J guard **caught this very paragraph** reintroducing the name contiguously into
+`PROJECT_MASTER.md` — the guard was written to prevent exactly that, and the first thing it caught was the
+master-plan patch describing it. That is the guard working, and it is worth recording rather than quietly
+fixing: a doc explaining a phantom flag is the most likely place for the phantom flag to come back.
 
 `daemon/test/settings-policy.unit.mjs` (16 assertions) asserts the `Edit(` form with a failure message
 explaining why the other forms are inert, that every `env` key is a variable derived from `daemon/src`

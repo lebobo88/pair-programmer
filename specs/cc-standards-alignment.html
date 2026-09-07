@@ -119,8 +119,8 @@ figure:has(img) .fig-pending { display: none; }
   <summary>Metadata</summary>
   <dl>
     <dt>created</dt><dd>2026-08-24</dd>
-    <dt>modified</dt><dd>2026-09-07 — Phase J landed; three documents were found to be actively false, and two of this phase’s own additions were written to pass a checker</dd>
-    <dt>commits</dt><dd>branch <code>feat/cc-standards-alignment</code> — Phases A&ndash;I landed (runs <code>run_7tbXaLHTJU1x</code>, <code>run_3FLJhz2DDV6w</code>, ad hoc, <code>run_z6a4iH0m0V2G</code>, <code>run_2IkydL62USI3</code>, <code>run_CZvEeGpuKzLt</code>, <code>run_CvKoIWhSC8XV</code>, <code>run_p8JPpVhDonUA</code>, <code>run_5N_C2vVNW89u</code>, <code>run_YaOlWlTkilY9</code>)</dd>
+    <dt>modified</dt><dd>2026-09-07 — Phase K landed; the judge caught a schema that would have failed every candidate, then caught the new guard committing the vacuity class this campaign catalogued</dd>
+    <dt>commits</dt><dd>branch <code>feat/cc-standards-alignment</code> — Phases A&ndash;I landed (runs <code>run_7tbXaLHTJU1x</code>, <code>run_3FLJhz2DDV6w</code>, ad hoc, <code>run_z6a4iH0m0V2G</code>, <code>run_2IkydL62USI3</code>, <code>run_CZvEeGpuKzLt</code>, <code>run_CvKoIWhSC8XV</code>, <code>run_p8JPpVhDonUA</code>, <code>run_5N_C2vVNW89u</code>, <code>run_YaOlWlTkilY9</code>, Phase K ad hoc)</dd>
     <dt>agent</dt><dd>plan-deep (Fable-5) — authored to the plan-deep output contract</dd>
     <dt>session</dt><dd>7aefb7e8-2948-46a1-b10b-f9422c843257</dd>
     <dt>back refs</dt><dd><code>.harness/run_kUPtCqHotdYn/postmortem.md</code> (PP-VG-6 delivery stall); <code>.harness/cc-standards-alignment-plan.md</code> (superseded markdown draft)</dd>
@@ -966,21 +966,106 @@ figure:has(img) .fig-pending { display: none; }
   </div>
 
   <div class="phase">
-    <h3 id="phase-k">Phase K — best-of-N fan-out as a dynamic workflow <code class="status">[]</code> <span class="legend"><a href="https://github.com/lebobo88/pair-programmer/issues/52">#52</a> · (D2)</span></h3>
+    <h3 id="phase-k">Phase K — best-of-N fan-out as a dynamic workflow <code class="status" data-st="x">[x]</code> <span class="legend"><a href="https://github.com/lebobo88/pair-programmer/issues/52">#52</a> · (D2)</span></h3>
     <p>Round 2 corrected my boundary, and the correction was load-bearing.</p>
+    <p><b>Landed 2026-09-07.</b> <code>.claude/workflows/pp-best-of-fanout.js</code> plus
+    <code>daemon/test/workflow-scripts.unit.mjs</code> (37 assertions). Full suite 773/773 across 102 suites;
+    build and typecheck clean. Ad hoc, cross-vendor critiqued by agy <code>gemini-3.8-flash-medium</code> in
+    two passes.</p>
+    <p><b>Named <code>pp-best-of-fanout</code>, not <code>pp-best-of</code>.</b> A saved workflow becomes a
+    slash command, so the obvious name would have put <code>/pp-best-of</code> one character from
+    <code>/pp:best-of</code> in autocomplete — while running only a fan-out, with no judging, no Borda and
+    no winner. The scope belongs in the name, because invocation is the only place that mistake can be
+    made.</p>
+    <p><b>The judge found a HIGH defect that would have broken every run.</b> The script forces a
+    <code>schema</code> on the typed <code>engineer</code> agent, and its <code>required</code> list demanded
+    <code>committed</code> — a field <code>engineer.md</code>'s Path A step 7 does not promise. A schema that
+    over-demands fails validation, a failed validation makes <code>agent()</code> return <code>null</code>,
+    and this script (correctly) converts every null into a dispatch failure. So <b>all N candidates would
+    have "failed to dispatch"</b>, with the cause visible nowhere but the schema. Fixed, and a guard now
+    derives the contract from <code>engineer.md</code> and asserts the subset relation, so the next person to
+    add a field is told by a test rather than by a judge.</p>
+    <p><b>Then the second pass caught the guard itself committing vacuity class 3 — the class this
+    campaign has been cataloguing since Phase F.</b> The falsification block inlined a <em>copy</em> of each
+    check's regex and asserted it against a string literal, so it passed by exercising V8's regex engine:
+    every real check could have been deleted and the whole block would have stayed green. It also defined a
+    temp-file fixture helper and never called it, which made the suite <em>look</em> like it tested against
+    disk. Rewritten so every check is a named function that the real test and its fixture both call —
+    promoted into <code>AGENTS.md</code> as the structural remedy for that class.</p>
+    <p><b>And the stripper had a real bypass.</b> The comment-stripping step existed so the scanner would not
+    flag a script for <em>documenting</em> that <code>Math.random()</code> throws. But the naive line regex
+    found a <code>//</code> inside a <em>string literal</em> and erased the rest of the line:
+    <code>const sep = "//"; const leaked = Date.now();</code> hid a genuine banned call. <b>A guard that can
+    be silenced by a string literal is worse than no guard, because it reports green.</b> Replaced with a
+    character scanner that tracks string state; both bypasses now have fixtures, and disabling the tracking
+    turns three of them red by name.</p>
     <h4>Tasks</h4>
     <ul class="checklist">
-      <li><code class="status">[]</code> Note the corrected span. In <code>best-of.md</code>, <b>step 8 is judge routing and step 9 is judge execution</b>, with 6.5 (smoke collection), 7 (diff entropy) and 9.5 (smoke post-filter) between them. Absorbing "step 6 + step 8" would have silently dropped smoke collection, entropy, verdict execution, Borda, and the smoke post-filter — <b>changing winner selection.</b></li>
-      <li><code class="status">[]</code> Author <code>.claude/workflows/pp-best-of.js</code> covering <b>step 6 only</b>: N-candidate parallel <code>engineer</code> dispatch and structured collection of the fan-out results.</li>
-      <li><code class="status">[]</code> The prose driver retains steps 6.5 through 9.5 intact.</li>
-      <li><code class="status">[]</code> The daemon still owns candidate worktrees, attempt slots, Borda, and archival. The workflow calls the same MCP tools the Task-dispatched engineers call today.</li>
-      <li><code class="status">[]</code> Opt-in; the existing prose path stays as fallback. Set <code>workflowSizeGuideline: small</code> (N is 2–8).</li>
+      <li><code class="status" data-st="x">[x]</code> <b>The corrected span is recorded in the script
+      itself, as a comment listing every step it does not do.</b> In <code>best-of.md</code>, <b>step 8 is
+      judge routing and step 9 is judge execution</b>, with 6.5 (smoke collection), 7 (diff entropy) and
+      9.5 (smoke post-filter) between them. Absorbing "step 6 + step 8" would have silently dropped smoke
+      collection, entropy, the second Borda ranking and the post-filter — <b>changing winner
+      selection.</b></li>
+      <li><code class="status" data-st="x">[x]</code> <code>.claude/workflows/pp-best-of-fanout.js</code>
+      covers <b>step 6 only</b>: N-candidate parallel <code>engineer</code> dispatch and structured
+      collection. The judge verified input-by-input that every value step 6 passes to the engineer is
+      forwarded (12 of 12), and entry-by-entry that the model/seed rotation matches the spec for candidates
+      1–3 exactly and reads "cycle adding" faithfully for 4–8.</li>
+      <li><code class="status" data-st="x">[x]</code> The prose driver retains 6.5 through 9.5 intact, and
+      the guard asserts the script references <em>none</em> of the eight tools that belong to those steps —
+      with a fixture proving each one is individually detectable, not just one representative.</li>
+      <li><code class="status" data-st="x">[x]</code> The daemon still owns candidate worktrees, attempt
+      slots, Borda and archival. <b>Deliberately not <code>isolation: 'worktree'</code></b> — the daemon
+      already made a worktree per candidate, and a workflow-created one would leave
+      <code>archive_winner_and_losers</code> merging a branch nobody wrote to, producing an empty
+      <code>winner.diff</code> with no visible cause.</li>
+      <li><code class="status" data-st="x">[x]</code> Opt-in; the prose Task path stays the default and the
+      fallback. <code>Workflow(pp-best-of-fanout)</code> added to the template's allow list —
+      <b>scoped by name, never a bare <code>Workflow</code></b>, which would approve every workflow launch
+      including ad hoc scripts for unrelated tasks. Needed because <code>claude -p</code> and the Agent SDK
+      never show the approval prompt.</li>
+      <li><code class="status" data-st="f">[f]</code> <b>Refused, and the requested value was wrong on two
+      counts.</b> <s>Set <code>workflowSizeGuideline: small</code> (N is 2–8).</s> The key is real and
+      settable in any settings file (CC ≥ 2.1.219; installed 2.1.263), so this was a <em>wrong</em> task
+      rather than an impossible one. First, the documented brackets make <code>small</code> mean <b>fewer
+      than 5 agents</b> while best-of-N runs to <b>N=8</b> — it would advise against the workflow's own
+      maximum; <code>medium</code> (fewer than 15) is the right bracket and is already the default. Second
+      and decisively, the guideline advises Claude when it <em>writes</em> a dynamic workflow, so it cannot
+      govern a saved script whose agent count is fixed at N by the daemon's candidate array — setting it
+      would instead constrain every <em>other</em> workflow in the project. The judge weighed all three
+      reasons and upheld the refusal at 0.94.</li>
+      <li><code class="status" data-st="x">[x]</code> <b>Unplanned: nulls must not shrink N.</b> A workflow
+      <code>agent()</code> returns <code>null</code> when the operator skips it or it dies terminally.
+      <code>.filter(Boolean)</code> would hand the driver a shorter candidate list than the daemon allocated
+      slots for — changing N, changing whether the second Borda lane is mandatory, and electing a different
+      winner <b>with no error anywhere</b>. Each null becomes an explicit <code>infra_error</code> row
+      instead, and the guard bans the idiom outright <em>and</em> asserts the positive form
+      (<code>candidates.map</code>).</li>
     </ul>
     <h4>Testing strategy — loop until every check passes before advancing</h4>
     <ul class="checklist">
-      <li><code class="status">[]</code> Protocol equivalence: the same N candidates, the same attempt slots, the same smoke results reach step 6.5 whether the workflow or the prose path ran.</li>
-      <li><code class="status">[]</code> Winner selection is byte-identical across both paths on a fixture run.</li>
-      <li><code class="status">[]</code> Verify no HITL gate falls inside step 6, so the no-mid-run-input limit costs nothing.</li>
+      <li><code class="status" data-st="x">[x]</code> <b>Protocol equivalence checked input-by-input by the
+      cross-vendor judge</b>, in a 12-row table, in the direction that matters: <em>omission</em>. A missing
+      input is a silent divergence between the two paths, and a summary would have hidden it. Result: no
+      omissions.</li>
+      <li><code class="status" data-st="x">[x]</code> <b>The falsification block is falsifiable — proved by
+      breaking the checks.</b> Disabling the stripper's string tracking turns three fixtures red by name;
+      gutting <code>bannedConstructs</code> turns three red including the bypass fixtures. That is the
+      property the first version lacked and could not have had.</li>
+      <li><code class="status" data-st="x">[x]</code> Every <code>BANNED</code> entry, every TypeScript
+      smell and every forbidden tool has its own reachability fixture, and the suite asserts <b>no entry is
+      left without one</b> — so adding a pattern without a fixture fails rather than passing quietly. A
+      clean-fixture contrast case must pass every check, which is what keeps the negative fixtures from
+      being trivially satisfiable.</li>
+      <li><code class="status" data-st="f">[f]</code> <b>Not run — and it needs a real best-of-N run, not a
+      workflow launch.</b> <s>Winner selection is byte-identical across both paths on a fixture run.</s> The
+      workflow was authored and statically verified; executing it requires an actual
+      <code>/pp:best-of 3</code> with live candidate worktrees, which is the campaign's <b>final gate</b>
+      rather than this phase's. Recorded there, not claimed here.</li>
+      <li><code class="status" data-st="x">[x]</code> <b>No HITL gate falls inside step 6</b>, so the
+      no-mid-run-input limit costs nothing: the interactive points in <code>best-of.md</code> are the
+      profile bootstrap (step 1) and the judge-override STOPs (steps 1.5, 8), all outside the fan-out.</li>
     </ul>
     <p class="legend">If a check cannot be made to pass after reasonable effort, mark the phase
       <code class="status" data-st="f">[f]</code> and record why in Notes rather than looping forever.</p>
@@ -1633,6 +1718,73 @@ figure:has(img) .fig-pending { display: none; }
     script it wants exists elsewhere. Reported with the one-line fix rather than applied, because
     <code>~/.claude/settings.json</code> is user-scope config affecting every project on the machine — a
     repo-scoped campaign should not change the operator's global environment as a side effect.</p>
+  </details>
+
+
+  <details class="amend" open>
+    <summary>2026-09-07 — Phase K: the judge caught a schema that would have failed every candidate, then caught the guard committing this campaign's own catalogued defect</summary>
+
+    <p><b>Landed</b> as <code>.claude/workflows/pp-best-of-fanout.js</code> plus
+    <code>daemon/test/workflow-scripts.unit.mjs</code> (37 assertions). Full suite 773/773 across 102
+    suites. Ad hoc; two cross-vendor passes by agy <code>gemini-3.8-flash-medium</code>.</p>
+
+    <p><b>Pass 1 found a HIGH defect that would have broken every single run.</b> The script forces a
+    structured <code>schema</code> on the typed <code>engineer</code> agent, and its <code>required</code>
+    list demanded <code>committed</code> — a field <code>engineer.md</code>'s Path A step 7 does not promise
+    to return. An over-demanding schema fails validation; a failed validation makes <code>agent()</code>
+    return <code>null</code>; and this script correctly converts every null into a dispatch failure. So
+    <b>all N candidates would have reported "failed to dispatch"</b>, with the cause visible nowhere except
+    a schema nobody re-reads. The permanent fix is not the one-line removal: a guard now <em>derives</em>
+    the contract from <code>engineer.md</code> and asserts the subset relation, so the next person to add a
+    required field is told by a test rather than by a judge.</p>
+
+    <p><b>Pass 2 found the new guard committing vacuity class 3 — the class this campaign has been
+    cataloguing since Phase F, in a file whose own header claims to defend against it.</b> The falsification
+    block inlined a <em>copy</em> of each check's regex and asserted it against a string literal. Those
+    tests passed by exercising V8's regex engine: every real check could have been deleted and the entire
+    block would have stayed green. It also defined a temp-file fixture helper and never called it, which
+    made the suite <em>look</em> like it tested against disk. Rewritten so every check is a named function
+    that both the real test and its fixture call — and then <b>proved</b> by breaking the checks: disabling
+    the stripper's string tracking turns three fixtures red by name; gutting the banned-construct scan turns
+    three red. <b>The structural remedy is now in <code>AGENTS.md</code></b> as the general answer to that
+    class, rather than staying a Phase K anecdote.</p>
+
+    <p><b>The stripper had a real bypass, and it was the dangerous direction.</b> Comment stripping exists so
+    the scanner does not flag a script for <em>documenting</em> that <code>Math.random()</code> throws — the
+    deliverable does exactly that. But the naive line regex found a <code>//</code> inside a <em>string
+    literal</em> and erased the rest of the line, so <code>const sep = "//"; const leaked = Date.now();</code>
+    hid a genuine banned call. <b>A guard that can be silenced by a string literal is worse than no guard,
+    because it reports green.</b> The same regex also refused to strip a comment preceded by a colon — a
+    false positive in the other direction. Replaced by a character scanner that tracks string state, which
+    also handles <code>https://</code> structurally rather than by special case.</p>
+
+    <p><b>The plan asked for a setting whose requested value was wrong on two counts, and the refusal was
+    judged rather than asserted.</b> <code>workflowSizeGuideline: small</code> is real and settable
+    (CC ≥ 2.1.219; installed 2.1.263) — so this was a wrong task, not an impossible one. <code>small</code>
+    means <b>fewer than 5 agents</b> while best-of-N runs to <b>N=8</b>, and <code>medium</code> is both
+    correct and already the default. Decisively, the guideline advises Claude when it <em>writes</em> a
+    dynamic workflow, so it cannot govern a saved script whose agent count is fixed at N by the daemon;
+    setting it in a shared file would constrain every <em>other</em> workflow in the project instead. Upheld
+    at 0.94.</p>
+
+    <p><b>A consistency question was put to the judge directly, and it held.</b> Phase J refused to repair a
+    broken setting in the operator's user-scope config on the principle that a repo-scoped campaign must not
+    change the operator's environment; Phase K then added a permission grant to a checked-in template. The
+    judge was asked whether that is a contradiction and ruled it a real distinction (0.88): user-scope
+    config affects every project on the machine, a repo template configures this project, the grant is
+    scoped to one workflow by name rather than a wildcard, and without it the repo's own shipped tool cannot
+    launch headlessly.</p>
+
+    <p><b>Two process notes worth keeping.</b> First, the naming: a saved workflow becomes a slash command,
+    so <code>pp-best-of</code> would have sat one character from <code>/pp:best-of</code> while running only
+    a fan-out — the scope now lives in the name, because invocation is the only place that mistake gets
+    made. Second, <b>the campaign's own judge-prompt boilerplate caused two bridge failures here</b>: the
+    standing instruction to verify with PowerShell <code>Select-String</code> sent agy into
+    <code>run_command</code>, whose working directory is agy's own scratch folder on <code>C:</code> rather
+    than the repo, so <code>-Path .</code> matched nothing and both attempts spent their full 280 s hunting
+    the filesystem. Re-issued with absolute paths and an explicit "use <code>view_file</code>, do not
+    search" instruction, it returned in 49 s. <b>A bridge failure is never a verdict</b>, so nothing was
+    recorded from those two attempts.</p>
   </details>
 
 </section>

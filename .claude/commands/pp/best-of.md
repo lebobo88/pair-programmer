@@ -40,6 +40,33 @@ You are about to drive a `/pp:best-of` invocation. Follow the `pair-programmer` 
 
    Codex and Antigravity (agy) do NOT generate candidates. Their CLIs are reserved for the judge stage (step 8) when cross-vendor is required.
 
+   **Optional: run this step as a dynamic workflow instead of N Task calls.** `.claude/workflows/pp-best-of-fanout.js` performs exactly this step — the same N `engineer` dispatches, the same model/seed rotation, the same per-candidate inputs — with the orchestration in a script rather than in this prose. It is **opt-in and this Task-based path remains the default**; use it when you want the fan-out codified, resumable within the session, or visible in `/workflows`.
+
+   To use it, invoke the `Workflow` tool with `{name: "pp-best-of-fanout", args: {...}}` — `args` is a real JSON object, never a JSON-encoded string:
+
+   ```
+   args = {
+     run_id, stage_id,
+     request_text:        <the request, minus CLI flags>,
+     candidates:          <the `candidates` array from step 4, VERBATIM>,
+     agents_md_path?:     <project>/AGENTS.md,
+     runtime_smoke_test?: profile.runtime_smoke_test,
+     do_not_touch?:       [...]
+   }
+   ```
+
+   Pass the daemon's `candidates` array **unmodified** — do not renumber, sort or filter it. `candidate_index` and `attempt_slot_id` are the daemon's keys for the attempt rows and for `stages.notes_json.smoke_results`; a re-derived index writes one candidate's smoke status onto another candidate's slot.
+
+   It returns `{ step: 6, next_driver_step: 6.5, n, candidates: [...], smoke_summary, dispatch_failures, index_echo_mismatches }`. **`smoke_summary` is already shaped as step 6.5 expects**, so use it directly rather than re-deriving a map. Then continue at step 6.5 as normal.
+
+   Three things to know before choosing this path:
+
+   - **The scope is step 6 and nothing else.** The workflow does not judge, rank, Borda, smoke-filter, merge or tear down. Steps 6.5 through 14 stay here, in this file. `daemon/test/workflow-scripts.unit.mjs` asserts the script never calls the tools that belong to those steps.
+   - **`dispatch_failures` is not an empty-set formality.** A workflow `agent()` returns null if the operator skips it or it dies terminally. The script converts each null into an `infra_error` row rather than dropping it, precisely so N stays equal to the number of slots the daemon allocated — a shortened candidate list would change whether the second Borda lane is mandatory and would elect a different winner with no error anywhere. For every index in `dispatch_failures`, call `record_smoke_status({stage_id, candidate_index, status: "infra_error", reason: <the row's smoke_reason>})` as step 6.5 already instructs, then treat it as `skipped` for ranking per step 9.5.
+   - **`index_echo_mismatches` means investigate, not continue.** It lists candidates whose engineer echoed a different `candidate_index` than it was dispatched with, which implies `record_smoke_status` may have landed on the wrong slot. Verify before trusting the smoke gate.
+
+   In `claude -p` and the Agent SDK there is no approval prompt, so the launch needs a permission rule: `Workflow(pp-best-of-fanout)` is in `.claude/settings.template.json`'s allow list for exactly this. Interactive sessions are prompted per the usual permission-mode rules. If a saved workflow was edited in-session, `/reload-skills` re-reads the workflow directories.
+
 6.5. **Collect smoke results.** After all N engineer Tasks return, build a smoke summary from each Task's return payload:
    `smoke_summary = { candidate_index → { smoke_status, smoke_reason } }`.
    The engineers should already have called `record_smoke_status` (the daemon's authoritative record). Sanity check: if any candidate's payload is missing `smoke_status`, call `mcp__pp_harness__record_smoke_status({stage_id, candidate_index, status: "infra_error", reason: "engineer_did_not_report"})` yourself as a fallback so the gate has a value to read.
