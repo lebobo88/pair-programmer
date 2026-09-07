@@ -57,6 +57,20 @@ See `README.md` for the full capability table and quick-start.
 
 ## Working Agreements
 
+> **These are the canonical text.** Several of them are additionally **mirrored** into path-scoped Claude-only
+> rules — `.claude/rules/daemon-tests.md` (scoped to `daemon/test/**`) and `.claude/rules/daemon-src.md`
+> (scoped to `daemon/src/**`) — so Claude Code sees the file-specific detail again at the moment it is
+> working in those directories. **Mirrored, never extracted:** Codex, Antigravity (agy) and Copilot read this
+> file and do **not** read `.claude/rules/`, so moving a rule there instead of copying it would silently
+> degrade three of the four tools. If a rule and its mirror ever disagree, **this file wins**, and
+> `daemon/test/rules-mirror.unit.mjs` fails if a mirrored rule's substance disappears from here.
+>
+> One documented limitation, worth knowing before relying on the mirrors: **a path-scoped rule triggers when
+> Claude *reads* a matching file, not on every tool use.** A session that only *writes* under
+> `daemon/test/**` may never load the mirror at all. That is why the canonical text stays here, always
+> loaded via `CLAUDE.md`'s `@AGENTS.md` import, rather than being moved.
+
+
 ### no-premature-done
 Do not declare a task done until the **relevant** test suite passes AND `npm run build` exits clean. A single new test passing is not done — run the broader set of unit tests whose modules could be affected. A frozen contract in another module can break silently if only the new test is checked.
 
@@ -65,6 +79,10 @@ Write **self-contained unit tests** (`daemon/test/<name>.unit.mjs`): temp SQLite
 ```
 node --test --test-timeout=60000 daemon/test/<name>.unit.mjs
 ```
+**Never open or migrate the live `~/.pair-programmer/state.db` from a test.** Use a temp database. Phase H
+of the cc-standards-alignment campaign lost its own v10 migration test subject because a background daemon
+opened the live file first and migrated it in place.
+
 **Running the FULL suite needs a larger timeout:** use `--test-timeout=180000` for `daemon/test/*.unit.mjs`. `node --test` runs files concurrently, and `finalize-gates-a.unit.mjs` takes ~26-33 s alone, so it intermittently exceeds the per-test ceiling under parallel load — verified 341/1 fail at 60 s, 342/0 pass at 120 s, and passing again at 60 s on a re-run (GitHub #57). **120 s stopped being enough on 2026-09-07**, when Phase E of cc-standards-alignment added 10 suites (`no-dangling-pointers.unit.mjs`): 429/1 fail at 120 s with the same bare `'test failed'`, then 430/0 pass at 180 s (432/0 after the guard was hardened), and `finalize-gates-a.unit.mjs` passing alone at 60 s in between. The ceiling is a function of total parallel load, not of any one file, so it will need raising again as suites are added. The failure surfaces as a bare `'test failed'` at `:1:1` with no assertion text, so an agent following the single-file command above cannot distinguish this flake from its own regression. 60 s remains correct for one file.
 
 **Prefer `*.unit.mjs` over `npm test` or `*.smoke.mjs` in automated agent contexts.** The `npm test` script includes `eights-integration.smoke.mjs` (needs an external TheEights peer) and `smoke.mjs` (spawns a daemon) — making the full suite slower and flakier for automated agents. As of 2026-09-07 its unit portion is the glob `node --test --test-timeout=180000 test/*.unit.mjs`, so a new `*.unit.mjs` file is picked up automatically; before that it was a hand-maintained list of filenames that had silently drifted to 32 of 52 files, omitting three guards that were declared must-run-in-CI. Do not reintroduce an explicit list. Confirmed against `daemon/package.json` (the `test` script) and `daemon/test/eights-integration.smoke.mjs` (header: "spawns C:\AiAppDeployments\TheEights\daemon\dist\index.js").
@@ -77,6 +95,62 @@ Parallel Task dispatch is the default for best-of-N — `/pp:best-of` mandates p
 
 ### correct-module-before-edit
 Before editing a module, verify it is the one that actually implements the behavior — not a stale copy, compiled output, or similarly-named file. Editing the wrong module is a silent no-op.
+
+### no-vacuous-assertions
+
+Five vacuity classes have shipped in this repo and each was caught by a cross-vendor judge, not by review.
+Every one of them passed a review first.
+
+1. **An assertion whose own source satisfies the pattern it searches for.** Assemble forbidden literals at
+   runtime from fragments and self-check the test file itself.
+2. **A scan that visits zero files and passes.** Assert non-emptiness on **the collection actually
+   iterated**, never on a correlate. One shipped assertion guarded a counter incremented *before* the
+   filters while the assertions iterated the post-filter list.
+3. **A fixture that exercises `node:assert` rather than the function under test.** `assert.ok(0 > 0)` on a
+   hand-built empty `Set` shipped once. Drive the real function.
+4. **An absence assertion whose fixture cannot produce the condition denied.** A `node_modules` skip check
+   scanned two roots that contain none.
+5. **A filter or parser that silently discards exactly the inputs the assertion exists to find.** The worst
+   of the five, because it satisfies all the others: a frontmatter parser dropped the malformed lines it
+   existed to catch and reported zero violations. **If you filter or parse a population, assert on what you
+   rejected too** — "nothing survived" and "nothing needed to" must be distinguishable outcomes, and a
+   falsifiability fixture whose input the filter drops proves nothing.
+
+**Derive every count from the filesystem or the database.** Six wrong hardcoded counts have shipped here.
+
+**Every positive invariant needs a falsifiability proof** — a mutation that turns it red — via a
+temp-directory or in-memory fixture. **Never mutate a real tracked file from inside the suite.** If you
+mutate one out of band, verify it byte-identical afterward with a checksum, and do **not** use
+`git checkout --` to revert it: that discards uncommitted work, which has already happened once.
+
+### schema-change-is-two-objects
+
+Adding a table or column is **two** edits plus a version bump, not one:
+
+- add it to **`SCHEMA_SQL`** (`daemon/src/db/schema.ts`) so a **fresh** database has it;
+- add it to the **migration** (`daemon/src/db/database.ts`) so an **existing** database gets it;
+- bump **`SCHEMA_VERSION`** — earlier migrations shipped without bumping it and stayed at 7 until v10 had to
+  reconcile the gap in one step;
+- mirror it into **`daemon/src/db/schema.sql`**, the human-readable copy, which has drifted from
+  `schema.ts` before and is guarded only by a narrow column check.
+
+Migrations MUST be **additive, guarded** (`IF NOT EXISTS` / `PRAGMA table_info`), **idempotent**, and MUST
+rewrite no existing row. Prove it against a fixture built from the *previous* schema, never against the live
+database — and separately prove that a **fresh** database built from the declaration alone carries every
+object, because that is the assertion which catches a migration-only column. A column present in the
+migration but absent from the declaration means an upgraded install works and a new install throws; that
+shipped once and was caught by a judge.
+
+### never-manufacture-a-ledger-row
+
+`attempts` records **generation**. `verdicts` record **judgement**. Neither is a place to record that
+something merely happened — that is what `execution_events` is for, and it is deliberately a separate table
+whose writer touches neither. **A failed vendor critique is not a generation attempt**; conflating them
+makes the attempt count a lie.
+
+The same discipline applies to provenance generally: where a true value is not recoverable, record that it
+is **unknown** rather than guessing it. `janitor`'s `untyped_producer_attempts` report is the pattern — it
+names rows whose producer cannot be recovered and mutates nothing.
 
 ### browser-verify
 When a change affects the user's live project web UI, validate in a real browser via the browser-validator path before declaring done. Note: `127.0.0.1:7878` is a read-only JSON GET API for cross-session queries — it is not a browser UI (server.ts:2–8).

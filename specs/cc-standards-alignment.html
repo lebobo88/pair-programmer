@@ -119,8 +119,8 @@ figure:has(img) .fig-pending { display: none; }
   <summary>Metadata</summary>
   <dl>
     <dt>created</dt><dd>2026-08-24</dd>
-    <dt>modified</dt><dd>2026-09-07 — Phase H landed; #58 closed, and the run exhausted its validator budget</dd>
-    <dt>commits</dt><dd>branch <code>feat/cc-standards-alignment</code> — Phases A&ndash;H landed (runs <code>run_7tbXaLHTJU1x</code>, <code>run_3FLJhz2DDV6w</code>, ad hoc, <code>run_z6a4iH0m0V2G</code>, <code>run_2IkydL62USI3</code>, <code>run_CZvEeGpuKzLt</code>, <code>run_CvKoIWhSC8XV</code>, <code>run_p8JPpVhDonUA</code>)</dd>
+    <dt>modified</dt><dd>2026-09-07 — Phase I landed; the phase broke its own mirror-not-extract rule twice</dd>
+    <dt>commits</dt><dd>branch <code>feat/cc-standards-alignment</code> — Phases A&ndash;I landed (runs <code>run_7tbXaLHTJU1x</code>, <code>run_3FLJhz2DDV6w</code>, ad hoc, <code>run_z6a4iH0m0V2G</code>, <code>run_2IkydL62USI3</code>, <code>run_CZvEeGpuKzLt</code>, <code>run_CvKoIWhSC8XV</code>, <code>run_p8JPpVhDonUA</code>, <code>run_5N_C2vVNW89u</code>)</dd>
     <dt>agent</dt><dd>plan-deep (Fable-5) — authored to the plan-deep output contract</dd>
     <dt>session</dt><dd>7aefb7e8-2948-46a1-b10b-f9422c843257</dd>
     <dt>back refs</dt><dd><code>.harness/run_kUPtCqHotdYn/postmortem.md</code> (PP-VG-6 delivery stall); <code>.harness/cc-standards-alignment-plan.md</code> (superseded markdown draft)</dd>
@@ -765,19 +765,83 @@ figure:has(img) .fig-pending { display: none; }
   </div>
 
   <div class="phase">
-    <h3 id="phase-i">Phase I — Path-scoped rules: mirror, do not extract <code class="status">[]</code> <span class="legend"><a href="https://github.com/lebobo88/pair-programmer/issues/50">#50</a></span></h3>
+    <h3 id="phase-i">Phase I — Path-scoped rules: mirror, do not extract <code class="status" data-st="x">[x]</code> <span class="legend"><a href="https://github.com/lebobo88/pair-programmer/issues/50">#50</a></span></h3>
     <p>Round 2 caught the real risk here, and it inverted the design.</p>
+    <p><b>Landed 2026-09-07</b> as run <code>run_5N_C2vVNW89u</code>. Guard 40/40; full suite 720/720 across
+    98 suites; missability 6 pass / 0 fail / 51 n/a. Closed <code>surfaced</code>: the code stage's closing
+    verdict was <code>revise</code> with Reflexion&nbsp;×1 spent.</p>
+    <p><b>This phase violated its own principle twice, and the cross-vendor judge caught both — review caught
+    neither.</b> First the driver <em>extracted</em> three whole normative sections into the Claude-only rule
+    files, where Codex, agy and Copilot cannot see them. Then, rather than promote a fourth, a retry
+    <b>widened the guard</b> so the unmirrored text fell outside the checked region and stopped being
+    required. Both were fixed by promoting the content into <code>AGENTS.md</code>; the guard now passes with
+    the escape hatch removed, which is the proof the content move was the right fix rather than the check
+    being wrong.</p>
+    <p><b>And the plan's own acceptance criterion turned out to be unsatisfiable — while being right to
+    demand it.</b> The docs say verbatim that path-scoped rules trigger when Claude <em>reads</em> a matching
+    file, "not on every tool use", so a write-only session may never load a mirror. That is documented
+    behaviour, and a <code>node --test</code> unit test cannot observe rule-loading to assert it. What makes
+    it harmless is structural: the canonical text stays in always-loaded <code>AGENTS.md</code> — which is
+    itself the strongest argument for mirroring rather than extracting.</p>
     <h4>Tasks</h4>
     <ul class="checklist">
-      <li><code class="status">[]</code> Recognize that <code>AGENTS.md</code> is the <b>cross-tool</b> contract — Codex, agy, and Copilot read it and do <b>not</b> read <code>.claude/rules/</code>. Extracting the only copy degrades all three.</li>
-      <li><code class="status">[]</code> Keep concise copies in <code>AGENTS.md</code> (or generate both mirrors from one source) and <em>add</em> Claude-only path-scoped <code>.claude/rules/*.md</code> with <code>paths:</code> globs.</li>
-      <li><code class="status">[]</code> Scope to genuinely file-bound rules only: ANTI-STALL TEST RULE (<code>daemon/test/**</code>), git-plumbing (<code>daemon/src/**</code>), correct-module-before-edit (<code>daemon/src/**</code>).</li>
-      <li><code class="status">[]</code> Governance invariants, Hard Rules, and run semantics stay in always-loaded <code>AGENTS.md</code>.</li>
+      <li><code class="status" data-st="x">[x]</code> <b>Confirmed against the primary docs, and it is why
+      the whole phase is shaped this way.</b> <em>"Claude Code reads <code>CLAUDE.md</code>, not
+      <code>AGENTS.md</code>"</em> — this repo already uses the documented <code>@AGENTS.md</code> import
+      shim, so <code>AGENTS.md</code> stays always-loaded. Codex, agy and Copilot read it and <b>do not read
+      <code>.claude/rules/</code></b>, so extracting the only copy degrades three of the four tools
+      <em>silently</em>: nothing fails, they just stop knowing the rule.</li>
+      <li><code class="status" data-st="x">[x]</code> Concise copies kept in <code>AGENTS.md</code>;
+      Claude-only path-scoped rules <b>added</b> alongside. <b>Generating both from one source was considered
+      and rejected as disproportionate</b> for two files — recorded as ADR-I1 with the alternatives, since
+      it is worth revisiting if the rule set grows.</li>
+      <li><code class="status" data-st="x">[x]</code> Scoped to the genuinely file-bound rules:
+      <code>.claude/rules/daemon-tests.md</code> carries the ANTI-STALL TEST RULE
+      (<code>daemon/test/**/*.mjs</code>); <code>.claude/rules/daemon-src.md</code> carries
+      <code>git-plumbing</code> and <code>correct-module-before-edit</code>
+      (<code>daemon/src/**/*.ts</code>).</li>
+      <li><code class="status" data-st="x">[x]</code> Governance invariants, Hard Rules and run semantics stay
+      in always-loaded <code>AGENTS.md</code>, untouched — the judge verified Hard Rules 1–10 all remain
+      there.</li>
+      <li><code class="status" data-st="x">[x]</code> <b>Unplanned, and the phase's real finding: the driver
+      extracted in the wrong direction.</b> Three whole normative sections — the schema-change discipline,
+      never-manufacture-a-ledger-row, and the five vacuity classes — were written into the rule files and
+      existed <b>nowhere else</b>. Not elaboration: new obligations, invisible to three of four tools.
+      Promoted into <code>AGENTS.md</code> as first-class Working Agreements, where they belonged, since all
+      four tools write tests and touch <code>daemon/src</code>.</li>
+      <li><code class="status" data-st="x">[x]</code> <b>Unplanned, and worse: the guard was loosened to fit
+      unmirrored content.</b> A prohibition with no <code>AGENTS.md</code> counterpart led a retry to
+      <em>widen</em> the core-extraction so it stopped being required — presented as a collateral fix,
+      correctly called out by the judge as loosening a check to fit content. Fixed by promoting the
+      prohibition and narrowing the extraction back.</li>
+      <li><code class="status" data-st="x">[x]</code> <b>The mirror property is now asserted, not
+      conventional.</b> <code>daemon/test/rules-mirror.unit.mjs</code> resolves each rule section to its
+      <code>AGENTS.md</code> anchor from the rule file's <em>own</em> declarations — never a hand-maintained
+      table, which would rot the way six hardcoded counts already have — then requires every backtick-quoted
+      identifier in the rule's core to occur in <b>that section</b>, above a floored word-overlap ratio.
+      <b>Every <code>##</code> section either resolves or is reported unresolved and fails; there is no third
+      outcome.</b></li>
     </ul>
     <h4>Testing strategy — loop until every check passes before advancing</h4>
     <ul class="checklist">
-      <li><code class="status">[]</code> A Codex critique run still receives every rule it received before — verified by diffing the rendered <code>AGENTS.md</code> content, not by <code>agents_md_status</code>, which reports section <em>population</em> and cannot prove semantic coverage.</li>
-      <li><code class="status">[]</code> A Claude session touching <code>daemon/test/**</code> loads the anti-stall rule; one touching only <code>docs/</code> does not.</li>
+      <li><code class="status" data-st="x">[x]</code> <b>The guard caught a defect in the driver's own rule
+      file on its first run.</b> <code>paths</code> included <code>daemon/test/**/*.ts</code> and
+      <code>daemon/test/</code> contains zero <code>.ts</code> files, so the glob matched nothing — "dead
+      weight that looks live". The test-strategist <b>refused to weaken the assertion</b> or edit
+      <code>.claude/</code>, reported it instead, and the driver removed the glob.</li>
+      <li><code class="status" data-st="x">[x]</code> Falsifiable in <b>both</b> directions, each against a
+      copy rather than a tracked file: a renamed <code>AGENTS.md</code> heading produces an
+      <code>unresolved</code> entry and a red test; a deleted section's substance is caught by the
+      section-scoped identifier check where a full-file search passed; a legitimate reword stays green.</li>
+      <li><code class="status" data-st="x">[x]</code> Frontmatter validity, every <code>paths:</code> glob
+      matching at least one real file, <b>both</b> limbs of the glob budget, and an unreadable
+      <code>[</code> bracket — plus an assertion that <code>CLAUDE.md</code> still imports
+      <code>AGENTS.md</code>, since the entire design rests on it.</li>
+      <li><code class="status" data-st="f">[f]</code> <b>Not measured.</b> <s><code>/context</code> compared
+      against the Phase A baseline.</s> Path-scoped rules load <em>conditionally</em>, so the figure depends
+      on which files a session reads and there is no single number to compare against a baseline. A rule
+      <em>without</em> <code>paths:</code> would load at launch and cost budget unconditionally — both of
+      these have <code>paths:</code>, deliberately.</li>
     </ul>
     <p class="legend">If a check cannot be made to pass after reasonable effort, mark the phase
       <code class="status" data-st="f">[f]</code> and record why in Notes rather than looping forever.</p>
