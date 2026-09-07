@@ -19,13 +19,13 @@ You are about to drive a `/pp:best-of` invocation. Follow the `pair-programmer` 
 
 ## Lifecycle
 
-1. **Triage + profile snapshot** — same as `/pp:run`. Best-of-N is heavy; if triage returns `trivial`, suggest `/pp:run` instead.
+1. **Triage + profile snapshot** — identical to `/pp:run` steps 1 and 2. Invoke the `triage` sub-agent with `request_text=$ARGUMENTS` and capture `{ class, signals }`; then invoke `profile-loader` with `cwd` and `request_text` and capture the snapshot. If the loader returns `source = "needs_bootstrap"`, follow the bootstrap flow in the `pair-programmer` skill step 2 (detect → confirm → write → re-load) and do not proceed until a profile is bound or the user explicitly chose `skip` / generic mode. Best-of-N is heavy; if triage returns `trivial`, suggest `/pp:run` instead.
 
 1.5. **Validate judge overrides (only when a judge flag is set).** Identical to `/pp:run` step 2.5 and it runs BEFORE `start_run`: call `mcp__pp_harness__doctor`, validate `cli_flags.judge_model` against `judge_capabilities[judge_vendor].allowed_critique_models` and `cli_flags.judge_effort` against `allowed_reasoning_efforts`, and STOP with the `PP_DISABLE_AGY=1` kill-switch remediation when `judge_vendor="agy"` and `agy_disabled` is true. Any failure STOPS before a run row exists — print the rejected value and the allow-list.
 
 2. **Start run.** `mcp__pp_harness__start_run(mode="best_of", n=N, request_text=<rest>, project_path=<cwd>, cli_flags=<the parsed object, including the judge fields>)`.
 
-3. **Taxonomy mapping** — same as `/pp:run`.
+3. **Taxonomy mapping** — identical to `/pp:run` step 5. Invoke the `taxonomy-mapper` sub-agent with `request_text`, the triage class/signals and the profile snapshot; it returns `{ scope, signals, sections, missability_required }`. Persist it with `mcp__pp_harness__record_taxonomy_mapping(run_id, …)`. Map only sections whose required artifacts this run can genuinely produce — `finalize_run` hard-blocks on them (PP-VG-2).
 
 4. **Open the best-of stage.** `mcp__pp_harness__start_best_of_stage(run_id, kind="code", gate_type="code_style", n=N)`. Returns `{stage_id, candidates: [{candidate_index, attempt_slot_id, worktree_path, worktree_mode}, ...]}`. The daemon refuses to open the stage unless at least one non-Claude vendor (codex OR agy) is reachable, since judges need cross-vendor capability when all candidates are Claude.
 
@@ -39,6 +39,33 @@ You are about to drive a `/pp:best-of` invocation. Follow the `pair-programmer` 
    Pass `cwd=<worktree_path[i]>` and `attempt_slot_id` from the per-candidate slot. **Also pass `profile.runtime_smoke_test`** if the active profile sets it — the engineer reads this to decide whether to run the dev-server smoke test before committing. Each engineer authors files DIRECTLY into its worktree using its native Write/Edit/Bash tools (see engineer.md), runs the verification step (3.5) on UI projects, then `git add -A && git commit -m "<msg>"` inside the worktree before returning. The harness will auto-commit if the engineer forgets, but explicit is preferred.
 
    Codex and Antigravity (agy) do NOT generate candidates. Their CLIs are reserved for the judge stage (step 8) when cross-vendor is required.
+
+   **Optional: run this step as a dynamic workflow instead of N Task calls.** `.claude/workflows/pp-best-of-fanout.js` performs exactly this step — the same N `engineer` dispatches, the same model/seed rotation, the same per-candidate inputs — with the orchestration in a script rather than in this prose. It is **opt-in and this Task-based path remains the default**; use it when you want the fan-out codified, resumable within the session, or visible in `/workflows`.
+
+   To use it, invoke the `Workflow` tool with `{name: "pp-best-of-fanout", args: {...}}` — `args` is a real JSON object, never a JSON-encoded string:
+
+   ```
+   args = {
+     run_id, stage_id,
+     request_text:        <the request, minus CLI flags>,
+     candidates:          <the `candidates` array from step 4, VERBATIM>,
+     agents_md_path?:     <project>/AGENTS.md,
+     runtime_smoke_test?: profile.runtime_smoke_test,
+     do_not_touch?:       [...]
+   }
+   ```
+
+   Pass the daemon's `candidates` array **unmodified** — do not renumber, sort or filter it. `candidate_index` and `attempt_slot_id` are the daemon's keys for the attempt rows and for `stages.notes_json.smoke_results`; a re-derived index writes one candidate's smoke status onto another candidate's slot.
+
+   It returns `{ step: 6, next_driver_step: 6.5, n, candidates: [...], smoke_summary, dispatch_failures, index_echo_mismatches }`. **`smoke_summary` is already shaped as step 6.5 expects**, so use it directly rather than re-deriving a map. Then continue at step 6.5 as normal.
+
+   Three things to know before choosing this path:
+
+   - **The scope is step 6 and nothing else.** The workflow does not judge, rank, Borda, smoke-filter, merge or tear down. Steps 6.5 through 14 stay here, in this file. `daemon/test/workflow-scripts.unit.mjs` asserts the script never calls the tools that belong to those steps.
+   - **`dispatch_failures` is not an empty-set formality.** A workflow `agent()` returns null if the operator skips it or it dies terminally. The script converts each null into an `infra_error` row rather than dropping it, precisely so N stays equal to the number of slots the daemon allocated — a shortened candidate list would change whether the second Borda lane is mandatory and would elect a different winner with no error anywhere. For every index in `dispatch_failures`, call `record_smoke_status({stage_id, candidate_index, status: "infra_error", reason: <the row's smoke_reason>})` as step 6.5 already instructs, then treat it as `skipped` for ranking per step 9.5.
+   - **`index_echo_mismatches` means investigate, not continue.** It lists candidates whose engineer echoed a different `candidate_index` than it was dispatched with, which implies `record_smoke_status` may have landed on the wrong slot. Verify before trusting the smoke gate.
+
+   In `claude -p` and the Agent SDK there is no approval prompt, so the launch needs a permission rule: `Workflow(pp-best-of-fanout)` is in `.claude/settings.template.json`'s allow list for exactly this. Interactive sessions are prompted per the usual permission-mode rules. If a saved workflow was edited in-session, `/reload-skills` re-reads the workflow directories.
 
 6.5. **Collect smoke results.** After all N engineer Tasks return, build a smoke summary from each Task's return payload:
    `smoke_summary = { candidate_index → { smoke_status, smoke_reason } }`.
@@ -71,7 +98,7 @@ You are about to drive a `/pp:best-of` invocation. Follow the `pair-programmer` 
 
 12. **Finalize stage.** `finalize_stage(stage_id, status="passed", winner_attempt_id=<winner attempt id>)` (or `surfaced` on merge conflict, empty diff, or failed preservation).
 
-13. **Missability + master-plan + finalize.** Same as `/pp:run` steps 7–9. Reflexion ×1 applies only to the winner. **Trigger Reflexion when the winner has `smoke_status="fail"`** — construct the critique from `smoke_reason` (the matched fail pattern + first 30 stderr lines) and feed it to the engineer for a single retry. Reflexion does NOT trigger on `smoke_status="infra_error"` (that's an environment problem, not a code crash, so the retry won't help).
+13. **Missability + master-plan + finalize.** Identical to `/pp:run` steps 7, 8, 8b and 9: invoke `missability-inspector` (it calls `run_missability_checks(run_id, required_check_ids=<from step 3>)`, and any `fail` on a required check sets `final_status="surfaced"`); then `master-plan-patcher` (`ensure_master_plan` then patch per touched section, setting `final_status="complete"`); then `agents-md-author` **only if** the patcher touched sections 11, 12, 13 or 14; then `run-finalizer`, which writes `run.summary.md` and calls `finalize_run` and returns `{ ok, run_id, status, summary_path, master_plan_path, patches_applied }`. **Beyond what `/pp:run` step 9 states:** `finalize_run` itself also returns `{ effective_status, requested_status, downgraded, surfaced_stage_count }` (see its tool description) — check `downgraded` before reporting a clean `complete`, because PP-VG-7 rewrites a requested `complete` as `surfaced` when any child stage is surfaced. This is attributed to the tool, not to step 9, which does not mention it. Reflexion ×1 applies only to the winner. **Trigger Reflexion when the winner has `smoke_status="fail"`** — construct the critique from `smoke_reason` (the matched fail pattern + first 30 stderr lines) and feed it to the engineer for a single retry. Reflexion does NOT trigger on `smoke_status="infra_error"` (that's an environment problem, not a code crash, so the retry won't help).
 
 14. **Report.** Show:
    - Winning candidate (index, model, seed, attempt id) and its critique.

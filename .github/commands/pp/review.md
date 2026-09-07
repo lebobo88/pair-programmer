@@ -8,7 +8,7 @@ argument-hint: <forum> [--scope files|stage|run|project]
 
 You are about to drive a `/pp:review` invocation. Follow the `pair-programmer` skill protocol exactly. Parse `$ARGUMENTS` as `<forum>` (one of: framing, scope, design, architecture, contract, threat, test-readiness, release-readiness, incident, service) followed by optional `--scope <files|stage|run|project>` and any free-text context.
 
-**Delegation contract:** All MCP tool access flows through sub-agent delegation per the Delegation Contract in `pair-programmer.md` (the master skill). Do not bypass. `PP_ALLOW_AD_HOC=1` is daemon-developer-debug only and MUST NOT be proposed as a remedy in this lifecycle.
+**Delegation contract:** All MCP tool access flows through sub-agent delegation per the Delegation Contract in the `pair-programmer` skill (the master skill). Do not bypass. `PP_ALLOW_AD_HOC=1` is daemon-developer-debug only and MUST NOT be proposed as a remedy in this lifecycle.
 
 ## CLI-flag pre-parse
 
@@ -25,7 +25,7 @@ Strip the judge-override flags out of `$ARGUMENTS` into a `cli_flags` object **b
 
 1. **Resolve the forum.** `mcp__pp_harness__get_forum(id=<forum>)`. If null, list forums via `mcp__pp_harness__list_forums` and refuse. Capture `stages` and `required_missability_checks`.
 
-2. **Triage + profile snapshot** — same as `/pp:run`.
+2. **Triage + profile snapshot** — identical to `/pp:run` steps 1 and 2. Invoke the `triage` sub-agent with `request_text=$ARGUMENTS` and capture `{ class, signals }`; then invoke `profile-loader` with `cwd` and `request_text` and capture the snapshot. If the loader returns `source = "needs_bootstrap"`, follow the bootstrap flow in the `pair-programmer` skill step 2 (detect → confirm → write → re-load) and do not proceed until a profile is bound or the user explicitly chose `skip` / generic mode.
 
 2.5. **Validate judge overrides (only when a judge flag is set).** Identical to `/pp:run` step 2.5 and it runs BEFORE `start_run`: call `mcp__pp_harness__doctor`, validate `cli_flags.judge_model` against `judge_capabilities[judge_vendor].allowed_critique_models` and `cli_flags.judge_effort` against `allowed_reasoning_efforts`, and STOP with the `PP_DISABLE_AGY=1` kill-switch remediation when `judge_vendor="agy"` and `agy_disabled` is true. Any failure STOPS before a run row exists — print the rejected value and the allow-list, and do not call `start_run`.
 

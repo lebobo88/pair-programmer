@@ -26,7 +26,7 @@ This guide is the single canonical reference for using the harness day-to-day. T
 14. [Best-of-N — the why and the how](#14-best-of-n--the-why-and-the-how)
 15. [Visual regression](#15-visual-regression)
 16. [Design templates](#16-design-templates)
-17. [Sub-agents (75)](#17-sub-agents-75)
+17. [Sub-agents (42)](#17-sub-agents-42)
 18. [Hooks (29)](#18-hooks-29)
 19. [MCP tools reference (79)](#19-mcp-tools-reference-79)
 20. [HTTP control plane](#20-http-control-plane)
@@ -84,7 +84,7 @@ For lower-stakes gates (`code_style`, `docs_polish`, `lint_class`) the harness p
 | Surface | Count |
 |---|---|
 | Slash commands | 19 |
-| Sub-agents | 75 |
+| Sub-agents | 42 |
 | Specialized teams | 25 |
 | Project profiles | 16 |
 | Standard-aligned rubrics | 25 |
@@ -284,7 +284,7 @@ Every `/pp:*` command follows this lifecycle (some phases are skipped for `/pp:s
 - **Run status:** `complete | surfaced | aborted | crashed`. (`crashed` is set by the janitor for runs >6h old that never finalized.)
 - **Verdict outcome:** `pass | revise | fail`. `fail` triggers Reflexion ×1; `pass` advances the stage; `revise` is a soft band where Reflexion is most likely to help.
 
-> Source: [`.claude/skills/pair-programmer.md`](../.claude/skills/pair-programmer.md).
+> Source: [`.claude/skills/pair-programmer/SKILL.md`](../.claude/skills/pair-programmer/SKILL.md).
 
 ---
 
@@ -370,7 +370,7 @@ For best-of-2, the driver asks the judge for a structured rubric score per candi
 
 When a supplementary same-vendor judge is in play, the generator and judge MUST use **different model ids** — there is no longer any exemption, the agy degenerate lane having been removed once agy gained a distinct escalated critique id. `pp_codex.critique` defaults to `gpt-5.6-terra` and `pp_agy.critique` to `gemini-3.8-flash-medium`; a same-vendor read on a generator that already used the default id must run another allow-listed id (normally the escalated lane, `gpt-5.6-sol` / `gemini-3.1-pro-high`), otherwise `gate_eligible_judges` routes the verdict cross-vendor. The daemon's `record_verdict` path rejects a judge model outside the producer's allow-list, a `default`/`escalated` source whose id does not match the pin, and an override source of `cli`/`team_yaml`/`hydra` without a reason of ≥ 8 characters — so a stale prompt cannot claim a model the wrapper did not actually use.
 
-> Deep-dive: [`docs/validator-policy.md`](validator-policy.md), [`.claude/skills/judge-policy.md`](../.claude/skills/judge-policy.md), source: [`daemon/src/orchestrator/gates.ts`](../daemon/src/orchestrator/gates.ts).
+> Deep-dive: [`docs/validator-policy.md`](validator-policy.md), [`.claude/skills/judge-policy/SKILL.md`](../.claude/skills/judge-policy/SKILL.md), source: [`daemon/src/orchestrator/gates.ts`](../daemon/src/orchestrator/gates.ts).
 
 ---
 
@@ -1116,9 +1116,9 @@ The current `getDesignTemplate(kind)` implementation reads from the in-process `
 
 ---
 
-## 17. Sub-agents (75)
+## 17. Sub-agents (42)
 
-Verified against `.claude/agents/*.md` (75 files). Direct invocation of these is rare — the orchestrator routes for you. The tables below cover the engineering / lifecycle / judging agents most users delegate to; the roster also includes the executive-suite personas (CEO/CFO/CTO/CISO/…), governance authors, and AgentSmith watchers (sentinel/archivist/quarantine/replicator/inspector) that round the directory out to 75.
+Verified against `.claude/agents/*.md` (42 files). Direct invocation of these is rare — the orchestrator routes for you. The subsection counts below sum to 42 and cover every agent in the directory.
 
 ### Generic generators (19)
 
@@ -1162,9 +1162,9 @@ Activated under any `game-dev*` profile. Each reads the matching `.claude/gotcha
 | `live-ops-manager` | Season plans, event cadences, store-page A/B plans, hotfix flow, retention-KPI plans. |
 | `game-accessibility-specialist` | GAG/XAG/AbleGamers/IGDA-GASIG-aligned accessibility plans (richer than generic web a11y). |
 
-### Lifecycle (5)
+### Lifecycle (6)
 
-`triage`, `profile-loader`, `taxonomy-mapper`, `missability-inspector`, `master-plan-patcher`.
+`triage`, `profile-loader`, `taxonomy-mapper`, `missability-inspector`, `master-plan-patcher`, `agents-md-author`.
 
 ### Judging (3)
 
@@ -1188,9 +1188,9 @@ Activated under any `game-dev*` profile. Each reads the matching `.claude/gotcha
 
 ## 18. Hooks (29)
 
-Hooks are shell commands Claude Code runs at lifecycle events. They read a JSON envelope on stdin and return exit code 0 (allow) or 2 (block). 29 distinct hooks span 5 events. [`.claude/settings.json`](../.claude/settings.json) wires **26** of them; [`hooks.json`](../hooks.json) (the Copilot CLI hook file) is the superset and adds the **3 TheEights ecosystem-recall hooks** (`eights-recall-project` on SessionStart, `eights-recall-stage` on PreToolUse, `eights-recall-request` on UserPromptSubmit). The subsection counts below reflect the `.claude/settings.json` wiring.
+Hooks are shell commands Claude Code runs at lifecycle events. They read a JSON envelope on stdin and return exit code 0 (allow) or 2 (block). 29 distinct hooks span 5 events. Both [`.claude/settings.json`](../.claude/settings.json) (generated from `settings.template.json`) and [`hooks.json`](../hooks.json) (the Copilot CLI hook file) wire all **29**, including the 3 TheEights ecosystem-recall hooks (`eights-recall-project` on SessionStart, `eights-recall-stage` on PreToolUse, `eights-recall-request` on UserPromptSubmit). The subsection counts below reflect that wiring.
 
-### SessionStart (5)
+### SessionStart (6)
 
 | Hook | What it enforces | Bypass |
 |---|---|---|
@@ -1199,8 +1199,9 @@ Hooks are shell commands Claude Code runs at lifecycle events. They read a JSON 
 | `cli-version-pin` | Codex / agy / pp-daemon / git / npm versions pinned in DB. Warns on drift. | — |
 | `master-plan-load` | Reports `PROJECT_MASTER.md` status. | — |
 | `surfaced-runs` | Lists up to 5 surfaced runs; reminds you to `/pp:retry`. | — |
+| `eights-recall-project` | Recalls this project's prior TheEights episodes at session start. Advisory; fail-soft — an absent or hung peer cannot block the session. | — |
 
-### PreToolUse (7)
+### PreToolUse (8)
 
 | Hook | Matcher | What it enforces | Bypass |
 |---|---|---|---|
@@ -1211,6 +1212,7 @@ Hooks are shell commands Claude Code runs at lifecycle events. They read a JSON 
 | `enforce-no-secrets` | `Edit | Write | MultiEdit | mcp__pp_harness__archive_artifact` | Regex scan for API keys / passwords / SSH keys / JWT / OAuth tokens. | None — fix the artifact, then retry. |
 | `enforce-validator-gate` | `Edit | Write | MultiEdit` | Blocks code edits when active run has a failed verdict and no Reflexion retry yet. | `/pp:retry <run_id>`, or `PP_ALLOW_AD_HOC=1`. |
 | `enforce-rfc2119-language` | `Write | Edit | mcp__pp_harness__archive_artifact` | Spec-shaped artifacts (path/kind/section heuristics) must contain MUST/SHOULD/MAY. Block in active run; advisory otherwise. | Add the keyword, or `PP_ALLOW_AD_HOC=1`. |
+| `eights-recall-stage` | `mcp__pp_harness__start_stage` | Recalls prior cross-run critiques for the stage being opened. Advisory; fail-soft — an absent or hung peer cannot block the stage. | — |
 
 ### PostToolUse (7)
 
@@ -1224,7 +1226,7 @@ Hooks are shell commands Claude Code runs at lifecycle events. They read a JSON 
 | `verdict-rubric-coverage` | `mcp__pp_harness__record_verdict` | Warns if verdict has <3 rubric dimensions scored. |
 | `update-master-plan` | `mcp__pp_harness__finalize_run` | Backstop: scaffold `PROJECT_MASTER.md` if absent and append a run summary. |
 
-### UserPromptSubmit (5)
+### UserPromptSubmit (6)
 
 All advisory — these never block. They print a one-line nudge above your prompt.
 
@@ -1235,6 +1237,7 @@ All advisory — these never block. They print a one-line nudge above your promp
 | `risk-flag` | Prompt contains security or concurrency keywords. Notes that the gate will auto-elevate to cross-vendor. |
 | `surfaced-run-reminder` | A surfaced run exists for this project. Suggests `/pp:retry <run_id>`. |
 | `profile-aware-nudge` | Profile-specific reminder (e.g. `enterprise` → SBOM + cross-vendor on every gate). |
+| `eights-recall-request` | Prompt resembles a prior request TheEights has an episode for. Recalls it as context. Fail-soft — an absent or hung peer cannot block the prompt. |
 
 ### Stop (2)
 
@@ -1259,7 +1262,7 @@ Stage-kind → sandbox mapping is in [`daemon/src/hooks/dispatcher.ts`](../daemo
 
 ## 19. MCP tools reference (79)
 
-Three MCP servers register with Claude Code over stdio: **`pp_harness` 75 + `pp_codex` 2 + `pp_agy` 2 = 79 tools**. The authoritative `pp_harness` list is the `TOOLS` array in [`daemon/src/mcp/harness-server.ts`](../daemon/src/mcp/harness-server.ts) (and mirrored in [`mesh-manifest.yaml`](../mesh-manifest.yaml)). The catalog below documents the most commonly used tools grouped by subsystem; the remaining harness tools (e.g. `force_unlock`, `ensure_run`, `retract_verdict`, `archive_winner_and_losers`, `teardown_candidates`, `detect_profile`, `write_profile`, `get_builtin_profile`, `get_copilot_claude_tier_models`, the ecosystem advisory bridges `request_strategic_framing` / `request_brand_review` / `request_visual_advisory`, `report_hydra_completion`, `hydra_envelope_query`, `audit_status`, `list_evolution_proposals` / `review_evolution_proposal` / `analyze_autogenesis`, `agents_md_*`, `constitution_status`, and `replay`) round out the surface to 75.
+Three MCP servers register with Claude Code over stdio: **`pp_harness` 92 + `pp_codex` 2 + `pp_agy` 2 = 96 tools**. The `pp_harness` figure is **76 catalogued tools plus 16 generated `hook_<event>_<name>` adapters** added by Phase L (issue #53), which exist so that 16 of the 37 lifecycle hooks run inside the already-connected daemon instead of paying a Node cold start and a SQLite reopen per event. The other 21 stay command hooks deliberately — the short version is that **anything that can deny stays a command hook**, because a not-connected `mcp_tool` hook is a non-blocking error and a guard must not acquire a fail-open failure mode; see `daemon/src/hooks/decision.ts` for the full rule set. **The adapters are invoked by the hook dispatcher, not by you** — the server's `instructions` say so and each adapter's description repeats it, because calling one out of band writes a telemetry row for an event that never happened. The authoritative `pp_harness` list is the `TOOLS` array in [`daemon/src/mcp/harness-server.ts`](../daemon/src/mcp/harness-server.ts) (and mirrored in [`mesh-manifest.yaml`](../mesh-manifest.yaml)). The catalog below documents the most commonly used tools grouped by subsystem; the remaining harness tools (e.g. `force_unlock`, `ensure_run`, `retract_verdict`, `archive_winner_and_losers`, `teardown_candidates`, `detect_profile`, `write_profile`, `get_builtin_profile`, `get_copilot_claude_tier_models`, the ecosystem advisory bridges `request_strategic_framing` / `request_brand_review` / `request_visual_advisory`, `report_hydra_completion`, `hydra_envelope_query`, `audit_status`, `list_evolution_proposals` / `review_evolution_proposal` / `analyze_autogenesis`, `agents_md_*`, `constitution_status`, and `replay`) round out the surface to 75.
 
 ### `pp_harness` (75 tools)
 
@@ -1571,7 +1574,7 @@ On MCP transport disconnect (`stdin` end / `transport.onclose`), SIGTERM/SIGINT,
 
 This guarantees the harness never strands a half-written run or orphans a Codex/agy subprocess when Claude Code (or the gateway) disconnects.
 
-> Source: [`.claude/skills/artifact-conventions.md`](../.claude/skills/artifact-conventions.md), [`daemon/src/orchestrator/janitor.ts`](../daemon/src/orchestrator/janitor.ts), [`daemon/src/util/shutdown.ts`](../daemon/src/util/shutdown.ts), [`daemon/src/config.ts`](../daemon/src/config.ts), [`mesh-manifest.yaml`](../mesh-manifest.yaml).
+> Source: [`.claude/skills/artifact-conventions/SKILL.md`](../.claude/skills/artifact-conventions/SKILL.md), [`daemon/src/orchestrator/janitor.ts`](../daemon/src/orchestrator/janitor.ts), [`daemon/src/util/shutdown.ts`](../daemon/src/util/shutdown.ts), [`daemon/src/config.ts`](../daemon/src/config.ts), [`mesh-manifest.yaml`](../mesh-manifest.yaml).
 
 ---
 
@@ -1776,7 +1779,7 @@ You should only need the manual flag when calling the Codex CLI yourself outside
 | **same-vendor judge** | Judge whose vendor matches the generator. Always a **different** model id — identical generator/judge ids are rejected for every producer — and always supplementary: a same-vendor verdict never closes a stage (JUDGE-2). |
 | **sandbox** | Codex's `read-only | workspace-write | danger-full-access` flag. Mapped per stage kind. |
 | **stage** | One slot in a run's pipeline (e.g. `spec`, `code`, `tests`). |
-| **sub-agent** | Specialized Claude Code agent invoked via the Task tool. 75 ship in `.claude/agents/` — engineering/lifecycle/judging generators plus executive-suite personas, governance authors, and AgentSmith watchers. |
+| **sub-agent** | Specialized Claude Code agent invoked via the Task tool. 42 ship in `.claude/agents/` — engineering/lifecycle/judging generators. |
 | **surfaced** | Run/stage status meaning "automated checks couldn't approve; humans take it from here." |
 | **taxonomy section** | One of the 16 sections in `taxonomy_blueprint.md` (4.1 through 4.16). |
 | **team** | A YAML pipeline (25 built-ins: 18 generic + 7 game-dev) with stage list + gate types + generator/judge bindings. Run via `/pp:team`. |

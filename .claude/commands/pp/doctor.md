@@ -3,7 +3,7 @@ description: Health-check the pair-programmer harness — daemon reachable, sub-
 argument-hint: [--quick]
 ---
 
-**Delegation contract:** All MCP tool access flows through sub-agent delegation per the Delegation Contract in `pair-programmer.md` (the master skill). Do not bypass. `PP_ALLOW_AD_HOC=1` is daemon-developer-debug only and MUST NOT be proposed as a remedy from `/pp:doctor` output — if a vendor is degraded, the user fixes the bridge or auth, not the hook.
+**Delegation contract:** All MCP tool access flows through sub-agent delegation per the Delegation Contract in the `pair-programmer` skill (the master skill). Do not bypass. `PP_ALLOW_AD_HOC=1` is daemon-developer-debug only and MUST NOT be proposed as a remedy from `/pp:doctor` output — if a vendor is degraded, the user fixes the bridge or auth, not the hook.
 
 Call `mcp__pp_harness__doctor` with `smoke: true` (omit `smoke` or pass `false` if the user typed `--quick`). The smoke test exercises each configured vendor's critique CLI end-to-end with a tiny prompt — it adds 10–60 seconds per vendor but catches the failure mode where credentials look fine yet the locally-installed CLI version cannot reach the configured default model id (e.g., the `gpt-5.5`-not-served bug from `run_vW1XuL7ko2SX`).
 

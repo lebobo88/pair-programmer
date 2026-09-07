@@ -6,6 +6,8 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 import { errorContent, jsonContent, zodToJsonSchema } from "./helpers.js";
+import { hookInventory, mcpToolEligible, runHookInProcess } from "../hooks/dispatcher.js";
+import { handlerBlocks } from "../hooks/decision.js";
 import {
   startRun, ensureRun, startStage, recordAttempt, recordVerdict, retractVerdict, finalizeStage,
   finalizeRun, archiveArtifact, listRuns, getRun, budgetStatus, doctor,
@@ -569,6 +571,35 @@ const BrowserValidationFinalizeSchema = z.object({
   // expected_statuses for each route/step that intentionally returns non-2xx.
 });
 
+// ─── Server instructions (Phase B / R1.1-R1.30) ───────────────────────────
+//
+// Delivered at `initialize`, before any `tools/list` — the only protocol
+// channel that reaches a session before tool search defers the full surface.
+// Budget is a SELF-IMPOSED design ceiling of 2048 bytes UTF-8, NOT a
+// documented platform limit (U-1) — see R1.7. Content is navigational only
+// (R1.10/R1.11): no step-by-step procedure, no rubric text, no tool counts
+// (R1.12). Governance identifiers cited below (JUDGE-1, JUDGE-1a, JUDGE-2,
+// Article V) are checked verbatim against the live CONSTITUTION.md by the
+// guard test's R1.30 drift guard — no content SHA is embedded here (R1.15,
+// §4.3.2: a static SHA has no comparison mechanism and only produces a
+// false-red on the next amendment).
+export const HARNESS_INSTRUCTIONS =
+  "pp_harness drives the pair-programmer run lifecycle over SQLite state and per-run artifacts " +
+  "under <project>/.harness/<run_id>/.\n\n" +
+  "Entrypoint order: start_run → start_stage → record_attempt → record_verdict → " +
+  "finalize_stage → finalize_run. A downstream call is invalid without the upstream id.\n\n" +
+  "Judging: call gate_eligible_judges first — it is the routing entrypoint, and its filtered " +
+  "producer list is authoritative over any team-yaml model_pref or prose preference. Cross-vendor " +
+  "judging is required at every gate (JUDGE-1; CONSTITUTION.md Article V). A same-vendor verdict is " +
+  "supplementary and can never close a stage (JUDGE-2). Deviating from the pinned vendor/model/effort " +
+  "is legal only through the JUDGE-1a channels (cli, team_yaml, hydra), each requiring " +
+  "judge_model_source plus a judge_override_reason on the verdict; an override is never inferred from " +
+  "prose. escalate and model are mutually exclusive.\n\n" +
+  "Discovery: this surface is large and deferred — search for the capability you need rather than " +
+  "guessing a name. Tools named hook_* are invoked by the hook dispatcher, not by you; do not call " +
+  "them directly.\n\n" +
+  "Procedure lives in tool descriptions and .claude/commands/pp/run.md. This text replaces neither.";
+
 // ─── Tool registry ───────────────────────────────────────────────────────
 
 type ToolDef = {
@@ -576,6 +607,10 @@ type ToolDef = {
   description: string;
   schema: z.ZodTypeAny;
   handler: (args: unknown) => Promise<unknown> | unknown;
+  // Phase B (R2.1): optional per-tool protocol metadata, propagated to the
+  // wire as `_meta` in the tools/list response entry (R2.2). Absent on all
+  // but `get_run` today — do not add without a direct measurement (R2.4a).
+  meta?: Record<string, unknown>;
 };
 
 const TOOLS: ToolDef[] = [
@@ -717,6 +752,23 @@ const TOOLS: ToolDef[] = [
       "Return the full tree for a run: run row, all stages, all attempts, all verdicts, all artifacts.",
     schema: GetRunSchema,
     handler: (args) => getRun(GetRunSchema.parse(args).run_id),
+    // Phase B / R2.4, R2.7: `get_run` is the ONE tool in this surface measured
+    // over the client's 25,000-token default result cap (verdicts.critique_md
+    // via SELECT * dominates payload size — F-6). Ceiling derived by
+    // min(DOCUMENTED_MAX, roundUpTo50k(2 * largest_measured)) = min(500000,
+    // roundUpTo50k(2 * 137255)) = 300000 (R2.7). `replay` is deliberately NOT
+    // annotated — its largest measured payload is 23,588 chars, nowhere near
+    // the cap (R2.4a) — do not "complete the set" by adding it here (RK-7).
+    //
+    // R2.7b — EXPECTED, NOT A DEFECT: the client warns whenever an MCP tool
+    // result exceeds 10,000 tokens, and that warning threshold is fixed and
+    // separate from the 25,000-token default limit this annotation raises.
+    // So a large `get_run` result will still print a size warning even with
+    // the ceiling in place — that is the steady state, not a sign the 300,000
+    // annotation failed. The annotation buys freedom from TRUNCATION; it
+    // cannot and does not silence the warning. Do not "fix" the warning by
+    // raising, lowering, or removing this value.
+    meta: { "anthropic/maxResultSizeChars": 300000 },
   },
   {
     name: "list_prior_critiques",
@@ -731,7 +783,7 @@ const TOOLS: ToolDef[] = [
   {
     name: "request_strategic_framing",
     description:
-      "T3 — Phase E. Emit a C_SUITE_DECISION_PACKET envelope to the executive squad asking for strategic framing on a major-tier request. When Hydra+TheEights are running, ExecutiveSuite's boardroom picks this up and the reply (a PRD envelope) lands in TheEights' envelope store keyed by workflow_id; poll via hydra_envelope_query. When TheEights is offline, recorded=false but envelope_id is still allocated — the driver may fall back to spawning the local `boardroom` agent directly via Task. Call this BEFORE spec-author on profiles enterprise|ai-agentic|data-product when triage returns scope=major.",
+      "T3 — Phase E. Emit a C_SUITE_DECISION_PACKET envelope to the executive squad asking for strategic framing on a major-tier request. When Hydra+TheEights are running, ExecutiveSuite's boardroom picks this up and the reply (a PRD envelope) lands in TheEights' envelope store keyed by workflow_id; poll via hydra_envelope_query. When TheEights is offline, recorded=false but envelope_id is still allocated — no local `boardroom` agent ships in this repo, so there is no local fallback — the ecosystem dispatch is the only path, and the driver MUST surface the unavailability rather than substitute an agent. Call this BEFORE spec-author on profiles enterprise|ai-agentic|data-product when triage returns scope=major.",
     schema: RequestStrategicFramingSchema,
     handler: async (args) => {
       const p = RequestStrategicFramingSchema.parse(args);
@@ -1340,20 +1392,128 @@ const TOOLS: ToolDef[] = [
   },
 ];
 
+// ─── Phase L: hook adapters (GitHub #53) ─────────────────────────────────
+//
+// One `hook_<event>_<name>` tool per hook handler that is eligible for the
+// `mcp_tool` transport, so those hooks call into this already-running server
+// instead of paying a Node cold start and a SQLite reopen per event. That cost
+// is paid most often on `PostToolUse`, which fires on every tool call.
+//
+// GENERATED FROM `hookInventory()`, NOT LISTED. A hand-written list is how six
+// hardcoded counts in this repo drifted from reality, and how the settings
+// template's own `_comment` came to claim "10 events" over an enumeration of
+// twelve summing to 36 while the file held 37 across 13. Deriving the adapters
+// means the tool surface cannot disagree with the handler registry; it can only
+// be wrong about eligibility, which `hook-inventory.unit.mjs` checks separately.
+//
+// ELIGIBILITY IS NARROWER THAN THE PLAN ASSUMED, and deliberately so. Any
+// handler that can deny stays a command hook, because the docs state that a
+// not-connected or erroring mcp_tool hook "produces a non-blocking error and
+// execution continues" — a fail-open failure mode that a command hook does not
+// have. Buying a cold-start saving with a security guard that stops guarding
+// whenever the stdio server hiccups is not a trade worth making. `SessionStart`
+// is refused for a second documented reason: it fires before MCP servers finish
+// connecting. See `mcpToolEligible`.
+//
+// NO `async: true` ANYWHERE, and it is not merely discouraged — `async` is a
+// command-hook field and is mutually exclusive with `mcp_tool`, so it cannot
+// appear on these at all. That happens to be what we want regardless: five of
+// the converted `PostToolUse` handlers write SQLite, and making their writes
+// eventually-consistent would collide with the idempotency guarantees Phase H
+// built.
+//
+// THE ADAPTERS MUST NEVER THROW. An MCP tool that errors sets `isError: true`,
+// which the docs make a *non-blocking* hook error — so a thrown denial would
+// permit the action it meant to stop. `runHookInProcess` catches everything and
+// returns a value; these handlers add no `throw` of their own.
+const HookAdapterSchema = z
+  .object({
+    tool_name: z.string().optional(),
+    tool_input: z.unknown().optional(),
+    tool_response: z.unknown().optional(),
+    prompt: z.string().optional(),
+    cwd: z.string().optional(),
+    session_id: z.string().optional(),
+    transcript_path: z.string().optional(),
+    agent_id: z.string().optional(),
+    agent_type: z.string().optional(),
+    prompt_id: z.string().optional(),
+    permission_mode: z.string().optional(),
+    effort: z.string().optional(),
+    file_path: z.string().optional(),
+    reason: z.string().optional(),
+  })
+  .passthrough();
+
+/** `hook_<event>_<name>` with `-` → `_`, since MCP tool names take no hyphen. */
+export function hookAdapterToolName(event: string, name: string): string {
+  return `hook_${event}_${name}`.replace(/-/g, "_");
+}
+
+/** The adapters, derived from the handler registry. */
+export const HOOK_ADAPTER_TOOLS: ToolDef[] = hookInventory()
+  .filter(({ event, name }) => mcpToolEligible(event, handlerBlocks(event, name)).eligible)
+  .map(({ event, name }) => ({
+    name: hookAdapterToolName(event, name),
+    description:
+      `Hook adapter — invoked by the Claude Code hook dispatcher for ${event}/${name}, NOT by you. ` +
+      `Do not call it directly: it runs a lifecycle side effect (telemetry, a ledger row, or context ` +
+      `injection) whose inputs come from the hook envelope, and calling it out of band writes a row for ` +
+      `an event that did not happen. Returns the object the hook emits as its text content.`,
+    schema: HookAdapterSchema,
+    handler: (args) => runHookInProcess(event, name, args ?? {}),
+  }));
+
+TOOLS.push(...HOOK_ADAPTER_TOOLS);
+
 // ─── Server ──────────────────────────────────────────────────────────────
+
+// Phase B / R3.1: side-effect-free surface projection so a unit test can
+// read tool name/description/_meta without starting a server or touching
+// zodToJsonSchema. Mirrors listHookHandlers (dispatcher.ts) precedent.
+// Derived directly from TOOLS — never a hand-maintained duplicate — and is
+// the same { name, description, _meta } shape the ListTools handler emits
+// (minus inputSchema), so an assertion against it is an assertion about the
+// wire (R2.2, RK-8).
+//
+// Import side effects (spec F-7 is only half true): importing this module
+// pulls in util/logger.ts, whose top-level `ensureDirs()` DOES create the
+// <PP_HOME>/.pair-programmer/ directory. No SQLite work happens — `db()` is
+// lazy — so a test asserting "importing opens no database" must target the
+// absence of `state.db`, not the absence of the directory.
+export function describeToolSurface(): Array<{
+  name: string;
+  description: string;
+  _meta?: Record<string, unknown>;
+}> {
+  return TOOLS.map(t => {
+    const entry: { name: string; description: string; _meta?: Record<string, unknown> } = {
+      name: t.name,
+      description: t.description,
+    };
+    if (t.meta) entry._meta = t.meta;
+    return entry;
+  });
+}
 
 export async function runHarnessMcpServer(): Promise<void> {
   const server = new Server(
     { name: "pp_harness", version: "0.1.0" },
-    { capabilities: { tools: {} } }
+    { capabilities: { tools: {} }, instructions: HARNESS_INSTRUCTIONS }
   );
 
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
-    tools: TOOLS.map(t => ({
-      name: t.name,
-      description: t.description,
-      inputSchema: zodToJsonSchema(t.schema),
-    })),
+    tools: TOOLS.map(t => {
+      const entry: { name: string; description: string; inputSchema: unknown; _meta?: Record<string, unknown> } = {
+        name: t.name,
+        description: t.description,
+        inputSchema: zodToJsonSchema(t.schema),
+      };
+      // R2.2: propagate per-tool meta to the wire as `_meta`; omit the key
+      // entirely (not `_meta: {}`) for tools that declare none.
+      if (t.meta) entry._meta = t.meta;
+      return entry;
+    }),
   }));
 
   server.setRequestHandler(CallToolRequestSchema, async (req) => {

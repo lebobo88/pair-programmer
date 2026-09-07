@@ -3,7 +3,7 @@ name: pair-programmer
 description: Master skill for the pair-programmer harness. Loaded by every /pp:* slash command. Defines the full Phase-11 request lifecycle — triage, profile snapshot, taxonomy mapping, judge routing with cross-vendor policy, Reflexion ×1, missability gate, master-plan patching, and run finalization. Read this before driving any harness run.
 ---
 
-<!-- Generated from .claude\skills\pair-programmer.md. Edit the .claude source file and rerun node scripts/sync-copilot-assets.mjs. -->
+<!-- Generated from .claude\skills\pair-programmer\SKILL.md. Edit the .claude source file and rerun node scripts/sync-copilot-assets.mjs. -->
 
 # Pair Programmer harness — driver protocol
 

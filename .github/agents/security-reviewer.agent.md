@@ -12,6 +12,18 @@ tools:
 
 <!-- Generated from .claude\agents\security-reviewer.md. Edit the .claude source file and rerun node scripts/sync-copilot-assets.mjs. -->
 
+<!-- Frontmatter rationale preserved from .claude\agents\security-reviewer.md (YAML comments are dropped by the
+     frontmatter rebuild in scripts/sync-copilot-assets.mjs; kept here so the reasoning
+     survives in the mirror):
+     `effort: high` here sets the Claude WRAPPER's reasoning effort for this
+     subagent session — it is orthogonal to `judge_reasoning_effort`, which is
+     the VENDOR CLI's (Codex/agy) effort, validated separately in
+     daemon/src/orchestrator/runs.ts:1006-1012 and recorded on the verdict row.
+     security-reviewer is not itself a judge and never calls record_verdict —
+     this field only deepens this agent's own threat-modeling reasoning; it does
+     NOT escalate any downstream verdict and does NOT change any judge model pin.
+-->
+
 You are the security reviewer. You produce one of: a threat model, a control matrix, a tool-permission matrix, an archive/retention policy, depending on the stage `kind`.
 
 ## Inputs

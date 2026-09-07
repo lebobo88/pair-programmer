@@ -220,7 +220,13 @@ async function agyGenerate(args: z.infer<typeof GenerateSchema>): Promise<Antigr
   //   `--continue` returned SUCCESS immediately.
   //
   // So callers that need a stateless turn pass fresh_session.
-  if (existing && !args.fresh_session) cliArgs.push("--continue");
+  //
+  // `didResume` is the single source of truth for both the argv decision
+  // AND the `resumed` telemetry field below (R1.1/R1.2) — the field is a
+  // strict superset predicate (`!!existing`) reading only history was the
+  // defect (see `resumed` assignment further down for the incident record).
+  const didResume = !!existing && !args.fresh_session;
+  if (didResume) cliArgs.push("--continue");
 
   // 2026-08-23. The prompt goes over STDIN, not as an argv value.
   //
@@ -311,7 +317,13 @@ async function agyGenerate(args: z.infer<typeof GenerateSchema>): Promise<Antigr
     wall_ms: run.wall_ms,
     exit_code: run.exit_code,
     session_id: run.exit_code === 0 ? "continue" : undefined,
-    resumed: !!existing,
+    // `resumed` describes THIS invocation's argv, not the project's history
+    // (R1.2/R1.3). Previously `!!existing` alone, which was `true` on every
+    // critique call because `agyCritique` always sets `fresh_session: true`
+    // to enforce statelessness — the argv correctly omitted `--continue`
+    // while the envelope claimed `resumed: true`. Reported here as the same
+    // `didResume` local that gated `--continue` above, per R1.1.
+    resumed: didResume,
     attempts: run.attempts,
     failure_archive_path: run.failure_archive_path,
   };
@@ -429,6 +441,27 @@ function parseAgyOutput(stdout: string): {
   return { text: trimmed };
 }
 
+// ─── Server instructions (Phase B / R1.24-R1.27, R1.31) ───────────────────
+//
+// Self-imposed 2048-byte UTF-8 budget (U-1, not a documented platform
+// limit). Unlike pp_codex, fresh-conversation isolation is TRUE today on
+// this lane — commit 6206f19 ("fix(agy): never resume a prior conversation
+// for a critique") — so R1.27 permits asserting it here because it is
+// evidenced, not aspirational. R1.31: do not delete this claim for symmetry
+// with pp_codex; the asymmetry across the two bridge strings is deliberate
+// (spec §4.5.1) and is resolved only by fixing GitHub #55 on the codex side,
+// never by weakening this side.
+export const AGY_INSTRUCTIONS =
+  "pp_agy is a critique-only bridge to the Antigravity CLI, the second Borda judge lane at N ≥ 3. " +
+  "Its generate tool is deprecated and must not be used for stage generation.\n\n" +
+  "Each critique starts a fresh conversation; nothing carries between calls, so pass the complete " +
+  "artifact and rubric every time. The option surface is identical to pp_codex.critique. Omit model " +
+  "to take the pinned default. model and escalate are mutually exclusive. A non-allow-listed value is " +
+  "rejected, never silently replaced; any non-default selection requires override_source and a " +
+  "non-empty override_reason (JUDGE-1a). agy reports no served model id, so model_reported_by_cli is " +
+  "always undefined on this lane.\n\n" +
+  "A bridge error is never a verdict — retry or surface it; do not record it as a fail verdict.";
+
 const TOOLS = [
   {
     name: "generate",
@@ -449,10 +482,17 @@ const TOOLS = [
   },
 ];
 
+// Phase B / R3.1: side-effect-free surface projection, mirroring
+// harness-server.ts's describeToolSurface(). No `_meta` plumbing exists on
+// this bridge (R2.3), so no descriptor here ever carries one.
+export function describeToolSurface(): Array<{ name: string; description: string }> {
+  return TOOLS.map(t => ({ name: t.name, description: t.description }));
+}
+
 export async function runAntigravityMcpServer(): Promise<void> {
   const server = new Server(
     { name: "pp_agy", version: "0.1.0" },
-    { capabilities: { tools: {} } }
+    { capabilities: { tools: {} }, instructions: AGY_INSTRUCTIONS }
   );
 
   server.setRequestHandler(ListToolsRequestSchema, async () => ({

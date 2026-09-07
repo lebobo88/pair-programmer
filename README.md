@@ -144,14 +144,14 @@ Cross-vendor gates require **two** configured vendors. The `SessionStart.vendor-
 | Category | Count | Highlights |
 |----------|-------|------------|
 | **MCP Tools** | 79 | 75 on `pp_harness` (orchestration, taxonomy, gates, best-of-N, replay, janitor) + 2 on `pp_codex` + 2 on `pp_agy` |
-| **Sub-Agents** | 75 | engineer, architect, judge-cross-vendor, security-reviewer, designer, game-ai-programmer, live-ops-manager, and 68 more |
+| **Sub-Agents** | 42 | engineer, architect, judge-cross-vendor, security-reviewer, designer, game-ai-programmer, live-ops-manager, and 35 more |
 | **Slash Commands** | 19 | `/pp:run`, `/pp:best-of`, `/pp:team`, `/pp:review`, `/pp:constitution`, `/pp:evolution`, and 13 more |
 | **Teams** | 25 | feature, bug-fix, refactor, security-review, ux, design-system, deep-reasoning (Fable-5), game-cert, game-live-ops, and 16 more |
 | **Profiles** | 16 | web-ui, api-platform, enterprise, ai-agentic, mobile, game-dev-unity, game-dev-unreal, and 9 more |
 | **Rubrics** | 25 | WCAG 2.2 AA, OWASP ASVS L1/L2, C4, OpenAPI 3.1, SLSA L2/L3, NIST AI RMF, Game Accessibility Guidelines, and 17 more |
-| **Hooks** | 29 | across 5 events (SessionStart, PreToolUse, PostToolUse, UserPromptSubmit, Stop): `block-destructive-shell`, cost tallying, vendor-matrix check, +3 TheEights recall hooks, and 23 more (26 wired in `settings.json`, all 29 in `hooks.json`) |
+| **Hooks** | 29 | across 5 events (SessionStart, PreToolUse, PostToolUse, UserPromptSubmit, Stop): `block-destructive-shell`, cost tallying, vendor-matrix check, +3 TheEights recall hooks, and 23 more — all 29 wired in both `.claude/settings.json` (generated from `settings.template.json`) and `hooks.json` |
 | **Missability Checks** | 56 | 23 generic (NFRs, authz, data retention) + 33 game-dev (console TRC, netcode, live-service, accessibility) |
-| **Skills** | 8 | pair-programmer master skill, taxonomy-adherence, master-plan-patching, game-design, frontend-design, and 3 more |
+| **Skills** | 11 | pair-programmer master skill, taxonomy-adherence, master-plan-patching, game-design, design-discovery, and 6 more |
 
 ---
 
@@ -227,13 +227,13 @@ pair-programmer/
     test/                         # smoke tests (MCP roundtrip)
     package.json
   .claude/
-    agents/                       # 75 sub-agent definitions
+    agents/                       # 42 sub-agent definitions
     commands/pp/                  # 19 slash commands
     teams/                        # 25 specialized team pipelines (incl. deep-reasoning-team)
     profiles/                     # 16 project profile templates
     rubrics/                      # rubric markdown mirrors
-    skills/                       # 8 domain skills
-    settings.json                 # permissions + 26 hook commands (hooks.json adds 3 eights-recall → 29)
+    skills/                       # 11 domain skills
+    settings.json                 # permissions + 29 hook commands
   .github/                        # generated Copilot CLI assets
   docs/
     USER_GUIDE.md                 # full reference guide
@@ -253,11 +253,11 @@ pair-programmer/
 
 | Env var | Effect |
 |---------|--------|
-| `PP_ENFORCE_ACTIVE_RUN=1` | PreToolUse hook hard-blocks Edit/Write outside an active run |
-| `PP_ALLOW_DANGER=1` | Allows `--sandbox=danger-full-access` on Codex calls (off by default) |
+| `PP_ALLOW_AD_HOC=1` | Escape hatch for `enforce-active-run` (`daemon/src/hooks/dispatcher.ts`), which **hard-blocks** Edit/Write/NotebookEdit/MultiEdit outside an active run by default — there is no advisory mode, and no PP\_ENFORCE\_ACTIVE\_RUN flag exists to opt into one (that name is not read anywhere in the daemon; corrected 2026-09-07, Phase J of cc-standards-alignment, issue #51). **Phase L (#53) qualified this**: the handler always *intended* to hard-block and its logic is unchanged, but until Phase L it emitted an **undocumented** decision shape (a bare `permissionDecision` rather than one nested under `hookSpecificOutput`), and the hooks docs state that an object failing schema validation is a *non-blocking* error in which "the action proceeds". Whether the old shape was accepted as a legacy alias could not be determined from the documentation, so **it is not known whether the pre-Phase-L blockers actually blocked**. They emit the documented shape now, verified live. `enforce-active-run` also matched the owning run by exact `project_path`, so a session whose cwd was a subdirectory was refused despite a valid active run; it now walks to the nearest ancestor. |
+| `PP_ALLOW_DANGER=1` | Allows `--sandbox=danger-full-access` on Codex calls; **blocked by default** (i.e. `PP_ALLOW_DANGER` unset already gives the hardened behavior — there is no need to set it to `0`) |
 | `PP_LOG_LEVEL=debug` | Verbose pino logs |
 | `PP_DEBUG=1` | Include stack traces in MCP error responses |
-| `PP_STRICT_AGENT_TYPE=1` | Reject `record_attempt` calls with `agent_type='general-purpose'` |
+| `PP_STRICT_AGENT_TYPE=0` | Opt out of the **default-on** rejection of `record_attempt` calls with `agent_type='general-purpose'` (strict is the default; `=1` is a no-op) |
 
 ---
 

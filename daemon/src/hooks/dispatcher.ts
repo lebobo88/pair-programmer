@@ -15,7 +15,7 @@
 
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, dirname } from "node:path";
 import { nanoid } from "nanoid";
 import { db, txImmediate } from "../db/database.js";
 import { scanForSecrets } from "../security/secret-scan.js";
@@ -27,6 +27,24 @@ import { evaluateGate, type GateType, type Profile } from "../orchestrator/gates
 import { agyEnabled } from "../config.js";
 import { evaluateShellSafety } from "./bash-safety.js";
 import { recallProjectContext, recallByQuery, listPriorCritiques } from "../ecosystem/eights-writes.js";
+import { computeCost } from "../util/prices.js";
+import {
+  formatPreToolUseDeny,
+  formatStopBlock,
+  shapeForMcpTool,
+  COMMAND_ONLY_EVENTS,
+  handlerBlocks,
+  type HookDecisionPayload,
+} from "./decision.js";
+import {
+  deriveCallKey,
+  writeExecutionEvent,
+  tallyFailedSpend,
+  tallySuccessSpend,
+  classifyStopFailureReason,
+  findSubagentDispatchMatch,
+  markDispatchReconciled,
+} from "../orchestrator/execution-events.js";
 
 type HookInput = {
   hook_event_name?: string;
@@ -37,6 +55,25 @@ type HookInput = {
   cwd?: string;
   session_id?: string;
   transcript_path?: string;
+  // R10 (Phase H): fields platform docs describe as present "when running
+  // with --agent or inside a subagent" (agent_id, agent_type), plus the
+  // per-turn identifiers used to derive an idempotent call_key
+  // (prompt_id), and two fields carried by several of the newer event
+  // types (permission_mode, effort). normalizeHookInput previously dropped
+  // every field it did not name (R10's whole reason for existing) — a
+  // silent drop here is exactly the R27 vacuity class this phase names,
+  // so every one of these is now named explicitly rather than left to fall
+  // through.
+  agent_id?: string;
+  agent_type?: string;
+  prompt_id?: string;
+  permission_mode?: string;
+  effort?: string;
+  // FileChanged (R8): the watched file's path. Not documented under a
+  // single canonical field name, so both plausible spellings are read.
+  file_path?: string;
+  // StopFailure (R7): the platform's classification of why the turn ended.
+  reason?: string;
 };
 
 let CURRENT_EVENT = "";
@@ -79,8 +116,19 @@ function normalizeHookInput(raw: unknown): HookInput {
     cwd: input.cwd as string | undefined,
     session_id: (input.session_id ?? input.sessionId) as string | undefined,
     transcript_path: (input.transcript_path ?? input.transcriptPath) as string | undefined,
+    // R10: carried through undefined (never null/"") when the envelope omits
+    // them, matching every other optional field's contract above.
+    agent_id: (input.agent_id ?? input.agentId) as string | undefined,
+    agent_type: (input.agent_type ?? input.agentType) as string | undefined,
+    prompt_id: (input.prompt_id ?? input.promptId) as string | undefined,
+    permission_mode: (input.permission_mode ?? input.permissionMode) as string | undefined,
+    effort: input.effort as string | undefined,
+    file_path: (input.file_path ?? input.filePath ?? input.path) as string | undefined,
+    reason: input.reason as string | undefined,
   };
 }
+
+export { normalizeHookInput };
 
 async function readStdin(): Promise<string> {
   return await new Promise<string>((resolve) => {
@@ -94,24 +142,59 @@ async function readStdin(): Promise<string> {
   });
 }
 
+/**
+ * Phase L: thrown by `reply()` when the dispatcher is running IN-PROCESS (as an
+ * `mcp_tool` hook adapter) rather than as a CLI subprocess.
+ *
+ * The 37 handler bodies are written in exit style — every one of them ends in
+ * `reply(...)`, whose declared return type is `never`. Rewriting all of them to
+ * return a value would have been a 37-site refactor of live security controls
+ * for no behavioural gain. Throwing a sentinel satisfies `never` exactly as
+ * `process.exit` does, so **not one handler body changes** and both transports
+ * run the same code.
+ *
+ * Caught only by `runHookInProcess`. It must never escape to the MCP layer: an
+ * escaped throw becomes `isError: true`, which the hook docs make a
+ * *non-blocking* error — so a leaked denial would permit the action it meant to
+ * stop.
+ */
+class HookDecisionSignal extends Error {
+  readonly decision: HookDecisionPayload;
+  constructor(decision: HookDecisionPayload) {
+    super(decision.allow ? "[pp] hook allowed" : (decision.message ?? "[pp] blocked by hook"));
+    this.name = "HookDecisionSignal";
+    this.decision = decision;
+  }
+}
+
+/**
+ * Transport mode. `"cli"` writes stdout and exits (the historical behaviour);
+ * `"in_process"` throws a `HookDecisionSignal` for `runHookInProcess` to shape.
+ * Module-level like `CURRENT_EVENT`, and restored in a `finally` so a crashing
+ * in-process handler cannot leave the CLI path throwing instead of exiting.
+ */
+let HOOK_MODE: "cli" | "in_process" = "cli";
+
 function reply(allow: boolean, message?: string, jsonExtras?: Record<string, unknown>): never {
+  if (HOOK_MODE === "in_process") {
+    throw new HookDecisionSignal({ allow, message, extras: jsonExtras });
+  }
   const structuredPreToolUse = CURRENT_EVENT === "PreToolUse";
   const structuredStop = CURRENT_EVENT === "Stop";
   if (!allow) {
     if (structuredPreToolUse) {
-      process.stdout.write(JSON.stringify({
-        permissionDecision: "deny",
-        permissionDecisionReason: message ?? "[pp] blocked by hook",
-        ...(jsonExtras ?? {}),
-      }));
+      // Phase L: the documented NESTED shape, via the shared formatter. The
+      // previous bare `{permissionDecision, …}` was undocumented, and an
+      // object the client cannot validate is a NON-BLOCKING error in which
+      // "the action proceeds" — a denial that permits. See decision.ts.
+      process.stdout.write(JSON.stringify(formatPreToolUseDeny(message, jsonExtras)));
       process.exit(0);
     }
     if (structuredStop) {
-      process.stdout.write(JSON.stringify({
-        decision: "block",
-        reason: message ?? "[pp] blocked by hook",
-        ...(jsonExtras ?? {}),
-      }));
+      // Deliberately unchanged: Stop's decision schema could not be retrieved
+      // verbatim, and changing a possibly-working control on a guess is the
+      // same class of risk. See formatStopBlock.
+      process.stdout.write(JSON.stringify(formatStopBlock(message, jsonExtras)));
       process.exit(0);
     }
     if (message) {
@@ -129,13 +212,95 @@ function reply(allow: boolean, message?: string, jsonExtras?: Record<string, unk
   }
 }
 
+/**
+ * The newest active run owning `project_path` — or owning any ANCESTOR of it.
+ *
+ * ── WHY THE ANCESTOR WALK EXISTS (Phase L, #53) ─────────────────────────────
+ *
+ * This was an exact string match, and that made `enforce-active-run` block
+ * legitimate edits. A run is started with `project_path` = the repo root, but
+ * the hook is handed the SESSION's `cwd`, which is wherever the operator or an
+ * agent happens to be. Run a single `cd daemon` — entirely normal in this
+ * monorepo, and what every `npm --prefix`-less build command does — and the
+ * lookup compares `H:\pair-programmer\daemon` against `H:\pair-programmer`,
+ * finds nothing, and reports "no active run owns this edit" for an edit that a
+ * perfectly valid active run does own.
+ *
+ * It was found the hard way: the guard fired on this very phase, refusing an
+ * edit to `daemon/test/hook-inventory.unit.mjs` while `run_Q69wXDpuWW4P` was
+ * `running` on the repo root. The failure mode is the annoying-but-safe
+ * direction (a false refusal, not a false permit), which is exactly why it
+ * could sit here unnoticed: the operator's fix is to re-run from the root, or —
+ * far worse and much likelier — to set `PP_ALLOW_AD_HOC=1` and disable the
+ * guard wholesale for the rest of the session. **A guard that misfires teaches
+ * people to switch it off.**
+ *
+ * Ancestor-ownership is also the correct semantics rather than merely the
+ * convenient one: a run owns a project TREE. And the nearest ancestor wins, so
+ * a nested project with its own run keeps precedence over the outer repo —
+ * which is not hypothetical here, since `daemon/test/` builds fixture projects
+ * that start their own runs.
+ *
+ * Deliberately unchanged: a path with NO active ancestor is still refused. The
+ * scratchpad refusal that first drew attention to this was correct and stays
+ * correct.
+ */
+/**
+ * Canonical form for comparing two filesystem paths that should denote the same
+ * directory.
+ *
+ * Separators are normalized to `/` and Windows paths are lowercased. Both
+ * halves are needed and both were hit while fixing this: `start_run` stored
+ * `H:\pair-programmer` (backslashes, from the MCP caller) while tooling in this
+ * very phase passed `H:/pair-programmer/daemon` (forward slashes), so an
+ * ancestor walk that compared raw strings still refused a legitimate edit even
+ * after the walk itself was correct. On Windows those are the same directory;
+ * on POSIX, case matters and is preserved.
+ *
+ * A trailing separator is dropped so `H:\repo\` and `H:\repo` compare equal,
+ * except for a bare root.
+ */
+function canonicalPath(p: string): string {
+  const slashed = p.replace(/\\/g, "/");
+  const cased = process.platform === "win32" ? slashed.toLowerCase() : slashed;
+  return cased.length > 1 && cased.endsWith("/") ? cased.slice(0, -1) : cased;
+}
+
 function activeRunForProject(project_path?: string): string | null {
   if (!project_path) return null;
   try {
-    const row = db()
-      .prepare(`SELECT id FROM runs WHERE project_path = ? AND status IN ('pending','running') ORDER BY started_at DESC LIMIT 1`)
-      .get(project_path) as { id: string } | undefined;
-    return row?.id ?? null;
+    // Read the active runs once and compare canonically, rather than issuing a
+    // SQL equality per ancestor: SQLite's `=` is byte comparison, which is the
+    // separator/case trap above. The active set is small by construction (a
+    // handful at most), so this is cheaper than the walk it replaces.
+    const rows = db()
+      .prepare(
+        `SELECT id, project_path FROM runs WHERE status IN ('pending','running') ORDER BY started_at DESC`,
+      )
+      .all() as Array<{ id: string; project_path: string }>;
+    if (!rows.length) return null;
+
+    const byPath = new Map<string, string>();
+    for (const r of rows) {
+      // First wins: the query is newest-first, so the newest run owning a given
+      // path is the one reported.
+      const key = canonicalPath(r.project_path);
+      if (!byPath.has(key)) byPath.set(key, r.id);
+    }
+
+    // Nearest ancestor first, so a nested project with its own run keeps
+    // precedence over the outer repo — not hypothetical, since daemon/test/
+    // builds fixture projects that start their own runs.
+    let dir = canonicalPath(project_path);
+    for (let guard = 0; guard < 64; guard += 1) {
+      const hit = byPath.get(dir);
+      if (hit) return hit;
+      const parent = canonicalPath(dirname(dir));
+      // `dirname` is a fixed point at the root ("C:/" -> "C:/", "/" -> "/").
+      if (!parent || parent === dir) break;
+      dir = parent;
+    }
+    return null;
   } catch { return null; }
 }
 
@@ -398,7 +563,12 @@ const HANDLERS: Record<string, Record<string, (input: HookInput) => Promise<void
       if (!content) return reply(true);
       const matches = scanForSecrets(content);
       if (matches.length) {
-        reply(false, `[pp] secret scanner blocked write: ${matches.length} match(es): ${matches.map(m => m.kind).slice(0, 3).join(", ")}.`);
+        reply(
+          false,
+          `[pp] secret scanner refused this write: nothing was written. ${matches.length} match(es): ${matches.map(m => m.kind).slice(0, 3).join(", ")}. ` +
+          `Move the value to an environment variable and reference it, per AGENTS.md Security ("Credentials must be env vars — not hardcoded"). ` +
+          `There is deliberately no bypass environment variable for this guard.`,
+        );
       }
       reply(true);
     },
@@ -504,9 +674,101 @@ const HANDLERS: Record<string, Record<string, (input: HookInput) => Promise<void
     "cost-tally": (input) => {
       const tool = input.tool_name ?? "";
       if (!/pp_(codex|agy)/.test(tool)) return reply(true);
-      const resp = input.tool_response as { tokens_in?: number; tokens_out?: number; cost_usd?: number; model?: string } | undefined;
+      const resp = input.tool_response as
+        | { direct_cli?: boolean; tokens_in?: number; tokens_out?: number; cost_usd?: number; model?: string; wall_ms?: number }
+        | undefined;
       if (resp && (resp.tokens_in || resp.tokens_out || resp.cost_usd)) {
         console.log(`[pp] +${resp.tokens_in ?? 0}/${resp.tokens_out ?? 0} tok, $${(resp.cost_usd ?? 0).toFixed(4)} (${resp.model ?? "?"})`);
+      }
+      // R16/R28 (Phase H, GitHub #58 second half; HIGH-2 fix,
+      // run_p8JPpVhDonUA retry). Ownership: `cost-tally` is now the
+      // EXCLUSIVE tallier of every pp_codex/pp_agy PostToolUse call's spend
+      // into the ordinary run:/day:/model: scopes, on every path —
+      // `direct_cli` and agent-driven alike. Earlier this hook only tallied
+      // the `direct_cli` backstop path, on the theory that an agent-driven
+      // flow would separately tally the same spend via `recordAttempt`. That
+      // theory was false: `pp_codex`/`pp_agy` `generate` is deprecated, so
+      // almost every one of these calls is a judge CRITIQUE, which is
+      // recorded via `recordVerdict` — a function that takes no tokens or
+      // cost and never tallies anything. Gating the tally on `direct_cli`
+      // therefore left ALL agent-driven critique spend permanently outside
+      // `budgets`, which is exactly what HIGH-2 caught.
+      //
+      // Double-tally is made structurally impossible, not merely avoided,
+      // two ways:
+      //  (1) `writeExecutionEvent`'s `call_key` is unique-indexed with
+      //      `ON CONFLICT DO NOTHING` (R2). `.inserted` tells us whether
+      //      THIS invocation is the one that won the race for that call —
+      //      the budget tally below only runs when it did, so a hook that
+      //      fires twice for the same underlying call (retry, duplicate
+      //      dispatch) tallies once, not twice.
+      //  (2) `recordAttempt` (runs.ts) now excludes producers "codex" and
+      //      "agy" from its own R15 cost-derivation tally, precisely
+      //      because THIS hook already owns that spend for those two
+      //      producers — see the comment at the `tallyBudgets` call site in
+      //      runs.ts for the other half of this split. `recordAttempt`
+      //      still tallies "claude" (and any future non-vendor-CLI
+      //      producer) spend, which this hook never observes (no
+      //      `pp_codex`/`pp_agy` tool call underlies it), so the two
+      //      writers' domains are disjoint by producer, not by a "shouldn't
+      //      also fire" assumption.
+      // The sibling `record-attempt` backstop handler below intentionally
+      // still performs a non-tallying raw INSERT into `attempts` for
+      // `direct_cli` calls (audit trail only) — it has no `tallyBudgets`
+      // call and this comment is not asserting it needs one.
+      try {
+        const producer = /pp_codex/.test(tool) ? "codex" : "agy";
+        const projectPath = input.cwd;
+        const runId = activeRunForProject(projectPath);
+        const tokensIn = resp?.tokens_in ?? 0;
+        const tokensOut = resp?.tokens_out ?? 0;
+        let costUsd = resp?.cost_usd ?? 0;
+        if (!costUsd && resp?.model && (tokensIn || tokensOut)) {
+          costUsd = computeCost(resp.model, tokensIn, tokensOut);
+        }
+        if (tokensIn || tokensOut || costUsd) {
+          const callKey = deriveCallKey({
+            hook_event_name: "PostToolUse:cost-tally",
+            session_id: input.session_id,
+            tool_name: tool,
+            prompt_id: input.prompt_id,
+            agent_id: input.agent_id,
+            detail: JSON.stringify({ tool, model: resp?.model, tokensIn, tokensOut, costUsd }),
+          });
+          const written = writeExecutionEvent({
+            call_key: callKey,
+            event_kind: "tool_success_spend",
+            status: "observed",
+            tool_name: tool,
+            producer,
+            run_id: runId,
+            session_id: input.session_id ?? null,
+            agent_id: input.agent_id ?? null,
+            tokens_in: tokensIn || null,
+            tokens_out: tokensOut || null,
+            cost_usd: costUsd || null,
+            wall_ms: resp?.wall_ms ?? null,
+          });
+          // Only the invocation that WON the call_key insert race tallies —
+          // see point (1) above.
+          tallySuccessSpend(written.inserted, runId, resp?.model ?? null, tokensIn, tokensOut, costUsd);
+        }
+      } catch (err) {
+        // NEW-3 (judge verdict_i4RtSb1C7X): cost-tally is now the SOLE writer
+        // of pp_codex/pp_agy spend into `budgets`, so a swallowed throw here
+        // loses that spend with nothing else to catch it -- the same class of
+        // invisibility GitHub #58 reports. A PostToolUse hook MUST NOT block
+        // the tool call that already succeeded, so this cannot throw onward;
+        // instead it is made LOUD and self-describing, naming itself as the
+        // sole writer so the message says what was lost rather than only that
+        // something failed.
+        const msg = err instanceof Error ? err.message : String(err);
+        console.error(
+          `[pp] cost-tally FAILED TO PERSIST vendor spend and is the only writer for it — ` +
+          `this call's tokens/cost are now absent from budgets and budget_status will under-report. ` +
+          `tool=${tool} session=${input.session_id ?? "?"} ` +
+          `tokens=${resp?.tokens_in ?? 0}/${resp?.tokens_out ?? 0} cost=${resp?.cost_usd ?? "?"} — ${msg}`,
+        );
       }
       reply(true);
     },
@@ -673,6 +935,344 @@ const HANDLERS: Record<string, Record<string, (input: HookInput) => Promise<void
     },
   },
 
+  // R6: fires when an MCP tool call to a vendor critique lane exits
+  // non-zero / times out / returns an unparseable response. This is the
+  // ledger row that closes GitHub #58's second half AND makes the
+  // `.harness/critique_failures/` bridge archives (already written today
+  // by cli-runner.ts independent of any hook — see spec.md §1.3)
+  // discoverable from budget_status/replay instead of being invisible
+  // text files on disk.
+  PostToolUseFailure: {
+    "record-execution-failure": (input) => {
+      const tool = input.tool_name ?? "";
+      if (!/pp_(codex|agy)/.test(tool)) return reply(true);
+      try {
+        const producer = /pp_codex/.test(tool) ? "codex" : "agy";
+        const resp = input.tool_response as
+          | { tokens_in?: number; tokens_out?: number; cost_usd?: number; wall_ms?: number; failure_archive_path?: string; error?: string; model?: string }
+          | undefined;
+        const runId = activeRunForProject(input.cwd);
+        let stageId: string | null = null;
+        if (runId) {
+          const stage = db()
+            .prepare(`SELECT id FROM stages WHERE run_id = ? AND status = 'open' ORDER BY started_at DESC LIMIT 1`)
+            .get(runId) as { id: string } | undefined;
+          stageId = stage?.id ?? null;
+        }
+        // R6b: derive cost from tokens when the response omits cost_usd,
+        // same reasoning as R15 — an unpriced/absent cost should not read
+        // as "this call was free".
+        let costUsd = resp?.cost_usd;
+        if (costUsd === undefined && resp?.model && ((resp?.tokens_in ?? 0) || (resp?.tokens_out ?? 0))) {
+          costUsd = computeCost(resp.model, resp.tokens_in ?? 0, resp.tokens_out ?? 0);
+        }
+        // R6a: cross-reference the on-disk archive path so the ledger row
+        // and the archive point at each other.
+        const detailParts: string[] = [];
+        if (resp?.error) detailParts.push(`error: ${resp.error}`);
+        if (resp?.failure_archive_path) detailParts.push(`failure_archive_path: ${resp.failure_archive_path}`);
+        const detail = detailParts.length ? detailParts.join(" | ") : null;
+
+        const callKey = deriveCallKey({
+          hook_event_name: "PostToolUseFailure",
+          session_id: input.session_id,
+          tool_name: tool,
+          prompt_id: input.prompt_id,
+          agent_id: input.agent_id,
+          detail: JSON.stringify({ tool, error: resp?.error, path: resp?.failure_archive_path }),
+        });
+        writeExecutionEvent({
+          call_key: callKey,
+          event_kind: "tool_failure",
+          status: "failed",
+          tool_name: tool,
+          producer,
+          run_id: runId,
+          stage_id: stageId,
+          session_id: input.session_id ?? null,
+          agent_id: input.agent_id ?? null,
+          reason: resp?.error ? String(resp.error).slice(0, 200) : null,
+          detail,
+          tokens_in: resp?.tokens_in ?? null,
+          tokens_out: resp?.tokens_out ?? null,
+          cost_usd: costUsd ?? null,
+          wall_ms: resp?.wall_ms ?? null,
+        });
+        // R4b: failed spend is visible AND distinguishable from attempt
+        // spend, hence the `failed:` scope prefix rather than run:/day:/model:.
+        tallyFailedSpend(runId, resp?.model ?? null, resp?.tokens_in ?? 0, resp?.tokens_out ?? 0, costUsd ?? 0);
+      } catch (err) {
+        console.error(`[pp] record-execution-failure failed: ${err instanceof Error ? err.message : String(err)}`);
+      }
+      // R6/NFR9: a failed hook MUST NOT be able to block a turn.
+      reply(true);
+    },
+  },
+
+  // R8: detector only. See R8a — MUST NOT block, revert, abort, surface,
+  // or write to CONSTITUTION.md. Hard Rule 1 forbids editing that file; the
+  // job here ends at noticing the SHA moved and saying so on stdout.
+  FileChanged: {
+    "constitution-drift-detect": (input) => {
+      try {
+        const path = input.file_path;
+        if (!path || !existsSync(path)) return reply(true);
+        const runId = activeRunForProject(input.cwd);
+        if (!runId) return reply(true);
+        const run = db()
+          .prepare(`SELECT constitution_sha FROM runs WHERE id = ?`)
+          .get(runId) as { constitution_sha: string | null } | undefined;
+        const recordedSha = run?.constitution_sha ?? null;
+        const content = readFileSync(path, "utf8");
+        const currentSha = createHash("sha256").update(content).digest("hex");
+        if (!recordedSha || recordedSha === currentSha) return reply(true);
+
+        const callKey = deriveCallKey({
+          hook_event_name: "FileChanged:constitution-drift-detect",
+          session_id: input.session_id,
+          tool_name: null,
+          detail: `${recordedSha}:${currentSha}`,
+        });
+        writeExecutionEvent({
+          call_key: callKey,
+          event_kind: "constitution_drift",
+          status: "observed",
+          run_id: runId,
+          session_id: input.session_id ?? null,
+          detail: `recorded_sha=${recordedSha} current_sha=${currentSha}`,
+        });
+        console.log(`[pp] CONSTITUTION.md drift detected: recorded_sha=${recordedSha.slice(0, 12)}… current_sha=${currentSha.slice(0, 12)}…. HITL required — this detector never edits the file. Use /pp:constitution amend.`);
+      } catch (err) {
+        console.error(`[pp] constitution-drift-detect failed: ${err instanceof Error ? err.message : String(err)}`);
+      }
+      reply(true);
+    },
+  },
+
+  // R9: PreCompact/PostCompact are wired as a save/reinject pair. Neither
+  // may reference `additionalContext` (R9a — not documented on the hooks
+  // page); the reinject side emits plain text on stdout at exit 0 via
+  // reply(true, message), which is the documented channel.
+  PreCompact: {
+    "run-context-save": (input) => {
+      // Nothing to persist beyond what's already in the DB — the active
+      // run/stage is looked up fresh at reinject time. This handler exists
+      // as the paired hook name PreCompact/PostCompact conventionally
+      // wants, and is a pure advisory no-op today.
+      reply(true);
+    },
+  },
+  PostCompact: {
+    "run-context-reinject": (input) => {
+      try {
+        const runId = activeRunForProject(input.cwd);
+        // R9b: no active run -> emit nothing.
+        if (!runId) return reply(true);
+        const stage = db()
+          .prepare(`SELECT id FROM stages WHERE run_id = ? AND status = 'open' ORDER BY started_at DESC LIMIT 1`)
+          .get(runId) as { id: string } | undefined;
+        // R9c: does not begin with "{" so Claude Code's documented parsing
+        // rule treats it as plain text, not an attempted JSON parse.
+        const message = `[pp] active run: ${runId}${stage ? ` (stage: ${stage.id})` : ""}`;
+        return reply(true, message);
+      } catch {
+        return reply(true);
+      }
+    },
+  },
+
+  // R7: an API-killed run today sits `running` for up to six hours until
+  // the janitor's time-based sweep marks it `crashed` with no cause
+  // recorded (janitor.ts:38). This surfaces it within seconds, with a
+  // reason, as `surfaced` — the operator-actionable status that already
+  // appears in the SessionStart banner and that /pp:retry operates on.
+  // MUST NOT touch RUN_STATUS, MUST NOT touch the janitor's crashed sweep.
+  StopFailure: {
+    "surface-api-killed-run": (input) => {
+      try {
+        const classified = classifyStopFailureReason(input.reason);
+        if (!input.cwd) return reply(true);
+        const run = db()
+          .prepare(
+            `SELECT id, status FROM runs WHERE project_path = ? AND status IN ('pending','running') ORDER BY started_at DESC LIMIT 1`,
+          )
+          .get(input.cwd) as { id: string; status: string } | undefined;
+
+        // HIGH-3 fix (run_p8JPpVhDonUA retry): R7b still forbids surfacing
+        // the run on an unclassified reason (no status/surfaced_reason
+        // mutation below), but "not evidence of an API kill" is not the
+        // same as "not worth recording". An unclassified reason is now
+        // written as an observation carrying the RAW text, so an operator
+        // can see a run died of something this classifier does not
+        // recognize yet, and so the classifier's blind spots are
+        // discoverable from data (R27) rather than a bug report. No DB
+        // write happens when there is no reason at all, and none happens
+        // when there is no run to correlate against, matching AC-H19's
+        // "execution_events count unchanged" expectation for that case.
+        if (!classified) {
+          if (input.reason && run) {
+            const callKey = deriveCallKey({
+              hook_event_name: "StopFailure",
+              session_id: input.session_id,
+              tool_name: null,
+              detail: `unclassified:${run.id}:${input.reason}`,
+            });
+            writeExecutionEvent({
+              call_key: callKey,
+              event_kind: "api_stop_failure",
+              status: "observed",
+              run_id: run.id,
+              session_id: input.session_id ?? null,
+              reason: null,
+              detail: `unclassified StopFailure reason: ${input.reason}`,
+            });
+          }
+          return reply(true);
+        }
+        if (!run) return reply(true);
+
+        const callKey = deriveCallKey({
+          hook_event_name: "StopFailure",
+          session_id: input.session_id,
+          tool_name: null,
+          detail: `${run.id}:${classified}`,
+        });
+        txImmediate(() => {
+          db()
+            .prepare(`UPDATE runs SET status = 'surfaced', surfaced_reason = ? WHERE id = ? AND status IN ('pending','running')`)
+            .run(classified, run.id);
+        });
+        writeExecutionEvent({
+          call_key: callKey,
+          event_kind: "api_stop_failure",
+          status: "observed",
+          run_id: run.id,
+          session_id: input.session_id ?? null,
+          reason: classified,
+        });
+        console.log(`[pp] run ${run.id} surfaced (reason=${classified}) — an API error killed the turn. /pp:retry ${run.id} to resume.`);
+      } catch (err) {
+        console.error(`[pp] surface-api-killed-run failed: ${err instanceof Error ? err.message : String(err)}`);
+      }
+      reply(true);
+    },
+  },
+
+  // R12/R13: the observation ledger half of SubagentStart/SubagentStop
+  // correlation. See R14 for why "one attempt row with the engineer's
+  // metadata intact" is [f] rather than built here — a hook cannot own
+  // that invariant.
+  SubagentStart: {
+    "subagent-dispatch-record": (input) => {
+      try {
+        const runId = activeRunForProject(input.cwd);
+        let stageId: string | null = null;
+        if (runId) {
+          const stage = db()
+            .prepare(`SELECT id FROM stages WHERE run_id = ? AND status = 'open' ORDER BY started_at DESC LIMIT 1`)
+            .get(runId) as { id: string } | undefined;
+          stageId = stage?.id ?? null;
+        }
+        const callKey = deriveCallKey({
+          hook_event_name: "SubagentStart",
+          session_id: input.session_id,
+          tool_name: null,
+          agent_id: input.agent_id,
+          detail: input.agent_type ?? null,
+        });
+        writeExecutionEvent({
+          call_key: callKey,
+          event_kind: "subagent_dispatch",
+          status: "observed",
+          run_id: runId,
+          stage_id: stageId,
+          session_id: input.session_id ?? null,
+          agent_id: input.agent_id ?? null,
+          producer: null,
+          reason: input.agent_type ?? null,
+        });
+      } catch (err) {
+        console.error(`[pp] subagent-dispatch-record failed: ${err instanceof Error ? err.message : String(err)}`);
+      }
+      reply(true);
+    },
+  },
+  SubagentStop: {
+    "subagent-stop-observe": (input) => {
+      try {
+        const match = findSubagentDispatchMatch(input.session_id, input.agent_id);
+        const callKey = deriveCallKey({
+          hook_event_name: "SubagentStop",
+          session_id: input.session_id,
+          tool_name: null,
+          agent_id: input.agent_id,
+          detail: match ? match.event_id : "unmatched",
+        });
+        if (match) {
+          // R13a: exactly one dispatch match -> reconciled, carrying the
+          // dispatch row's correlation. Both rows are execution_events
+          // rows; neither touches attempts.
+          writeExecutionEvent({
+            call_key: callKey,
+            event_kind: "subagent_stop",
+            status: "reconciled",
+            run_id: match.run_id,
+            stage_id: match.stage_id,
+            attempt_slot_id: match.attempt_slot_id,
+            session_id: input.session_id ?? null,
+            agent_id: input.agent_id ?? null,
+          });
+          markDispatchReconciled(match.event_id);
+        } else {
+          // R13b: agent_id absent, or zero/multiple matches -> unreconciled
+          // with NULL correlation. Never inferred from recency, agent_type,
+          // or the sole open stage.
+          writeExecutionEvent({
+            call_key: callKey,
+            event_kind: "subagent_stop",
+            status: "unreconciled",
+            run_id: null,
+            stage_id: null,
+            attempt_slot_id: null,
+            session_id: input.session_id ?? null,
+            agent_id: input.agent_id ?? null,
+          });
+        }
+      } catch (err) {
+        console.error(`[pp] subagent-stop-observe failed: ${err instanceof Error ? err.message : String(err)}`);
+      }
+      reply(true);
+    },
+  },
+
+  // R11: judged on merit — the raised SessionEnd budget (documented as 1.5s
+  // shared, raised to match a longer declared per-hook timeout up to 60s)
+  // makes a Node cold start + SQLite open viable at timeout>=20.
+  SessionEnd: {
+    "session-orphan-sweep": (input) => {
+      try {
+        if (input.session_id) {
+          // NFR3: at most 2 prepare() calls in this handler body.
+          db()
+            .prepare(
+              `UPDATE execution_events SET status = 'unreconciled'
+                WHERE event_kind = 'subagent_dispatch' AND status = 'observed' AND session_id = ?`,
+            )
+            .run(input.session_id);
+        }
+        if (input.cwd) {
+          const row = db()
+            .prepare(`SELECT id FROM runs WHERE project_path = ? AND status IN ('pending','running') ORDER BY started_at DESC LIMIT 1`)
+            .get(input.cwd) as { id: string } | undefined;
+          if (row?.id) console.log(`[pp] session ending with run ${row.id} still open (pending/running).`);
+        }
+      } catch (err) {
+        console.error(`[pp] session-orphan-sweep failed: ${err instanceof Error ? err.message : String(err)}`);
+      }
+      reply(true);
+    },
+  },
+
   UserPromptSubmit: {
     "taxonomy-nudge": (input) => {
       const p = input.prompt ?? "";
@@ -800,6 +1400,204 @@ const HANDLERS: Record<string, Record<string, (input: HookInput) => Promise<void
     },
   },
 };
+
+/**
+ * Side-effect-free inventory of every implemented hook handler, derived
+ * directly from `HANDLERS` (never a hand-maintained duplicate — a duplicate
+ * list is precisely the drift class this export exists to let a test catch;
+ * R2.6). Importing this module and calling this function executes no hook
+ * body and touches no database — it only reads the keys of the `HANDLERS`
+ * object that `runHookDispatcher` itself indexes at dispatch time (R2.7).
+ *
+ * Consumed by `daemon/test/hook-inventory.unit.mjs` to assert parity against
+ * `.claude/settings.template.json` and `hooks.json`.
+ */
+export function listHookHandlers(): Array<{ event: string; name: string }> {
+  const pairs: Array<{ event: string; name: string }> = [];
+  for (const [event, handlersForEvent] of Object.entries(HANDLERS)) {
+    for (const name of Object.keys(handlersForEvent)) {
+      pairs.push({ event, name });
+    }
+  }
+  return pairs;
+}
+
+/**
+ * Every wired handler as `{ event, name }`, derived from `HANDLERS` rather than
+ * listed. Phase D and Phase H both shipped a hardcoded hook count that drifted
+ * from reality (24 → 26 → 29 → 37), and the settings template's own `_comment`
+ * still enumerated 12 events summing to 36 while the file held 37 across 13.
+ * Deriving it means the count cannot be wrong, only the file.
+ */
+/**
+ * Drop `${…}` values that the hook runtime did not substitute.
+ *
+ * An `mcp_tool` hook receives only what its `input` map declares, and the docs
+ * state that "String values support `${path}` substitution from the hook's JSON
+ * input". What they do NOT state is what happens to a placeholder whose path is
+ * absent from the envelope — whether it becomes `""`, `null`, or survives as the
+ * literal `"${tool_name}"`. That could not be established from the
+ * documentation, and it varies per event: `PostToolUse` has a `tool_name`,
+ * `UserPromptSubmit` does not.
+ *
+ * Rather than bet on one behaviour, treat an unsubstituted placeholder as
+ * ABSENT. That is correct under every possibility: if the runtime substitutes
+ * empty strings we never see these, and if it leaves the literal we do not hand
+ * a handler the string `"${tool_name}"` as a tool name — which would sail past
+ * `normalizeToolName` (it returns unknown names unchanged) and be compared
+ * against `"Bash"`, or worse, be written into a ledger row as if it were real
+ * data. **Manufacturing a row from a placeholder is the ledger-integrity
+ * failure this repo has a working agreement against.**
+ *
+ * Only exact `${…}` values are dropped, never substrings: a real path or prompt
+ * that happens to contain `${` keeps it.
+ */
+export function stripUnsubstitutedPlaceholders(raw: unknown): Record<string, unknown> {
+  if (!raw || typeof raw !== "object") return {};
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(raw as Record<string, unknown>)) {
+    if (typeof v === "string" && /^\$\{[^}]*\}$/.test(v.trim())) continue;
+    out[k] = v;
+  }
+  return out;
+}
+
+export function hookInventory(): Array<{ event: string; name: string }> {
+  const out: Array<{ event: string; name: string }> = [];
+  for (const event of Object.keys(HANDLERS)) {
+    for (const name of Object.keys(HANDLERS[event]!)) out.push({ event, name });
+  }
+  return out;
+}
+
+/**
+ * True when this handler may be wired as an `mcp_tool` hook.
+ *
+ * ── THE RULE: NO BLOCKING HANDLER CONVERTS. ─────────────────────────────────
+ *
+ * The saving this phase chases is real — a command hook pays a Node cold start
+ * and a SQLite reopen on every event, and `PostToolUse` fires on every single
+ * tool call. But it is not worth buying with a guard that stops guarding, and
+ * the docs are explicit about when that happens:
+ *
+ *   "If the named server is not connected, or the tool returns `isError: true`,
+ *    the hook produces a non-blocking error and execution continues."
+ *
+ * So an `mcp_tool` blocker inherits a **fail-open** failure mode it did not
+ * have before: any moment the stdio server is down, restarting, or slow to
+ * connect, the denial silently becomes an advisory notice and the guarded
+ * action proceeds. For `block-destructive-shell`, `enforce-no-secrets` and
+ * `enforce-sandbox-policy` that is not a refactor, it is a downgrade — and a
+ * downgrade in precisely the circumstances (a sick daemon) where a guard is
+ * most likely to be needed.
+ *
+ * An earlier draft of this function allowed `PreToolUse` and `Stop` blockers to
+ * convert on the grounds that they carry a JSON decision the client parses, so
+ * the *shape* survives the transport. That was true and beside the point: the
+ * shape surviving does not help when the tool call never happens. The rule is
+ * now the simpler and stricter one — **if it can say no, it stays a command
+ * hook** — which also subsumes the exit-code-2 argument rather than needing it
+ * as a separate case.
+ *
+ * The 23 non-blocking handlers carry telemetry, ledger rows and context
+ * injection. A missed one costs an observation, not an enforcement, and they
+ * include every `PostToolUse` hook — where the per-event cold start is paid
+ * most often. That is where the win actually lives.
+ *
+ * `SessionStart` / `Setup` are refused ahead of the blocking test, on the
+ * platform's own statement that they fire before servers finish connecting.
+ * That covers their non-blocking handlers too, which the blocking rule alone
+ * would have let through.
+ */
+export function mcpToolEligible(event: string, blocks: boolean): { eligible: boolean; reason?: string } {
+  const commandOnly = COMMAND_ONLY_EVENTS[event];
+  if (commandOnly) return { eligible: false, reason: commandOnly };
+  if (blocks) {
+    return {
+      eligible: false,
+      reason:
+        "the handler can deny, and a not-connected or erroring mcp_tool hook is a non-blocking error in " +
+        "which execution continues — converting it would give a guard a fail-open failure mode it does " +
+        "not have as a command hook",
+    };
+  }
+  return { eligible: true };
+}
+
+/**
+ * Run a handler IN-PROCESS and return the object an `mcp_tool` hook should
+ * emit as its text content. Never throws, never exits.
+ *
+ * The not-throwing is the contract, not defensiveness: an MCP tool that errors
+ * sets `isError: true`, and the docs make that a *non-blocking* error in which
+ * execution continues. So a thrown denial would silently permit the action it
+ * meant to stop, and a thrown *crash* would silently permit it too. Both are
+ * caught here and turned into a returned value — a crash into a fail-open
+ * acknowledgement that says so in the payload, matching the CLI path, which
+ * also exits 0 on a handler crash rather than blocking.
+ */
+export async function runHookInProcess(
+  event: string,
+  name: string,
+  input: unknown,
+): Promise<Record<string, unknown>> {
+  const handler = HANDLERS[event]?.[name];
+  if (!handler) {
+    return {
+      pp_hook_ok: false,
+      pp_hook_error: `unknown hook ${event}/${name}`,
+      pp_hook_note: "the CLI path prints the same and allows; this transport matches it",
+    };
+  }
+
+  // Enforce eligibility HERE, not only where the adapters are registered.
+  //
+  // `harness-server.ts` filters `hookInventory()` so no ineligible handler ever
+  // becomes a tool, and that is the primary control. But it is the only one, and
+  // an entry point whose safety lives entirely in its callers is one refactor
+  // away from running a security guard on a transport that cannot carry its
+  // denial. Checking here makes the invariant local to the function that would
+  // violate it.
+  //
+  // Refusing is the safe direction: this transport cannot transmit a denial for
+  // these handlers anyway, so running one could only produce a decision nobody
+  // acts on — while still performing whatever side effects the handler has.
+  const eligibility = mcpToolEligible(event, handlerBlocks(event, name));
+  if (!eligibility.eligible) {
+    return {
+      pp_hook_ok: false,
+      pp_hook_error: `${event}/${name} is not eligible for the in-process transport`,
+      pp_hook_reason: eligibility.reason,
+      pp_hook_note:
+        "this handler must run as a command hook. Reaching this line means something called the " +
+        "in-process path directly, bypassing the adapter registration filter — the handler was NOT run.",
+    };
+  }
+
+  const prevEvent = CURRENT_EVENT;
+  const prevMode = HOOK_MODE;
+  CURRENT_EVENT = event;
+  HOOK_MODE = "in_process";
+  try {
+    await handler(normalizeHookInput(stripUnsubstitutedPlaceholders(input ?? {})));
+    // A handler that returned without calling reply() has allowed by omission.
+    return shapeForMcpTool(event, { allow: true });
+  } catch (err) {
+    if (err instanceof HookDecisionSignal) return shapeForMcpTool(event, err.decision);
+    return {
+      pp_hook_ok: false,
+      pp_hook_error: `hook ${event}/${name} crashed: ${err instanceof Error ? err.message : String(err)}`,
+      pp_hook_note:
+        "fail-open, matching the CLI path, which exits 0 on a handler crash rather than blocking",
+    };
+  } finally {
+    // Restore unconditionally: leaving HOOK_MODE at "in_process" would make a
+    // later CLI invocation throw where it must exit, converting a real block
+    // into an unhandled rejection.
+    CURRENT_EVENT = prevEvent;
+    HOOK_MODE = prevMode;
+  }
+}
 
 export async function runHookDispatcher(args: string[]): Promise<void> {
   const event = args[0];

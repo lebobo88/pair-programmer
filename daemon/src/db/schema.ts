@@ -14,8 +14,22 @@
  * meta row is written with INSERT OR REPLACE (database.ts::db), so an existing
  * DB at 7 restamps to 10 in place after applyMigrations has added any missing
  * columns; no destructive step is involved.
+ *
+ * v11 (Phase H, GitHub #49): adds the `execution_events` table (recovery
+ * observations for vendor-CLI failures, API-killed runs, constitution
+ * drift, and subagent dispatch/stop correlation -- never `attempts`,
+ * `verdicts`, or `stages` rows; see execution-events.ts R3) plus
+ * `runs.surfaced_reason` (the cause a `StopFailure`-surfaced run was
+ * surfaced for -- distinct from `acked_at`/`acked_reason`, which are the
+ * operator's later acknowledgement, not the cause). Additive only: one
+ * `CREATE TABLE IF NOT EXISTS`, three `CREATE INDEX IF NOT EXISTS`, one
+ * guarded `ALTER TABLE runs ADD COLUMN`. The stamp below is applied by
+ * `INSERT OR REPLACE INTO daemon_meta` AFTER `applyMigrations` runs (see
+ * database.ts::db), same as every prior version bump -- this is the shape
+ * the v7-to-v10 gap (schema changes landing without a version bump) is
+ * meant not to recur.
  */
-export const SCHEMA_VERSION = 10;
+export const SCHEMA_VERSION = 11;
 
 export const SCHEMA_SQL = `
 PRAGMA journal_mode = WAL;
@@ -56,6 +70,14 @@ CREATE TABLE IF NOT EXISTS runs (
   constitution_attestation_id TEXT,
   eights_episodic_handle   TEXT,
   audit_bom_handle         TEXT,
+  -- v11 (Phase H, GitHub #49): the cause a StopFailure-surfaced run was
+  -- surfaced for (e.g. "rate_limit"), distinct from acked_at/acked_reason
+  -- (the operator's later acknowledgement, not the cause). Declared here
+  -- AND added by the guarded ALTER in applyMigrations (HIGH-1 fix,
+  -- run_p8JPpVhDonUA retry): a database built fresh from SCHEMA_SQL must
+  -- carry this column without depending on the migration step, or the
+  -- StopFailure UPDATE throws against a freshly-created DB.
+  surfaced_reason          TEXT,
   started_at               TEXT NOT NULL,
   finished_at              TEXT
 );
@@ -290,4 +312,52 @@ CREATE TABLE IF NOT EXISTS evolution_proposals (
 );
 CREATE INDEX IF NOT EXISTS idx_evolution_proposals_run    ON evolution_proposals(run_id);
 CREATE INDEX IF NOT EXISTS idx_evolution_proposals_status ON evolution_proposals(status);
+
+-- v11 (Phase H, GitHub #49): recovery observations. These rows are
+-- NEVER a claim that a producer generated an artifact -- that is what
+-- the attempts table means. See execution-events.ts R3 for the
+-- enforcement of "never attempts/verdicts/stages" at the writer. run_id is
+-- intentionally NOT a foreign key (R5c): a StopFailure or SessionEnd
+-- observation can legitimately reference no run, and MUST NOT be
+-- cascade-deleted with an unrelated run.
+--
+-- HAZARD (LOW-1, run_p8JPpVhDonUA retry): tokens_in/tokens_out/cost_usd and
+-- attempt_slot_id are carried here for reporting/correlation, NOT as a
+-- second ledger of billable spend. 'budgets' (via tallyBudgets /
+-- tallySuccessSpend / tallyFailedSpend) is the aggregated source of
+-- truth, already split into non-overlapping run:/day:/model: (attempt
+-- + successful vendor-CLI spend) vs failed:run:/failed:day:/
+-- failed:model: (failed vendor-CLI spend) scopes precisely so the two
+-- populations don't need to be summed by hand. An ad-hoc query that SUMs
+-- execution_events.cost_usd (or tokens) ACROSS EVENT KINDS, or alongside
+-- 'attempts', double-counts: a tool_success_spend row's cost is the same
+-- dollars cost-tally already tallied into budgets' run:/day:/
+-- model: scopes (see the ownership comment at that call site in
+-- dispatcher.ts), and an api_stop_failure/tool_failure row's cost is
+-- already in the failed: scopes. Query 'budgets' for spend; treat this
+-- table's numeric columns as per-event context for the row they're on, not
+-- as an independent total to re-derive.
+CREATE TABLE IF NOT EXISTS execution_events (
+  id                  TEXT PRIMARY KEY,
+  call_key            TEXT NOT NULL,
+  event_kind          TEXT NOT NULL,
+  tool_name           TEXT,
+  producer            TEXT,
+  run_id              TEXT,
+  stage_id            TEXT,
+  session_id          TEXT,
+  agent_id            TEXT,
+  attempt_slot_id     TEXT,
+  status              TEXT NOT NULL,
+  reason              TEXT,
+  detail              TEXT,
+  tokens_in           INTEGER,
+  tokens_out          INTEGER,
+  cost_usd            REAL,
+  wall_ms             INTEGER,
+  created_at          TEXT NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_execution_events_call_key ON execution_events(call_key);
+CREATE INDEX IF NOT EXISTS idx_execution_events_run  ON execution_events(run_id);
+CREATE INDEX IF NOT EXISTS idx_execution_events_kind ON execution_events(event_kind);
 `;
