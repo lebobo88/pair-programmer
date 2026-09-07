@@ -40,10 +40,41 @@
 
 import { test, describe } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync, existsSync, mkdtempSync } from "node:fs";
+import {
+  readFileSync as readFileSyncRaw,
+  existsSync,
+  mkdtempSync,
+  writeFileSync,
+  rmSync,
+} from "node:fs";
 import { join, dirname } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath, pathToFileURL } from "node:url";
+
+// Tracked files arrive CRLF on any checkout with core.autocrlf=true (the
+// Windows default). Normalize once, at the only place the bytes enter this
+// file, so every scan below can assume LF. This SHADOWS the node:fs import
+// deliberately: it covers every existing call site without editing any of
+// them, and it means a new read has to go out of its way (via
+// readFileSyncRaw) to bypass it.
+//
+// What actually breaks without this, established by running it: a pattern
+// carrying an explicit \n (/^---\n/ on a frontmatter block) and .split("\n"),
+// which leaves a trailing \r on every element. A bare /^heading$/m anchor is
+// NOT affected -- CR is itself a LineTerminator in ECMAScript, so $ matches
+// before it. Do not "fix" an anchor thinking that was the cause.
+//
+// Only \r\n is collapsed. A lone \r never comes out of a git checkout, and
+// rewriting one would silently alter a literal carriage return inside a
+// scanned source file, which some scans here assert on. Buffer reads (no
+// encoding) pass through untouched.
+//
+// Proved by the "read boundary is line-ending agnostic" suite at the bottom of
+// this file.
+function readFileSync(p, enc) {
+  const raw = readFileSyncRaw(p, enc);
+  return typeof raw === "string" ? raw.replace(/\r\n/g, "\n") : raw;
+}
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = join(__dirname, "..", "..");
@@ -619,5 +650,103 @@ describe("activeRunForProject ancestor ownership (Phase L, #53)", () => {
     const body = DISPATCHER_SRC.slice(fnStart, fnStart + 2400);
     assert.match(body, /guard < \d+/, "the ancestor walk must carry an iteration bound");
     assert.match(body, /parent === dir/, "the walk must stop at the filesystem root's fixed point");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The read boundary is line-ending agnostic.
+//
+// This file scans tracked repo files. Git checks those out CRLF wherever
+// core.autocrlf=true, the default on Windows, so a fresh clone delivers
+// different bytes than a working tree whose files happen to have been written
+// LF -- and an LF working file hashes to the same blob, so `git status` stays
+// clean and nothing reveals the difference. Nineteen assertions across three
+// guards passed for exactly that reason and failed on the next checkout.
+//
+// The two constructs that actually break are used here as the discriminator,
+// each asserted in BOTH directions -- raw CRLF must fail it, normalized must
+// pass it -- so "nothing survived" and "nothing needed to" stay
+// distinguishable:
+//
+//   * a pattern with an explicit \n in it (/^---\n/), and
+//   * .split("\n"), which leaves a trailing \r on every element.
+//
+// A bare /^heading$/m anchor is deliberately NOT used: CR is a LineTerminator
+// in ECMAScript, so $ already matches before it and such an anchor would pass
+// unnormalized -- a vacuous proof. Cross-vendor judge finding, agy
+// gemini-3.8-flash-medium, MEDIUM, on the first version of this suite.
+//
+// Deleting the .replace in readFileSync turns three assertions here red.
+// ---------------------------------------------------------------------------
+describe("the read boundary is line-ending agnostic", () => {
+  test("a CRLF file read through readFileSync arrives LF", () => {
+    const dir = mkdtempSync(join(tmpdir(), "crlf-read-"));
+    try {
+      const f = join(dir, "sample.md");
+      writeFileSync(f, "---\r\nmodel: haiku\r\n---\r\n\r\nbody\r\n", "utf8");
+
+      // The fixture genuinely carries the condition being denied.
+      const raw = readFileSyncRaw(f, "utf8");
+      assert.ok(raw.includes("\r\n"), "fixture precondition: the file on disk must actually be CRLF");
+
+      const text = readFileSync(f, "utf8");
+      assert.ok(!text.includes("\r"), "readFileSync must strip CR from a CRLF file");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("an explicit-\\n pattern fails on the raw bytes and passes after normalization", () => {
+    const dir = mkdtempSync(join(tmpdir(), "crlf-read-"));
+    try {
+      const f = join(dir, "sample.md");
+      writeFileSync(f, "---\r\nmodel: haiku\r\n---\r\n\r\nbody\r\n", "utf8");
+      const frontmatter = /^---\n([\s\S]*?)\n---/;
+
+      assert.ok(
+        !frontmatter.test(readFileSyncRaw(f, "utf8")),
+        "the condition denied must be reachable: a \\n pattern must MISS the raw CRLF bytes",
+      );
+      assert.ok(
+        frontmatter.test(readFileSync(f, "utf8")),
+        "the same pattern must match once the read normalizes -- this is the defect the helper prevents",
+      );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('.split("\\n") leaves a trailing CR on the raw bytes and none after normalization', () => {
+    const dir = mkdtempSync(join(tmpdir(), "crlf-read-"));
+    try {
+      const f = join(dir, "sample.md");
+      writeFileSync(f, "---\r\nmodel: haiku\r\n---\r\n\r\nbody\r\n", "utf8");
+
+      assert.equal(
+        readFileSyncRaw(f, "utf8").split("\n")[1],
+        "model: haiku\r",
+        "the condition denied must be reachable: a raw split must strand a CR",
+      );
+      assert.equal(
+        readFileSync(f, "utf8").split("\n")[1],
+        "model: haiku",
+        "a normalized split must yield the bare line",
+      );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("a Buffer read (no encoding) is passed through untouched", () => {
+    const dir = mkdtempSync(join(tmpdir(), "crlf-read-"));
+    try {
+      const f = join(dir, "sample.bin");
+      writeFileSync(f, "a\r\nb\r\n", "utf8");
+      const buf = readFileSync(f);
+      assert.ok(Buffer.isBuffer(buf), "no encoding must still yield a Buffer");
+      assert.equal(buf.toString("utf8"), "a\r\nb\r\n", "Buffer bytes must not be rewritten");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

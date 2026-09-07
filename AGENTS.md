@@ -124,6 +124,18 @@ Every one of them passed a review first.
 
 **Derive every count from the filesystem or the database.** Six wrong hardcoded counts have shipped here.
 
+**A guard that scans tracked files must normalize line endings at the read, and must prove it against the
+construct that actually breaks.** `core.autocrlf=true` is the Windows default, so tracked files are checked
+out CRLF — while an LF working file hashes to the same blob, leaving `git status` clean and hiding the
+difference until the next checkout. Nineteen assertions across three guards passed for exactly that reason
+and went red on a fresh checkout of the same commit. **A bare `/^heading$/m` anchor is not the failure
+mode** — CR is itself a LineTerminator in ECMAScript, so `$` matches before it. What breaks is a pattern
+carrying an explicit `\n` (`/^---\n/` on frontmatter) and `.split("\n")`, which strands a `\r` on every
+element. Assert both in **both directions**: the raw bytes must fail the check and the normalized text must
+pass it, or the proof cannot distinguish a working normalizer from a tolerant regex. The first version of
+that proof used an `$` anchor and was vacuous; a cross-vendor judge caught it.
+
+
 **Every positive invariant needs a falsifiability proof** — a mutation that turns it red — via a
 temp-directory or in-memory fixture. **Never mutate a real tracked file from inside the suite.** If you
 mutate one out of band, verify it byte-identical afterward with a checksum, and do **not** use
