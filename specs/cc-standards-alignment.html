@@ -119,8 +119,8 @@ figure:has(img) .fig-pending { display: none; }
   <summary>Metadata</summary>
   <dl>
     <dt>created</dt><dd>2026-08-24</dd>
-    <dt>modified</dt><dd>2026-09-05 — validation round; see Amendments</dd>
-    <dt>commits</dt><dd>branch <code>feat/cc-standards-alignment</code></dd>
+    <dt>modified</dt><dd>2026-09-06 — Phase D landed; <code>if:</code> predicates dropped, see Amendments</dd>
+    <dt>commits</dt><dd>branch <code>feat/cc-standards-alignment</code> — Phases A&ndash;D landed (runs <code>run_7tbXaLHTJU1x</code>, <code>run_3FLJhz2DDV6w</code>, ad hoc, <code>run_z6a4iH0m0V2G</code>)</dd>
     <dt>agent</dt><dd>plan-deep (Fable-5) — authored to the plan-deep output contract</dd>
     <dt>session</dt><dd>7aefb7e8-2948-46a1-b10b-f9422c843257</dd>
     <dt>back refs</dt><dd><code>.harness/run_kUPtCqHotdYn/postmortem.md</code> (PP-VG-6 delivery stall); <code>.harness/cc-standards-alignment-plan.md</code> (superseded markdown draft)</dd>
@@ -336,31 +336,102 @@ figure:has(img) .fig-pending { display: none; }
   </div>
 
   <div class="phase">
-    <h3 id="phase-d">Phase D — Hook hardening, safe subset <code class="status">[]</code> <span class="legend"><a href="https://github.com/lebobo88/pair-programmer/issues/46">#46</a></span></h3>
-    <p>Timeouts and predicates only. The two genuinely attractive optimizations are deferred as spikes.</p>
+    <h3 id="phase-d">Phase D — Hook hardening, safe subset <code class="status" data-st="x">[x]</code> <span class="legend"><a href="https://github.com/lebobo88/pair-programmer/issues/46">#46</a></span></h3>
+    <p>Timeouts and wiring. <b>Landed 2026-09-06</b> as run <code>run_z6a4iH0m0V2G</code>, closed
+    <code>surfaced</code> for two known daemon defects unrelated to this work (<a href="https://github.com/lebobo88/pair-programmer/issues/59">#59</a>
+    — PP-VG-5 is unsatisfiable in <code>mode="single"</code>; PP-VG-2 blocks on Phase A's <code>runbook</code>).
+    Four stages, every closing verdict cross-vendor via agy <code>gemini-3.8-flash-medium</code> under JUDGE-1a.
+    Guard 40/40; full suite 387/387 across 52 suites; missability 8 pass / 0 fail / 49 n/a.
+    <b>The <code>if:</code> predicates were dropped outright</b> — see the task below; that was the phase's
+    one real finding.</p>
     <h4>Tasks</h4>
     <ul class="checklist">
-      <li><code class="status">[]</code> Classify all 26 hooks as <b>blocking / recovery / informational</b> first, then set explicit <code>timeout</code> per class. <b>Start from the <code>timeoutSec: 30</code> that <code>hooks.json</code> already sets on all 26 of its entries</b> rather than inventing values; note <code>UserPromptSubmit</code> hooks already default to 30 s, not 600 s. Round-2 caveat still applies: a too-tight timeout converts a slow <em>success</em> into a failure, so values follow the classification, not a blanket number.</li>
-      <li><code class="status">[]</code> Add <code>if:</code> predicates. <code>block-destructive-shell</code> currently runs on <em>every</em> Bash call; <code>enforce-rfc2119-language</code> on <em>every</em> Write/Edit rather than markdown artifacts only. <b>Note:</b> <code>if:</code> is evaluated only on <em>tool</em> events, so this applies to the PreToolUse/PostToolUse hooks — not to SessionStart, UserPromptSubmit, or Stop.</li>
-      <li><code class="status">[]</code> Add <code>statusMessage</code> to <code>enforce-no-secrets</code> and <code>enforce-validator-gate</code>.</li>
-      <li><code class="status">[]</code> <b>Wire the three dead handlers.</b> <code>dispatcher.ts</code> implements 29 handlers; only 26 are wired, in either runtime. <code>eights-recall-project</code> (SessionStart), <code>eights-recall-stage</code> (PreToolUse on <code>__start_stage</code>), and <code>eights-recall-request</code> (UserPromptSubmit) are reachable by name but referenced by no settings file. TheEights episodic recall is therefore silently off — including the cross-run prior-critique lookup that <code>/forge:cauterize</code> advertises as "pulls cross-run reflexion context". Add all three to <code>.claude/settings.json</code> and <code>hooks.json</code>.</li>
-      <li><code class="status">[]</code> <b>Correct README lines 152 and 236</b>, which both claim <code>hooks.json</code> carries the 3 eights-recall hooks for a total of 29. It carries 26 and none of them.</li>
-      <li><code class="status">[]</code> <b>No longer deferred — promoted to Phase L.</b> The <code>type: "mcp_tool"</code> conversion is now a real phase, landing after Phase H so the SQLite write discipline is settled first. Per D6 there is <b>no</b> <code>async: true</code> anywhere: it is command-hook-only, mutually exclusive with <code>mcp_tool</code>, and five PostToolUse hooks write SQLite. Keep this phase's hooks as command hooks; L migrates them.</li>
+      <li><code class="status" data-st="x">[x]</code> <b>Done — all 29, not 26.</b> Classified by
+      <em>consequence-of-kill</em>: BLOCKING and RECOVERY carry <b>30 s</b> (the <code>hooks.json</code> baseline,
+      kept rather than invented); INFORMATIONAL carry <b>20 s</b>. 20, not the spec&#39;s derived 15: the
+      <code>eights-recall-*</code> trio&#39;s daemon-side worst case is bounded at 14 000 ms
+      (<code>ECOSYSTEM_PROBE_TIMEOUT_MS</code>&times;2 + <code>ECOSYSTEM_CALL_TIMEOUT_MS</code>,
+      <code>config.ts:450</code>/<code>:459</code>), leaving 15 a ~1 s margin on Windows Node cold start — the
+      cross-vendor judge raised that as LOW-5 and it was adopted. 13&times;30 / 16&times;20 in both files. The
+      rationale is recorded in the template&#39;s own <code>_comment</code> so a future editor cannot flatten it
+      back to a blanket number.</li>
+      <li><code class="status" data-st="f">[f]</code> <b>DROPPED — adding <code>if:</code> would have silently
+      lost blocks.</b> Hook handler matching is case-<b>insensitive</b> (<code>dispatcher.ts:455</code>/<code>:459</code>
+      for the path/kind match, plus 8 <code>/i</code> patterns in <code>bash-safety.ts</code>), while an
+      <code>if:</code> glob would be lowercase. A predicate that failed to match an upper- or mixed-case shape
+      would suppress the hook entirely — the failure mode of a <em>security</em> guard silently not running,
+      which is strictly worse than it running too often. The guard now asserts <b>no <code>if:</code> key exists
+      anywhere in either file</b> (AC-D34, whole-file), so any future reintroduction has to be deliberate and
+      has to solve the case problem first. <s>Add <code>if:</code> predicates to the PreToolUse/PostToolUse
+      hooks.</s></li>
+      <li><code class="status" data-st="x">[x]</code> <b>Done, template only.</b> <code>statusMessage</code> on
+      <code>enforce-no-secrets</code> and <code>enforce-validator-gate</code> — a while-running spinner line, so
+      the copy describes the check in progress, not its outcome. Deliberately <b>absent</b> from
+      <code>hooks.json</code>: Copilot CLI support for the field is unverified (Q8), and the guard <em>asserts
+      that absence</em> (AC-D33) rather than merely omitting the check, so a stray addition is caught.</li>
+      <li><code class="status" data-st="x">[x]</code> <b>Done — episodic recall is no longer inert.</b> All three
+      <code>eights-recall-*</code> handlers wired in both <code>.claude/settings.template.json</code> and
+      <code>hooks.json</code>; both files now carry all 29. They call an external TheEights MCP peer <em>over the
+      network</em>, and every ecosystem wrapper short-circuits to <code>null</code> when it is unreachable
+      (<code>daemon/src/config.ts:444-447</code>) — verified fail-soft: an absent or hung peer cannot block a
+      session, a stage, or a prompt. Unwiring any one of the three is now a plain unexcused test failure
+      (AC-D22/23/24), where Phase A&#39;s guard had excused it under a self-expiring allowance.</li>
+      <li><code class="status" data-st="x">[x]</code> <b>Done, and the drift was wider than two lines.</b>
+      <code>README.md:152</code> and <code>:236</code>, plus <code>docs/INSTALL.md:29</code> ("25 hooks"),
+      <code>scripts/install-user.ps1:4</code> (also "25 hooks" — the docs judge caught this one still open after
+      the others were fixed), and <code>docs/USER_GUIDE.md</code> §18, whose three bumped subsection headings
+      contradicted their own tables until the three handler rows were added. All five §18 counts now match
+      (6/8/7/6/2).</li>
+      <li><code class="status" data-st="x">[x]</code> <b>Confirmed — no <code>async</code>, no
+      <code>mcp_tool</code> here.</b> All 29 stay command hooks; Phase L migrates them after Phase H settles the
+      SQLite write discipline. Per D6 there is no <code>async: true</code> anywhere: it is command-hook-only,
+      mutually exclusive with <code>mcp_tool</code>, and five PostToolUse hooks write SQLite.</li>
+      <li><code class="status" data-st="x">[x]</code> <b>Cleared both self-expiring allowances (unplanned, and the
+      point of them).</b> Phase A&#39;s guard shipped two <em>named, self-expiring</em> excusals. Wiring the recall
+      trio and adding the timeouts expired both on schedule — the guard went red with seven precise
+      <code>STALE ALLOWANCE</code> messages, each naming its pair, its file, and #46. Both constants, both
+      excusal branches (<code>buildFileReport</code> arity 5&rarr;4, <code>diagnoseParity</code> loses
+      <code>staleAllowance</code>) and six acceptance criteria are gone, replaced by fifteen strictly stronger
+      assertions. AC-D21 self-checks that neither allowance identifier appears anywhere in the file, building
+      each from string fragments at runtime so the assertion&#39;s own source cannot match itself. 25 &rarr; 40
+      subtests. The cross-vendor judge&#39;s ruling: coverage is <b>stronger, not reduced</b>.</li>
+      <li><code class="status" data-st="x">[x]</code> <b>Deny-reason repair (unplanned).</b>
+      <code>enforce-no-secrets</code> reported only what it matched; it now names the remedy and states plainly
+      that there is no bypass, because fixing the artifact is the only route and an operator hunting for a flag
+      wastes the block.</li>
     </ul>
     <h4>Testing strategy — loop until every check passes before advancing</h4>
     <ul class="checklist">
-      <li><code class="status">[]</code> Every hook has an explicit <code>timeout</code>, asserted by the Phase A inventory test.</li>
-      <li><code class="status">[]</code> <b>Parity test:</b> the set of handler names in <code>dispatcher.ts</code> equals the set wired in <code>.claude/settings.json</code> equals the set in <code>hooks.json</code>. This is the guard that would have caught the eights-recall gap, and it must run in CI.</li>
-      <li><code class="status">[]</code> With recall wired, a SessionStart in a project with prior runs actually emits the <code>[pp] eights recall:</code> line.</li>
-      <li><code class="status">[]</code> Each <code>if:</code> predicate verified to still fire on the cases it must catch — especially <code>block-destructive-shell</code> on real destructive shapes.</li>
-      <li><code class="status">[]</code> No hook that previously succeeded slowly now times out. Measure against the Phase A baseline.</li>
+      <li><code class="status" data-st="x">[x]</code> Every hook declares an explicit finite numeric
+      <code>timeout</code> — asserted positively in both files (AC-D30), not merely "not exempt". The
+      <code>0</code>/<code>-1</code>/<code>"30"</code> invalid-timeout battery now reaches the template too
+      (AC-D26), which the file exemption had made unreachable.</li>
+      <li><code class="status" data-st="x">[x]</code> <b>Parity holds three ways.</b> Handler names in
+      <code>dispatcher.ts</code> = wired set in <code>.claude/settings.template.json</code> = set in
+      <code>hooks.json</code>, all 29; and the <em>timeout values</em> match pair-for-pair across the two files
+      (AC-D31). A <code>TIMEOUT_CLASS</code> map — its coverage asserted set-equal to the handler inventory, so
+      no count literal is transcribed — pins 30 for BLOCKING/RECOVERY and 20 for INFORMATIONAL (AC-D32). Both
+      mutation-proved. The guard runs in the unit suite. <b>Residual:</b> the class <em>assignment</em> is
+      hand-written, so a handler reclassified in <code>dispatcher.ts</code> leaves the map stale — raised by the
+      judge as MED-1.</li>
+      <li><code class="status" data-st="x">[x]</code> Verified by two out-of-band mutation proofs against the
+      <b>real</b> files: unwiring <code>eights-recall-project</code> from the template went red naming the pair
+      and the file; deleting <code>daemon-up</code>&#39;s timeout went red across parity, AC-D30, AC-D31 and
+      AC-D32. Both reverted with md5 verified byte-identical before and after.</li>
+      <li><code class="status" data-st="f">[f]</code> <b>N/A — the <code>if:</code> work was dropped.</b> Replaced
+      by the inverse check: AC-D34 asserts no <code>if:</code> key exists in either file, whole-file, under any
+      event. <s>Each <code>if:</code> predicate verified to still fire on the cases it must catch.</s></li>
+      <li><code class="status">[]</code> <b>Not measured — carried to Phase L.</b> No hook that previously
+      succeeded slowly now times out. Phase A&#39;s baseline measured MCP result sizes, not per-hook wall time,
+      so there is nothing to compare against; the timeout floor (20 s against a 14 000 ms bound) is an argument,
+      not a measurement. Phase L&#39;s latency work is where this gets numbers.</li>
     </ul>
     <p class="legend">If a check cannot be made to pass after reasonable effort, mark the phase
       <code class="status" data-st="f">[f]</code> and record why in Notes rather than looping forever.</p>
     <figure>
-      <img src="cc-standards-alignment/phase2.png" alt="twenty-six identical valves on a manifold, each now fitted with a pressure gauge and a labelled cutoff">
+      <img src="cc-standards-alignment/phase2.png" alt="twenty-nine valves on a manifold, each now fitted with a pressure gauge and a labelled cutoff; three of them newly connected to a line that was previously capped">
       <div class="fig-pending"><b>Image pending</b><span class="hint">phase2.png — see prompt sheet</span></div>
-      <figcaption>Twenty-six hooks, none of which currently has a cutoff.</figcaption>
+      <figcaption>Twenty-nine hooks. All twenty-nine now have a cutoff, and three of them are connected to anything at all for the first time.</figcaption>
     </figure>
   </div>
 
@@ -785,6 +856,71 @@ figure:has(img) .fig-pending { display: none; }
       <li>Work now tracked on branch <code>feat/cc-standards-alignment</code> and mirrored to GitHub epic
         <a href="https://github.com/lebobo88/pair-programmer/issues/42">#42</a> with one issue per phase.</li>
     </ul>
+  </details>
+
+  <details class="amend" open>
+    <summary>2026-09-06 — Phase D: <code>if:</code> predicates dropped; two self-expiring allowances expired on schedule</summary>
+
+    <p>Phase D landed as run <code>run_z6a4iH0m0V2G</code> (four stages, every closing verdict cross-vendor
+    via agy <code>gemini-3.8-flash-medium</code> under JUDGE-1a). It changed the plan in two ways worth
+    recording.</p>
+
+    <h4>Dropped: <code>if:</code> predicates</h4>
+    <p>The plan called for <code>if:</code> predicates to stop <code>block-destructive-shell</code> running on
+    every Bash call and <code>enforce-rfc2119-language</code> on every Write/Edit. <b>They were dropped
+    outright, not deferred.</b> Hook handler matching is case-<b>insensitive</b>
+    (<code>dispatcher.ts:455</code>/<code>:459</code> for the path/kind match, plus 8 <code>/i</code> patterns
+    in <code>bash-safety.ts</code>) while an <code>if:</code> glob would be lowercase. A predicate that missed
+    an upper- or mixed-case shape would suppress the hook entirely — a security guard silently not running,
+    which is worse than one running too often. The guard now asserts, whole-file, that <b>no <code>if:</code>
+    key exists in either settings file</b> (AC-D34), so a reintroduction must be deliberate and must solve the
+    case problem first.</p>
+
+    <h4>Unplanned: Phase A's allowances expired and were cleared</h4>
+    <p>Phase A's parity guard shipped two <em>named, self-expiring</em> excusals covering exactly the gaps
+    Phase D was meant to close. Wiring the three <code>eights-recall-*</code> handlers and adding the timeouts
+    expired both on schedule: the guard went red with seven <code>STALE ALLOWANCE</code> messages, each naming
+    its <code>(event, name)</code> pair, its file, and this issue. Both constants, both excusal branches
+    (<code>buildFileReport</code> arity 5&rarr;4, <code>diagnoseParity</code> loses
+    <code>staleAllowance</code>) and six acceptance criteria were removed and replaced by fifteen strictly
+    stronger assertions — 25 &rarr; 40 subtests, judged <b>stronger, not reduced</b>. This is the mechanism
+    working as designed and is worth keeping as a pattern: a temporary allowance that names its own remover
+    and fails loudly when the remover lands.</p>
+
+    <h4>Deviation from the spec: 20 s, not 15 s</h4>
+    <p>INFORMATIONAL hooks carry a 20 s timeout where the spec derived 15. The
+    <code>eights-recall-*</code> trio's daemon-side worst case is bounded at 14 000 ms
+    (<code>ECOSYSTEM_PROBE_TIMEOUT_MS</code>&times;2 + <code>ECOSYSTEM_CALL_TIMEOUT_MS</code>,
+    <code>config.ts:450</code>/<code>:459</code>), leaving 15 a ~1 s margin on Windows Node cold start. The
+    cross-vendor judge raised it as LOW-5 and it was adopted. The reasoning lives in the template's own
+    <code>_comment</code> so it cannot be flattened back to a blanket number.</p>
+
+    <h4>Residuals carried forward</h4>
+    <ul>
+      <li><b><code>daemon-up</code> fail-open (FU-1).</b> A timeout kill converts its fail-closed liveness
+        guard into fail-open in precisely the case it exists to catch. Accepted and documented; the operator's
+        own <code>doctor</code> call is the compensating control.</li>
+      <li><b>Installer-propagation gap.</b> <code>.claude/settings.json</code> is git-ignored
+        (<code>.gitignore:21</code>) and rendered from the template by <code>scripts/install-user.ps1</code> —
+        a full render at project scope, but at user scope only <code>hooks</code> is replaced and
+        <code>permissions.allow</code> unioned. Between a pull and the next installer run, repo and session
+        diverge and <b>nothing detects it</b>: the guard asserts template/<code>hooks.json</code> parity, not
+        template/installed parity.</li>
+      <li><b><code>TIMEOUT_CLASS</code> is hand-classified (MED-1).</b> Its coverage is derived and asserted
+        set-equal to the handler inventory, so no count literal is transcribed — but a handler reclassified in
+        <code>dispatcher.ts</code> leaves the class assignment stale.</li>
+      <li><b>Per-hook latency was never measured.</b> Phase A's baseline measured MCP result sizes, not hook
+        wall time, so "no hook that succeeded slowly now times out" has nothing to compare against. Carried to
+        Phase L, where latency is the point.</li>
+    </ul>
+
+    <h4>Why the run closed <code>surfaced</code></h4>
+    <p>Two known daemon defects, neither caused by this work, and <code>surfaced</code> was requested directly
+    rather than being downgraded, so PP-VG-7's <code>downgraded</code> flag stays false.
+    <a href="https://github.com/lebobo88/pair-programmer/issues/59">#59</a>: PP-VG-5 is unsatisfiable in
+    <code>mode="single"</code> — it resolves the winning attempt's <code>candidate_index</code> and looks for a
+    best-of-N smoke row a single-mode stage never writes (reproduced identically in Phase B). And PP-VG-2
+    blocks a <code>complete</code> on the profile's required <code>runbook</code>, which belongs to Phase A.</p>
   </details>
 </section>
 

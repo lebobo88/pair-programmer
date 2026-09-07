@@ -97,6 +97,7 @@ _To be populated by harness runs._
 
 
 
+
 ### Run run_jc1UxeCMvyZR — 2026-08-22
 
 **Request:** Fix four daemon defects and establish no-secondary-vendor architectural constraint
@@ -154,6 +155,21 @@ _To be populated by harness runs._
 - Key decisions:
   - Metadata is ToolDef-scoped, not MCP-service-scoped, to allow per-tool overrides and future extensibility (e.g., rate-limit metadata per endpoint).
 
+### Run run_z6a4iH0m0V2G — 2026-09-06
+
+- Request: Phase D hook-file hardening (GitHub #46) — rationalize hook wiring, explicit timeouts, and operator-facing messaging
+- Artifacts:
+  - spec: `.harness/run_z6a4iH0m0V2G/spec.md`
+  - diff: `.harness/run_z6a4iH0m0V2G/diff.patch`
+  - changelog: `.harness/run_z6a4iH0m0V2G/docs/changelog.md`
+- Summary: All 29 hook handlers are now wired in both `.claude/settings.template.json` and `hooks.json`, each with an explicit timeout classified by consequence-of-kill (30s for BLOCKING and RECOVERY handlers, 20s for INFORMATIONAL). The three `eights-recall-*` handlers (eights-recall-project, eights-recall-stage, eights-recall-request) were already implemented in `dispatcher.ts` but referenced by no settings file; they are now wired with advisory-only fail-soft semantics. The `enforce-no-secrets` deny reason was strengthened to name the remedy and state that there is no bypass. Hook counts were corrected across five documentation sites.
+- Key decisions:
+  - Timeout classes are derived from `reply(false)` site analysis (consequence-of-kill), not hook latency — the classification required multiline regex awareness to correctly identify 14 sites across 10 handlers, six of which span line breaks.
+  - INFORMATIONAL timeout is 20s (not the spec's derived 15s) to add headroom for Windows Node cold-start above the 14 000 ms daemon-side eights-recall bound (ECOSYSTEM_PROBE_TIMEOUT_MS ×2 + ECOSYSTEM_CALL_TIMEOUT_MS, raised by cross-vendor judge as LOW-5).
+  - `if:` predicates on hook matchers were abstained entirely — handler regexes are case-insensitive but permission globs would be lowercase, so predicates would silently lose blocks; the only detector was unexecutable under ANTI-STALL TEST RULE; the trade did not meet the 25% suppression threshold (R2.8).
+  - `statusMessage` is added to template only; Copilot CLI support is unverified (Q8) and the guard now asserts absence rather than omitting the check.
+  - `daemon-up` fail-open residual is documented as accepted (FU-1) — a timeout kill converts its fail-closed liveness guard into fail-open in precisely the case it was written to detect, per Claude Code hook docs.
+
 
 ## 14. Security, privacy, and compliance
 
@@ -183,6 +199,7 @@ _To be populated by harness runs._
 
 
 ## 15. Test and verification strategy
+
 
 
 
@@ -228,8 +245,23 @@ _To be populated by harness runs._
 - Key decisions:
   - Fixture builder committed to `daemon/test/fixtures/` because the equivalent measurement artifact from the prior phase was a throwaway; capturing it as reusable infrastructure prevents re-measurement per run.
 
+### Run run_z6a4iH0m0V2G — 2026-09-06
+
+- Request: Phase D test-guard clearing (GitHub #46) — retire self-expiring allowances and replace with stronger positive invariants
+- Artifacts:
+  - test_plan: `.harness/run_z6a4iH0m0V2G/tests/test_plan.md`
+  - changelog: `.harness/run_z6a4iH0m0V2G/docs/changelog.md`
+- Summary: `daemon/test/hook-inventory.unit.mjs` cleared both PENDING_WIRING and PENDING_TIMEOUT_EXEMPT_FILES allowances on schedule when Phase D wired all three recall handlers and added timeouts to the template. Replacement coverage is strictly stronger: unwiring any handler is now a plain failure (no allowance to excuse it), invalid-timeout checks now reach the template (previously exempt), and five new positive-invariant families cover timeout presence, cross-file parity, per-class values, statusMessage correctness on the two write-guards, and whole-file `if:` absence. Test count grew from 25 subtests to 40; full suite passes 387/387 across 52 test files.
+- Key decisions:
+  - One-for-one replacement strategy ensures no prior coverage is lost — each deleted allowance-mutation check is replaced by an equivalent-or-stronger positive-invariant test (R7.7).
+  - Mutation-check strategy: every positive invariant includes both a real-tree assertion and an injected-defect proof that the invariant is falsifiable (contract testing).
+  - arity assertion on `buildFileReport` (`buildFileReport.length === 4`) prevents silent re-introduction of an exemption parameter, since any future exemption-add must fail loudly.
+  - TIMEOUT_CLASS map is hand-written classification; coverage is derived and asserted set-equal to `implementedPairKeys` so a handler reclassified in `dispatcher.ts` leaves the map stale (MED-1, raised for future auto-derivation).
+  - Textual self-checks (AC-D21, AC-D21b) use substring-absence searches to prevent stale references in comments and docstring prose, not just in live constants.
+
 
 ## 16. Operations and support model
+
 
 
 
@@ -317,6 +349,19 @@ _To be populated by harness runs._
 - Key decisions:
   - Annotation scope limited to `get_run` (the primary discovery/browsing endpoint) rather than all harness tools. Other large-payload endpoints (e.g., for artifact streaming) can be annotated incrementally as needed.
 
+### Run run_z6a4iH0m0V2G — 2026-09-06
+
+- Request: Phase D operational-ownership missability response (GitHub #46)
+- Artifacts:
+  - ownership: `.harness/run_z6a4iH0m0V2G/ops/ownership.md`
+  - changelog: `.harness/run_z6a4iH0m0V2G/docs/changelog.md`
+- Summary: Phase D adds only advisory, fail-soft mechanisms (episodic recall handlers, status messages, per-class timeouts); pair-programmer is single-operator local harness with no on-call obligation or paging. The phase identified and disclosed one real operational gap: `.claude/settings.json` is git-ignored and rendered from `.claude/settings.template.json` by the installer, so divergence between repo state and running state is silent — nothing in the tree detects it. Between a `git pull` and the next installer run, hooks stay on implicit defaults while every checked-in file claims explicit wiring and timeouts.
+- Key decisions:
+  - All ecosystem wrappers short-circuit to null when the external TheEights peer is unreachable — an absent or hung peer degrades behavior to silence, never to blocking.
+  - Timeout kills are documented per consequence-of-class in the template's `_comment`, so operators understand the fail-open risk and can factor it into assessment.
+  - Hook inventory drift is owned by `daemon/test/hook-inventory.unit.mjs` (test failure); timeout-class drift is owned by the same guard's TIMEOUT_CLASS map (hand-written, with coverage assertion); installed-vs-repo divergence is owned by the operator running `scripts/install-user.ps1` (unautomated, undiscovered).
+  - `daemon-up` fail-open residual (FU-1) is accepted and cites platform documentation verbatim — operator's own `doctor` call is the compensating control (per AGENTS.md Hard Rule 1).
+
 
 ## 17. Team operating model and governance
 
@@ -372,6 +417,7 @@ _To be populated by harness runs._
 _To be populated by harness runs._
 
 ## Appendices
+
 
 
 
@@ -500,4 +546,18 @@ shims. Interactive Google Sign-In (system keyring) remains the default path, whi
 - **resumed fix.** Correct in source and dist/; MCP server process predated build, so envelopes reported resumed: true throughout run. Verified by unit test.
 - **Judge-reliability signal.** agy fabricated two of three platform-documentation quotes at confidence 1.0 earlier in campaign; returned zero-finding rubber stamp on this run's docs stage (cross-vendor pass) while an overclaim was present. Repo claims consistently accurate (refuted two wrong counts). Platform-doc questions should be verified first-hand, not delegated.
 - **Incorrect counts (campaign tally).** Four counts produced and corrected: tools 76 (claimed ~76 then 78); missability checks 57 (AGENTS.md:11 says 56, spec said 58). AGENTS.md still stale and fenced for follow-up.
+
+### Run run_z6a4iH0m0V2G — 2026-09-06
+
+- Request: Phase D documentation and enablement (GitHub #46) — correct counts, document timeout rationale, and disclose operator actions
+- Artifacts:
+  - spec: `.harness/run_z6a4iH0m0V2G/spec.md`
+  - changelog: `.harness/run_z6a4iH0m0V2G/docs/changelog.md`
+- Summary: Updated `.claude/settings.template.json` top-level `_comment` to document all 29 handlers (up from 26), per-class timeout values with rationale, and the daemon-up fail-open residual (FU-1). Corrected hook counts in five user-facing documents where they had drifted (README.md two sites, docs/INSTALL.md, docs/USER_GUIDE.md subsection headings, scripts/install-user.ps1). Added official changelog under "Unreleased" and documented operator action required: re-running the installer to propagate the wiring and timeouts into `.claude/settings.json` (git-ignored, rendered from template).
+- Key decisions:
+  - Timeout class rationale is recorded inline in the template's `_comment` rather than in separate docs, tying specification to source.
+  - Documentation counts are derived from `listHookHandlers()` or asserted as immutable fixtures in the test suite, never transcribed — no second place they can drift.
+  - PLAN.md is left untouched as a dated artifact (§8); only live user-facing docs are corrected (§7.2).
+  - Subsection heading counts in USER_GUIDE.md are re-derived from the handler inventory and mechanically verified (R5.7, AC-D19a).
+  - Changelog captures both the fixes and the known residuals (daemon-up fail-open, if: abstention, installer-propagation gap, TIMEOUT_CLASS drift) so readers understand what is and is not settled.
 

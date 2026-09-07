@@ -1,7 +1,7 @@
 <#
 .SYNOPSIS
   Register the pair-programmer harness at user scope so /pp:* commands, the 3
-  MCP servers, the 25 hooks, the sub-agents, and the skills are available in
+  MCP servers, the 29 hooks, the sub-agents, and the skills are available in
   every Claude Code session, regardless of cwd.
 #>
 [CmdletBinding()]

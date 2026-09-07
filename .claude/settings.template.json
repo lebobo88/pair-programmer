@@ -1,6 +1,6 @@
 {
   "$schema": "https://json.schemastore.org/claude-code-settings.json",
-  "_comment": "Template for Phase 10 settings (26 hooks across 5 events: SessionStart 5, PreToolUse 7, PostToolUse 7, UserPromptSubmit 5, Stop 2). Corrected from a stale count of 24 on 2026-09-05; daemon/test/hook-inventory.unit.mjs asserts the count against this file so it cannot drift again. KNOWN GAPS, both tracked in issue #46: (1) no hook here sets `timeout`, while the sibling `hooks.json` for the Copilot runtime sets timeoutSec 30 on all 26 of its entries; (2) three implemented handlers -- eights-recall-project, eights-recall-stage, eights-recall-request -- are wired in NEITHER file, so TheEights episodic recall is silently off even though dispatcher.ts implements all three. The installer (`scripts/install-user.ps1`) substitutes `__PP_DAEMON__` in TWO ways: (a) USER scope (~/.claude/settings.json) — replaced with the absolute path to daemon/dist/index.js on the installing machine, so hooks fire correctly in every project where $CLAUDE_PROJECT_DIR is not the pair-programmer repo; (b) PROJECT scope (<repo>/.claude/settings.json, git-ignored) — replaced with the literal string `$CLAUDE_PROJECT_DIR/daemon/dist/index.js`, which Claude Code expands at hook-execution time, making the project-local file machine-independent and self-relocating. Each hook calls `node <daemon> hook <event> <name>` which dispatches to a typed handler in `src/hooks/dispatcher.ts`. PreToolUse blockers default to advisory; set PP_ENFORCE_ACTIVE_RUN=1 / PP_ALLOW_DANGER=0 to harden.",
+  "_comment": "Template for Phase 10 settings (29 hooks across 5 events: SessionStart 6, PreToolUse 8, PostToolUse 7, UserPromptSubmit 6, Stop 2). Corrected from a stale count of 24 on 2026-09-05, then from 26 to 29 on Phase D of cc-standards-alignment (issue #46): every entry now declares a numeric `timeout`, and the three previously-unwired TheEights episodic-recall handlers (eights-recall-project, eights-recall-stage, eights-recall-request) are wired. daemon/test/hook-inventory.unit.mjs asserts the count against this file so it cannot drift again. TIMEOUT CLASSES (seconds, per handler consequence-of-kill): BLOCKING and RECOVERY hooks carry 30 (the sibling `hooks.json` baseline); INFORMATIONAL hooks carry 20 -- a documented deviation from the spec's derived 15: the eights-recall trio's daemon-side worst case is bounded at 14 000 ms (ECOSYSTEM_PROBE_TIMEOUT_MS x2 + ECOSYSTEM_CALL_TIMEOUT_MS, config.ts:450/:459 via daemon/src/ecosystem/eights-client.ts:335/:341/:398); 20 adds headroom for Windows Node cold-start on top of that bound, raised by the cross-vendor judge as LOW-5 on the 15s figure's thin ~1s margin. `daemon-up` is a documented, accepted fail-open residual: a timeout kill converts its fail-closed liveness guard into fail-open in precisely the case it exists to catch, because the Claude Code hook docs state verbatim that a timed-out command/http/mcp_tool hook 'doesn't block the tool call. The call continues through the normal permission flow, so don't count on a stalled hook to act as a gate.' This is not closed by Phase D; see follow-up FU-1. The installer (`scripts/install-user.ps1`) substitutes `__PP_DAEMON__` in TWO ways: (a) USER scope (~/.claude/settings.json) — replaced with the absolute path to daemon/dist/index.js on the installing machine, so hooks fire correctly in every project where $CLAUDE_PROJECT_DIR is not the pair-programmer repo; (b) PROJECT scope (<repo>/.claude/settings.json, git-ignored) — replaced with the literal string `$CLAUDE_PROJECT_DIR/daemon/dist/index.js`, which Claude Code expands at hook-execution time, making the project-local file machine-independent and self-relocating. Each hook calls `node <daemon> hook <event> <name>` which dispatches to a typed handler in `src/hooks/dispatcher.ts`. PreToolUse blockers default to advisory; set PP_ENFORCE_ACTIVE_RUN=1 / PP_ALLOW_DANGER=0 to harden.",
   "permissions": {
     "allow": [
       "mcp__pp_harness__doctor",
@@ -34,40 +34,43 @@
   },
   "hooks": {
     "SessionStart": [
-      { "hooks": [{ "type": "command", "command": "node \"__PP_DAEMON__\" hook SessionStart daemon-up" }] },
-      { "hooks": [{ "type": "command", "command": "node \"__PP_DAEMON__\" hook SessionStart vendor-matrix" }] },
-      { "hooks": [{ "type": "command", "command": "node \"__PP_DAEMON__\" hook SessionStart cli-version-pin" }] },
-      { "hooks": [{ "type": "command", "command": "node \"__PP_DAEMON__\" hook SessionStart master-plan-load" }] },
-      { "hooks": [{ "type": "command", "command": "node \"__PP_DAEMON__\" hook SessionStart surfaced-runs" }] }
+      { "hooks": [{ "type": "command", "command": "node \"__PP_DAEMON__\" hook SessionStart daemon-up", "timeout": 30 }] },
+      { "hooks": [{ "type": "command", "command": "node \"__PP_DAEMON__\" hook SessionStart vendor-matrix", "timeout": 30 }] },
+      { "hooks": [{ "type": "command", "command": "node \"__PP_DAEMON__\" hook SessionStart cli-version-pin", "timeout": 20 }] },
+      { "hooks": [{ "type": "command", "command": "node \"__PP_DAEMON__\" hook SessionStart master-plan-load", "timeout": 20 }] },
+      { "hooks": [{ "type": "command", "command": "node \"__PP_DAEMON__\" hook SessionStart surfaced-runs", "timeout": 20 }] },
+      { "hooks": [{ "type": "command", "command": "node \"__PP_DAEMON__\" hook SessionStart eights-recall-project", "timeout": 20 }] }
     ],
     "PreToolUse": [
-      { "matcher": "Bash|PowerShell", "hooks": [{ "type": "command", "command": "node \"__PP_DAEMON__\" hook PreToolUse block-destructive-shell" }] },
-      { "matcher": "Edit|Write|MultiEdit|NotebookEdit", "hooks": [{ "type": "command", "command": "node \"__PP_DAEMON__\" hook PreToolUse enforce-active-run" }] },
-      { "matcher": "mcp__pp_codex__.*|mcp__pp_agy__.*", "hooks": [{ "type": "command", "command": "node \"__PP_DAEMON__\" hook PreToolUse enforce-vendor-matrix" }] },
-      { "matcher": "mcp__pp_codex__generate", "hooks": [{ "type": "command", "command": "node \"__PP_DAEMON__\" hook PreToolUse enforce-sandbox-policy" }] },
-      { "matcher": "Edit|Write|MultiEdit|mcp__pp_harness__archive_artifact", "hooks": [{ "type": "command", "command": "node \"__PP_DAEMON__\" hook PreToolUse enforce-no-secrets" }] },
-      { "matcher": "Edit|Write|MultiEdit", "hooks": [{ "type": "command", "command": "node \"__PP_DAEMON__\" hook PreToolUse enforce-validator-gate" }] },
-      { "matcher": "Write|Edit|mcp__pp_harness__archive_artifact", "hooks": [{ "type": "command", "command": "node \"__PP_DAEMON__\" hook PreToolUse enforce-rfc2119-language" }] }
+      { "matcher": "Bash|PowerShell", "hooks": [{ "type": "command", "command": "node \"__PP_DAEMON__\" hook PreToolUse block-destructive-shell", "timeout": 30 }] },
+      { "matcher": "Edit|Write|MultiEdit|NotebookEdit", "hooks": [{ "type": "command", "command": "node \"__PP_DAEMON__\" hook PreToolUse enforce-active-run", "timeout": 30 }] },
+      { "matcher": "mcp__pp_codex__.*|mcp__pp_agy__.*", "hooks": [{ "type": "command", "command": "node \"__PP_DAEMON__\" hook PreToolUse enforce-vendor-matrix", "timeout": 30 }] },
+      { "matcher": "mcp__pp_codex__generate", "hooks": [{ "type": "command", "command": "node \"__PP_DAEMON__\" hook PreToolUse enforce-sandbox-policy", "timeout": 30 }] },
+      { "matcher": "Edit|Write|MultiEdit|mcp__pp_harness__archive_artifact", "hooks": [{ "type": "command", "command": "node \"__PP_DAEMON__\" hook PreToolUse enforce-no-secrets", "timeout": 30, "statusMessage": "pp: scanning this write for hardcoded credentials..." }] },
+      { "matcher": "Edit|Write|MultiEdit", "hooks": [{ "type": "command", "command": "node \"__PP_DAEMON__\" hook PreToolUse enforce-validator-gate", "timeout": 30, "statusMessage": "pp: checking the latest verdict before allowing this edit..." }] },
+      { "matcher": "Write|Edit|mcp__pp_harness__archive_artifact", "hooks": [{ "type": "command", "command": "node \"__PP_DAEMON__\" hook PreToolUse enforce-rfc2119-language", "timeout": 30 }] },
+      { "matcher": "mcp__pp_harness__start_stage", "hooks": [{ "type": "command", "command": "node \"__PP_DAEMON__\" hook PreToolUse eights-recall-stage", "timeout": 20 }] }
     ],
     "PostToolUse": [
-      { "matcher": "mcp__pp_codex__.*|mcp__pp_agy__.*", "hooks": [{ "type": "command", "command": "node \"__PP_DAEMON__\" hook PostToolUse cost-tally" }] },
-      { "matcher": "mcp__pp_codex__.*|mcp__pp_agy__.*", "hooks": [{ "type": "command", "command": "node \"__PP_DAEMON__\" hook PostToolUse record-attempt" }] },
-      { "matcher": "mcp__pp_harness__archive_artifact", "hooks": [{ "type": "command", "command": "node \"__PP_DAEMON__\" hook PostToolUse taxonomy-coverage-update" }] },
-      { "matcher": "mcp__pp_harness__archive_artifact", "hooks": [{ "type": "command", "command": "node \"__PP_DAEMON__\" hook PostToolUse hash-artifact" }] },
-      { "matcher": "mcp__pp_harness__record_verdict", "hooks": [{ "type": "command", "command": "node \"__PP_DAEMON__\" hook PostToolUse loop-ceiling-tally" }] },
-      { "matcher": "mcp__pp_harness__record_verdict", "hooks": [{ "type": "command", "command": "node \"__PP_DAEMON__\" hook PostToolUse verdict-rubric-coverage" }] },
-      { "matcher": "mcp__pp_harness__finalize_run", "hooks": [{ "type": "command", "command": "node \"__PP_DAEMON__\" hook PostToolUse update-master-plan" }] }
+      { "matcher": "mcp__pp_codex__.*|mcp__pp_agy__.*", "hooks": [{ "type": "command", "command": "node \"__PP_DAEMON__\" hook PostToolUse cost-tally", "timeout": 20 }] },
+      { "matcher": "mcp__pp_codex__.*|mcp__pp_agy__.*", "hooks": [{ "type": "command", "command": "node \"__PP_DAEMON__\" hook PostToolUse record-attempt", "timeout": 30 }] },
+      { "matcher": "mcp__pp_harness__archive_artifact", "hooks": [{ "type": "command", "command": "node \"__PP_DAEMON__\" hook PostToolUse taxonomy-coverage-update", "timeout": 20 }] },
+      { "matcher": "mcp__pp_harness__archive_artifact", "hooks": [{ "type": "command", "command": "node \"__PP_DAEMON__\" hook PostToolUse hash-artifact", "timeout": 30 }] },
+      { "matcher": "mcp__pp_harness__record_verdict", "hooks": [{ "type": "command", "command": "node \"__PP_DAEMON__\" hook PostToolUse loop-ceiling-tally", "timeout": 20 }] },
+      { "matcher": "mcp__pp_harness__record_verdict", "hooks": [{ "type": "command", "command": "node \"__PP_DAEMON__\" hook PostToolUse verdict-rubric-coverage", "timeout": 20 }] },
+      { "matcher": "mcp__pp_harness__finalize_run", "hooks": [{ "type": "command", "command": "node \"__PP_DAEMON__\" hook PostToolUse update-master-plan", "timeout": 30 }] }
     ],
     "UserPromptSubmit": [
-      { "hooks": [{ "type": "command", "command": "node \"__PP_DAEMON__\" hook UserPromptSubmit taxonomy-nudge" }] },
-      { "hooks": [{ "type": "command", "command": "node \"__PP_DAEMON__\" hook UserPromptSubmit team-suggester" }] },
-      { "hooks": [{ "type": "command", "command": "node \"__PP_DAEMON__\" hook UserPromptSubmit risk-flag" }] },
-      { "hooks": [{ "type": "command", "command": "node \"__PP_DAEMON__\" hook UserPromptSubmit surfaced-run-reminder" }] },
-      { "hooks": [{ "type": "command", "command": "node \"__PP_DAEMON__\" hook UserPromptSubmit profile-aware-nudge" }] }
+      { "hooks": [{ "type": "command", "command": "node \"__PP_DAEMON__\" hook UserPromptSubmit taxonomy-nudge", "timeout": 20 }] },
+      { "hooks": [{ "type": "command", "command": "node \"__PP_DAEMON__\" hook UserPromptSubmit team-suggester", "timeout": 20 }] },
+      { "hooks": [{ "type": "command", "command": "node \"__PP_DAEMON__\" hook UserPromptSubmit risk-flag", "timeout": 20 }] },
+      { "hooks": [{ "type": "command", "command": "node \"__PP_DAEMON__\" hook UserPromptSubmit surfaced-run-reminder", "timeout": 20 }] },
+      { "hooks": [{ "type": "command", "command": "node \"__PP_DAEMON__\" hook UserPromptSubmit profile-aware-nudge", "timeout": 20 }] },
+      { "hooks": [{ "type": "command", "command": "node \"__PP_DAEMON__\" hook UserPromptSubmit eights-recall-request", "timeout": 20 }] }
     ],
     "Stop": [
-      { "hooks": [{ "type": "command", "command": "node \"__PP_DAEMON__\" hook Stop decision-log-required" }] },
-      { "hooks": [{ "type": "command", "command": "node \"__PP_DAEMON__\" hook Stop summary-format-check" }] }
+      { "hooks": [{ "type": "command", "command": "node \"__PP_DAEMON__\" hook Stop decision-log-required", "timeout": 30 }] },
+      { "hooks": [{ "type": "command", "command": "node \"__PP_DAEMON__\" hook Stop summary-format-check", "timeout": 20 }] }
     ]
   }
 }

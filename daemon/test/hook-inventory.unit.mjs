@@ -1,24 +1,28 @@
-// ─── Hook-inventory parity guard (GitHub #43, Phase A of epic #42) ─────────
+// ─── Hook-inventory parity guard (GitHub #43, Phase A; hardened GitHub #46, Phase D) ──
 //
 // WHAT THIS GUARDS: daemon/src/hooks/dispatcher.ts implements 29 hook
-// handlers (HANDLERS, keyed by event then name). Only 26 are wired in EACH
+// handlers (HANDLERS, keyed by event then name). All 29 are wired in EACH
 // of the two runtime settings files (.claude/settings.template.json for
 // Claude Code, hooks.json at the repo root for the Copilot CLI plugin).
-// Before this test existed, that 29-vs-26 drift was invisible: nothing
+// Before this test existed, that inventory drift was invisible: nothing
 // compared the two inventories, so a handler could be fully implemented and
 // reachable by name yet silently dead in both runtimes.
 //
-// AS OF 2026-09-05, the three pending/unwired handlers are:
+// AS OF 2026-09-06, all three of TheEights' episodic-recall handlers —
 //   - ("SessionStart",     "eights-recall-project")
 //   - ("PreToolUse",       "eights-recall-stage")
 //   - ("UserPromptSubmit", "eights-recall-request")
-// These are TheEights episodic-recall hooks. Because none of the three is
-// wired in EITHER settings file, TheEights episodic recall is consequently
-// OFF in both the Claude Code and the Copilot runtime today.
-//
-// GitHub #46 (Phase D) is the issue that wires these three handlers and, per
-// R2.26, deletes BOTH allowance lists below (PENDING_WIRING and
-// PENDING_TIMEOUT_EXEMPT_FILES) once they stop being true.
+// are wired in BOTH settings files. TheEights episodic recall is
+// consequently ON in both the Claude Code and the Copilot runtime today —
+// it is NOT off in either. GitHub #46 (Phase D) is the issue that wired
+// these three handlers and removed the two self-expiring allowance lists
+// this file previously carried (the pending-wiring list and the
+// pending-timeout-exemption list): every (event, name) pair implemented in
+// dispatcher.ts MUST now be wired,
+// unconditionally, in both files, and every wired entry in both files MUST
+// declare a valid, positive, finite numeric timeout, unconditionally. No
+// allowance list, and no conditional excusal of any pair or file, remains
+// anywhere in this file.
 //
 // SOURCE-OF-TRUTH CONSTRAINT: this test reads ONLY
 // `.claude/settings.template.json` (the tracked template) and MUST NOT read
@@ -36,7 +40,7 @@
 // no DB access at module-load time; see the "import has no side effects"
 // check below).
 //
-// MUTATION-CHECK STRATEGY: the acceptance criteria (AC-18..AC-32 in the
+// MUTATION-CHECK STRATEGY: the acceptance criteria (AC-18..AC-34 in the
 // spec) require confirming the guard goes RED under a battery of injected
 // defects, with correctly-labelled messages. Rather than mutating the real
 // settings files on disk (fragile, and risks leaving the repo dirty if a
@@ -85,58 +89,42 @@ async function itAsync(label, fn) {
   }
 }
 
-// ─── R2.23/R2.24/R2.25 — the two named, self-expiring allowances ──────────
-//
-// Both are literal, exhaustively-enumerated lists (R2.28: no prefix, no
-// wildcard, no regex — a fourth eights-recall-* handler must NOT be
-// silently absorbed). GitHub #46 (Phase D) removes both once the underlying
-// gap it names is closed.
-
-/** Pairs permitted to be implemented-but-unwired. Removed by #46 (Phase D) — the issue that wires all three into both runtime settings files. */
-const PENDING_WIRING = [
-  { event: "SessionStart", name: "eights-recall-project" },
-  { event: "PreToolUse", name: "eights-recall-stage" },
-  { event: "UserPromptSubmit", name: "eights-recall-request" },
-];
-
-/** Settings files permitted to have entries without a declared timeout. Removed by #46 (Phase D) once .claude/settings.template.json declares timeouts. */
-const PENDING_TIMEOUT_EXEMPT_FILES = [TEMPLATE_LABEL];
-
 function pairKey(event, name) {
   return `${event} ${name}`;
 }
-const PENDING_WIRING_KEYS = new Set(PENDING_WIRING.map(p => pairKey(p.event, p.name)));
 
-// ─── AC-27: allowance declarations carry the tracking issue ───────────────
-// A pure textual self-check: read this very file's source and confirm the
-// two allowance declarations are each annotated with an inline comment
-// naming #46. This is deliberately literal (not "does the constant exist")
-// because R2.23 requires the comment, not just the list.
-it("PENDING_WIRING and PENDING_TIMEOUT_EXEMPT_FILES declarations each carry a #46 comment", () => {
+// ─── AC-D21: the two former allowance identifiers must never reappear ─────
+// A pure textual self-check: R7.5 requires a literal-absence check on the
+// two allowance-constant identifiers this file used to declare, so a
+// re-introduced allowance fails loudly. Each is constructed from fragments
+// at runtime (same technique as the settings.json exclusion check below),
+// AND neither identifier is written contiguously anywhere else in this
+// file's prose or messages — so this very assertion's source text never
+// contains either identifier contiguously, and therefore never matches
+// itself.
+it("AC-D21: neither former allowance-constant identifier appears anywhere in this file's source (GitHub #46 allowances fully removed)", () => {
   const src = readFileSync(__filename, "utf8");
-  const pwBlock = src.slice(src.indexOf("permitted to be implemented-but-unwired"), src.indexOf("const PENDING_WIRING ="));
-  const ptBlock = src.slice(src.indexOf("permitted to have entries without a declared timeout"), src.indexOf("const PENDING_TIMEOUT_EXEMPT_FILES ="));
-  assert.match(pwBlock, /#46/, "PENDING_WIRING's preceding comment must name #46");
-  assert.match(ptBlock, /#46/, "PENDING_TIMEOUT_EXEMPT_FILES's preceding comment must name #46");
-  assert.equal(PENDING_WIRING.length, 3, "PENDING_WIRING must contain exactly the three enumerated pairs");
-  assert.deepEqual(
-    PENDING_WIRING.map(p => `${p.event}/${p.name}`).sort(),
-    ["PreToolUse/eights-recall-stage", "SessionStart/eights-recall-project", "UserPromptSubmit/eights-recall-request"],
-    "PENDING_WIRING must contain exactly these three pairs and no others",
-  );
-  assert.deepEqual(PENDING_TIMEOUT_EXEMPT_FILES, [TEMPLATE_LABEL], "PENDING_TIMEOUT_EXEMPT_FILES must contain exactly .claude/settings.template.json");
+  const pendingWiring = ["PENDING", "_WIRING"].join("");
+  const pendingTimeoutExempt = ["PENDING", "_TIMEOUT_EXEMPT_FILES"].join("");
+  assert.ok(!src.includes(pendingWiring), "the pending-wiring allowance identifier must not appear anywhere in this file — it was removed by GitHub #46");
+  assert.ok(!src.includes(pendingTimeoutExempt), "the pending-timeout-exemption allowance identifier must not appear anywhere in this file — it was removed by GitHub #46");
 });
 
-// ─── R2.29 — header comment content check ─────────────────────────────────
-it("header comment names the three pending handlers, the date, the recall-off statement, and #46", () => {
+// ─── AC-D21b (R7.6) — header states the post-#46 truth, not the pre-#46 one
+it("AC-D21b: header states the post-#46 truth — the three recall handlers, ON not off, the date, and #46 — with no residual off-claim", () => {
   const src = readFileSync(__filename, "utf8");
   const header = src.slice(0, src.indexOf("import { readFileSync }"));
   assert.match(header, /eights-recall-project/);
   assert.match(header, /eights-recall-stage/);
   assert.match(header, /eights-recall-request/);
-  assert.match(header, /2026-09-05/);
-  assert.match(header, /episodic recall is consequently[\s\S]*off in both/i);
+  assert.match(header, /2026-09-06/);
   assert.match(header, /#46/);
+  assert.match(header, /\bON\b/, "header must positively state recall is ON");
+  assert.match(header, /NOT off/i, "header must carry the negative claim that recall is not off");
+  assert.ok(
+    !/episodic recall is consequently[\s\S]*off in both/i.test(header),
+    "header must no longer claim recall is off in both runtimes — that claim became false once #46 landed",
+  );
 });
 
 // ─── Pure parsing helpers (shared by real-file checks and fixture-based
@@ -179,6 +167,8 @@ function extractTemplateEntries(json) {
           command: h.command,
           parsed: parseHookCommand(h.command),
           timeout: h.timeout,
+          statusMessage: h.statusMessage,
+          hasIf: Object.prototype.hasOwnProperty.call(h, "if") || Object.prototype.hasOwnProperty.call(wrapper, "if"),
         });
       }
     }
@@ -198,6 +188,8 @@ function extractHooksJsonEntries(json) {
         bashParsed: parseHookCommand(entry.bash),
         pwshParsed: parseHookCommand(entry.powershell),
         timeoutSec: entry.timeoutSec,
+        statusMessage: entry.statusMessage,
+        hasIf: Object.prototype.hasOwnProperty.call(entry, "if"),
       });
     }
   }
@@ -207,7 +199,8 @@ function extractHooksJsonEntries(json) {
 /**
  * Reduce template entries into: the (event,name) pair set, unparseable raw
  * commands (R2.18), event/key mismatches (R2.16), and entries missing a
- * valid timeout (R2.13/R2.15).
+ * valid timeout (R2.13/R2.15). No exemption parameter — every entry is held
+ * to the timeout requirement unconditionally (R7.2 item 8/9).
  */
 function reduceTemplateEntries(entries) {
   const pairs = new Set();
@@ -259,28 +252,18 @@ function reduceHooksJsonEntries(entries) {
 
 /**
  * Compute the parity diagnosis for one settings file against the implemented
- * set, applying the PENDING_WIRING allowance PER FILE (R2.26b): a pending
- * pair suppresses an implemented-but-unwired failure only when genuinely
- * absent from wiredPairs. If the pair IS present in wiredPairs, that is
- * staleness (R2.26), reported separately — never silently absorbed and never
- * ALSO reported as an ordinary implemented-but-unwired failure (R2.26a/AC-29c).
+ * set. Unconditional (R7.2 items 4/5): every implemented pair MUST be wired
+ * in every file, and every wired pair MUST be implemented — no allowance
+ * suppresses either direction any more.
  */
 function diagnoseParity(implementedPairs, wiredPairs) {
   const implementedButUnwired = [];
-  const staleAllowance = [];
-  // Staleness: any PENDING_WIRING pair that IS wired in this file.
-  for (const key of PENDING_WIRING_KEYS) {
-    if (wiredPairs.has(key)) staleAllowance.push(key);
-  }
-  // True implemented-but-unwired: implemented, not wired here, AND not a
-  // (still-valid, i.e. not stale) pending pair.
   for (const p of implementedPairs) {
     if (wiredPairs.has(p)) continue;
-    if (PENDING_WIRING_KEYS.has(p)) continue; // excused (staleness reported separately if applicable)
     implementedButUnwired.push(p);
   }
   const wiredButUnimplemented = [...wiredPairs].filter(p => !implementedPairs.has(p));
-  return { implementedButUnwired, wiredButUnimplemented, staleAllowance };
+  return { implementedButUnwired, wiredButUnimplemented };
 }
 
 function unkey(key) {
@@ -300,13 +283,14 @@ function sanitize(s) {
 }
 
 /**
- * Build the full diagnostic message for one file. Returns null when there is
+ * Build the full diagnostic message for one file. Returns [] when there is
  * nothing to report. This is the single source of failure-message text so
  * every mutation check exercises the exact same formatting code the real
- * assertion uses.
+ * assertion uses. Exactly 4 parameters (R7.2 item 9 / AC-D27): no
+ * timeout-exemption parameter exists any more.
  */
-function buildFileReport(fileLabel, implementedPairs, wiredPairs, reduced, isTimeoutExempt) {
-  const { implementedButUnwired, wiredButUnimplemented, staleAllowance } = diagnoseParity(implementedPairs, wiredPairs);
+function buildFileReport(fileLabel, implementedPairs, wiredPairs, reduced) {
+  const { implementedButUnwired, wiredButUnimplemented } = diagnoseParity(implementedPairs, wiredPairs);
   const lines = [];
 
   if (implementedButUnwired.length) {
@@ -314,15 +298,6 @@ function buildFileReport(fileLabel, implementedPairs, wiredPairs, reduced, isTim
   }
   if (wiredButUnimplemented.length) {
     lines.push(`[${fileLabel}] wired but unimplemented: ${formatPairs(wiredButUnimplemented)}`);
-  }
-  if (staleAllowance.length) {
-    for (const key of staleAllowance) {
-      const { event, name } = unkey(key);
-      lines.push(
-        `[${fileLabel}] STALE ALLOWANCE: (${sanitize(event)}, ${sanitize(name)}) is listed in PENDING_WIRING but is now wired in ${fileLabel}. ` +
-        `Delete this pair from PENDING_WIRING (GitHub #46 is done for this handler).`,
-      );
-    }
   }
   if (reduced.unparseable.length) {
     for (const raw of reduced.unparseable) {
@@ -342,15 +317,10 @@ function buildFileReport(fileLabel, implementedPairs, wiredPairs, reduced, isTim
       lines.push(`[${fileLabel}] bash/powershell handler mismatch: bash="${sanitize(m.bash)}" powershell="${sanitize(m.powershell)}"`);
     }
   }
-  if (!isTimeoutExempt && reduced.missingTimeout.length) {
+  if (reduced.missingTimeout.length) {
     for (const m of reduced.missingTimeout) {
       lines.push(`[${fileLabel}] missing/invalid timeout on (${sanitize(m.event)}, ${sanitize(m.name)})`);
     }
-  } else if (isTimeoutExempt && reduced.missingTimeout.length === 0) {
-    lines.push(
-      `[${fileLabel}] STALE ALLOWANCE: every entry in ${fileLabel} now declares a valid timeout. ` +
-      `Delete ${fileLabel} from PENDING_TIMEOUT_EXEMPT_FILES (GitHub #46 is done).`,
-    );
   }
   return lines;
 }
@@ -361,14 +331,8 @@ function assertNoFailures(templateJson, hooksJsonJson, implementedPairs) {
   const templateReduced = reduceTemplateEntries(templateEntries);
   const hooksReduced = reduceHooksJsonEntries(hooksEntries);
 
-  const templateLines = buildFileReport(
-    TEMPLATE_LABEL, implementedPairs, templateReduced.pairs, templateReduced,
-    PENDING_TIMEOUT_EXEMPT_FILES.includes(TEMPLATE_LABEL),
-  );
-  const hooksLines = buildFileReport(
-    HOOKS_JSON_LABEL, implementedPairs, hooksReduced.pairs, hooksReduced,
-    PENDING_TIMEOUT_EXEMPT_FILES.includes(HOOKS_JSON_LABEL),
-  );
+  const templateLines = buildFileReport(TEMPLATE_LABEL, implementedPairs, templateReduced.pairs, templateReduced);
+  const hooksLines = buildFileReport(HOOKS_JSON_LABEL, implementedPairs, hooksReduced.pairs, hooksReduced);
   const all = [...templateLines, ...hooksLines];
   if (all.length) {
     throw new Error(`hook-inventory parity failures:\n${all.join("\n")}`);
@@ -423,12 +387,12 @@ const EXPECTED_IMPLEMENTED = [
 ];
 
 let implementedPairKeys;
-it("listHookHandlers() returns exactly the 29 pairs enumerated in the spec (AC-15)", () => {
+it("listHookHandlers() returns exactly the pairs enumerated in the spec (AC-15)", () => {
   const raw = listHookHandlers();
-  assert.equal(raw.length, 29, `expected 29 implemented (event,name) pairs, got ${raw.length}`);
+  const expectedKeys = new Set(EXPECTED_IMPLEMENTED.map(([e, n]) => pairKey(e, n)));
+  assert.equal(raw.length, expectedKeys.size, `expected ${expectedKeys.size} implemented (event,name) pairs, got ${raw.length}`);
   const keys = new Set(raw.map(p => pairKey(p.event, p.name)));
   implementedPairKeys = keys;
-  const expectedKeys = new Set(EXPECTED_IMPLEMENTED.map(([e, n]) => pairKey(e, n)));
   assert.deepEqual(
     [...keys].sort(),
     [...expectedKeys].sort(),
@@ -436,9 +400,9 @@ it("listHookHandlers() returns exactly the 29 pairs enumerated in the spec (AC-1
   );
 });
 
-// ─── AC-12..AC-17, AC-27, AC-33, AC-34 — the real-tree assertion ──────────
+// ─── AC-12..AC-17, AC-33, AC-34 — the real-tree assertion ─────────────────
 
-it("hook inventory parity holds against the real repository tree (with the two named allowances)", () => {
+it("hook inventory parity holds against the real repository tree — every implemented pair is wired in both files, unconditionally", () => {
   assertNoFailures(templateJson, hooksJsonJson, implementedPairKeys);
 });
 
@@ -521,7 +485,7 @@ it("AC-20: removing timeoutSec from a hooks.json entry fails, naming the (event,
   assert.match(threw.message, /\[hooks\.json\] missing\/invalid timeout on \(SessionStart, daemon-up\)/);
 });
 
-// ─── AC-21: 0 / -1 / "30" each fail ────────────────────────────────────────
+// ─── AC-21: 0 / -1 / "30" each fail (hooks.json half) ──────────────────────
 for (const badValue of [0, -1, "30"]) {
   it(`AC-21: hooks.json timeoutSec=${JSON.stringify(badValue)} is treated as undeclared`, () => {
     const mutated = clone(hooksJsonJson);
@@ -534,6 +498,23 @@ for (const badValue of [0, -1, "30"]) {
     }
     assert.ok(threw, `timeoutSec=${JSON.stringify(badValue)} must fail the guard`);
     assert.match(threw.message, /missing\/invalid timeout on \(SessionStart, daemon-up\)/);
+  });
+}
+
+// ─── AC-D26: 0 / -1 / "30" each fail (template.json half — previously
+//     unreachable because the template was exempt) ─────────────────────────
+for (const badValue of [0, -1, "30"]) {
+  it(`AC-D26: template.json timeout=${JSON.stringify(badValue)} is treated as undeclared`, () => {
+    const mutated = clone(templateJson);
+    mutated.hooks.SessionStart[0].hooks[0].timeout = badValue;
+    let threw = null;
+    try {
+      assertNoFailures(mutated, hooksJsonJson, implementedPairKeys);
+    } catch (err) {
+      threw = err;
+    }
+    assert.ok(threw, `template timeout=${JSON.stringify(badValue)} must fail the guard now that the template is no longer exempt`);
+    assert.match(threw.message, /\[\.claude\/settings\.template\.json\] missing\/invalid timeout on \(SessionStart, daemon-up\)/);
   });
 }
 
@@ -601,7 +582,7 @@ it("AC-26: none of the AC-18..AC-24 failure messages contain a home-directory pa
   if (home) assert.ok(!threw.message.includes(home), "home directory must never appear verbatim in a failure message");
 });
 
-// ─── AC-28: hooks.json is never timeout-exempt, even template-shaped ──────
+// ─── AC-28 / AC-D27: no file is exempt from the timeout requirement ───────
 it("AC-28: hooks.json is not exempt from the timeout requirement even if every entry loses its timeout", () => {
   const mutated = clone(hooksJsonJson);
   for (const arr of Object.values(mutated.hooks)) {
@@ -617,102 +598,12 @@ it("AC-28: hooks.json is not exempt from the timeout requirement even if every e
   assert.match(threw.message, /\[hooks\.json\] missing\/invalid timeout/);
 });
 
-// ─── AC-29 / AC-29a / AC-29b / AC-29c — self-expiring PENDING_WIRING ──────
-
-function wireEightsRecallProjectIntoTemplate(json) {
-  const mutated = clone(json);
-  mutated.hooks.SessionStart.push({
-    hooks: [{ type: "command", command: 'node "__PP_DAEMON__" hook SessionStart eights-recall-project' }],
-  });
-  return mutated;
-}
-function wireEightsRecallProjectIntoHooksJson(json, { withTimeout = true } = {}) {
-  const mutated = clone(json);
-  const entry = {
-    type: "command",
-    bash: 'node "daemon/dist/index.js" hook SessionStart eights-recall-project',
-    powershell: 'node "daemon/dist/index.js" hook SessionStart eights-recall-project',
-  };
-  if (withTimeout) entry.timeoutSec = 30;
-  mutated.hooks.SessionStart.push(entry);
-  return mutated;
-}
-
-it("AC-29: wiring eights-recall-project into BOTH files fails with a staleness message naming the pair", () => {
-  const mutatedTemplate = wireEightsRecallProjectIntoTemplate(templateJson);
-  const mutatedHooksJson = wireEightsRecallProjectIntoHooksJson(hooksJsonJson);
-  let threw = null;
-  try {
-    assertNoFailures(mutatedTemplate, mutatedHooksJson, implementedPairKeys);
-  } catch (err) {
-    threw = err;
-  }
-  assert.ok(threw);
-  assert.match(threw.message, /STALE ALLOWANCE: \(SessionStart, eights-recall-project\) is listed in PENDING_WIRING/);
-  assert.match(threw.message, /Delete this pair from PENDING_WIRING/);
-});
-
-it("AC-29a: wiring eights-recall-project into settings.template.json ONLY must go red, naming that pair and that file, instructing removal", () => {
-  const mutatedTemplate = wireEightsRecallProjectIntoTemplate(templateJson);
-  let threw = null;
-  try {
-    assertNoFailures(mutatedTemplate, hooksJsonJson, implementedPairKeys);
-  } catch (err) {
-    threw = err;
-  }
-  assert.ok(threw, "a one-file-only wiring MUST turn the suite red under the either/not-both rule (R2.26a)");
-  assert.match(
-    threw.message,
-    /\[\.claude\/settings\.template\.json\] STALE ALLOWANCE: \(SessionStart, eights-recall-project\) is listed in PENDING_WIRING but is now wired in \.claude\/settings\.template\.json\. Delete this pair from PENDING_WIRING/,
-  );
-});
-
-it("AC-29b: the mirror — wiring eights-recall-stage into hooks.json ONLY must go red, naming that pair and hooks.json", () => {
-  const mutatedHooksJson = clone(hooksJsonJson);
-  mutatedHooksJson.hooks.PreToolUse.push({
-    type: "command",
-    bash: 'node "daemon/dist/index.js" hook PreToolUse eights-recall-stage',
-    powershell: 'node "daemon/dist/index.js" hook PreToolUse eights-recall-stage',
-    timeoutSec: 30,
-  });
-  let threw = null;
-  try {
-    assertNoFailures(templateJson, mutatedHooksJson, implementedPairKeys);
-  } catch (err) {
-    threw = err;
-  }
-  assert.ok(threw);
-  assert.match(
-    threw.message,
-    /\[hooks\.json\] STALE ALLOWANCE: \(PreToolUse, eights-recall-stage\) is listed in PENDING_WIRING but is now wired in hooks\.json\. Delete this pair from PENDING_WIRING/,
-  );
-});
-
-it("AC-29c: the AC-29a mutation does NOT also report the pair as an unexplained implemented-but-unwired failure against hooks.json", () => {
-  const mutatedTemplate = wireEightsRecallProjectIntoTemplate(templateJson);
-  let threw = null;
-  try {
-    assertNoFailures(mutatedTemplate, hooksJsonJson, implementedPairKeys);
-  } catch (err) {
-    threw = err;
-  }
-  assert.ok(threw);
-  // The ONLY diagnosis for this pair must be the stale-allowance message on
-  // the template file. It must NOT ALSO appear as a plain "implemented but
-  // unwired" line attributed to hooks.json (that would be two contradictory
-  // messages for one condition).
-  assert.ok(
-    !/\[hooks\.json\] implemented but unwired[\s\S]*eights-recall-project/.test(threw.message),
-    "the pair's absence from hooks.json must stay silently excused, not re-reported as a separate failure",
-  );
-});
-
-// ─── AC-30 — PENDING_TIMEOUT_EXEMPT_FILES self-expiry ─────────────────────
-it("AC-30: adding a valid timeout to every template.json entry fails, instructing removal from PENDING_TIMEOUT_EXEMPT_FILES", () => {
+it("AC-D27: buildFileReport takes no timeout-exemption parameter (arity 4), and the template is equally non-exempt", () => {
+  assert.equal(buildFileReport.length, 4, "buildFileReport must take exactly 4 parameters now that isTimeoutExempt is gone");
   const mutated = clone(templateJson);
   for (const arr of Object.values(mutated.hooks)) {
     for (const wrapper of arr) {
-      for (const h of wrapper.hooks) h.timeout = 30;
+      for (const h of wrapper.hooks) delete h.timeout;
     }
   }
   let threw = null;
@@ -721,20 +612,97 @@ it("AC-30: adding a valid timeout to every template.json entry fails, instructin
   } catch (err) {
     threw = err;
   }
-  assert.ok(threw, "a fully-timed-out template.json must expire its own exemption");
-  assert.match(
-    threw.message,
-    /\[\.claude\/settings\.template\.json\] STALE ALLOWANCE: every entry in \.claude\/settings\.template\.json now declares a valid timeout\. Delete \.claude\/settings\.template\.json from PENDING_TIMEOUT_EXEMPT_FILES/,
-  );
+  assert.ok(threw, "settings.template.json must never be silently exempted from R2.14 any more");
+  assert.match(threw.message, /\[\.claude\/settings\.template\.json\] missing\/invalid timeout/);
 });
 
-// ─── AC-31 — wired-but-unimplemented has NO allowance, even name-colliding ─
-it("AC-31: a wired entry naming a handler absent from HANDLERS fails unconditionally, even when the name matches a PENDING_WIRING entry under the wrong event", () => {
+// ─── AC-D22 / AC-D23 / AC-D24 — replacing AC-29/29a/29b/29c: removing a
+//     recall handler from ONE file is now a plain, unexcused failure ──────
+
+it("AC-D22: removing eights-recall-project from settings.template.json (clone) fails as implemented-but-unwired, with no allowance to excuse it", () => {
+  const mutated = clone(templateJson);
+  const before = mutated.hooks.SessionStart.length;
+  mutated.hooks.SessionStart = mutated.hooks.SessionStart.filter(
+    w => !w.hooks.some(h => /eights-recall-project$/.test(h.command)),
+  );
+  assert.equal(mutated.hooks.SessionStart.length, before - 1, "fixture setup must actually remove exactly one wrapper");
+  let threw = null;
+  try {
+    assertNoFailures(mutated, hooksJsonJson, implementedPairKeys);
+  } catch (err) {
+    threw = err;
+  }
+  assert.ok(threw, "an unwired implemented pair must fail unconditionally now that the pending-wiring allowance is gone");
+  assert.match(threw.message, /\[\.claude\/settings\.template\.json\] implemented but unwired[\s\S]*\(SessionStart, eights-recall-project\)/);
+});
+
+it("AC-D23: the mirror — removing eights-recall-stage from hooks.json (clone) fails as implemented-but-unwired", () => {
   const mutated = clone(hooksJsonJson);
-  // Wire "eights-recall-project" under PostToolUse — the NAME matches a
-  // PENDING_WIRING entry, but the PAIR (PostToolUse, eights-recall-project)
-  // is not implemented under any event pairing, and PENDING_WIRING excuses
-  // implemented-but-unwired only, never wired-but-unimplemented (R2.27).
+  const before = mutated.hooks.PreToolUse.length;
+  mutated.hooks.PreToolUse = mutated.hooks.PreToolUse.filter(e => !/eights-recall-stage$/.test(e.bash));
+  assert.equal(mutated.hooks.PreToolUse.length, before - 1, "fixture setup must actually remove exactly one entry");
+  let threw = null;
+  try {
+    assertNoFailures(templateJson, mutated, implementedPairKeys);
+  } catch (err) {
+    threw = err;
+  }
+  assert.ok(threw);
+  assert.match(threw.message, /\[hooks\.json\] implemented but unwired[\s\S]*\(PreToolUse, eights-recall-stage\)/);
+});
+
+it("AC-D24: the AC-D22 mutation produces exactly one diagnostic line mentioning eights-recall-project, attributed to the template only (no duplicate against hooks.json)", () => {
+  const mutated = clone(templateJson);
+  mutated.hooks.SessionStart = mutated.hooks.SessionStart.filter(
+    w => !w.hooks.some(h => /eights-recall-project$/.test(h.command)),
+  );
+  let threw = null;
+  try {
+    assertNoFailures(mutated, hooksJsonJson, implementedPairKeys);
+  } catch (err) {
+    threw = err;
+  }
+  assert.ok(threw);
+  const matchingLines = threw.message.split("\n").filter(l => l.includes("eights-recall-project"));
+  assert.equal(matchingLines.length, 1, `expected exactly one line naming eights-recall-project, got ${matchingLines.length}:\n${matchingLines.join("\n")}`);
+  assert.match(matchingLines[0], /^\[\.claude\/settings\.template\.json\]/, "the sole diagnostic line must be attributed to the template");
+});
+
+// ─── AC-D25 — replacing AC-30: an undeclared template timeout is a plain,
+//     unexcused failure ────────────────────────────────────────────────────
+it("AC-D25: deleting timeout from a template.json entry fails, naming the pair, with no exemption to excuse it", () => {
+  const mutated = clone(templateJson);
+  delete mutated.hooks.SessionStart[0].hooks[0].timeout;
+  let threw = null;
+  try {
+    assertNoFailures(mutated, hooksJsonJson, implementedPairKeys);
+  } catch (err) {
+    threw = err;
+  }
+  assert.ok(threw, "a template.json entry missing a timeout must fail now that the pending-timeout-exemption allowance is gone");
+  assert.match(threw.message, /\[\.claude\/settings\.template\.json\] missing\/invalid timeout on \(SessionStart, daemon-up\)/);
+});
+
+// ─── AC-D28 — replacing AC-32: allowance-free restatement, exact-match only
+it("AC-D28: a synthetic fourth eights-recall-* handler that is implemented-but-unwired fails (no prefix/wildcard excusal exists to reintroduce)", () => {
+  const syntheticImplemented = new Set(implementedPairKeys);
+  syntheticImplemented.add(pairKey("SessionStart", "eights-recall-session"));
+  let threw = null;
+  try {
+    assertNoFailures(templateJson, hooksJsonJson, syntheticImplemented);
+  } catch (err) {
+    threw = err;
+  }
+  assert.ok(threw, "a fourth eights-recall-* handler must fail — there is no allowance of any shape left to absorb it");
+  assert.match(threw.message, /implemented but unwired[\s\S]*eights-recall-session/);
+});
+
+// ─── AC-D29 — replacing AC-31: wired-but-unimplemented fails unconditionally
+it("AC-D29: a wired entry naming a handler absent from HANDLERS fails unconditionally, even under a name that collides with a recall handler", () => {
+  const mutated = clone(hooksJsonJson);
+  // Wire "eights-recall-project" under PostToolUse — the NAME collides with a
+  // real implemented handler, but the PAIR (PostToolUse, eights-recall-project)
+  // is not implemented under any event pairing.
   mutated.hooks.PostToolUse.push({
     type: "command",
     bash: 'node "daemon/dist/index.js" hook PostToolUse eights-recall-project',
@@ -751,18 +719,219 @@ it("AC-31: a wired entry naming a handler absent from HANDLERS fails uncondition
   assert.match(threw.message, /\[hooks\.json\] wired but unimplemented[\s\S]*PostToolUse, eights-recall-project/);
 });
 
-// ─── AC-32 — allowance is exact-match, not prefix-based ───────────────────
-it("AC-32: a fourth eights-recall-* handler that is implemented-but-unwired is NOT absorbed by the PENDING_WIRING allowance (exact-match only)", () => {
-  const syntheticImplemented = new Set(implementedPairKeys);
-  syntheticImplemented.add(pairKey("SessionStart", "eights-recall-session"));
-  let threw = null;
-  try {
-    assertNoFailures(templateJson, hooksJsonJson, syntheticImplemented);
-  } catch (err) {
-    threw = err;
+// ─── AC-D30 — every wired entry in both files declares a positive finite
+//     numeric timeout, asserted positively (not merely "the guard didn't
+//     complain") ────────────────────────────────────────────────────────────
+it("AC-D30: every wired entry in both real files declares a positive finite numeric timeout", () => {
+  const templateReduced = reduceTemplateEntries(extractTemplateEntries(templateJson));
+  const hooksReduced = reduceHooksJsonEntries(extractHooksJsonEntries(hooksJsonJson));
+  assert.ok(templateReduced.pairs.size > 0, "sanity: the template must have wired at least one pair");
+  assert.ok(hooksReduced.pairs.size > 0, "sanity: hooks.json must have wired at least one pair");
+  assert.deepEqual(templateReduced.missingTimeout, [], "every template.json entry must declare a valid timeout");
+  assert.deepEqual(hooksReduced.missingTimeout, [], "every hooks.json entry must declare a valid timeoutSec");
+});
+
+// ─── AC-D31 — template `timeout` equals hooks.json `timeoutSec` for every
+//     (event, name) pair ──────────────────────────────────────────────────
+function templateTimeoutMap(json) {
+  const out = new Map();
+  for (const e of extractTemplateEntries(json)) {
+    if (e.parsed) out.set(pairKey(e.containingEvent, e.parsed.name), e.timeout);
   }
-  assert.ok(threw, "a fourth eights-recall-* handler must NOT be silently excused by a prefix/wildcard reading of PENDING_WIRING");
-  assert.match(threw.message, /implemented but unwired[\s\S]*eights-recall-session/);
+  return out;
+}
+function hooksJsonTimeoutMap(json) {
+  const out = new Map();
+  for (const e of extractHooksJsonEntries(json)) {
+    if (e.bashParsed) out.set(pairKey(e.containingEvent, e.bashParsed.name), e.timeoutSec);
+  }
+  return out;
+}
+function findTimeoutParityMismatches(templateJsonArg, hooksJsonJsonArg) {
+  const t = templateTimeoutMap(templateJsonArg);
+  const h = hooksJsonTimeoutMap(hooksJsonJsonArg);
+  const mismatches = [];
+  for (const [key, tv] of t) {
+    if (h.has(key) && h.get(key) !== tv) {
+      mismatches.push(`${key}: template=${JSON.stringify(tv)} hooks.json=${JSON.stringify(h.get(key))}`);
+    }
+  }
+  return mismatches;
+}
+
+it("AC-D31: template timeout equals hooks.json timeoutSec for every (event,name) pair in the real files", () => {
+  const mismatches = findTimeoutParityMismatches(templateJson, hooksJsonJson);
+  assert.deepEqual(mismatches, [], `timeout/timeoutSec parity mismatch: ${mismatches.join("; ")}`);
+});
+
+it("AC-D31 mutation: desynchronizing one pair's template timeout from its hooks.json timeoutSec is caught", () => {
+  const mutated = clone(templateJson);
+  mutated.hooks.SessionStart[0].hooks[0].timeout = 45; // daemon-up: template=30, hooks.json=30 -> now mismatched
+  const mismatches = findTimeoutParityMismatches(mutated, hooksJsonJson);
+  assert.ok(mismatches.length >= 1, "a desynchronized timeout pair must be reported");
+  assert.match(mismatches.join("; "), /SessionStart daemon-up/);
+});
+
+// ─── AC-D32 — per-class timeout values, declared once, enforced everywhere
+const TIMEOUT_CLASS = {
+  // BLOCKING (10) + RECOVERY (3) = 13, timeout 30 — §3.2, unchanged from baseline.
+  "SessionStart daemon-up": 30,
+  "SessionStart vendor-matrix": 30,
+  "PreToolUse block-destructive-shell": 30,
+  "PreToolUse enforce-active-run": 30,
+  "PreToolUse enforce-vendor-matrix": 30,
+  "PreToolUse enforce-sandbox-policy": 30,
+  "PreToolUse enforce-no-secrets": 30,
+  "PreToolUse enforce-validator-gate": 30,
+  "PreToolUse enforce-rfc2119-language": 30,
+  "Stop decision-log-required": 30,
+  "PostToolUse record-attempt": 30,
+  "PostToolUse hash-artifact": 30,
+  "PostToolUse update-master-plan": 30,
+  // INFORMATIONAL (16), timeout 20 — a documented deviation from the spec's
+  // derived 15 (driver-verified): 20 clears the 14 000 ms daemon-side
+  // eights-recall bound (ECOSYSTEM_PROBE_TIMEOUT_MS x2 + ECOSYSTEM_CALL_TIMEOUT_MS)
+  // with more headroom than 15 gave. Do not hardcode 15 here.
+  "SessionStart cli-version-pin": 20,
+  "SessionStart master-plan-load": 20,
+  "SessionStart surfaced-runs": 20,
+  "SessionStart eights-recall-project": 20,
+  "PreToolUse eights-recall-stage": 20,
+  "PostToolUse cost-tally": 20,
+  "PostToolUse taxonomy-coverage-update": 20,
+  "PostToolUse loop-ceiling-tally": 20,
+  "PostToolUse verdict-rubric-coverage": 20,
+  "UserPromptSubmit taxonomy-nudge": 20,
+  "UserPromptSubmit team-suggester": 20,
+  "UserPromptSubmit risk-flag": 20,
+  "UserPromptSubmit surfaced-run-reminder": 20,
+  "UserPromptSubmit profile-aware-nudge": 20,
+  "UserPromptSubmit eights-recall-request": 20,
+  "Stop summary-format-check": 20,
+};
+
+function findClassMismatches(templateJsonArg, hooksJsonJsonArg) {
+  const t = templateTimeoutMap(templateJsonArg);
+  const h = hooksJsonTimeoutMap(hooksJsonJsonArg);
+  const mismatches = [];
+  for (const [key, expected] of Object.entries(TIMEOUT_CLASS)) {
+    if (t.has(key) && t.get(key) !== expected) mismatches.push(`[template] ${key}: expected ${expected}, got ${JSON.stringify(t.get(key))}`);
+    if (h.has(key) && h.get(key) !== expected) mismatches.push(`[hooks.json] ${key}: expected ${expected}, got ${JSON.stringify(h.get(key))}`);
+  }
+  return mismatches;
+}
+
+it("AC-D32: the declared class->value map covers exactly the implemented inventory (derived, not hardcoded)", () => {
+  assert.equal(
+    Object.keys(TIMEOUT_CLASS).length,
+    implementedPairKeys.size,
+    "TIMEOUT_CLASS must have exactly one entry per implemented (event,name) pair",
+  );
+  for (const key of implementedPairKeys) {
+    assert.ok(Object.prototype.hasOwnProperty.call(TIMEOUT_CLASS, key), `TIMEOUT_CLASS is missing an entry for ${key}`);
+  }
+});
+
+it("AC-D32: every wired hook's timeout equals its declared class value in both real files", () => {
+  const mismatches = findClassMismatches(templateJson, hooksJsonJson);
+  assert.deepEqual(mismatches, [], `class/value mismatch: ${mismatches.join("; ")}`);
+});
+
+it("AC-D32 mutation: moving one hook's timeout off its class value is caught", () => {
+  const mutated = clone(templateJson);
+  mutated.hooks.SessionStart[0].hooks[0].timeout = 25; // daemon-up is class BLOCKING=30
+  const mismatches = findClassMismatches(mutated, hooksJsonJson);
+  assert.ok(mismatches.some(m => m.includes("SessionStart daemon-up") && m.includes("expected 30")), "an off-class timeout must be reported");
+});
+
+// ─── AC-D33 — statusMessage on the two blocking write-guards ──────────────
+// Q8 is resolved for this run: Copilot's hooks.json entries carry no
+// `statusMessage` (deliberate — Copilot support unverified), so the
+// hooks.json half of R3.1/AC-D33 is scoped out here per R8.2, and this
+// suite instead positively asserts hooks.json's absence so a stray
+// hooks.json statusMessage does not silently diverge from that scoping
+// decision without review.
+const STATUS_MESSAGES = {
+  "enforce-no-secrets": "pp: scanning this write for hardcoded credentials...",
+  "enforce-validator-gate": "pp: checking the latest verdict before allowing this edit...",
+};
+const OUTCOME_WORDS = /\b(refuse[sd]?|block(ed)?|den(y|ied)|fail(ed)?)\b/i;
+
+function findStatusMessageDefects(templateJsonArg) {
+  const defects = [];
+  const entries = extractTemplateEntries(templateJsonArg);
+  for (const [name, expected] of Object.entries(STATUS_MESSAGES)) {
+    const entry = entries.find(e => e.parsed && e.parsed.name === name);
+    if (!entry) {
+      defects.push(`${name}: not found in template`);
+      continue;
+    }
+    if (typeof entry.statusMessage !== "string" || entry.statusMessage.length === 0) {
+      defects.push(`${name}: statusMessage missing or empty`);
+      continue;
+    }
+    if (entry.statusMessage.length > 80) {
+      defects.push(`${name}: statusMessage exceeds 80 characters`);
+    }
+    if (entry.statusMessage !== expected) {
+      defects.push(`${name}: statusMessage does not match the required literal`);
+    }
+    if (OUTCOME_WORDS.test(entry.statusMessage)) {
+      defects.push(`${name}: statusMessage contains a banned outcome word`);
+    }
+  }
+  return defects;
+}
+
+it("AC-D33: statusMessage on enforce-no-secrets and enforce-validator-gate is present, <=80 chars, matches the R3.3 literal, and is free of outcome words (template)", () => {
+  const defects = findStatusMessageDefects(templateJson);
+  assert.deepEqual(defects, [], `statusMessage defects: ${defects.join("; ")}`);
+});
+
+it("AC-D33: hooks.json carries no statusMessage on either write-guard (Q8 — Copilot support unverified, scoped out per R8.2)", () => {
+  const entries = extractHooksJsonEntries(hooksJsonJson);
+  for (const name of Object.keys(STATUS_MESSAGES)) {
+    const entry = entries.find(e => e.bashParsed && e.bashParsed.name === name);
+    assert.ok(entry, `${name} must be wired in hooks.json`);
+    assert.equal(entry.statusMessage, undefined, `${name} must not declare statusMessage in hooks.json while Q8 is unresolved`);
+  }
+});
+
+it("AC-D33 mutation: rewriting a statusMessage to outcome-shaped copy is caught", () => {
+  const mutated = clone(templateJson);
+  const entry = mutated.hooks.PreToolUse.find(w => w.hooks.some(h => /enforce-no-secrets$/.test(h.command)));
+  entry.hooks[0].statusMessage = "pp: refuses the write if credentials are found";
+  const defects = findStatusMessageDefects(mutated);
+  assert.ok(defects.some(d => d.includes("enforce-no-secrets") && d.includes("outcome word")), "an outcome-shaped statusMessage must be caught");
+});
+
+// ─── AC-D34 — no `if:` key anywhere, under any event, in either file ──────
+function findIfKeyViolations(templateJsonArg, hooksJsonJsonArg) {
+  const violations = [];
+  for (const e of extractTemplateEntries(templateJsonArg)) {
+    if (e.hasIf) violations.push(`[${TEMPLATE_LABEL}] (${e.containingEvent}, ${e.parsed ? e.parsed.name : e.command}) declares an "if:" key`);
+  }
+  for (const e of extractHooksJsonEntries(hooksJsonJsonArg)) {
+    if (e.hasIf) violations.push(`[${HOOKS_JSON_LABEL}] (${e.containingEvent}, ${e.bashParsed ? e.bashParsed.name : e.bash}) declares an "if:" key`);
+  }
+  return violations;
+}
+
+it("AC-D34: no entry in either real file, under any event, declares an if: key", () => {
+  const violations = findIfKeyViolations(templateJson, hooksJsonJson);
+  assert.deepEqual(violations, [], `if: key violations: ${violations.join("; ")}`);
+});
+
+it("AC-D34 mutation: adding an if: key to a clone of either file is caught", () => {
+  const mutatedTemplate = clone(templateJson);
+  mutatedTemplate.hooks.SessionStart[0].hooks[0].if = "some.predicate";
+  const templateViolations = findIfKeyViolations(mutatedTemplate, hooksJsonJson);
+  assert.ok(templateViolations.length >= 1, "an injected if: key in the template must be caught");
+
+  const mutatedHooksJson = clone(hooksJsonJson);
+  mutatedHooksJson.hooks.SessionStart[0].if = "some.predicate";
+  const hooksViolations = findIfKeyViolations(templateJson, mutatedHooksJson);
+  assert.ok(hooksViolations.length >= 1, "an injected if: key in hooks.json must be caught");
 });
 
 // ─── AC-34 — this change touches neither settings file ────────────────────

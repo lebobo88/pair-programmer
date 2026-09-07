@@ -1188,9 +1188,9 @@ Activated under any `game-dev*` profile. Each reads the matching `.claude/gotcha
 
 ## 18. Hooks (29)
 
-Hooks are shell commands Claude Code runs at lifecycle events. They read a JSON envelope on stdin and return exit code 0 (allow) or 2 (block). 29 distinct hooks span 5 events. [`.claude/settings.json`](../.claude/settings.json) wires **26** of them; [`hooks.json`](../hooks.json) (the Copilot CLI hook file) is the superset and adds the **3 TheEights ecosystem-recall hooks** (`eights-recall-project` on SessionStart, `eights-recall-stage` on PreToolUse, `eights-recall-request` on UserPromptSubmit). The subsection counts below reflect the `.claude/settings.json` wiring.
+Hooks are shell commands Claude Code runs at lifecycle events. They read a JSON envelope on stdin and return exit code 0 (allow) or 2 (block). 29 distinct hooks span 5 events. Both [`.claude/settings.json`](../.claude/settings.json) (generated from `settings.template.json`) and [`hooks.json`](../hooks.json) (the Copilot CLI hook file) wire all **29**, including the 3 TheEights ecosystem-recall hooks (`eights-recall-project` on SessionStart, `eights-recall-stage` on PreToolUse, `eights-recall-request` on UserPromptSubmit). The subsection counts below reflect that wiring.
 
-### SessionStart (5)
+### SessionStart (6)
 
 | Hook | What it enforces | Bypass |
 |---|---|---|
@@ -1199,8 +1199,9 @@ Hooks are shell commands Claude Code runs at lifecycle events. They read a JSON 
 | `cli-version-pin` | Codex / agy / pp-daemon / git / npm versions pinned in DB. Warns on drift. | — |
 | `master-plan-load` | Reports `PROJECT_MASTER.md` status. | — |
 | `surfaced-runs` | Lists up to 5 surfaced runs; reminds you to `/pp:retry`. | — |
+| `eights-recall-project` | Recalls this project's prior TheEights episodes at session start. Advisory; fail-soft — an absent or hung peer cannot block the session. | — |
 
-### PreToolUse (7)
+### PreToolUse (8)
 
 | Hook | Matcher | What it enforces | Bypass |
 |---|---|---|---|
@@ -1211,6 +1212,7 @@ Hooks are shell commands Claude Code runs at lifecycle events. They read a JSON 
 | `enforce-no-secrets` | `Edit | Write | MultiEdit | mcp__pp_harness__archive_artifact` | Regex scan for API keys / passwords / SSH keys / JWT / OAuth tokens. | None — fix the artifact, then retry. |
 | `enforce-validator-gate` | `Edit | Write | MultiEdit` | Blocks code edits when active run has a failed verdict and no Reflexion retry yet. | `/pp:retry <run_id>`, or `PP_ALLOW_AD_HOC=1`. |
 | `enforce-rfc2119-language` | `Write | Edit | mcp__pp_harness__archive_artifact` | Spec-shaped artifacts (path/kind/section heuristics) must contain MUST/SHOULD/MAY. Block in active run; advisory otherwise. | Add the keyword, or `PP_ALLOW_AD_HOC=1`. |
+| `eights-recall-stage` | `mcp__pp_harness__start_stage` | Recalls prior cross-run critiques for the stage being opened. Advisory; fail-soft — an absent or hung peer cannot block the stage. | — |
 
 ### PostToolUse (7)
 
@@ -1224,7 +1226,7 @@ Hooks are shell commands Claude Code runs at lifecycle events. They read a JSON 
 | `verdict-rubric-coverage` | `mcp__pp_harness__record_verdict` | Warns if verdict has <3 rubric dimensions scored. |
 | `update-master-plan` | `mcp__pp_harness__finalize_run` | Backstop: scaffold `PROJECT_MASTER.md` if absent and append a run summary. |
 
-### UserPromptSubmit (5)
+### UserPromptSubmit (6)
 
 All advisory — these never block. They print a one-line nudge above your prompt.
 
@@ -1235,6 +1237,7 @@ All advisory — these never block. They print a one-line nudge above your promp
 | `risk-flag` | Prompt contains security or concurrency keywords. Notes that the gate will auto-elevate to cross-vendor. |
 | `surfaced-run-reminder` | A surfaced run exists for this project. Suggests `/pp:retry <run_id>`. |
 | `profile-aware-nudge` | Profile-specific reminder (e.g. `enterprise` → SBOM + cross-vendor on every gate). |
+| `eights-recall-request` | Prompt resembles a prior request TheEights has an episode for. Recalls it as context. Fail-soft — an absent or hung peer cannot block the prompt. |
 
 ### Stop (2)
 

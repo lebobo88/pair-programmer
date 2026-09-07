@@ -398,7 +398,12 @@ const HANDLERS: Record<string, Record<string, (input: HookInput) => Promise<void
       if (!content) return reply(true);
       const matches = scanForSecrets(content);
       if (matches.length) {
-        reply(false, `[pp] secret scanner blocked write: ${matches.length} match(es): ${matches.map(m => m.kind).slice(0, 3).join(", ")}.`);
+        reply(
+          false,
+          `[pp] secret scanner refused this write: nothing was written. ${matches.length} match(es): ${matches.map(m => m.kind).slice(0, 3).join(", ")}. ` +
+          `Move the value to an environment variable and reference it, per AGENTS.md Security ("Credentials must be env vars — not hardcoded"). ` +
+          `There is deliberately no bypass environment variable for this guard.`,
+        );
       }
       reply(true);
     },

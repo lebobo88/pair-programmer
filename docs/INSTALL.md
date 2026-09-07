@@ -26,7 +26,7 @@ Two ways to use it:
 
 ### Option A — system-wide (recommended)
 
-Register the harness once at user scope (`~/.claude/`) so `/pp:*`, the 3 MCP servers, the 25 hooks, the sub-agents, and the skills are available in **every** Claude Code session, regardless of cwd. The repo stays the single source of truth — `git pull` updates every project.
+Register the harness once at user scope (`~/.claude/`) so `/pp:*`, the 3 MCP servers, the 29 hooks, the sub-agents, and the skills are available in **every** Claude Code session, regardless of cwd. The repo stays the single source of truth — `git pull` updates every project.
 
 ```powershell
 cd <repo>
