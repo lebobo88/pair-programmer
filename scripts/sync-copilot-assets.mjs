@@ -326,6 +326,60 @@ function enumerateSkillSources(skillsDir) {
   return sources;
 }
 
+/*
+ * Phase G (GitHub #48): Claude Code scans `.claude/agents/` RECURSIVELY
+ * (code.claude.com/docs/en/sub-agents.md -- "Claude Code scans
+ * `.claude/agents/` and `~/.claude/agents/` recursively, so you can
+ * organize definitions into subfolders... identity comes only from the
+ * `name` frontmatter field"). The mirror generator used to do a single flat
+ * `readdirSync(agentsDir)`, which would silently DROP any agent placed in a
+ * subdirectory from the Copilot mirror -- a latent trap that only fires the
+ * day someone reorganises `.claude/agents/` into subfolders, at which point
+ * the drop would be invisible (no error, just a missing mirror). This
+ * enumerator walks subdirectories so the generator's traversal matches the
+ * platform's.
+ *
+ * Mirror target names are `<basename>.agent.md`, keyed only by basename
+ * (see main()'s use of `basename(file, ".md")` for the target path) --
+ * exactly like Claude Code's own name-only identity rule above. That means
+ * two source agents with the same basename in different subdirectories
+ * would collide on a single mirror target and one would silently overwrite
+ * the other with no signal to the operator. Recursion makes that collision
+ * reachable for the first time, so this enumerator detects it and FAILS
+ * LOUDLY (throws) rather than let the last-writer win.
+ */
+function enumerateAgentSources(agentsDir) {
+  const sources = [];
+  const seenBasenames = new Map(); // basename -> sourcePath, for collision detection
+
+  function walk(dir) {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const entryPath = join(dir, entry.name);
+      if (entry.isDirectory()) {
+        walk(entryPath);
+        continue;
+      }
+      if (entry.isFile() && entry.name.endsWith(".md")) {
+        const base = basename(entry.name, ".md");
+        const prior = seenBasenames.get(base);
+        if (prior) {
+          throw new Error(
+            `[sync-copilot-assets] agent basename collision: "${base}" is defined at both ` +
+            `"${prior}" and "${entryPath}" -- both would mirror to the same target ` +
+            `"${base}.agent.md", and Claude Code identifies subagents by \`name\` (not path), ` +
+            `so this cannot be resolved automatically. Rename one of the source files.`,
+          );
+        }
+        seenBasenames.set(base, entryPath);
+        sources.push({ file: entry.name, sourcePath: entryPath });
+      }
+    }
+  }
+
+  walk(agentsDir);
+  return sources;
+}
+
 // R6.4: refuse a mirror write whose new content drops below this fraction of
 // the existing mirror's byte size, unless overridden. Half is a deliberately
 // blunt heuristic: an ordinary content edit shrinks a file by a few percent
@@ -665,6 +719,17 @@ function main() {
   // both write paths rather than re-derived.
   const pointerSkipSet = new Set();
 
+  // LOW-3 (Phase G judge): enumerateAgentSources() throws on a basename
+  // collision, and it used to be called only when the agent loop was reached
+  // -- i.e. AFTER the command mirrors had already been written and pruned. The
+  // throw is uncaught, so a collision left the tree half-synced with no
+  // summary, which is exactly the partial-write shape the normalizeHooks catch
+  // below was added to stop being silent about. Enumeration is a pure read, so
+  // it is hoisted here: a collision now aborts before anything has been
+  // written at all, which is strictly better than reporting the partial write
+  // after the fact.
+  const agentSources = enumerateAgentSources(join(CLAUDE_DIR, "agents"));
+
   ensureDir(GENERATED_COMMANDS_DIR);
   const keepCommandTargets = new Set();
   for (const file of readdirSync(join(CLAUDE_DIR, "commands", "pp"))) {
@@ -684,10 +749,13 @@ function main() {
 
   ensureDir(GENERATED_AGENTS_DIR);
   const keepAgentTargets = new Set();
-  for (const file of readdirSync(join(CLAUDE_DIR, "agents"))) {
-    if (!file.endsWith(".md")) continue;
+  // Phase G (GitHub #48): recursive enumeration -- see enumerateAgentSources
+  // for why a flat readdirSync would silently drop nested agents, and why a
+  // basename collision across subdirectories must fail loudly instead of
+  // letting one mirror write silently overwrite the other.
+  for (const { file, sourcePath } of agentSources) {
     const written = syncMirrorEntry({
-      sourcePath: join(CLAUDE_DIR, "agents", file),
+      sourcePath,
       targetPath: join(GENERATED_AGENTS_DIR, `${basename(file, ".md")}.agent.md`),
       render: renderAgent,
       allowShrink,
@@ -858,10 +926,18 @@ if (invokedDirectly) {
 // the exact shape of the ~673-line incident: the skip itself worked, but
 // nothing proved the skip's target was protected from the prune pass that
 // runs immediately afterward in every real sync.
+//
+// Phase G (GitHub #48): `enumerateAgentSources` is a third, explicitly
+// authorised generator export (daemon/test/agent-frontmatter.unit.mjs). Its
+// recursive-scan and basename-collision-throws behaviour is the generator's
+// half of the recursive-scan platform fact; the guard drives this real
+// function against temp-directory fixtures rather than reimplementing the
+// walk, for the same reason as every other export in this block.
 export {
   preservedFrontmatterComments,
   isDirectInvocation,
   enumerateSkillSources,
+  enumerateAgentSources,
   normalizeHooks,
   writeMirrorSafely,
   syncMirrorEntry,

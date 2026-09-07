@@ -100,6 +100,7 @@ _To be populated by harness runs._
 
 
 
+
 ### Run run_jc1UxeCMvyZR — 2026-08-22
 
 **Request:** Fix four daemon defects and establish no-secondary-vendor architectural constraint
@@ -217,6 +218,42 @@ _To be populated by harness runs._
 - Mirrors regenerated: 13 real content changes (1 agent mirror for path cleanup + 1 hooks mirror for timeout fix + 11 skill mirrors for bundle sources and R8/R12 edits). No net deletions.
 - `daemon/package.json` test script and `engines.node` were already corrected in Phase E. Phase F added three authorised generator exports (`syncMirrorEntry`, `pruneStaleMirrorFiles`, whitelist comment).
 
+### Run run_CvKoIWhSC8XV — 2026-09-07
+
+**Phase G: cc-standards-alignment campaign (#48, epic #42) — subagent frontmatter**
+
+**Request:** Implement three Claude Code frontmatter fields on 42 real agents, establish platform-fact verification, and add guard test to prevent regressions.
+
+**Artifacts:**
+- changelog: `.harness/run_CvKoIWhSC8XV/docs/changelog.md` (17 documented fields found, platform facts verified from code.claude.com/docs)
+- test_plan: `.harness/run_CvKoIWhSC8XV/tests/test_plan.md` (acceptance criteria to assertion mapping)
+- run_summary: `.harness/run_CvKoIWhSC8XV/run.summary.md` (detailed outcome, judge findings, residuals)
+- browser_validation: `.harness/run_CvKoIWhSC8XV/browser-validation/report.md` (not_applicable — no web UI)
+
+**Summary:** Implemented `effort: low` on five non-verdict helpers (triage, profile-loader, taxonomy-mapper, run-finalizer, missability-inspector); `effort: high` on two judges (judge-cross-vendor, security-reviewer) with a note documenting that the agent-level field sets Claude wrapper's reasoning and is orthogonal to `judge_reasoning_effort` (the vendor CLI's effort, recorded separately on verdicts). Added `color:` frontmatter to all 42 agents using the eight documented values, grouped by function. Set `maxTurns: 6` on exactly two agents (triage and profile-loader) with protocol-based justification; deliberately excluded `engineer`, all authoring agents, and all judges (a turn cap can truncate valid Reflexion into partial output). Rewrote Copilot generator's agent enumeration from flat to recursive with collision-refusing logic (mirror targets are `<basename>.agent.md`, so same-named agents in different subdirectories would silently overwrite; enumerator now hoisted above all writes and validates no collisions before any file touch). Added `daemon/test/agent-frontmatter.unit.mjs` guard (156 tests / 10 suites) validating every color and effort value is documented, frontmatter keys fall within the documented 17, `maxTurns` exclusions hold, generator enumerates recursively and rejects collisions, and every `skills:` member resolves. Platform facts were verified by the driver against `code.claude.com/docs` directly (prior agy critique fabricated two of three quotes); found plan had three errors: 17 documented fields not 16, `maxTurns`' version gate is on partial marking not the field, `effort` accepts five values not four. Full suite: **677 passed / 0 failed / 90 suites** (delta from Phase F: +156 tests / +10 suites).
+
+**Key decisions and constraints:**
+- **`effort` is orthogonal to judge verdict effort**: agent-level `effort: high` does NOT escalate the judge model id or pin. The field controls Claude wrapper reasoning only. Note added to both frontmatter and body of judge agents to stop future misreading (captured from cross-vendor judge's finding).
+- **`maxTurns` capped only on helpers**: a turn cap on `engineer`, authoring agents, or judges can truncate valid Reflexion attempts into output marked partial. Plan authorizes helpers-only fallback; taken. Judge agreed it was right rather than over-cautious, but flagged `triage`'s cap of 4 as thin (no error-handling in protocol) — raised to 6.
+- **Collision detection hoisted above all writes**: enumeration is a pure read, so a discovered collision fails before anything is touched (proved: temp collision aborts with `.github/` unchanged).
+- **Flat-file generator is obsolete**: `readdirSync(agents)` would have silently dropped nested agents the moment someone used a subdirectory (which platform docs explicitly permit). Replaced with recursive enumeration carrying no silent-write risk.
+- **Guard uses closed-world set-equality on maxTurns exclusion**: a future authoring agent or judge shipping `maxTurns` will fail the suite automatically, whether or not the name list is updated.
+
+**Residuals that MUST survive into the master plan:**
+1. **The benefit of `effort` is unmeasured** — nothing shows `effort: low` reduces cost or `effort: high` improves judge output. Premises from the plan, carried forward.
+2. **`copilot-model:` on `pair-programmer-orchestrator` is undocumented** — genuine cross-tool metadata, allow-listed on exactly that agent with non-spread asserted.
+3. **Prose-phrased stale justifications still escape** comment/value guard (matches literal `maxTurns=N`, not general phrasings).
+4. **The `maxTurns` exclusion name list is a maintenance surface** — closed-world set-equality is the load-bearing part; deriving authors by convention (like judges) would remove it.
+5. **One color is unused: `pink`** — seven functional groups, seven colors. Deliberate.
+6. **Falsification demos ran against temp copy while guard scans module constant** — coverage real and verified, but evidence originally offered was not.
+
+**Verification:**
+- Guard 156/156 pass; full suite 677/0 failed/90 suites at --test-timeout=180000.
+- Build and typecheck clean.
+- Every `color` one of eight documented, every `effort` one of five documented — proved by script.
+- Generator idempotent; deliberate collision aborts with `.github/` unchanged.
+- Mutation proofs on undocumented color, `maxTurns` on engineer, misspelled effort_level, `max_turns : 5`, and skewed `maxTurns=N` comment.
+
 
 ## 14. Security, privacy, and compliance
 
@@ -246,6 +283,7 @@ _To be populated by harness runs._
 
 
 ## 15. Test and verification strategy
+
 
 
 
@@ -361,6 +399,31 @@ _To be populated by harness runs._
 - **AC-F65 (rollback on scratch worktree):** not this commit's obligation (commit 1/2 scoped to R16.1/R16.2).
 - **`frontend-design` reference:** still open; R17 forbids touching until settled. Guard does not mention it (scoped to command tree only, where it doesn't appear).
 - **One unidentified full-suite failure:** appeared once, did not reproduce across four subsequent runs. Disclosed with signatures distinguishing GitHub #57 from phase-specific fixture issue.
+
+### Run run_CvKoIWhSC8XV — 2026-09-07
+
+**Phase G: Guard test for agent-frontmatter validation (GitHub #48, epic #42)**
+
+**Request:** Add self-contained unit test guard preventing regressions on agent frontmatter fields, generator recursion, and collision detection.
+
+**Artifacts:**
+- test_plan: `.harness/run_CvKoIWhSC8XV/tests/test_plan.md` (acceptance criteria coverage map, 7 invariants with 156 assertions across 10 suites)
+- new_test: `daemon/test/agent-frontmatter.unit.mjs` (156 tests / 10 suites, ~110 ms)
+- changelog: `.harness/run_CvKoIWhSC8XV/docs/changelog.md` (judge findings and corrections)
+
+**Summary:** Added `daemon/test/agent-frontmatter.unit.mjs`, a self-contained unit test (156 tests / 10 suites, ~110 ms runtime, no daemon/MCP/network) that validates the agent frontmatter implementation against seven key invariants. Coverage map: (1) every `color:` is one of eight documented values and every agent has one (per-agent assertions, tally check, and falsifiability on `isDocumentedColor()`); (2) `effort:` is one of five documented values at exactly {5 low, 2 high}, with set-equality against named agent sets and documented-value checks; (3) `maxTurns` on exactly {triage, profile-loader}, absent by name on engineer/every author/every judge, with per-name assertions and live splice-in falsifiability; (4) no frontmatter key outside the documented 17 (one pre-existing exception: `copilot-model` on `pair-programmer-orchestrator`, allow-listed and non-spread asserted); (5) model-invocation-blocking key appears nowhere in skills or agents (real-tree scan, self-reference-safety, mutation controls); (6) every `skills:` member resolves to a real `.claude/skills/<name>/SKILL.md` bundle; (7) generator finds nested agents and throws on cross-directory basename collision before any write, driving real `enumerateAgentSources()` imported from `scripts/sync-copilot-assets.mjs`. Non-vacuity discipline: non-emptiness `it` before every collection loop, every positive invariant paired with falsifiability fixture, forbidden literals assembled at runtime with self-check, live enumeration (not reimplemented).
+
+**Test results:**
+- Single-file: 156/156 pass, ~110 ms
+- Full suite: `node --test --test-timeout=180000 daemon/test/*.unit.mjs` — **677 passed / 0 failed / 90 suites**
+- Delta from prior phase: +156 tests / +10 suites
+- Build and typecheck: clean
+- Three live red/green mutations (undocumented color: magenta, `maxTurns: 5` on engineer, misspelled `effort_level`) all correctly failed against mutated copy, passed once reverted
+
+**Key decisions:**
+- **Guard as enforcement mechanism**: adding `maxTurns` to `engineer`, an authoring agent, or a judge now fails the suite rather than silently working. Closed-world set-equality catches new authoring agents automatically.
+- **Real function imports over reimplements**: guard drives actual `enumerateAgentSources()` from the generator, not a copy; `enumerateSkillSources` proved falsifiable by real-tree splices.
+- **No agent/skill counts transcribed**: all counts derived from filesystem at test-run time; set-equality against real collections prevents vacuous passes.
 
 
 ## 16. Operations and support model
@@ -520,6 +583,7 @@ _To be populated by harness runs._
 _To be populated by harness runs._
 
 ## Appendices
+
 
 
 
@@ -736,4 +800,41 @@ Seven classes of defect, each previously shipped in this campaign:
 4. **Nothing asserts the prune/rewrite interaction across a future source change**, so today's mirror correctness is not protected tomorrow.
 5. **One unidentified full-suite failure** appeared once and did not reproduce across four subsequent runs. Disclosed with the two signatures that distinguish GitHub #57 from a fixture of this phase's own; the judge would have blocked on it and the driver did not.
 6. **Two spec acceptance criteria are operator-only and not automatable** (AC-F55, AC-F57), and AC-F65's rollback demonstration was out of this commit's scope.
+
+### Run run_CvKoIWhSC8XV — 2026-09-07 — Phase G: subagent frontmatter documentation (GitHub #48, epic #42)
+
+**Platform facts verified against code.claude.com/docs by the driver, not delegated.** An agy critique earlier in this campaign fabricated two of three platform-documentation quotes at confidence 1.0; every field in this phase was read from the primary source and quoted verbatim into the implementation brief.
+
+**Three claims the plan got wrong, discovered during verification:**
+
+1. **17 documented frontmatter fields, not sixteen.** The documented list: `name`, `description`, `tools`, `disallowedTools`, `model`, `permissionMode`, `maxTurns`, `skills`, `mcpServers`, `hooks`, `memory`, `background`, `effort`, `isolation`, `color`, `initialPrompt`, `experimental`. Five were in use before Phase F (`name`, `description`, `tools` at 42 each, `model` at 40); plan said four and was written before `skills` existed.
+2. **`maxTurns`' version gate is on the *partial marking*, not the field.** Docs say "The partial marking requires Claude Code v2.1.246 or later"; plan read that as the field itself requiring it. Moot here (installed 2.1.263), but the premise was wrong.
+3. **`effort` accepts five values, not four.** `max` exists alongside `low`, `medium`, `high`, `xhigh`.
+
+**What landed:**
+- `effort: low` on five non-verdict helpers; `effort: high` on two judges, each with a note that the field sets Claude wrapper's reasoning and is orthogonal to `judge_reasoning_effort` (vendor CLI effort, recorded on verdicts).
+- `color:` on all 42, documented values only, grouped by function: blue 15, green 9, yellow 9, purple 3, cyan 2, red 2, orange 2.
+- `maxTurns` on exactly two agents (triage, profile-loader) with protocol justification. Nothing on `engineer`, any authoring agent, or judge—a cap there truncates valid Reflexion into partial output.
+- Generator's agent enumeration now recursive and collision-refusing (flat walk would silently drop nested agents when subdirectories are used, which platform docs explicitly permit).
+- `daemon/test/agent-frontmatter.unit.mjs` — 156 tests / 10 suites. Full suite: 677 passed / 0 failed / 90 suites.
+
+**Two planned tasks dropped on discovery:**
+- **5.1 was already refuted**: assumed 33 agents inherited permissive tool surface when they were pointer stubs with no frontmatter.
+- **5.5's subdirectory folding is obsolete**: Phase E deleted exec and smith families, so all 42 remaining agents are harness agents. What is obsolete is the *three-way split*; a single `harness/` fold remains possible and was skipped as a judgment about value.
+
+**What the judges caught:**
+Three stages, three cross-vendor verdicts all on the agy lane — code (pass), tests (pass), docs (revise → pass). Findings (not shipped in code): orthogonality note reached only frontmatter, not body where `judge_reasoning_effort` is set (added to body); three color misfits (release-planner, retirement-planner, live-ops-manager reassigned to correct functional groups); `triage`'s cap had no margin for retried transient failure (raised from 4 to 6); collision throw was uncaught after mirrors written, hoisted above all writes; guard parser silently dropped unmatched lines so `max_turns : 5` and `effort=high` escaped unknown-key check (both now surfaced and asserted); a "mutation control" that re-implemented scan as `.includes()` (now uses real functions); **a defect the driver introduced**: raising `triage`'s cap left the comment reading `maxTurns=4` beneath the field `6` (shipped contradiction); new guard suite now asserts any `maxTurns=N` comment agrees with its field; changelog omitted three things in diff (four `.github/` mirrors, tracker edit, new export); test suite label destructured wrong field name (undefined printed) — fixed to destructure actual field.
+
+**Residuals that MUST survive into the master plan:**
+
+1. **The benefit of `effort` is unmeasured.** Nothing demonstrates `effort: low` reduces cost or `effort: high` improves judge output—premises from the plan, carried as written.
+2. **`copilot-model:` on `pair-programmer-orchestrator` is undocumented** — cross-tool metadata read only by generator, allow-listed on exactly that agent with non-spread asserted.
+3. **Prose-phrased stale justifications still escape** the new comment/value guard, which matches only literal `maxTurns=N`.
+4. **The `maxTurns` exclusion name list is a maintenance surface**, though closed-world set-equality is what catches a new authoring agent.
+5. **Falsification demos ran against temp copy while guard scans module constant**, so those demos could not exercise shipped assertions. Coverage real and verified; evidence offered was not.
+6. **One color unused: `pink`** — seven functional groups, seven colors. Deliberate.
+
+**Process pattern worth recording:**
+
+A guard caught a defect the driver introduced. Raising `triage`'s cap left the justifying comment naming the old number beneath the new value—the shipped justification contradicting the shipped value. Caught by a judge, not an assertion, so an assertion now exists: any frontmatter comment naming `maxTurns=N` must agree with the field beside it. This exemplifies why guard-strengthening requires cross-vendor judgment of the failure—the driver does not see what contradicts.
 

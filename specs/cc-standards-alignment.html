@@ -119,8 +119,8 @@ figure:has(img) .fig-pending { display: none; }
   <summary>Metadata</summary>
   <dl>
     <dt>created</dt><dd>2026-08-24</dd>
-    <dt>modified</dt><dd>2026-09-07 — Phase F landed; skills load for the first time, see Amendments</dd>
-    <dt>commits</dt><dd>branch <code>feat/cc-standards-alignment</code> — Phases A&ndash;F landed (runs <code>run_7tbXaLHTJU1x</code>, <code>run_3FLJhz2DDV6w</code>, ad hoc, <code>run_z6a4iH0m0V2G</code>, <code>run_2IkydL62USI3</code>, <code>run_CZvEeGpuKzLt</code>)</dd>
+    <dt>modified</dt><dd>2026-09-07 — Phase G landed; the plan was wrong about the platform three times, see Amendments</dd>
+    <dt>commits</dt><dd>branch <code>feat/cc-standards-alignment</code> — Phases A&ndash;G landed (runs <code>run_7tbXaLHTJU1x</code>, <code>run_3FLJhz2DDV6w</code>, ad hoc, <code>run_z6a4iH0m0V2G</code>, <code>run_2IkydL62USI3</code>, <code>run_CZvEeGpuKzLt</code>, <code>run_CvKoIWhSC8XV</code>)</dd>
     <dt>agent</dt><dd>plan-deep (Fable-5) — authored to the plan-deep output contract</dd>
     <dt>session</dt><dd>7aefb7e8-2948-46a1-b10b-f9422c843257</dd>
     <dt>back refs</dt><dd><code>.harness/run_kUPtCqHotdYn/postmortem.md</code> (PP-VG-6 delivery stall); <code>.harness/cc-standards-alignment-plan.md</code> (superseded markdown draft)</dd>
@@ -624,16 +624,30 @@ figure:has(img) .fig-pending { display: none; }
   </div>
 
   <div class="phase">
-    <h3 id="phase-g">Phase G — Subagent frontmatter <code class="status">[]</code> <span class="legend"><a href="https://github.com/lebobo88/pair-programmer/issues/48">#48</a> · (D4)</span></h3>
+    <h3 id="phase-g">Phase G — Subagent frontmatter <code class="status" data-st="x">[x]</code> <span class="legend"><a href="https://github.com/lebobo88/pair-programmer/issues/48">#48</a> · (D4)</span></h3>
     <p>Four of sixteen available fields are in use across 75 agents. Split into a safe half (5.1) and a
     gated half (5.2–5.4) because round 2 correctly rejected my "zero quality impact" claim.</p>
+    <p><b>Landed 2026-09-07</b> as run <code>run_CvKoIWhSC8XV</code>. Guard 156/156; full suite 677/677 across
+    90 suites; missability 6 pass / 0 fail / 51 n/a. Closed <code>surfaced</code> on PP-VG-5
+    (<a href="https://github.com/lebobo88/pair-programmer/issues/59">#59</a>), for the sixth time in this
+    campaign. All three verdicts came back on the <b>agy</b> lane first call — no substitution to report,
+    unlike Phase F where agy failed 2-for-2.</p>
+    <p><b>The platform facts were verified by the driver against <code>code.claude.com/docs</code>, not
+    delegated</b> — an agy critique earlier in this campaign fabricated two of three platform quotes at
+    confidence 1.0. That found <b>three things this plan had wrong</b>: there are <b>17</b> documented
+    frontmatter fields, not sixteen (and five were in use, not four — this plan predates Phase F's
+    <code>skills</code>); <code>maxTurns</code>' version gate is on the <em>partial marking</em>, not on the
+    field; and <code>effort</code> accepts <b>five</b> values, not four. It also settled Phase F's open
+    <code>frontend-design</code> question as <em>still unresolved</em>: the bundled-skills list in the docs is
+    explicitly illustrative ("such as"), so absence from it proves nothing, and those references stay
+    frozen.</p>
     <h4>Tasks</h4>
     <ul class="checklist">
       <li><code class="status" data-st="f">[f]</code> <b>5.1 OBSOLETE 2026-09-05 — refuted.</b> <s>Apply <code>tools:</code>/<code>disallowedTools:</code> to the 33 agents that declare no <code>tools:</code> and inherit the full surface including Write/Edit/Bash, against Hard Rule 5.</s> Those 33 files are one-line pointer stubs containing only an absolute <code>C:/AiAppDeployments/…</code> path. They have no frontmatter, so Claude Code never loads them as agents — there is no permissive-agent gap. Verified three ways (own count, Fable 5.1 audit, agy PowerShell pass): 75 files, 33 pointers, 33 without <code>tools:</code>, 33 without frontmatter — an exact overlap. The real defect is <b>50 dangling pointers</b> (33 agents + 17 skills), now <b>Phase E</b> / <a href="https://github.com/lebobo88/pair-programmer/issues/38">#38</a>. This phase applies to the <b>42 real agents</b> only.</li>
-      <li><code class="status">[]</code> <b>5.2</b> <code>effort: low</code> on non-verdict helpers (triage, profile-loader, taxonomy-mapper, run-finalizer, missability-inspector). Official Opus 5 guidance: "use <code>low</code> and <code>medium</code> liberally as your primary control for token cost."</li>
-      <li><code class="status">[]</code> <b>5.2</b> <code>effort: high</code> on judge-cross-vendor and security-reviewer per D4. Sonnet 5 default is already <code>high</code>; <code>xhigh</code> is the documented setting for the hardest agentic work. <b>Document explicitly</b> that this sets the <em>Claude wrapper's</em> reasoning and is orthogonal to <code>judge_reasoning_effort</code> — the vendor CLI's effort, validated at <code>runs.ts:1006-1012</code> and recorded on the verdict. It does <b>not</b> escalate the verdict; the judge model's effort remains the pin.</li>
-      <li><code class="status">[]</code> <b>5.3</b> <code>maxTurns:</code> including engineer.</li>
-      <li><code class="status">[]</code> <b>5.5</b> <code>color:</code> for transcript legibility; fold the flat agent files into <code>harness/</code>, <code>exec/</code>, <code>smith/</code> subdirectories — <code>.claude/agents/</code> is scanned recursively and only <code>name:</code> is identity. <b>But make <code>scripts/sync-copilot-assets.mjs</code> recursive first</b>: it reads <code>.claude/agents</code> flat at <code>:373-377</code>, so subdirectories would silently drop agents from the Copilot mirror.</li>
+      <li><code class="status" data-st="x">[x]</code> <b>5.2</b> <code>effort: low</code> on non-verdict helpers (triage, profile-loader, taxonomy-mapper, run-finalizer, missability-inspector). Official Opus 5 guidance: "use <code>low</code> and <code>medium</code> liberally as your primary control for token cost."</li>
+      <li><code class="status" data-st="x">[x]</code> <b>5.2</b> <code>effort: high</code> on judge-cross-vendor and security-reviewer per D4. Sonnet 5 default is already <code>high</code>; <code>xhigh</code> is the documented setting for the hardest agentic work. <b>Document explicitly</b> that this sets the <em>Claude wrapper's</em> reasoning and is orthogonal to <code>judge_reasoning_effort</code> — the vendor CLI's effort, validated at <code>runs.ts:1006-1012</code> and recorded on the verdict. It does <b>not</b> escalate the verdict; the judge model's effort remains the pin. <b>Landed 2026-09-07:</b> the <code>runs.ts:1006-1012</code> line citation was re-verified against the live file and is unchanged.</li>
+      <li><code class="status" data-st="x">[x]</code> <b>5.3</b> <code>maxTurns:</code> — <b>narrowed 2026-09-07, not "including engineer" as originally scoped.</b> Applied only to <code>triage</code> (cap 4) and <code>profile-loader</code> (cap 6), justified from each agent's own Procedure section (1 tool call and ≤2 tool calls respectively, no loops). Explicitly <b>not</b> applied to <code>engineer</code>, any authoring agent, or any judge — a turn cap on those can truncate a valid Reflexion attempt into a partial output, and no deterministic fixture proves a cap is safe when turn counts vary with the task. This is the plan's own authorised fallback (helpers-only subset), taken deliberately rather than as a failure.</li>
+      <li><code class="status" data-st="x">[x]</code> <b>5.5</b> <code>color:</code> for transcript legibility — landed on all 42 real agents, grouped by function (judges/lifecycle-helpers/generators/domain-specialists/security/QA). <b>The subdirectory-folding half of this task is DROPPED 2026-09-07 as obsolete</b>, for the same reason Phase E already used for its own refuted 5.1: Phase E deleted the exec and smith agent families, so all 42 remaining agents are harness agents — folding a single, already-homogeneous set into <code>harness/</code>/<code>exec/</code>/<code>smith/</code> subdirectories has no distinguishing groups left to fold along and achieves nothing. <b>The recursive-scan prerequisite for <code>scripts/sync-copilot-assets.mjs</code> was landed anyway</b> (now genuinely a "close the latent trap while the file is open" fix rather than a prerequisite for the dropped folding task): the flat <code>readdirSync(join(CLAUDE_DIR, "agents"))</code> is replaced with a recursive <code>enumerateAgentSources()</code> that also fails loudly on a basename collision across subdirectories, since Claude Code identifies subagents by <code>name:</code> frontmatter, not path.</li>
     </ul>
     <h4>Testing strategy — loop until every check passes before advancing</h4>
     <ul class="checklist">
@@ -1248,6 +1262,93 @@ figure:has(img) .fig-pending { display: none; }
         runs. Disclosed with the two signatures that distinguish GitHub #57 from a fixture of this phase's own.
         <b>The judge would have blocked on it; the driver did not</b> — that disagreement is recorded rather
         than left implicit.</li>
+    </ul>
+  </details>
+
+  <details class="amend" open>
+    <summary>2026-09-07 — Phase G: the plan was wrong about the platform three times, and a guard caught a defect the driver introduced</summary>
+
+    <p>Phase G added <code>effort</code>, <code>color</code> and a deliberately narrow <code>maxTurns</code> to
+    the 42 real agents, and made the Copilot generator's agent enumeration recursive. Run
+    <code>run_CvKoIWhSC8XV</code>.</p>
+
+    <h4>Verifying the platform facts rather than delegating them changed the phase</h4>
+    <p>Every field here is a Claude Code platform mechanism, and an agy critique earlier in this campaign
+    fabricated two of three platform-documentation quotes at confidence 1.0. So the driver fetched the
+    sub-agents and skills pages directly and quoted them verbatim into the implementation brief. Three of this
+    plan's premises were wrong:</p>
+    <ul>
+      <li><b>17 documented frontmatter fields, not sixteen</b> — and five were in use, not four, because this
+        plan was written before Phase F added <code>skills</code>.</li>
+      <li><b><code>maxTurns</code>' version gate is on the <em>partial marking</em>, not the field.</b> The
+        docs say "The partial marking requires Claude Code v2.1.246 or later"; the plan read that as gating
+        the field. Moot in practice — installed is 2.1.263 — but the premise was wrong.</li>
+      <li><b><code>effort</code> accepts five values, not four.</b> <code>max</code> exists.</li>
+    </ul>
+    <p>It also settled Phase F's open question as <em>still open</em>: the bundled-skills list is explicitly
+    illustrative, so <code>frontend-design</code>'s absence from it proves nothing either way. R17 holds.</p>
+
+    <h4>The orthogonality this phase exists to make unmistakable</h4>
+    <p>The plan's D4 wording read as though <code>effort: high</code> on a judge escalates the <em>verdict</em>.
+    It does not. The agent-level field sets the <b>Claude wrapper's</b> reasoning; <code>judge_reasoning_effort</code>
+    is the <b>vendor CLI's</b> effort, validated at <code>daemon/src/orchestrator/runs.ts:1006-1012</code> and
+    recorded on the verdict row. The note saying so is now in both the frontmatter and the body's field list,
+    because the judge found it reached only the frontmatter.</p>
+
+    <h4><code>maxTurns</code> was narrowed on purpose, not left half-done</h4>
+    <p>Applied to <code>triage</code> and <code>profile-loader</code> only, each justified from its own
+    protocol. <b>Nothing on <code>engineer</code>, any authoring agent, or any judge</b>: a turn cap there can
+    truncate a valid Reflexion attempt into output marked partial, and no deterministic fixture can prove a cap
+    safe when turn counts vary with the task. This plan authorises a helpers-only fallback and it was taken;
+    the judge agreed that was right rather than over-cautious, but found <code>triage</code>'s original cap of
+    4 had no margin for a retried transient failure — its Procedure has no error-handling step — so it was
+    raised to 6.</p>
+
+    <h4>A guard caught a defect the driver introduced</h4>
+    <p>Raising that cap changed the field and <b>left the justifying comment beside it reading
+    <code>maxTurns=4 ... 4 turns leaves margin</code></b>. The shipped justification contradicted the shipped
+    value, and a reader trusting the comment would have reasoned from the wrong number. It was caught by the
+    docs judge, not by any assertion — so an assertion now exists: any frontmatter comment naming
+    <code>maxTurns=N</code> must agree with the field beside it, mutation-proved by skewing the real comment.</p>
+
+    <h4>The guard's own parser had the exact defect it was written to catch</h4>
+    <p>It silently dropped any frontmatter line it could not match, so <code>max_turns : 5</code> (space before
+    the colon) and <code>effort=high</code> escaped the unknown-key check — <em>precisely</em> the "the platform
+    ignores your typo and the field looks set" failure that check exists to close. It also trimmed lines before
+    matching, promoting an indented key to a top-level one. Both drift directions are now surfaced and asserted
+    with five falsifiability cases.</p>
+
+    <h4>A latent generator trap, and a process error</h4>
+    <p>The generator read <code>.claude/agents</code> <b>flat</b>, so a subdirectory would have silently dropped
+    agents from the Copilot mirror even though the docs explicitly permit subdirectories. Now recursive and
+    collision-refusing — and hoisted above every write, because the judge found a collision aborted only
+    <em>after</em> the command mirrors had been written and pruned.</p>
+    <p>Recorded because it should not be silent: while proving a mutation control, the driver used
+    <code>git checkout --</code> to revert a deliberately mutated <code>engineer.md</code> — <b>a file that
+    still carried uncommitted Phase G work</b> — and discarded its <code>color:</code> field. The guard caught
+    it by going red and naming the file. Reverting to HEAD is the wrong tool for undoing a mutation on a dirty
+    file; the remaining proofs used a <code>cp</code>-based backup.</p>
+
+    <h4>The second planned task to be dropped on discovery</h4>
+    <p>5.1 had already been refuted for assuming the 33 pointer stubs were permissive agents. Now 5.5's
+    <code>harness</code>/<code>exec</code>/<code>smith</code> folding is <b>obsolete</b>: Phase E deleted the
+    exec and smith families, so all 42 remaining agents are harness agents. To be precise, since the judge
+    called the framing convenient — what is obsolete is the <em>three-way split</em>; a single
+    <code>harness/</code> fold remains possible and was skipped as a judgement about value. The recursion fix
+    this plan framed as its prerequisite was kept regardless.</p>
+
+    <h4>Residuals</h4>
+    <ul>
+      <li><b>The benefit of <code>effort</code> is unmeasured.</b> Nothing here shows <code>effort: low</code>
+        reduces cost or <code>effort: high</code> improves judge output. Those are this plan's premises,
+        carried forward as written rather than demonstrated.</li>
+      <li><code>copilot-model:</code> on <code>pair-programmer-orchestrator</code> is outside the documented 17
+        — genuine cross-tool metadata, allow-listed on exactly that agent with its non-spread asserted.</li>
+      <li>A prose-phrased stale justification still escapes the new comment/value guard, which matches only the
+        literal <code>maxTurns=N</code>.</li>
+      <li>The tests-stage falsification demos ran against a temp copy while the guard's real-tree scans read a
+        module constant, so those demos could not have exercised the shipped assertions. The coverage is real;
+        the evidence originally offered for it was not.</li>
     </ul>
   </details>
 </section>

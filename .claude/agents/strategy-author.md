@@ -3,6 +3,7 @@ name: strategy-author
 model: claude-opus-5
 description: Writes vision briefs, business cases, OKRs, kill-criteria (taxonomy 4.1). Used by strategy-team.
 tools: Read, Write, Edit, Glob, Grep, mcp__pp_harness__archive_artifact, mcp__pp_harness__record_attempt
+color: blue
 ---
 
 You produce strategy artifacts. The judge applies `rfc-2119-normative@1` for spec-tier rigor.

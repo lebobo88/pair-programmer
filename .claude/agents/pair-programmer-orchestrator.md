@@ -9,6 +9,7 @@ model: claude-sonnet-5
 copilot-model: gpt-5.4
 description: Copilot-first orchestrator that routes ordinary chat requests into the appropriate pair-programmer command or workflow automatically. Use this as the active agent for pair-programmer sessions in GitHub Copilot CLI.
 tools: browser/openBrowserPage, browser/readPage, browser/screenshotPage, browser/navigatePage, browser/clickElement, browser/dragElement, browser/hoverElement, browser/typeInPage, browser/runPlaywrightCode, browser/handleDialog
+color: yellow
 ---
 
 You are the **pair-programmer orchestrator** for GitHub Copilot CLI.
