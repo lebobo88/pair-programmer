@@ -60,6 +60,7 @@ import { fileURLToPath } from "node:url";
 import { dirname, join, relative, sep } from "node:path";
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
+import { isPointerFile } from "../../scripts/lib/pointer-file.mjs";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -102,30 +103,27 @@ function buildDanglingReferenceRegex() {
 const DANGLING_REFERENCE_RE = buildDanglingReferenceRegex();
 
 // ─── Pointer-file predicate (R10 definition, NFR4 portability) ────────────
-// A Windows drive-letter absolute path: `C:\...` or `C:/...`, single line,
-// no whitespace anywhere in what remains after trim.
-const WIN_ABS_RE = /^[A-Za-z]:[\\/]\S*$/;
-// A POSIX absolute path: `/...`, same constraints.
-const POSIX_ABS_RE = /^\/\S+$/;
-
-/**
- * Implements the spec's "Definition — pointer file" verbatim:
- *   1. strip a UTF-8 BOM, normalise CRLF -> LF, trim leading/trailing ws
- *   2. remaining content has no LF (exactly one line)
- *   3. does not begin with `---` (no frontmatter opener)
- *   4. matches an absolute-path shape (Windows drive-letter or POSIX), with
- *      no whitespace anywhere in the remaining content
- */
-function isPointerFile(rawContent) {
-  let s = rawContent;
-  if (s.length > 0 && s.charCodeAt(0) === 0xfeff) s = s.slice(1);
-  s = s.replace(/\r\n/g, "\n");
-  s = s.trim();
-  if (s.length === 0) return false;
-  if (s.includes("\n")) return false;
-  if (s.startsWith("---")) return false;
-  return WIN_ABS_RE.test(s) || POSIX_ABS_RE.test(s);
-}
+// R6.2 (Phase F): this used to be a second, independently-typed-out copy of
+// the predicate (WIN_ABS_RE / POSIX_ABS_RE / isPointerFile). It is now
+// imported from scripts/lib/pointer-file.mjs, the single shared definition
+// that scripts/sync-copilot-assets.mjs's syncMirrorEntry() also imports, so
+// the generator and this guard cannot drift apart the way two hand-copied
+// definitions could. This is the deletion CONSTITUTION.md FORBIDDEN-3
+// requires be documented as a replacement in the same commit: the local
+// `isPointerFile`/`WIN_ABS_RE`/`POSIX_ABS_RE` definitions below this comment
+// are gone, replaced by the `import { isPointerFile } from
+// "../../scripts/lib/pointer-file.mjs"` above.
+//
+// NEW-4: an earlier version of this comment pointed at a "mutation-control
+// test below" that mutates the shared module. No such automated test is
+// checked in, and claiming one existed was worse than admitting the gap. What
+// was actually done, out of band on 2026-09-07: `isPointerFile` in the shared
+// module was temporarily replaced with `return false`, which took this file
+// from 45 passing to 37 passing / 8 failing -- the 8 being every assertion
+// that expects a `true` classification. That proves the import is load-bearing
+// rather than decorative. It cannot be automated from inside this file without
+// an ESM loader hook to stub the import, so it is an operator check, not an
+// assertion. Do not re-add a claim that it is one.
 
 // ─── Bounded directory walker (NFR1, NFR5) ─────────────────────────────────
 const SKIP_DIR_NAMES = new Set(["node_modules", ".git", ".harness"]);
