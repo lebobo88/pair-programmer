@@ -130,6 +130,7 @@ _To be populated by harness runs._
 
 
 
+
 ### Run run_jc1UxeCMvyZR — 2026-08-22
 
 **Request:** Fix four daemon defects and establish no-secondary-vendor architectural constraint
@@ -314,6 +315,54 @@ _To be populated by harness runs._
 - **Copilot CLI runtime outside hook coverage**: the Copilot CLI is a shipped configuration whose vendor calls now reach execution_events but bypass cost-tally (no PostToolUse hook). Budget_status is a lower bound for that path until a correlation key exists between tool call and later attempt.
 - **SubagentStop reconciliation has no UPDATE path**: recordAttempt has no UPDATE, so whichever writer lands first wins permanently. Observation ledger ships; success test does not (marked `[f]` on verified grounds).
 - **deriveCallKey fallback mixes in coarse timestamp**: two distinct calls within the same second with identical detail still collide; rare, but makes execution_events a floor on event count, not exact.
+
+### Slash-command model overrides (Phase M, run `run_vU_JqUkQDAjf`, 2026-09-07)
+
+Five read-only render commands carry `model: haiku` — `/pp:budget`, `/pp:teams`, `/pp:rubrics`,
+`/pp:taxonomy`, `/pp:profile`. Three are deliberately held on the session model: `/pp:status`,
+`/pp:checklist`, `/pp:master`.
+
+**The rule is "one tool call and a table", not "read-only".** A command's `model` *"applies for the rest of
+the current turn and is not saved to settings"* — it is not scoped to the render, so anything else in the
+invoking turn runs on the overridden model too.
+
+> **A converted command may call only tools on the read-only allowlist in
+> `daemon/test/command-model-policy.unit.mjs`, and may not dispatch a sub-agent.**
+
+The allowlist is deliberately an allowlist rather than a list of writers: an unknown or newly-added tool
+**fails closed**. The denylist it replaced was incomplete (`artifact_validate`, `analyze_autogenesis`,
+`visual_regression_diff`, the `request_*` envelope bridges, Phase L's `hook_*` adapters), and lengthening it
+would have closed those instances while leaving the class open.
+
+**Tool-search model support is documented, not assumed:** *"Claude Sonnet 4.5, Claude Haiku 4.5, Claude
+Opus 4.5, and later models"*. Every one of these commands calls a deferred MCP tool, so this was the
+blocking question.
+
+**`/pp:master` is not read-only** — it calls `ensure_master_plan`, which writes `PROJECT_MASTER.md` when
+absent. Recorded because the plan and issue #54 both described all eight as "read-only render commands".
+
+### Hook timeouts have one source
+
+`.claude/hook-timeouts.json` declares the per-handler timeout in seconds for all 37 handlers, and both
+manifests derive from it. It exists because Phase L's `mcp_tool` entries carry no `timeout` (a command-hook
+field) while `hooks.json` must stay all-command and needs a `timeoutSec` for every entry — the generator had
+nowhere to read those 16 from and **silently skipped them**, taking `hooks.json` from 37 handlers to 21.
+`normalizeHooks` now converts an `mcp_tool` entry to its command form and **throws** on any shape it does
+not recognise.
+
+### Filenames that must not collide are created atomically, not checked-then-written
+
+`browser-validation.ts` named artifacts `report-${Date.now()}.md` under a comment claiming that stopped
+finalize calls clobbering each other. At millisecond granularity it did not, and `writeFileSync` overwrites
+silently — so a clean finalize in the same millisecond overwrote the **errors** report PP-VG-3 had retained,
+leaving the gate reporting "errors retained" over clean evidence.
+
+> **Where a filename carries the uniqueness guarantee, create the file with `flag: "wx"` and retry on
+> `EEXIST`.** A `existsSync`-then-write pair has a TOCTOU window and cannot support a cross-process claim.
+> Let every non-`EEXIST` error propagate: a permission fault must not be retried and then reported as a
+> naming problem.
+
+Whether this bare-`Date.now()` pattern appears elsewhere in `daemon/src` has not been audited.
 
 
 ## 14. Security, privacy, and compliance

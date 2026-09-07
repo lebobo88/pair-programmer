@@ -207,11 +207,36 @@ function parseMcpToolHook(h) {
   const m = h.tool.match(/^hook_(.+)$/);
   if (!m) return null;
   const rest = m[1];
+  // RESOLVE against the implemented handler inventory rather than transforming
+  // blind.
+  //
+  // This originally did `rest.slice(prefix.length).replace(/_/g, "-")`, the same
+  // unsound inverse that was fixed in `scripts/sync-copilot-assets.mjs` — the
+  // `-` → `_` mapping into an MCP tool name is not injective, so a handler whose
+  // real name contained an underscore would come back with that underscore
+  // turned into a hyphen. A cross-vendor judge caught that the sync had been
+  // fixed and this copy had not: a partial fix, which is worse than none,
+  // because the two now-divergent parsers would disagree about the same file.
+  //
+  // Every handler is hyphen-only today, so nothing was mis-parsed; the inverse
+  // was simply unsound. `EXPECTED_IMPLEMENTED` is the authoritative list, so
+  // find the one real handler whose name maps to this tool name.
   for (const ev of MCP_HOOK_EVENTS) {
     const prefix = `${ev}_`;
-    if (rest.startsWith(prefix)) {
-      return { event: ev, name: rest.slice(prefix.length).replace(/_/g, "-"), server: h.server };
+    if (!rest.startsWith(prefix)) continue;
+    const encoded = rest.slice(prefix.length);
+    const matches = EXPECTED_IMPLEMENTED
+      .filter(([event]) => event === ev)
+      .map(([, name]) => name)
+      .filter(name => name.replace(/-/g, "_") === encoded);
+    if (matches.length === 1) return { event: ev, name: matches[0], server: h.server };
+    if (matches.length > 1) {
+      throw new Error(
+        `adapter tool ${h.tool} is ambiguous under ${ev}: maps from ${JSON.stringify(matches)}. ` +
+          `Two handler names cannot differ only by - versus _.`,
+      );
     }
+    return null;
   }
   return null;
 }
@@ -926,6 +951,85 @@ function findTimeoutParityMismatches(templateJsonArg, hooksJsonJsonArg) {
   }
   return mismatches;
 }
+
+// ─── Phase M (#54) — `.claude/hook-timeouts.json` is the single source ─────
+//
+// WHY IT EXISTS. Phase L converted 16 hooks to `type: "mcp_tool"`, which carries
+// no `timeout` (that field belongs to the command-hook shape). But `hooks.json`
+// must stay all-command and every entry there needs a `timeoutSec`, so the
+// generator had nowhere to read those 16 from — and it SILENTLY SKIPPED them,
+// taking hooks.json from 37 handlers to 21. Nothing failed; the file just came
+// back smaller. The parity assertion above caught it on the next full run.
+//
+// The map removes the ambiguity, but only if it cannot itself drift, which is
+// what these three assertions are for: it must cover exactly the implemented
+// inventory, and it must agree with every command hook in BOTH manifests.
+const hookTimeoutsPath = join(REPO_ROOT, ".claude", "hook-timeouts.json");
+const hookTimeouts = JSON.parse(readFileSync(hookTimeoutsPath, "utf8")).timeouts;
+
+it("Phase M: hook-timeouts.json covers exactly the implemented handler inventory", () => {
+  const declared = Object.keys(hookTimeouts).sort();
+  const implemented = [...implementedPairKeys].map(k => k.replace(" ", "/")).sort();
+  assert.ok(declared.length > 0, "the timeout map is empty — every assertion below would be vacuous");
+  assert.deepEqual(
+    declared,
+    implemented,
+    "hook-timeouts.json must name exactly the implemented (event, name) pairs — no more, no fewer. A " +
+      "missing entry makes the Copilot mirror unbuildable; a stale extra one is a handler that no longer " +
+      "exists.",
+  );
+});
+
+it("Phase M: every value in hook-timeouts.json is a positive finite integer", () => {
+  for (const [k, v] of Object.entries(hookTimeouts)) {
+    assert.ok(
+      Number.isInteger(v) && v > 0,
+      `hook-timeouts.json ${k} = ${JSON.stringify(v)}; must be a positive integer number of seconds`,
+    );
+  }
+});
+
+it("Phase M: the map agrees with every command hook in BOTH manifests", () => {
+  // The map is only trustworthy while it matches what the manifests actually
+  // declare. Checked against both, in both directions of disagreement.
+  const problems = [];
+  for (const [key, tv] of templateTimeoutMap(templateJson)) {
+    const mapped = hookTimeouts[key.replace(" ", "/")];
+    if (mapped !== tv) problems.push(`[template] ${key}: file=${tv} map=${mapped}`);
+  }
+  let checkedHooksJson = 0;
+  for (const [key, hv] of hooksJsonTimeoutMap(hooksJsonJson)) {
+    checkedHooksJson += 1;
+    const mapped = hookTimeouts[key.replace(" ", "/")];
+    if (mapped !== hv) problems.push(`[hooks.json] ${key}: file=${hv} map=${mapped}`);
+  }
+  assert.ok(
+    checkedHooksJson > 0,
+    "hooks.json contributed no timeouts — if the sync dropped its entries again, this check would pass " +
+      "by comparing nothing, which is the exact failure mode that produced this map",
+  );
+  assert.deepEqual(problems, [], `hook-timeouts.json disagrees with a manifest: ${problems.join("; ")}`);
+});
+
+it("Phase M: hook-timeouts.json and hooks.json have identical key sets, asserted DIRECTLY", () => {
+  // The check above iterates hooks.json and looks each key up in the map, so a
+  // map key ABSENT from hooks.json is caught only transitively — via the
+  // inventory equality test plus manifest parity. A judge pointed out that
+  // relying on transitivity means one of those two tests being weakened
+  // silently reopens this. Asserted directly, in both directions, so it stands
+  // on its own.
+  const mapKeys = Object.keys(hookTimeouts).sort();
+  const hooksJsonKeys = [...hooksJsonTimeoutMap(hooksJsonJson).keys()]
+    .map(k => k.replace(" ", "/"))
+    .sort();
+  assert.ok(hooksJsonKeys.length > 0, "hooks.json contributed no keys — the comparison would be vacuous");
+  assert.deepEqual(
+    mapKeys,
+    hooksJsonKeys,
+    "hook-timeouts.json and hooks.json must name the same handlers. A map key with no hooks.json entry " +
+      "is a handler the mirror lost; a hooks.json entry with no map key makes the mirror unbuildable.",
+  );
+});
 
 it("AC-D31: template timeout equals hooks.json timeoutSec for every (event,name) pair in the real files", () => {
   const mismatches = findTimeoutParityMismatches(templateJson, hooksJsonJson);

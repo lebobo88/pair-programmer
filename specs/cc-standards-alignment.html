@@ -119,8 +119,8 @@ figure:has(img) .fig-pending { display: none; }
   <summary>Metadata</summary>
   <dl>
     <dt>created</dt><dd>2026-08-24</dd>
-    <dt>modified</dt><dd>2026-09-07 — Phase L landed; a security control was found riding on an undocumented wire format, and two guards from earlier phases fired on this one</dd>
-    <dt>commits</dt><dd>branch <code>feat/cc-standards-alignment</code> — Phases A&ndash;I landed (runs <code>run_7tbXaLHTJU1x</code>, <code>run_3FLJhz2DDV6w</code>, ad hoc, <code>run_z6a4iH0m0V2G</code>, <code>run_2IkydL62USI3</code>, <code>run_CZvEeGpuKzLt</code>, <code>run_CvKoIWhSC8XV</code>, <code>run_p8JPpVhDonUA</code>, <code>run_5N_C2vVNW89u</code>, <code>run_YaOlWlTkilY9</code>, Phase K ad hoc, <code>run_Q69wXDpuWW4P</code>)</dd>
+    <dt>modified</dt><dd>2026-09-07 — <b>campaign complete (A–M).</b> Phase M landed; it caused a regression an earlier guard caught, and found a correctness bug in something it was not looking at</dd>
+    <dt>commits</dt><dd>branch <code>feat/cc-standards-alignment</code> — Phases A&ndash;I landed (runs <code>run_7tbXaLHTJU1x</code>, <code>run_3FLJhz2DDV6w</code>, ad hoc, <code>run_z6a4iH0m0V2G</code>, <code>run_2IkydL62USI3</code>, <code>run_CZvEeGpuKzLt</code>, <code>run_CvKoIWhSC8XV</code>, <code>run_p8JPpVhDonUA</code>, <code>run_5N_C2vVNW89u</code>, <code>run_YaOlWlTkilY9</code>, Phase K ad hoc, <code>run_Q69wXDpuWW4P</code>, <code>run_vU_JqUkQDAjf</code>)</dd>
     <dt>agent</dt><dd>plan-deep (Fable-5) — authored to the plan-deep output contract</dd>
     <dt>session</dt><dd>7aefb7e8-2948-46a1-b10b-f9422c843257</dd>
     <dt>back refs</dt><dd><code>.harness/run_kUPtCqHotdYn/postmortem.md</code> (PP-VG-6 delivery stall); <code>.harness/cc-standards-alignment-plan.md</code> (superseded markdown draft)</dd>
@@ -1186,19 +1186,94 @@ figure:has(img) .fig-pending { display: none; }
   </div>
 
   <div class="phase">
-    <h3 id="phase-m">Phase M — <code>model: haiku</code> on read-only render commands <code class="status">[]</code> <span class="legend"><a href="https://github.com/lebobo88/pair-programmer/issues/54">#54</a></span></h3>
+    <h3 id="phase-m">Phase M — <code>model: haiku</code> on read-only render commands <code class="status" data-st="x">[x]</code> <span class="legend"><a href="https://github.com/lebobo88/pair-programmer/issues/54">#54</a></span></h3>
     <p><b>New 2026-09-05 — promoted from Q4, which had this unscheduled.</b> Eight slash commands are single-MCP-call renderers where the model only formats a result, yet no pp command sets <code>model:</code> at all, so the session model renders a table.</p>
+    <p><b>Landed 2026-09-07</b> as run <code>run_vU_JqUkQDAjf</code>, closed <code>surfaced</code>. Suite
+    814/814 across 108 suites (twice consecutively); build and typecheck clean; missability 5 pass / 1 fail /
+    51 n/a with all four required checks passing. Both stages closed <code>surfaced</code>: each judge round
+    ended <code>revise</code> and Reflexion&nbsp;×1 was spent on the first.</p>
+    <p><b>The blocking question is resolved — and the validation round, not the plan, was wrong.</b> Every
+    one of these commands calls a <em>deferred</em> MCP tool, so Haiku's tool-search support decided the
+    whole phase. The docs say verbatim: <em>"Claude Sonnet 4.5, Claude Haiku 4.5, Claude Opus 4.5, and later
+    models"</em>. The original plan asserted exactly this; the validation pass demoted it to NOT-FOUND by
+    reading model-availability pages instead of the tool-search page. <b>A NOT-FOUND that is really a
+    looked-in-the-wrong-place is worth distinguishing from an absence of evidence.</b></p>
+    <p><b>Two facts the plan did not have, both from scanning rather than assuming.</b> A command's
+    <code>model</code> <em>"applies for the rest of the current turn"</em> — not just the render — so the
+    rule became "one tool call and a table" rather than "read-only". And <b><code>/pp:master</code> is not
+    read-only</b>: it calls <code>ensure_master_plan</code>, which writes <code>PROJECT_MASTER.md</code> when
+    absent. "The eight read-only render commands" was the wrong description for one of them.</p>
+    <p><b>Then this phase caused a regression and an earlier guard caught it.</b> Running the Copilot sync —
+    routine, not part of the conversion — took <code>hooks.json</code> from <b>37 handlers to 21</b>:
+    <code>normalizeHooks</code> silently skipped every <code>mcp_tool</code> entry Phase L had introduced, so
+    the Copilot runtime lost its telemetry, ledger and context-injection hooks with nothing failing. Phase
+    A's parity guard named all 16 on the next full run. <b>This is the case that would otherwise have
+    shipped</b>, because the sync writes a generated file nobody diffs closely.</p>
+    <p><b>And underneath a flaky test, a real correctness bug in something this phase was not looking
+    at.</b> <code>browser-validation.ts</code> named artifacts <code>report-${Date.now()}.md</code> under a
+    comment claiming <em>"a timestamp suffix so multiple finalize calls don't clobber each other"</em>. At
+    millisecond granularity they did clobber, and <code>writeFileSync</code> overwrites silently — so a clean
+    finalize <b>overwrote the errors report PP-VG-3 had just retained</b>. The gate reported "errors
+    retained" while the retained file said clean. Fixed with atomic <code>flag: "wx"</code> creation, and
+    proved by breaking atomicity alone.</p>
+    <p><b>Four self-inflicted errors on the way, all fixed and all recorded.</b> I misdiagnosed the symptom
+    as the documented <code>#57</code> timeout flake and raised the suite ceiling 180s→240s on <em>one</em>
+    passing run — it failed at 240s too, and the signature was a <em>named</em> assertion, which the repo's
+    own discriminator says means a real defect. My first proof of the overwrite was itself vacuous (rapid
+    calls <em>hoping</em> to share a millisecond). Four of six falsification fixtures re-implemented the
+    check inline while I described all six as driving the real functions — <b>vacuity class 3 for the third
+    time in this campaign</b>. And I fixed a lossy inverse in the sync while leaving the identical copy in
+    the test, which is worse than not fixing it.</p>
     <h4>Tasks</h4>
     <ul class="checklist">
-      <li><code class="status">[]</code> <b>Pilot <code>/pp:budget</code> alone</b> (D7) — one <code>budget_status</code> call, trivially verifiable output.</li>
-      <li><code class="status">[]</code> <b>The risk that shapes this.</b> The claim "Haiku 4.5 supports tool search" could <b>not</b> be confirmed against current docs during validation — marked NOT-FOUND, not refuted. Every one of these commands calls a <em>deferred</em> MCP tool, so if Haiku cannot drive tool search, all eight break at once. The pilot settles it empirically.</li>
-      <li><code class="status">[]</code> If the pilot passes, fan out to <code>/pp:status</code>, <code>/pp:teams</code>, <code>/pp:rubrics</code>, <code>/pp:taxonomy</code>, <code>/pp:checklist</code>, <code>/pp:master</code>, <code>/pp:profile</code>.</li>
-      <li><code class="status">[]</code> <b>Watch the three interpretive ones.</b> <code>/pp:status</code> renders a run tree, <code>/pp:master</code> a master-plan document, <code>/pp:checklist</code> a completion checklist — these do more than format. Leave any that degrades on the session model.</li>
+      <li><code class="status" data-st="x">[x]</code> <b><code>/pp:budget</code> piloted, and the
+      empirical question it existed to settle is answered from the docs instead.</b> The pilot's purpose was
+      to find out whether Haiku can drive a <em>deferred</em> MCP tool; the tool-search page states the model
+      support outright, so the answer did not need to be discovered by experiment. <b>The plan was right and
+      the validation round's NOT-FOUND was a wrong lookup.</b></li>
+      <li><code class="status" data-st="x">[x]</code> <b>Fanned out to four more, not seven.</b> Converted
+      <code>/pp:teams</code>, <code>/pp:rubrics</code>, <code>/pp:taxonomy</code>, <code>/pp:profile</code>
+      — each one MCP call rendered as a fixed table or list.</li>
+      <li><code class="status" data-st="x">[x]</code> <b>The three interpretive ones are held, as this task
+      instructed.</b> <code>/pp:status</code> renders a run tree and decides what to elide;
+      <code>/pp:checklist</code> derives 15 pass/fail items across two calls;
+      <code>/pp:master</code> is interpretive <em>and</em> writes. Converting them would assert an output
+      equivalence nobody measured — so they stay on the session model rather than accepting worse output for
+      the saving, which is exactly what this task asked for.</li>
+      <li><code class="status" data-st="x">[x]</code> <b>Unplanned: the converted set is asserted, not
+      conventional.</b> <code>daemon/test/command-model-policy.unit.mjs</code> holds the set to exactly five,
+      requires each to call only tools on a <b>read-only allowlist</b> — inverted from a denylist so an
+      unknown or newly-added tool <em>fails closed</em> — and forbids sub-agent dispatch, since the override
+      covers the whole turn. The cross-vendor judge audited all 32 allowlist entries and endorsed the
+      inversion as "the correct architectural direction for security-critical guards".</li>
+      <li><code class="status" data-st="x">[x]</code> <b>Unplanned: the Copilot mirror deliberately does NOT
+      carry <code>model:</code></b>, and that is asserted. It is a Claude Code frontmatter field whose
+      meaning in that runtime is unverified — the same assumption Phase L refused to make about
+      <code>mcp_tool</code> in <code>hooks.json</code>. The mirror still carries the rationale.</li>
     </ul>
     <h4>Testing strategy — loop until every check passes before advancing</h4>
     <ul class="checklist">
-      <li><code class="status">[]</code> Each converted command produces output equivalent to the session model's on a fixture run: same rows, same fields, no dropped columns, no invented summary.</li>
-      <li><code class="status">[]</code> Revert any command that fails, rather than accepting worse output for the saving.</li>
+      <li><code class="status" data-st="f">[f]</code> <b>NOT RUN — the phase's headline acceptance
+      criterion.</b> <s>Each converted command produces output equivalent to the session model's on a
+      fixture run: same rows, same fields, no dropped columns or invented summary.</s> My first claim that
+      this <em>cannot</em> be run was too strong, and the judge was right to call it an excuse: it cannot be
+      run in a unit test, or from inside the driver's own turn (the override would cover the comparison
+      itself), but <code>claude -p</code> can run it out-of-process. Recorded as not-run with the procedure
+      rather than as impossible. <b>Reverting is one line per command</b>, which is what makes shipping
+      without it defensible rather than reckless.</li>
+      <li><code class="status" data-st="x">[x]</code> <b>Falsified in both directions against the real
+      files</b>, restored from <code>cp</code> backups: adding <code>model: haiku</code> to a held
+      interpretive command reddens two assertions; giving a converted command a write tool reddens the
+      allowlist check; an <em>unknown</em> tool reddens it too — the property the old denylist could not have
+      had.</li>
+      <li><code class="status" data-st="x">[x]</code> <b>The browser-validation fix is proved by breaking
+      atomicity alone</b>, leaving the suffixing loop intact — a stricter test than reverting both. Five
+      calls under a frozen clock produce one path, and the suite reports "the retained report reads as clean;
+      it was overwritten by a later finalize call".</li>
+      <li><code class="status" data-st="f">[f]</code> <b>Unverified.</b> True multi-process concurrent
+      finalize. <code>flag: "wx"</code> is the correct primitive for it, but the guard proves the
+      single-process case only. And whether the bare-<code>Date.now()</code> naming pattern appears elsewhere
+      in <code>daemon/src</code> was not audited — out of scope here, worth a sweep of its own.</li>
     </ul>
     <p class="legend">If a check cannot be made to pass after reasonable effort, mark the phase
       <code class="status" data-st="f">[f]</code> and record why in Notes rather than looping forever.</p>

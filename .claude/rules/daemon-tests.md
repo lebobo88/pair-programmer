@@ -38,7 +38,10 @@ node --test --test-timeout=180000 daemon/test/*.unit.mjs
 `node --test` runs files concurrently, `finalize-gates-a.unit.mjs` takes ~26–33 s alone, and the ceiling is a
 function of **total parallel load, not of any one file**. History, because it will move again: 60 s failed and
 120 s passed (GitHub #57); then 120 s failed once the campaign added ten suites, and 180 s passed. **If you
-add suites and the sweep goes red, check this before assuming you broke something.**
+add suites and the sweep goes red, check this before assuming you broke something — but check the failure's
+SHAPE first.** Phase M read a `finalize-gates-a` failure as this flake and raised the ceiling to 240 s off one
+passing run; it failed at 240 s too, and the real cause was a *named* assertion from a millisecond filename
+collision that no timeout affects. The raise was reverted. The two signatures below are load-bearing.
 
 **The failure mode is the dangerous part.** It surfaces as a bare `'test failed'` at `:1:1` with *no
 assertion text*, which is indistinguishable from a real regression. Two signatures tell them apart:

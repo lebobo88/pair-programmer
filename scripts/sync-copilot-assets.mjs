@@ -544,6 +544,107 @@ function describeHookCommand(command) {
  * care about accounting (e.g. a future standalone fixture test) does not
  * have to construct one.
  */
+/**
+ * Recover a handler name from a Phase L adapter tool name.
+ *
+ * `hook_<Event>_<handler_with_underscores>` — the handler's real name uses
+ * hyphens, which MCP tool names cannot contain. The event is stripped by exact
+ * prefix rather than by splitting on the first `_`, because several events are
+ * themselves multi-word (`PostToolUseFailure`, `SubagentStart`) and a naive
+ * split would mis-attribute every one of them.
+ */
+function handlerFromAdapterTool(tool, eventName) {
+  if (typeof tool !== "string") return null;
+  const prefix = `hook_${eventName}_`;
+  if (!tool.startsWith(prefix)) return null;
+  const rest = tool.slice(prefix.length);
+  if (!rest) return null;
+
+  // RESOLVE against the real handler inventory rather than transforming blind.
+  //
+  // The first version returned `rest.replaceAll("_", "-")`, which a
+  // cross-vendor judge correctly called lossy: the `-` → `_` mapping that
+  // produces an MCP tool name is not injective, so any handler whose real name
+  // legitimately contains an underscore would come back with that underscore
+  // turned into a hyphen — silently emitting a command for a handler that does
+  // not exist. Every handler happens to be hyphen-only today, so nothing was
+  // wrong in the tree; the inverse was simply unsound.
+  //
+  // The timeout map's keys ARE the handler inventory (a guard holds them to it),
+  // so the sound inverse is to find the one real handler whose name maps to
+  // this tool name, and to refuse if it is absent or ambiguous.
+  const inventory = hookInventoryFromTimeouts();
+  const candidates = inventory
+    .filter(({ event }) => event === eventName)
+    .map(({ handler }) => handler)
+    .filter(handler => handler.replaceAll("-", "_") === rest);
+
+  if (candidates.length === 1) return candidates[0];
+  if (candidates.length > 1) {
+    throw new Error(
+      `[sync-copilot-assets] adapter tool ${tool} is ambiguous under ${eventName}: it maps from ` +
+      `${JSON.stringify(candidates)}. Two handler names cannot differ only by - versus _.`,
+    );
+  }
+  return null;
+}
+
+let HOOK_INVENTORY = null;
+
+/**
+ * `{event, handler}` pairs from `.claude/hook-timeouts.json`, which a guard
+ * holds to the daemon's implemented handler set.
+ */
+function hookInventoryFromTimeouts() {
+  if (!HOOK_INVENTORY) {
+    const p = join(CLAUDE_DIR, "hook-timeouts.json");
+    if (!existsSync(p)) {
+      throw new Error(`[sync-copilot-assets] ${p} is missing; it is the handler inventory this sync resolves against.`);
+    }
+    const timeouts = JSON.parse(readText(p)).timeouts ?? {};
+    HOOK_INVENTORY = Object.keys(timeouts).map(key => {
+      const idx = key.indexOf("/");
+      return { event: key.slice(0, idx), handler: key.slice(idx + 1) };
+    });
+  }
+  return HOOK_INVENTORY;
+}
+
+let HOOK_TIMEOUTS = null;
+
+/**
+ * Per-handler timeout in seconds, from `.claude/hook-timeouts.json`.
+ *
+ * A converted `mcp_tool` entry carries no `timeout` — that field belongs to the
+ * command-hook shape — so the value for those 16 handlers has to come from
+ * somewhere when rebuilding the all-command mirror. It comes from one declared
+ * map that a guard holds against both manifests, rather than from a default
+ * substituted here: this generator has refused to invent a timeout since Phase
+ * D, and that refusal is the reason the regression surfaced as a dropped entry
+ * instead of a wrong number.
+ */
+function hookTimeoutFor(eventName, handler, sourcePath) {
+  if (!HOOK_TIMEOUTS) {
+    const p = join(CLAUDE_DIR, "hook-timeouts.json");
+    if (!existsSync(p)) {
+      throw new Error(
+        `[sync-copilot-assets] ${p} is missing; it is the single source for hook timeouts and is ` +
+        `required to rebuild hooks.json from a template containing mcp_tool entries.`,
+      );
+    }
+    HOOK_TIMEOUTS = JSON.parse(readText(p)).timeouts ?? {};
+  }
+  const key = `${eventName}/${handler}`;
+  const t = HOOK_TIMEOUTS[key];
+  if (typeof t !== "number") {
+    throw new Error(
+      `[sync-copilot-assets] ${sourcePath}: no timeout declared for ${key} in ` +
+      `.claude/hook-timeouts.json. Add it there rather than defaulting one here.`,
+    );
+  }
+  return t;
+}
+
 function normalizeHooks(sourcePath, targetPaths, { allowShrink = false, counts = { skipped: 0 } } = {}) {
   const settings = JSON.parse(readText(sourcePath));
   const hooks = { version: 1, hooks: {} };
@@ -552,13 +653,49 @@ function normalizeHooks(sourcePath, targetPaths, { allowShrink = false, counts =
     hooks.hooks[eventName] = [];
     for (const entry of entries) {
       for (const hook of entry.hooks ?? []) {
-        if (hook.type !== "command" || !hook.command) continue;
-        const command = hook.command.replaceAll("__PP_DAEMON__", "daemon/dist/index.js");
-        const timeout = hook.timeout;
+        // Phase M (#54): an `mcp_tool` entry is CONVERTED to its command form
+        // rather than skipped.
+        //
+        // This line used to read `if (hook.type !== "command") continue;`, and
+        // that silent skip is what took hooks.json from 37 handlers to 21 the
+        // first time the sync ran after Phase L converted 16 entries to
+        // `mcp_tool`. Nothing failed; the file just came back smaller, and the
+        // Copilot runtime quietly lost its telemetry, context-injection and
+        // ledger hooks. `hook-inventory.unit.mjs` caught it on the next full
+        // suite run, which is the only reason it did not ship.
+        //
+        // The mirror must stay all-command — `mcp_tool` is a Claude Code hook
+        // type whose meaning in the Copilot runtime is unverified — so the
+        // command line is reconstructed from the adapter's tool name, which
+        // encodes the same `<event> <handler>` pair the command carries.
+        let command;
+        let timeout;
+
+        if (hook.type === "mcp_tool") {
+          const pair = handlerFromAdapterTool(hook.tool, eventName);
+          if (!pair) {
+            throw new Error(
+              `[sync-copilot-assets] ${sourcePath}: cannot recover a handler name from mcp_tool entry ` +
+              `${JSON.stringify(hook.tool)} under ${eventName}. Refusing to drop the entry -- a silently ` +
+              `smaller hooks.json is exactly the failure this branch exists to prevent.`,
+            );
+          }
+          command = `node "daemon/dist/index.js" hook ${eventName} ${pair}`;
+          timeout = hookTimeoutFor(eventName, pair, sourcePath);
+        } else if (hook.type === "command" && hook.command) {
+          command = hook.command.replaceAll("__PP_DAEMON__", "daemon/dist/index.js");
+          timeout = hook.timeout;
+        } else {
+          throw new Error(
+            `[sync-copilot-assets] ${sourcePath}: unrecognised hook entry under ${eventName}: ` +
+            `${JSON.stringify(hook).slice(0, 200)}. Refusing to skip it silently.`,
+          );
+        }
+
         if (typeof timeout !== "number" || !Number.isFinite(timeout) || timeout <= 0) {
           throw new Error(
             `[sync-copilot-assets] ${sourcePath}: missing or invalid "timeout" for ` +
-            `(${eventName}, ${describeHookCommand(hook.command)}); every hook entry must declare ` +
+            `(${eventName}, ${describeHookCommand(command)}); every hook entry must declare ` +
             `a positive finite numeric timeout -- refusing to substitute a default.`,
           );
         }
