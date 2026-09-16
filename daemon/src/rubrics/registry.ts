@@ -389,9 +389,11 @@ Score 0..1 for each dimension. Applies to PRD / product-requirements artifacts.
   rather than silently assumed away.
 
 Outcome — exactly one of the following three applies (total, mutually
-exclusive partition; mirrors Hydra's \`prd-quality@1\` judge rubric in
-\`hydra_core/judge/registry.py\` so a PRD artifact scores identically
-regardless of which side judges it):
+exclusive partition; follows the same convention as Hydra's
+\`plan-decomposition-quality@1\` judge rubric in
+\`hydra_core/judge/registry.py\` — Hydra has no PRD-specific rubric, but this
+PRD rubric's pass/fail/revise thresholds are structured the same way so the
+convention stays consistent across rubric bodies):
 - pass: problem_statement, functional_requirements and acceptance_criteria
   (the structural minimum) are all ≥ 0.6, AND no dimension equals 0.
 - fail: any dimension equals 0, OR any of {problem_statement,

@@ -23,11 +23,12 @@
 //      artifact_kind:"prd" WITH rubric_hint:"rfc-2119-normative@1" resolves
 //      to rfc-2119-normative@1 documents that rubric_hint takes precedence
 //      over the artifact_kind map.
-//   6. Outcome-partition text proof: prd-quality@1 and
-//      plan-decomposition-quality@1 markdown bodies literally encode the
-//      pass/fail/revise thresholds (0.6, 0.4, "exactly one") and name their
-//      structural dimensions, so the Hydra-mirrored partition can't silently
-//      drift out of the rubric text.
+//   6. Outcome-partition text proof: prd-quality@1 (same-convention
+//      partition; Hydra has no PRD-specific rubric) and
+//      plan-decomposition-quality@1 (Hydra-mirrored partition) markdown
+//      bodies literally encode the pass/fail/revise thresholds (0.6, 0.4,
+//      "exactly one") and name their structural dimensions, so the
+//      partition can't silently drift out of the rubric text.
 //
 // Self-contained: pure functions from dist/, no daemon, no DB writes, no
 // mutation of compiled output.
@@ -140,7 +141,7 @@ test("precedence proof: rubric_hint wins over the artifact_kind map", () => {
   assert.equal(decision.rubric_id, "rfc-2119-normative@1");
 });
 
-test("prd-quality@1 markdown literally encodes the Hydra-mirrored outcome partition", () => {
+test("prd-quality@1 markdown literally encodes the same-convention outcome partition", () => {
   const r = getRubric("prd-quality@1");
   assert.match(r.markdown, /0\.6/, "pass threshold 0.6 must appear verbatim");
   assert.match(r.markdown, /0\.4/, "fail threshold 0.4 must appear verbatim");
