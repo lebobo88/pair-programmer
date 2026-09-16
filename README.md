@@ -148,7 +148,7 @@ Cross-vendor gates require **two** configured vendors. The `SessionStart.vendor-
 | **Slash Commands** | 19 | `/pp:run`, `/pp:best-of`, `/pp:team`, `/pp:review`, `/pp:constitution`, `/pp:evolution`, and 13 more |
 | **Teams** | 25 | feature, bug-fix, refactor, security-review, ux, design-system, deep-reasoning (Fable-5), game-cert, game-live-ops, and 16 more |
 | **Profiles** | 16 | web-ui, api-platform, enterprise, ai-agentic, mobile, game-dev-unity, game-dev-unreal, and 9 more |
-| **Rubrics** | 25 | WCAG 2.2 AA, OWASP ASVS L1/L2, C4, OpenAPI 3.1, SLSA L2/L3, NIST AI RMF, Game Accessibility Guidelines, and 17 more |
+| **Rubrics** | see `list_rubrics` | WCAG 2.2 AA, OWASP ASVS L1/L2, C4, OpenAPI 3.1, SLSA L2/L3, NIST AI RMF, Game Accessibility Guidelines, and more |
 | **Hooks** | 29 | across 5 events (SessionStart, PreToolUse, PostToolUse, UserPromptSubmit, Stop): `block-destructive-shell`, cost tallying, vendor-matrix check, +3 TheEights recall hooks, and 23 more (26 wired in `settings.json`, all 29 in `hooks.json`) |
 | **Missability Checks** | 56 | 23 generic (NFRs, authz, data retention) + 33 game-dev (console TRC, netcode, live-service, accessibility) |
 | **Skills** | 8 | pair-programmer master skill, taxonomy-adherence, master-plan-patching, game-design, frontend-design, and 3 more |
@@ -219,7 +219,7 @@ pair-programmer/
       mcp/                        # 3 MCP servers: harness (75 tools), codex (2), agy (2)
       orchestrator/               # runs, gates, taxonomy, missability, best-of-n, profiles, teams, forums
       ecosystem/                  # TheEights client, Hydra envelopes
-      rubrics/                    # 25 standard-aligned rubric definitions
+      rubrics/                    # standard-aligned rubric definitions (call `list_rubrics` for the current roster)
       hooks/                      # hook dispatcher + bash-safety (29 hooks / 5 events)
       security/                   # untrusted-envelope wrapping, secret-scan
       http/                       # read-only control plane (127.0.0.1:7878)

@@ -87,7 +87,7 @@ For lower-stakes gates (`code_style`, `docs_polish`, `lint_class`) the harness p
 | Sub-agents | 75 |
 | Specialized teams | 25 |
 | Project profiles | 16 |
-| Standard-aligned rubrics | 25 |
+| Standard-aligned rubrics | see `list_rubrics` |
 | Governance forums | 10 |
 | Missability checks | 56 |
 | Hooks (5 events) | 29 |
@@ -1771,7 +1771,7 @@ You should only need the manual flag when calling the Codex CLI yourself outside
 | **missability check** | Heuristic inspector that scans artifacts for evidence of an easy-to-miss topic. 56 in the library (23 generic + 33 game-dev). Each check's `triggers(artifactKinds, requiredSections)` function decides whether it fires; team / profile `required_missability_checks` force-evaluate a check (yielding `pass` or `fail`, never `n/a`). |
 | **profile** | YAML at `<project>/.harness/profile.yaml` that activates project-type-specific gates. 16 built-ins. |
 | **Reflexion ×1** | At most one critique-fed retry per failed attempt. Then surface. |
-| **rubric** | Standard-aligned scoring guide applied at a gate. 25 ship in the registry; project files at `<project>/.claude/rubrics/<bare-id>.md` are loaded only for IDs the registry doesn't have (registry-first). |
+| **rubric** | Standard-aligned scoring guide applied at a gate. Call `list_rubrics` for the current roster shipped in the registry; project files at `<project>/.claude/rubrics/<bare-id>.md` are loaded only for IDs the registry doesn't have (registry-first). |
 | **run** | One invocation of `/pp:run` / `/pp:best-of` / `/pp:team` / `/pp:review`. Has a `run_id` and a directory. |
 | **same-vendor judge** | Judge whose vendor matches the generator. Always a **different** model id — identical generator/judge ids are rejected for every producer — and always supplementary: a same-vendor verdict never closes a stage (JUDGE-2). |
 | **sandbox** | Codex's `read-only | workspace-write | danger-full-access` flag. Mapped per stage kind. |

@@ -13,8 +13,10 @@ note: This file mirrors the registry in daemon/src/rubrics/registry.ts. Do not e
 Score 0..1 for each dimension. Judges a PLAN artifact on whether it
 decomposes the stated goal into a sound, dependency-correct, testable set of
 steps. Dimension names mirror Hydra's `plan-decomposition-quality@1` judge
-rubric (`hydra_core/judge/registry.py`) on the same 0..1 scale so a plan
-artifact scores identically regardless of which side judges it.
+rubric (`hydra_core/judge/registry.py`), which scores the same dimensions
+on a 0..5 scale. This rubric's 0..1 thresholds are Hydra's 0..5 thresholds
+normalized (>=3/5 -> >=0.6; <2/5 -> <0.4), so outcomes agree after
+normalization even though raw scores are on different scales.
 
 - **goal_fidelity**: the plan's goal restatement and steps actually address
   the stated goal — no drift, no scope invention.
@@ -40,8 +42,10 @@ artifact scores identically regardless of which side judges it.
 
 Outcome — exactly one of the following three applies (total, mutually
 exclusive partition; mirrors Hydra's `plan-decomposition-quality@1` judge
-rubric in `hydra_core/judge/registry.py` so a plan artifact scores
-identically regardless of which side judges it). `cell_coverage` is
+rubric in `hydra_core/judge/registry.py`, whose 0..5-scale thresholds
+(pass >=3/5, fail <2/5) normalize to this rubric's 0..1 thresholds below, so
+outcomes agree after normalization even though raw scores differ in scale).
+`cell_coverage` is
 ADVISORY and is excluded from every rule below; skip it when the classifier
 is unavailable — it never gates the outcome:
 - pass: goal_fidelity, decomposition_soundness and dependency_correctness
