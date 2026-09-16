@@ -1214,7 +1214,7 @@ const TOOLS: ToolDef[] = [
   },
   {
     name: "list_rubrics",
-    description: "List all 13 standard-aligned rubrics (id, kind, version, title, source_url) — body bytes are fetched separately via get_rubric.",
+    description: "List all registered standard-aligned rubrics (id, kind, version, title, source_url) — body bytes are fetched separately via get_rubric.",
     schema: ListRubricsSchema,
     handler: () => listRubrics(),
   },

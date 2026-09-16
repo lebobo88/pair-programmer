@@ -31,7 +31,12 @@ Score 0..1 for each dimension. Applies to PRD / product-requirements artifacts.
 - **risks_and_open_questions**: known risks and open questions are surfaced
   rather than silently assumed away.
 
-Outcome:
-- pass: every dimension ≥ 0.7.
-- revise: any dimension in [0.5, 0.7).
-- fail: any of {problem_statement, functional_requirements, acceptance_criteria} < 0.5 — these are the structural minimum.
+Outcome — exactly one of the following three applies (total, mutually
+exclusive partition; mirrors Hydra's `prd-quality@1` judge rubric in
+`hydra_core/judge/registry.py` so a PRD artifact scores identically
+regardless of which side judges it):
+- pass: problem_statement, functional_requirements and acceptance_criteria
+  (the structural minimum) are all ≥ 0.6, AND no dimension equals 0.
+- fail: any dimension equals 0, OR any of {problem_statement,
+  functional_requirements, acceptance_criteria} < 0.4.
+- revise: every other score vector (i.e. neither pass nor fail applies).

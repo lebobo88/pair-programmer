@@ -15,21 +15,27 @@
 //      declared rubric_id AND when that value is threaded through evaluateGate
 //      as rubric_hint (the precedence path .claude/commands/pp/review.md
 //      actually uses: rubric_hint=stage.rubric_id).
-//   5. Mutation proof: temporarily removing the "plan" entry from the routing
-//      map (re-derived here via a local copy of pickDefaultRubric's fallback
-//      behavior) is exercised by calling evaluateGate with an unmapped kind
-//      and confirming it does NOT resolve to plan-decomposition-quality@1 —
-//      i.e. the map entry, not gate_type defaulting, is what makes the "plan"
-//      test pass. See inline test for the actual delete-and-restore proof
-//      against the compiled dist module.
+//   5. Non-vacuity proof (no on-disk mutation): evaluateGate with NO
+//      artifact_kind at all falls back to the gate_type default
+//      rfc-2119-normative@1, while artifact_kind:"plan" resolves to
+//      plan-decomposition-quality@1 — proving the artifact_kind map (not the
+//      gate_type default) drives the "plan" result. A further check that
+//      artifact_kind:"prd" WITH rubric_hint:"rfc-2119-normative@1" resolves
+//      to rfc-2119-normative@1 documents that rubric_hint takes precedence
+//      over the artifact_kind map.
+//   6. Outcome-partition text proof: prd-quality@1 and
+//      plan-decomposition-quality@1 markdown bodies literally encode the
+//      pass/fail/revise thresholds (0.6, 0.4, "exactly one") and name their
+//      structural dimensions, so the Hydra-mirrored partition can't silently
+//      drift out of the rubric text.
 //
-// Self-contained: pure functions from dist/, no daemon, no DB writes.
+// Self-contained: pure functions from dist/, no daemon, no DB writes, no
+// mutation of compiled output.
 
 import { strict as assert } from "node:assert";
 import test from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { dirname, join } from "node:path";
-import { readFileSync, writeFileSync } from "node:fs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const DIST = join(__dirname, "..", "dist");
@@ -107,37 +113,49 @@ test("forum 'scope' stage (kind=prd) resolves prd-quality@1", () => {
   assert.equal(decision.rubric_id, "prd-quality@1");
 });
 
-test("mutation proof: deleting the artifact_kind->rubric source mapping breaks plan routing", async () => {
-  // Edit the compiled dist file directly (pure-function module, no DB): drop
-  // the "plan" entry from ARTIFACT_KIND_RUBRICS, re-import via a cache-busting
-  // query string, confirm the plan routing test would now fail, then restore
-  // the file exactly and re-verify the fix is back.
-  const gatesDistPath = join(DIST, "orchestrator", "gates.js");
-  const original = readFileSync(gatesDistPath, "utf8");
-  assert.match(original, /plan:\s*"plan-decomposition-quality@1"/, "expected the plan mapping in dist output");
+test("non-vacuity proof: artifact_kind map (not gate_type default) drives 'plan' routing", () => {
+  // With no artifact_kind at all, evaluateGate falls back to the gate_type
+  // default (rfc-2119-normative@1) — confirming that default is NOT
+  // plan-decomposition-quality@1 or prd-quality@1 on its own.
+  const noKind = evaluateGate({ gate_type: "spec" });
+  assert.equal(noKind.rubric_id, "rfc-2119-normative@1");
 
-  const mutated = original.replace(/plan:\s*"plan-decomposition-quality@1",?\s*/, "");
-  assert.notEqual(mutated, original, "mutation must actually change the file");
+  // artifact_kind:"plan" resolves differently from the no-kind default,
+  // proving the ARTIFACT_KIND_RUBRICS map entry (not gate_type defaulting)
+  // is what makes plan routing resolve to plan-decomposition-quality@1.
+  const planKind = evaluateGate({ gate_type: "spec", artifact_kind: "plan" });
+  assert.equal(planKind.rubric_id, "plan-decomposition-quality@1");
+  assert.notEqual(planKind.rubric_id, noKind.rubric_id);
+});
 
-  writeFileSync(gatesDistPath, mutated);
-  try {
-    const bustUrl = `${pathToFileURL(gatesDistPath).href}?mutation-proof=${Date.now()}`;
-    const { evaluateGate: mutatedEvaluateGate } = await import(bustUrl);
-    const decision = mutatedEvaluateGate({ gate_type: "spec", artifact_kind: "plan" });
-    assert.notEqual(
-      decision.rubric_id,
-      "plan-decomposition-quality@1",
-      "removing the plan mapping must break plan routing (mutation proof)",
-    );
-    // Falls through to the gate_type=spec default.
-    assert.equal(decision.rubric_id, "rfc-2119-normative@1");
-  } finally {
-    writeFileSync(gatesDistPath, original);
+test("precedence proof: rubric_hint wins over the artifact_kind map", () => {
+  // artifact_kind:"prd" would normally resolve to prd-quality@1, but an
+  // explicit rubric_hint of rfc-2119-normative@1 must win — documenting the
+  // precedence order pickDefaultRubric implements (hint checked first).
+  const decision = evaluateGate({
+    gate_type: "spec",
+    artifact_kind: "prd",
+    rubric_hint: "rfc-2119-normative@1",
+  });
+  assert.equal(decision.rubric_id, "rfc-2119-normative@1");
+});
+
+test("prd-quality@1 markdown literally encodes the Hydra-mirrored outcome partition", () => {
+  const r = getRubric("prd-quality@1");
+  assert.match(r.markdown, /0\.6/, "pass threshold 0.6 must appear verbatim");
+  assert.match(r.markdown, /0\.4/, "fail threshold 0.4 must appear verbatim");
+  assert.match(r.markdown, /exactly one/i, "must state exactly one outcome applies");
+  for (const dim of ["problem_statement", "functional_requirements", "acceptance_criteria"]) {
+    assert.match(r.markdown, new RegExp(dim), `structural dimension ${dim} must be named in the outcome text`);
   }
+});
 
-  // Restored: re-import (new cache-busted URL) and confirm the fix is back.
-  const bustRestoredUrl = `${pathToFileURL(gatesDistPath).href}?mutation-proof-restored=${Date.now()}`;
-  const { evaluateGate: restoredEvaluateGate } = await import(bustRestoredUrl);
-  const restoredDecision = restoredEvaluateGate({ gate_type: "spec", artifact_kind: "plan" });
-  assert.equal(restoredDecision.rubric_id, "plan-decomposition-quality@1");
+test("plan-decomposition-quality@1 markdown literally encodes the Hydra-mirrored outcome partition", () => {
+  const r = getRubric("plan-decomposition-quality@1");
+  assert.match(r.markdown, /0\.6/, "pass threshold 0.6 must appear verbatim");
+  assert.match(r.markdown, /0\.4/, "fail threshold 0.4 must appear verbatim");
+  assert.match(r.markdown, /exactly one/i, "must state exactly one outcome applies");
+  for (const dim of ["goal_fidelity", "decomposition_soundness", "dependency_correctness"]) {
+    assert.match(r.markdown, new RegExp(dim), `structural dimension ${dim} must be named in the outcome text`);
+  }
 });

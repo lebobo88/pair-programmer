@@ -388,10 +388,15 @@ Score 0..1 for each dimension. Applies to PRD / product-requirements artifacts.
 - **risks_and_open_questions**: known risks and open questions are surfaced
   rather than silently assumed away.
 
-Outcome:
-- pass: every dimension ≥ 0.7.
-- revise: any dimension in [0.5, 0.7).
-- fail: any of {problem_statement, functional_requirements, acceptance_criteria} < 0.5 — these are the structural minimum.`,
+Outcome — exactly one of the following three applies (total, mutually
+exclusive partition; mirrors Hydra's \`prd-quality@1\` judge rubric in
+\`hydra_core/judge/registry.py\` so a PRD artifact scores identically
+regardless of which side judges it):
+- pass: problem_statement, functional_requirements and acceptance_criteria
+  (the structural minimum) are all ≥ 0.6, AND no dimension equals 0.
+- fail: any dimension equals 0, OR any of {problem_statement,
+  functional_requirements, acceptance_criteria} < 0.4.
+- revise: every other score vector (i.e. neither pass nor fail applies).`,
     schema_json: SCORE_SCHEMA_GENERIC,
   },
   {
@@ -430,10 +435,18 @@ artifact scores identically regardless of which side judges it.
   scored as skip/advisory and MUST NOT fail the rubric — it enriches
   judgment when reachable, never gates it.
 
-Outcome:
-- pass: every non-advisory dimension ≥ 0.7.
-- revise: any non-advisory dimension in [0.5, 0.7).
-- fail: any of {goal_fidelity, decomposition_soundness, dependency_correctness} < 0.5 — these are the structural minimum. cell_coverage never fails the rubric.`,
+Outcome — exactly one of the following three applies (total, mutually
+exclusive partition; mirrors Hydra's \`plan-decomposition-quality@1\` judge
+rubric in \`hydra_core/judge/registry.py\` so a plan artifact scores
+identically regardless of which side judges it). \`cell_coverage\` is
+ADVISORY and is excluded from every rule below; skip it when the classifier
+is unavailable — it never gates the outcome:
+- pass: goal_fidelity, decomposition_soundness and dependency_correctness
+  (the structural minimum) are all ≥ 0.6, AND no non-advisory dimension
+  equals 0.
+- fail: any non-advisory dimension equals 0, OR any of {goal_fidelity,
+  decomposition_soundness, dependency_correctness} < 0.4.
+- revise: every other score vector (i.e. neither pass nor fail applies).`,
     schema_json: SCORE_SCHEMA_GENERIC,
   },
   {
