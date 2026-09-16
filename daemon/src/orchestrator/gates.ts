@@ -70,6 +70,8 @@ const AI_AGENTIC_KEYWORDS = /\b(eval|model|tool|permission|hitl|hallucin|prompt[
 export type RubricSelection = string | null;
 
 const ARTIFACT_KIND_RUBRICS: Record<string, RubricSelection> = {
+  plan: "plan-decomposition-quality@1",
+  prd: "prd-quality@1",
   openapi: "openapi-3.1-stability@1",
   asyncapi: "asyncapi-3.1-stability@1",
   supabase: "supabase-contract-stability@1",

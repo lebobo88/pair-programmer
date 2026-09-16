@@ -629,9 +629,10 @@ async function main() {
     //     that path through Client.callTool here — it's defensive code for
     //     raw JSON-RPC clients.
 
-    // 21. Phase 6: rubric registry has 27 rubrics (added igda-gasig@1).
+    // 21. Phase 6: rubric registry has 31 rubrics (added prd-quality@1,
+    //     plan-decomposition-quality@1).
     const rubricList = await callTool(client, "list_rubrics");
-    if (rubricList.length !== 29) throw new Error(`expected 29 rubrics, got ${rubricList.length}`);
+    if (rubricList.length !== 31) throw new Error(`expected 31 rubrics, got ${rubricList.length}`);
     const wcag = await callTool(client, "get_rubric", { id: "wcag-2.2-aa@1" });
     if (!wcag?.markdown.includes("8-state matrix")) throw new Error(`wcag rubric body missing expected content`);
     const wrv2 = await callTool(client, "get_rubric", { id: "web-runtime-validation@2" });
