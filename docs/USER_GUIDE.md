@@ -20,7 +20,7 @@ This guide is the single canonical reference for using the harness day-to-day. T
 8. [Slash command reference (19)](#8-slash-command-reference-19)
 9. [Specialized teams (25)](#9-specialized-teams-25)
 10. [Project profiles (16)](#10-project-profiles-16)
-11. [Rubrics (25)](#11-rubrics-25)
+11. [Rubrics](#11-rubrics)
 12. [Governance forums (10)](#12-governance-forums-10)
 13. [Missability checks (56)](#13-missability-checks-56)
 14. [Best-of-N — the why and the how](#14-best-of-n--the-why-and-the-how)
@@ -521,7 +521,7 @@ DB reachable? · CLI versions (codex, agy, git, node) · vendor credentials (cli
 
 ### `/pp:rubrics [list|show <id>]`
 
-`list` (default) → 25 rubrics with id/kind/title/source_url. `show <id>` (e.g. `wcag-2.2-aa@1`) → markdown body.
+`list` (default) → every registered rubric with id/kind/title/source_url; call `list_rubrics` for the current roster. `show <id>` (e.g. `wcag-2.2-aa@1`) → markdown body.
 
 ### Judge override flags
 
@@ -782,7 +782,7 @@ If your profile needs custom escalation logic, you'll need to extend `gates.ts` 
 
 ---
 
-## 11. Rubrics (25)
+## 11. Rubrics
 
 Standard-aligned rubrics. The daemon picks one per gate via `gate_eligible_judges` based on `gate_type` + active profile. The loader is **registry-first**; to diverge from a built-in standard, introduce a new ID and drop the body at `<project>/.claude/rubrics/<new-id>.md` — copying a built-in ID into your project does NOT override the registry hit (see the "Project-local rubrics" subsection below).
 
@@ -816,7 +816,7 @@ Standard-aligned rubrics. The daemon picks one per gate via `gate_eligible_judge
 | `game-perf-budget@1` | code_style | Game perf-budget: frame budget per scene type, GPU/CPU/memory thresholds, profiler capture required. |
 | `igda-gasig@1` | design | IGDA Game Accessibility SIG basic guidelines — complementary to GAG. |
 
-The `Kind` column matches the `kind` field on each entry in [`daemon/src/rubrics/registry.ts`](../daemon/src/rubrics/registry.ts) — that field is what `gate_eligible_judges` matches against when picking a rubric for a gate. The 25 rubric IDs correspond to 25 mirrored markdown files under `.claude/rubrics/` plus an `index.md` table-of-contents (not itself a rubric).
+The `Kind` column matches the `kind` field on each entry in [`daemon/src/rubrics/registry.ts`](../daemon/src/rubrics/registry.ts) — that field is what `gate_eligible_judges` matches against when picking a rubric for a gate. Each rubric ID has a corresponding mirrored markdown file under `.claude/rubrics/` plus an `index.md` table-of-contents (not itself a rubric); call `list_rubrics` for the current roster.
 
 ### Outcome envelope (default)
 
