@@ -360,6 +360,102 @@ Outcome:
     schema_json: SCORE_SCHEMA_GENERIC,
   },
   {
+    id: "prd-quality@1",
+    kind: "spec",
+    version: "1",
+    title: "PRD quality",
+    source_url: "https://www.rfc-editor.org/rfc/rfc2119",
+    markdown: `# PRD quality rubric
+
+Score 0..1 for each dimension. Applies to PRD / product-requirements artifacts.
+
+- **problem_statement**: the problem being solved is named plainly, with who
+  has it and why it matters — not just a feature description.
+- **users_and_jobs**: every user/persona is named with the job(s) they are
+  trying to get done.
+- **scope_and_non_goals**: in-scope work is bounded and explicit non-goals are
+  named to prevent scope drift.
+- **functional_requirements**: requirements use RFC 2119 normative language
+  (MUST / SHOULD / MAY) precisely — MUST for non-negotiable behavior, no
+  imperative "will" standing in for MUST.
+- **acceptance_criteria**: every functional requirement has a concrete,
+  testable acceptance criterion — verifiable pass/fail without further
+  interpretation.
+- **nfrs**: non-functional requirements (performance, security, reliability,
+  accessibility, etc.) are named where they matter to the feature.
+- **success_metrics**: the PRD states how success will be measured after
+  ship, not just what will be built.
+- **risks_and_open_questions**: known risks and open questions are surfaced
+  rather than silently assumed away.
+
+Outcome — exactly one of the following three applies (total, mutually
+exclusive partition; follows the same convention as Hydra's
+\`plan-decomposition-quality@1\` judge rubric in
+\`hydra_core/judge/registry.py\` — Hydra has no PRD-specific rubric, but this
+PRD rubric's pass/fail/revise thresholds are structured the same way so the
+convention stays consistent across rubric bodies):
+- pass: problem_statement, functional_requirements and acceptance_criteria
+  (the structural minimum) are all ≥ 0.6, AND no dimension equals 0.
+- fail: any dimension equals 0, OR any of {problem_statement,
+  functional_requirements, acceptance_criteria} < 0.4.
+- revise: every other score vector (i.e. neither pass nor fail applies).`,
+    schema_json: SCORE_SCHEMA_GENERIC,
+  },
+  {
+    id: "plan-decomposition-quality@1",
+    kind: "spec",
+    version: "1",
+    title: "Plan decomposition quality",
+    source_url: "https://www.rfc-editor.org/rfc/rfc2119",
+    markdown: `# Plan decomposition quality rubric
+
+Score 0..1 for each dimension. Judges a PLAN artifact on whether it
+decomposes the stated goal into a sound, dependency-correct, testable set of
+steps. Dimension names mirror Hydra's \`plan-decomposition-quality@1\` judge
+rubric (\`hydra_core/judge/registry.py\`), which scores the same dimensions
+on a 0..5 scale. This rubric's 0..1 thresholds are Hydra's 0..5 thresholds
+normalized (>=3/5 -> >=0.6; <2/5 -> <0.4), so outcomes agree after
+normalization even though raw scores are on different scales.
+
+- **goal_fidelity**: the plan's goal restatement and steps actually address
+  the stated goal — no drift, no scope invention.
+- **decomposition_soundness**: each step is a coherent, right-sized unit of
+  work; the whole covers the goal without gaps or needless overlap.
+- **dependency_correctness**: dependency edges reflect real ordering
+  constraints; the dependency graph is acyclic and non-dangling.
+- **acceptance_testability**: each step's acceptance criteria are concrete
+  enough to verify pass/fail without further interpretation.
+- **envelope_typing**: each step's envelope type and target match the kind
+  of work described.
+- **risk_surfacing**: risks, non-goals, and open questions are populated
+  where the plan has real uncertainty; silence on an obvious risk counts
+  against this dimension.
+- **ceiling_respect**: the plan's scope and step count are proportionate to
+  its stated rigor and do not invite loop-ceiling or envelope-ceiling
+  exhaustion.
+- **cell_coverage** (ADVISORY): whether the plan's steps map sensibly onto
+  an eight-cell classification vocabulary, when a cell classifier is
+  available. When the classifier is unavailable this dimension MUST be
+  scored as skip/advisory and MUST NOT fail the rubric — it enriches
+  judgment when reachable, never gates it.
+
+Outcome — exactly one of the following three applies (total, mutually
+exclusive partition; mirrors Hydra's \`plan-decomposition-quality@1\` judge
+rubric in \`hydra_core/judge/registry.py\`, whose 0..5-scale thresholds
+(pass >=3/5, fail <2/5) normalize to this rubric's 0..1 thresholds below, so
+outcomes agree after normalization even though raw scores differ in scale).
+\`cell_coverage\` is
+ADVISORY and is excluded from every rule below; skip it when the classifier
+is unavailable — it never gates the outcome:
+- pass: goal_fidelity, decomposition_soundness and dependency_correctness
+  (the structural minimum) are all ≥ 0.6, AND no non-advisory dimension
+  equals 0.
+- fail: any non-advisory dimension equals 0, OR any of {goal_fidelity,
+  decomposition_soundness, dependency_correctness} < 0.4.
+- revise: every other score vector (i.e. neither pass nor fail applies).`,
+    schema_json: SCORE_SCHEMA_GENERIC,
+  },
+  {
     id: "web-runtime-validation@1",
     kind: "contract",
     version: "1",

@@ -1,6 +1,6 @@
 # Rubrics — authoring guide
 
-The harness ships 13 standard-aligned rubrics. The canonical source is `daemon/src/rubrics/registry.ts`; mirror copies live at `.claude/rubrics/<bare-id>.md` and are regenerated via `pp-daemon dump-rubrics`.
+The harness ships a set of standard-aligned rubrics; call `list_rubrics` for the current, authoritative count and roster. The canonical source is `daemon/src/rubrics/registry.ts`; mirror copies live at `.claude/rubrics/<bare-id>.md` and are regenerated via `pp-daemon dump-rubrics`.
 
 ## Built-ins
 

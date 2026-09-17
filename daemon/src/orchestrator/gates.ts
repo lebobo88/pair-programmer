@@ -70,6 +70,8 @@ const AI_AGENTIC_KEYWORDS = /\b(eval|model|tool|permission|hitl|hallucin|prompt[
 export type RubricSelection = string | null;
 
 const ARTIFACT_KIND_RUBRICS: Record<string, RubricSelection> = {
+  plan: "plan-decomposition-quality@1",
+  prd: "prd-quality@1",
   openapi: "openapi-3.1-stability@1",
   asyncapi: "asyncapi-3.1-stability@1",
   supabase: "supabase-contract-stability@1",
@@ -410,9 +412,13 @@ export function evaluateGate(opts: {
   };
 }
 
-/** Phase 6 expands this with the full 13-rubric registry. Phase 2 ships defaults. */
 const SUPABASE_HINT_RE = /\b(supabase|postgrest|row[\s_-]?level[\s_-]?security|\brls\b|auth\.uid\(\))/i;
 
+/**
+ * Resolves the rubric for a gate in precedence order: an explicit
+ * `rubric_hint`, then the artifact-kind map, then gate-type / keyword
+ * defaults (e.g. the Supabase contract hint below).
+ */
 function pickDefaultRubric(
   gate_type: GateType,
   profile?: Profile | null,

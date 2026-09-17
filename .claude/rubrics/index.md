@@ -19,6 +19,8 @@ The canonical source for these rubrics is `daemon/src/rubrics/registry.ts`. The 
 | nist-ai-rmf-govern@1 | ai | [nist-ai-rmf-govern.md](nist-ai-rmf-govern.md) | https://www.nist.gov/itl/ai-risk-management-framework |
 | nist-ai-rmf-measure@1 | ai | [nist-ai-rmf-measure.md](nist-ai-rmf-measure.md) | https://www.nist.gov/itl/ai-risk-management-framework |
 | rfc-2119-normative@1 | spec | [rfc-2119-normative.md](rfc-2119-normative.md) | https://www.rfc-editor.org/rfc/rfc2119 |
+| prd-quality@1 | spec | [prd-quality.md](prd-quality.md) | https://www.rfc-editor.org/rfc/rfc2119 |
+| plan-decomposition-quality@1 | spec | [plan-decomposition-quality.md](plan-decomposition-quality.md) | https://www.rfc-editor.org/rfc/rfc2119 |
 | web-runtime-validation@1 | contract | [web-runtime-validation@1.md](web-runtime-validation@1.md) | https://www.w3.org/TR/2024/WD-wai-aria-1.3-20240320/ |
 | web-runtime-validation@2 | contract | [web-runtime-validation@2.md](web-runtime-validation@2.md) | https://www.w3.org/TR/2024/WD-wai-aria-1.3-20240320/ |
 | metric-dictionary@1 | data | [metric-dictionary.md](metric-dictionary.md) | https://www.dama.org/cpages/body-of-knowledge |
