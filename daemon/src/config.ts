@@ -441,6 +441,35 @@ export function agyEnabled(): boolean {
   return (process.env.PP_DISABLE_AGY ?? "0") !== "1";
 }
 
+/**
+ * Wall-clock cap on each of doctor's five CLI `--version` probes (codex, agy,
+ * claude, git, node). These probes run CONCURRENTLY (Promise.all), so this
+ * bounds doctor's total version-probe latency to ~this value regardless of how
+ * slow any single CLI cold-starts on the host machine (measured: `agy
+ * --version` 127s cold on some machines, well past the MCP client's fixed
+ * 60s per-request timeout). A timed-out probe resolves to `null` — the same
+ * value a genuinely-missing CLI produces — so callers must consult
+ * `cli_probe_timeouts` to distinguish "timed out" from "not installed".
+ * Implemented as a function (not a top-level const) so tests can toggle the
+ * env var between calls; see agyEnabled() above for the same pattern.
+ */
+export function doctorProbeTimeoutMs(): number {
+  const raw = Number(process.env.PP_DOCTOR_PROBE_TIMEOUT_MS);
+  return Number.isFinite(raw) && raw > 0 ? raw : 15_000;
+}
+
+/**
+ * Wall-clock cap on doctor's `checkAgyPinServed` call (the `agy models` list
+ * probe used to verify pinned judge/generation models are still served). On
+ * timeout, doctor degrades open: it reports the same inconclusive shape it
+ * already returns when the agy CLI is absent, rather than failing the whole
+ * doctor call. Runs concurrently with the version probes, not after them.
+ */
+export function doctorPinTimeoutMs(): number {
+  const raw = Number(process.env.PP_DOCTOR_PIN_TIMEOUT_MS);
+  return Number.isFinite(raw) && raw > 0 ? raw : 20_000;
+}
+
 // ─── Ecosystem integration (Hydra / TheEights / Constitution) ───────────
 // Phase A spine. Every ecosystem call is best-effort: if the eights-daemon
 // MCP peer is unreachable, all wrappers short-circuit to null and pp

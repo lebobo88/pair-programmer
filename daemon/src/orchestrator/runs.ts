@@ -9,6 +9,7 @@ import { projectArtifactDir } from "../util/paths.js";
 import {
   RunMode, RunStatus, StageStatus, AttemptStatus, VerdictOutcome, vendorFor,
   ClaudeTier, isClaudeTier, normalizeProducer, PRODUCERS,
+  doctorProbeTimeoutMs, doctorPinTimeoutMs,
 } from "../config.js";
 import { log } from "../util/logger.js";
 import { scanForSecrets, SecretsFoundError } from "../security/secret-scan.js";
@@ -167,7 +168,7 @@ export async function startRun(input: StartRunInput): Promise<StartRunOutput> {
     ? createHash("sha256").update(dirty).digest("hex").slice(0, 16)
     : null;
 
-  const cliVersions = await captureCliVersions();
+  const { versions: cliVersions } = await captureCliVersions();
 
   // v7: lift Hydra context fields off the input. parseHydraContext returns
   // null when no workflow_id is set (standalone runs), in which case all
@@ -3482,23 +3483,117 @@ async function tryGitCommand(cwd: string, args: string[]): Promise<string | null
   }
 }
 
-async function captureCliVersions(): Promise<Record<string, string | null>> {
-  const out: Record<string, string | null> = {};
-  for (const cli of ["codex", "agy", "claude", "git", "node"]) {
-    out[cli] = (await tryCmd(cli, ["--version"])) ?? null;
-  }
-  return out;
+/** The five CLIs doctor / start_run probe for `--version`. */
+const CLI_VERSION_TARGETS = ["codex", "agy", "claude", "git", "node"] as const;
+
+/**
+ * Injectable probe seam (PP-doctor-timeout). Production code always uses
+ * `tryCmd` (below); tests substitute a fake that never resolves, or resolves
+ * after a short controllable delay, so the concurrency/timeout behaviour of
+ * `captureCliVersions` can be asserted without spawning real (slow) CLIs.
+ */
+export type CliVersionProbe = (cmd: string, args: string[], timeoutMs: number) => Promise<string | null>;
+
+/**
+ * Run all five `--version` probes CONCURRENTLY, each individually bounded by
+ * `timeoutMs` (default `doctorProbeTimeoutMs()`). A probe that does not settle
+ * within its budget resolves to `null` — exactly like a probe that fails or a
+ * CLI that isn't installed — but its name is additionally recorded in
+ * `timeouts` so callers (doctor) can distinguish "timed out" from "missing".
+ *
+ * The outer per-probe race (not just `tryCmd`'s own execa `timeout` option) is
+ * what makes this testable: an injected `probe` that hangs forever (no execa
+ * involved) is still bounded by this function, not by whatever timeout logic
+ * the injected probe itself may or may not implement.
+ */
+export async function captureCliVersions(
+  probe: CliVersionProbe = tryCmd,
+  timeoutMs: number = doctorProbeTimeoutMs(),
+): Promise<{ versions: Record<string, string | null>; timeouts: string[] }> {
+  const versions: Record<string, string | null> = {};
+  const timeouts: string[] = [];
+  await Promise.all(
+    CLI_VERSION_TARGETS.map(async (cli) => {
+      let timer: ReturnType<typeof setTimeout>;
+      const budget = new Promise<{ value: string | null; timedOut: boolean }>((resolve) => {
+        timer = setTimeout(() => resolve({ value: null, timedOut: true }), timeoutMs);
+      });
+      const attempt = probe(cli, ["--version"], timeoutMs)
+        .then((value) => ({ value, timedOut: false }))
+        .catch(() => ({ value: null, timedOut: false }));
+      const result = await Promise.race([attempt, budget]);
+      clearTimeout(timer!);
+      versions[cli] = result.value;
+      if (result.timedOut) timeouts.push(cli);
+    }),
+  );
+  return { versions, timeouts };
 }
 
-async function tryCmd(cmd: string, args: string[]): Promise<string | null> {
+async function tryCmd(cmd: string, args: string[], timeoutMs?: number): Promise<string | null> {
   try {
     // trackedExeca so doctor's CLI-version probes are registered in
-    // ACTIVE_CHILDREN and aborted on shutdown (PP-RS-3 issue 1).
-    const { stdout } = await trackedExeca(cmd, args, { windowsHide: true });
+    // ACTIVE_CHILDREN and aborted on shutdown (PP-RS-3 issue 1). The `timeout`
+    // option makes execa kill the child itself when a probe outlives its
+    // budget, so a slow-cold-start CLI (e.g. agy) never leaks a process even
+    // when the outer race in captureCliVersions has already moved on.
+    const { stdout } = await trackedExeca(cmd, args, {
+      windowsHide: true,
+      ...(timeoutMs !== undefined ? { timeout: timeoutMs } : {}),
+    });
     return (stdout ?? "").toString().trim();
   } catch {
     return null;
   }
+}
+
+/** Injectable seam for the bounded agy pin check (test-only override point). */
+export type AgyPinCheckFn = (pins?: Record<string, string>) => Promise<AgyPinCheck>;
+
+/** The degraded-open shape returned when the pin check times out or the CLI is absent. */
+function agyPinInconclusive(pins: Record<string, string>, note: string): AgyPinCheck {
+  return {
+    agy_pin_served: null,
+    pinned_model: pins.critique_default ?? DEFAULT_MODELS.agy_critique,
+    pinned_models: { ...pins },
+    per_pin: Object.fromEntries(Object.keys(pins).map((k) => [k, null])),
+    served_models: null,
+    unserved_allowlist: [],
+    note,
+  };
+}
+
+/**
+ * Bound `checkAgyPinServed` (default `PP_DOCTOR_PIN_TIMEOUT_MS`, 20s) so a
+ * slow/hung `agy models` call can never make doctor itself hang or fail.
+ * Degrades open: on timeout it returns the same inconclusive shape doctor
+ * already returns when the agy CLI is absent, with a note naming the budget
+ * that was exceeded. `checkFn` is an injectable seam so tests can simulate a
+ * hang without spawning a real CLI.
+ */
+export async function checkAgyPinServedBounded(
+  pins: Record<string, string> = defaultAgyPins(),
+  timeoutMs: number = doctorPinTimeoutMs(),
+  checkFn: AgyPinCheckFn = checkAgyPinServed,
+): Promise<AgyPinCheck> {
+  let timer: ReturnType<typeof setTimeout>;
+  const budget = new Promise<AgyPinCheck>((resolve) => {
+    timer = setTimeout(
+      () =>
+        resolve(
+          agyPinInconclusive(
+            pins,
+            `agy pinned-model check exceeded its time budget (${timeoutMs}ms). Could not ` +
+              `confirm any agy pin is served; run \`agy models\` manually before trusting any ` +
+              `agy judge_model_id in the ledger.`,
+          ),
+        ),
+      timeoutMs,
+    );
+  });
+  const result = await Promise.race([checkFn(pins), budget]);
+  clearTimeout(timer!);
+  return result;
 }
 
 export type DoctorOptions = {
@@ -3515,7 +3610,18 @@ export type DoctorOptions = {
 };
 
 export async function doctor(opts: DoctorOptions = {}): Promise<unknown> {
-  const cliVersions = await captureCliVersions();
+  const doctorStart = Date.now();
+  // Version probes and the agy pin check run CONCURRENTLY: previously the pin
+  // check awaited cliVersions.agy sequentially, which meant a slow-cold-start
+  // CLI (agy: ~127s cold on some machines) plus a slow pin probe stacked their
+  // wall-clock cost. Neither depends on the other's OUTCOME here — the pin
+  // probe fails fast (ENOENT) on its own if agy truly isn't installed, and its
+  // result is discarded below in favour of the "not installed" shape when
+  // cliVersions confirms that.
+  const [{ versions: cliVersions, timeouts: cli_probe_timeouts }, agyPinResult] = await Promise.all([
+    captureCliVersions(),
+    checkAgyPinServedBounded(),
+  ]);
   const dbReachable = (() => {
     try { db().prepare("SELECT 1").get(); return true; } catch { return false; }
   })();
@@ -3583,7 +3689,7 @@ export async function doctor(opts: DoctorOptions = {}): Promise<unknown> {
   // is already sunk. The probe moves that discovery here, and additionally
   // reports allow-list drift (allowed_models must stay a subset of served).
   const agy_pin: AgyPinCheck = cliVersions.agy !== null
-    ? await checkAgyPinServed()
+    ? agyPinResult
     : {
         agy_pin_served: null,
         pinned_model: DEFAULT_MODELS.agy_critique,
@@ -3632,6 +3738,7 @@ export async function doctor(opts: DoctorOptions = {}): Promise<unknown> {
 
   return {
     cli_versions: cliVersions,
+    cli_probe_timeouts,
     db_reachable: dbReachable,
     vendors_configured: vendors,
     vendor_credentials,
@@ -3652,6 +3759,7 @@ export async function doctor(opts: DoctorOptions = {}): Promise<unknown> {
     critique_smoke,
     browser_engines,
     db_path: (await import("../util/paths.js")).DB_PATH,
+    duration_ms: Date.now() - doctorStart,
   };
 }
 
