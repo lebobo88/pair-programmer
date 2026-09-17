@@ -64,7 +64,7 @@ export async function startBestOfStage(opts: {
       // through the shared classifyCliProbeResult/cliRemediationText helpers
       // so a timed-out probe reads as a budget problem
       // (PP_DOCTOR_PROBE_TIMEOUT_MS), not credential advice.
-      const remediation = buildVendorRemediationNote(report.cli_versions, report.cli_probe_timeouts);
+      const remediation = buildVendorRemediationNote(report.cli_versions, report.cli_probe_timeouts, report.vendors_configured);
       const parts = [
         remediation.codex ? `openai: ${remediation.codex}` : null,
         remediation.agy ? `google: ${remediation.agy}` : null,

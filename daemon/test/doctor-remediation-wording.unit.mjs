@@ -15,9 +15,45 @@
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { dirname, join, delimiter } from "node:path";
 import { tmpdir } from "node:os";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from "node:fs";
+import { execSync } from "node:child_process";
 import test from "node:test";
 import assert from "node:assert/strict";
+
+/**
+ * Best-effort backstop (P1b hardening): kill any process whose command line
+ * still references `needle` (a unique temp-dir path baked into a shim). The
+ * production process-tree kill (killProcessTree in cli-runner.ts) is what's
+ * actually under test and should leave nothing behind on its own; this is
+ * defense-in-depth so a regression cannot leak a process past this suite's
+ * lifetime, per "every test that spawns a shim cleans up its own processes
+ * in a finally".
+ */
+function killAnyProcessReferencing(needle) {
+  try {
+    if (process.platform === "win32") {
+      const escaped = needle.replace(/'/g, "''");
+      const out = execSync(
+        `powershell -NoProfile -Command "Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like '*${escaped}*' } | Select-Object -ExpandProperty ProcessId"`,
+        { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] },
+      );
+      for (const line of out.split(/\r?\n/)) {
+        const pid = parseInt(line.trim(), 10);
+        if (Number.isFinite(pid)) {
+          try { execSync(`taskkill /PID ${pid} /T /F`, { stdio: "ignore" }); } catch { /* already gone */ }
+        }
+      }
+    } else {
+      const out = execSync(`pgrep -f ${JSON.stringify(needle)} || true`, { encoding: "utf8" });
+      for (const line of out.split(/\r?\n/)) {
+        const pid = parseInt(line.trim(), 10);
+        if (Number.isFinite(pid)) {
+          try { process.kill(pid, "SIGKILL"); } catch { /* already gone */ }
+        }
+      }
+    }
+  } catch { /* best-effort cleanup; never fail the test on cleanup errors */ }
+}
 
 const SUITE_DIR = mkdtempSync(join(tmpdir(), "pp-doctor-remediation-"));
 mkdirSync(join(SUITE_DIR, ".pair-programmer"), { recursive: true });
@@ -64,6 +100,31 @@ test("cliRemediationText: 'timed_out' classification NEVER mentions install/logi
   assert.match(text, /not confirmed missing/i);
 });
 
+// ─── P1a (gpt-5.6-terra, revise pass): installed-but-unconfigured is a
+// FOURTH state, distinct from "ok" — a resolved --version does not mean the
+// vendor has usable credentials. ──────────────────────────────────────────
+
+test("classifyCliProbeResult: a resolved version with configured=false is 'unconfigured', NOT 'ok'", () => {
+  assert.equal(classifyCliProbeResult("codex", "1.2.3", [], false), "unconfigured");
+  assert.equal(classifyCliProbeResult("codex", "1.2.3", ["codex"], false), "unconfigured");
+});
+
+test("classifyCliProbeResult: a resolved version with configured=true or omitted is 'ok'", () => {
+  assert.equal(classifyCliProbeResult("codex", "1.2.3", [], true), "ok");
+  assert.equal(classifyCliProbeResult("codex", "1.2.3", [], undefined), "ok");
+});
+
+test("cliRemediationText: 'unconfigured' classification uses the vendor-specific install/login hint verbatim (installed, no credentials)", () => {
+  assert.equal(
+    cliRemediationText("codex", "unconfigured", "OpenAI not configured (set OPENAI_API_KEY or `codex login`)"),
+    "OpenAI not configured (set OPENAI_API_KEY or `codex login`)",
+  );
+  assert.equal(
+    cliRemediationText("agy", "unconfigured", "Google not configured (set GEMINI_API_KEY or sign in via `agy`)"),
+    "Google not configured (set GEMINI_API_KEY or sign in via `agy`)",
+  );
+});
+
 // ─── finding 2 (gpt-5.6-terra remediation-wording pass, sites the prior pass missed) ──
 //
 // best-of-n.ts's startBestOfStage precondition and dispatcher.ts's
@@ -94,7 +155,33 @@ test("buildVendorRemediationNote: a genuinely-missing vendor still gets install/
   assert.doesNotMatch(note.agy, /PP_DOCTOR_PROBE_TIMEOUT_MS/);
 });
 
-test("buildVendorRemediationNote: a resolved (ok) vendor produces no remediation text", () => {
+test("buildVendorRemediationNote: a resolved AND configured vendor produces no remediation text", () => {
+  const note = buildVendorRemediationNote(
+    { codex: "1.2.3", agy: "4.5.6" },
+    ["codex", "agy"],
+    { openai: true, google: true },
+  );
+  assert.equal(note.codex, null);
+  assert.equal(note.agy, null);
+});
+
+// P1a regression: this call site USED to lock in "any resolved version is
+// always 'ok', full stop" — dropping credential guidance for an installed
+// binary with no working credentials. buildVendorRemediationNote now takes
+// vendors_configured as a third argument specifically to catch this.
+test("buildVendorRemediationNote: an INSTALLED but UNCONFIGURED vendor still gets credential/login advice, not silence", () => {
+  const note = buildVendorRemediationNote(
+    { codex: "1.2.3", agy: "4.5.6" },
+    [],
+    { openai: false, google: false },
+  );
+  assert.match(note.codex, /OPENAI_API_KEY|codex login/i);
+  assert.match(note.agy, /GEMINI_API_KEY|ANTIGRAVITY_API_KEY|agy/i);
+  assert.doesNotMatch(note.codex, /PP_DOCTOR_PROBE_TIMEOUT_MS/);
+  assert.doesNotMatch(note.agy, /PP_DOCTOR_PROBE_TIMEOUT_MS/);
+});
+
+test("buildVendorRemediationNote: vendors_configured omitted (unknown) still treats a resolved version as 'ok' (no manufactured warning)", () => {
   const note = buildVendorRemediationNote({ codex: "1.2.3", agy: "4.5.6" }, ["codex", "agy"]);
   assert.equal(note.codex, null);
   assert.equal(note.agy, null);
@@ -103,19 +190,108 @@ test("buildVendorRemediationNote: a resolved (ok) vendor produces no remediation
 /** Put a hanging `codex`/`agy` (never exits) FIRST on PATH so a real spawn of either never resolves. */
 function installHangingVendorShims() {
   const dir = mkdtempSync(join(tmpdir(), "pp-shim-vendor-hang-"));
+  // 60s loops (not 3600s, per P1b hardening): the daemon is expected to
+  // process-tree-kill these on timeout; should that regress, a leaked
+  // process still can't outlive this suite by an hour.
   for (const bin of ["codex", "agy"]) {
-    writeFileSync(join(dir, `${bin}.cmd`), `@echo off\r\n:loop\r\ntimeout /t 3600 >nul\r\ngoto loop\r\n`, "utf8");
-    writeFileSync(join(dir, bin), `#!/bin/sh\nwhile true; do sleep 3600; done\n`, { encoding: "utf8", mode: 0o755 });
+    writeFileSync(join(dir, `${bin}.cmd`), `@echo off\r\n:loop\r\ntimeout /t 60 >nul\r\ngoto loop\r\n`, "utf8");
+    writeFileSync(join(dir, bin), `#!/bin/sh\nwhile true; do sleep 60; done\n`, { encoding: "utf8", mode: 0o755 });
   }
   const prevPath = process.env.PATH;
   process.env.PATH = dir + delimiter + prevPath;
   return {
     cleanup() {
       process.env.PATH = prevPath;
+      // Best-effort: the production timeout enforcement should already have
+      // reaped any spawned shim process (that's what's under test), but kill
+      // by path reference too so a regression can't leak past this test.
+      killAnyProcessReferencing(dir);
       rmSync(dir, { recursive: true, force: true });
     },
   };
 }
+
+/**
+ * Put a FAST (instant, version-printing) `codex`/`agy` shim on PATH, with an
+ * isolated HOME/USERPROFILE so file-based login detection
+ * (~/.codex/auth.json, ~/.gemini/oauth_creds.json) can never pick up the
+ * real operator's credentials on the machine running this suite. Combined
+ * with clearing the credential env vars, this deterministically reproduces
+ * the P1a "installed but unconfigured" state regardless of what's actually
+ * on this machine.
+ */
+function installFastUnconfiguredVendorShims() {
+  const dir = mkdtempSync(join(tmpdir(), "pp-shim-vendor-fast-"));
+  for (const bin of ["codex", "agy"]) {
+    writeFileSync(join(dir, `${bin}.cmd`), `@echo off\r\necho 1.0.0-test\r\n`, "utf8");
+    writeFileSync(join(dir, bin), `#!/bin/sh\necho 1.0.0-test\n`, { encoding: "utf8", mode: 0o755 });
+  }
+  const isolatedHome = mkdtempSync(join(tmpdir(), "pp-isolated-home-"));
+  const prevPath = process.env.PATH;
+  const prevHome = process.env.HOME;
+  const prevUserProfile = process.env.USERPROFILE;
+  const prevEnvVars = {
+    OPENAI_API_KEY: process.env.OPENAI_API_KEY,
+    GEMINI_API_KEY: process.env.GEMINI_API_KEY,
+    GOOGLE_API_KEY: process.env.GOOGLE_API_KEY,
+    ANTIGRAVITY_API_KEY: process.env.ANTIGRAVITY_API_KEY,
+  };
+  process.env.PATH = dir + delimiter + prevPath;
+  process.env.HOME = isolatedHome;
+  process.env.USERPROFILE = isolatedHome;
+  delete process.env.OPENAI_API_KEY;
+  delete process.env.GEMINI_API_KEY;
+  delete process.env.GOOGLE_API_KEY;
+  delete process.env.ANTIGRAVITY_API_KEY;
+  return {
+    cleanup() {
+      process.env.PATH = prevPath;
+      if (prevHome === undefined) delete process.env.HOME; else process.env.HOME = prevHome;
+      if (prevUserProfile === undefined) delete process.env.USERPROFILE; else process.env.USERPROFILE = prevUserProfile;
+      for (const [k, v] of Object.entries(prevEnvVars)) {
+        if (v === undefined) delete process.env[k]; else process.env[k] = v;
+      }
+      rmSync(dir, { recursive: true, force: true });
+      rmSync(isolatedHome, { recursive: true, force: true });
+    },
+  };
+}
+
+// End-to-end P1a proof: startBestOfStage's ACTUAL thrown message (not just
+// the shared helper in isolation) must carry credential wording — not
+// budget wording — when the vendor CLI resolves fine but has no usable
+// credentials. Before the fix, doctor()'s cliVersions.codex/agy resolving
+// non-null short-circuited buildVendorRemediationNote straight to "ok" and
+// this call site silently lost all remediation text.
+test("best-of-n startBestOfStage: precondition message uses credential wording (not budget wording) for an INSTALLED-but-UNCONFIGURED vendor", async () => {
+  const shim = installFastUnconfiguredVendorShims();
+  const prevAllow = process.env.PP_ALLOW_BEST_OF_WITHOUT_JUDGE;
+  delete process.env.PP_ALLOW_BEST_OF_WITHOUT_JUDGE;
+  try {
+    const { startBestOfStage } = await importDist("orchestrator/best-of-n.js");
+    await assert.rejects(
+      () => startBestOfStage({ run_id: "run_does_not_exist_for_this_test_2", kind: "spec", gate_type: "spec", n: 2 }),
+      (err) => {
+        assert.match(err.message, /best-of-N refused/);
+        assert.match(
+          err.message,
+          /OPENAI_API_KEY|codex login|GEMINI_API_KEY|ANTIGRAVITY_API_KEY|sign in/i,
+          `expected credential wording for an installed-but-unconfigured vendor, got: ${err.message}`,
+        );
+        assert.doesNotMatch(
+          err.message,
+          /PP_DOCTOR_PROBE_TIMEOUT_MS/,
+          `an installed-but-unconfigured vendor is NOT a timeout — must not get budget wording, got: ${err.message}`,
+        );
+        return true;
+      },
+    );
+  } finally {
+    shim.cleanup();
+    if (prevAllow === undefined) delete process.env.PP_ALLOW_BEST_OF_WITHOUT_JUDGE;
+    else process.env.PP_ALLOW_BEST_OF_WITHOUT_JUDGE = prevAllow;
+  }
+});
 
 test("best-of-n startBestOfStage: precondition message uses budget wording for timed-out vendors and still refuses (fail-closed)", async () => {
   const shim = installHangingVendorShims();

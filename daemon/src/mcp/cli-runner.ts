@@ -45,10 +45,18 @@
  *   - SpawnRefusedError           — typed sentinel for "daemon shutting down";
  *                                   callers MUST rethrow this before any
  *                                   destructive fallback.
+ *   - killProcessTree()           — process-tree-safe kill (P1b): terminates
+ *                                   the whole tree (taskkill /T on Windows,
+ *                                   process group kill on POSIX), not just
+ *                                   the direct pid. Used internally by every
+ *                                   timeout enforced through trackedExeca /
+ *                                   trackedExecaNoRefuse and by the shutdown
+ *                                   drain loop; exported for direct use too.
  *   - _activeChildrenSize()       — test-only size accessor.
  */
 
 import { execa, type ExecaError, type Options as ExecaOptions } from "execa";
+import { execFileSync } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
@@ -279,10 +287,63 @@ export function trackedExecaNoRefuse(
 }
 
 /**
+ * Terminate an entire process TREE rooted at `pid`, not just the single
+ * process execa/Node knows about (P1b, gpt-5.6-terra revise pass).
+ *
+ * Why this exists: on Windows, a `.cmd`/`.bat` launcher (e.g. a shimmed
+ * `codex.cmd` or `agy.cmd`, or any real vendor CLI installed as an npm
+ * `.cmd` shim) is spawned by Node/execa via a `cmd.exe /c` wrapper. The pid
+ * execa hands back is that wrapper's pid; the launcher's actual work often
+ * runs in a GRANDCHILD process. `ChildProcess.kill()` (what execa's own
+ * `timeout` option and a plain `child.kill(signal)` both call) only signals
+ * the direct pid — the grandchild survives and leaks for the lifetime of the
+ * daemon (or longer). `taskkill /T` kills the whole tree in one call.
+ *
+ * On POSIX, `process.kill(-pid, signal)` targets the process GROUP rather
+ * than a single pid — but that only reaches descendants if the child was
+ * spawned as its own group leader, which is why `_spawnTracked` passes
+ * `detached: true` on non-Windows below. Falls back to a single-pid kill if
+ * the group-kill fails (e.g. the child already exited, or wasn't actually
+ * detached because a caller explicitly overrode it).
+ *
+ * Best-effort throughout: a process that already exited (ESRCH / taskkill's
+ * "not found") is not an error worth surfacing — the goal was for it to be
+ * gone, and it is.
+ */
+export function killProcessTree(pid: number | undefined, signal: NodeJS.Signals = "SIGTERM"): void {
+  if (!pid) return;
+  if (process.platform === "win32") {
+    // Windows has no real signal delivery for arbitrary processes — Node's
+    // own ChildProcess.kill() already resolves any non-SIGKILL signal to a
+    // forceful TerminateProcess() call under the hood, so requesting /F here
+    // is not "more forceful than before"; it just now reaches the whole tree
+    // instead of only the wrapper pid.
+    try {
+      execFileSync("taskkill", ["/PID", String(pid), "/T", "/F"], { stdio: "ignore", windowsHide: true });
+    } catch { /* already exited, or never existed — best-effort */ }
+    return;
+  }
+  try {
+    process.kill(-pid, signal);
+  } catch {
+    try { process.kill(pid, signal); } catch { /* already exited — best-effort */ }
+  }
+}
+
+/**
  * Internal: spawn the child and register it in ACTIVE_CHILDREN.
  * Called by both trackedExeca (after refuse-guard) and trackedExecaNoRefuse
  * (after seal-guard).  Both variants register identically.
  * abortAllInFlightChildren() treats them identically.
+ *
+ * P1b: execa's own `timeout` option only kills the direct child pid (see
+ * killProcessTree's doc comment above), so it is stripped here and enforced
+ * manually via a timer that calls killProcessTree() instead — this covers
+ * every trackedExeca/trackedExecaNoRefuse call site with a `timeout` option
+ * (tryCmd's doctor probes, runCliWithRetry's vendor CLI calls, the agy pin
+ * check, etc.) from one place, without requiring each call site to know
+ * about process trees. `ChildEntry.kill` (used by the shutdown drain loop)
+ * also routes through killProcessTree for the same reason.
  */
 function _spawnTracked(
   file: string,
@@ -290,18 +351,40 @@ function _spawnTracked(
   options?: ExecaOptions,
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 ): ReturnType<typeof execa<any>> {
+  const rawOptions = (options ?? {}) as ExecaOptions & { timeout?: number; killSignal?: NodeJS.Signals; detached?: boolean };
+  const requestedTimeoutMs = typeof rawOptions.timeout === "number" && rawOptions.timeout > 0 ? rawOptions.timeout : undefined;
+  const killSignal: NodeJS.Signals = rawOptions.killSignal ?? "SIGTERM";
+  const { timeout: _omitTimeout, ...restOptions } = rawOptions;
+  const spawnOptions: ExecaOptions & { detached?: boolean } = { ...restOptions };
+  // New process group on POSIX so killProcessTree's process.kill(-pid, ...)
+  // reaches descendants. Only applied when the caller hasn't already made an
+  // explicit choice (e.g. a caller that needs to stay attached to the
+  // daemon's own group for some other reason).
+  if (spawnOptions.detached === undefined && process.platform !== "win32") {
+    spawnOptions.detached = true;
+  }
+
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const child = execa(file, args as string[], options as any);
+  const child = execa(file, args as string[], spawnOptions as any);
+
+  let timeoutTimer: ReturnType<typeof setTimeout> | undefined;
+  if (requestedTimeoutMs !== undefined) {
+    timeoutTimer = setTimeout(() => {
+      killProcessTree(child.pid, killSignal);
+    }, requestedTimeoutMs);
+    // Don't let this timer keep the daemon process alive on its own.
+    timeoutTimer.unref?.();
+  }
+  const clearTimeoutTimer = () => { if (timeoutTimer) clearTimeout(timeoutTimer); };
+
   // Wrap the child promise so we can await exit without .kill() interfering.
   const exitPromise: Promise<unknown> = child.then(
-    () => { /* resolved */ },
-    () => { /* rejected — process exited non-zero or was killed; that's fine */ },
+    () => { clearTimeoutTimer(); },
+    () => { clearTimeoutTimer(); /* rejected — process exited non-zero or was killed; that's fine */ },
   );
   const entry: ChildEntry = {
     pid: child.pid,
-    kill: (signal) => {
-      try { child.kill(signal); } catch { /* best-effort */ }
-    },
+    kill: (signal) => killProcessTree(child.pid, signal),
     exitPromise,
   };
   ACTIVE_CHILDREN.add(entry);

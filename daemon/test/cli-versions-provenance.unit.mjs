@@ -63,9 +63,12 @@ function scaffoldProject() {
 function installHangingAgyShim() {
   const dir = mkdtempSync(join(tmpdir(), "pp-shim-agy-hang-"));
   // Windows resolves a bare `agy` via PATHEXT, so the shim must be `.cmd`.
-  writeFileSync(join(dir, "agy.cmd"), `@echo off\r\n:loop\r\ntimeout /t 3600 >nul\r\ngoto loop\r\n`, "utf8");
+  // 60s (not 3600s, per P1b hardening): the daemon is now expected to
+  // process-tree-kill this on timeout, but should it ever leak, a stray
+  // process should not be able to outlive the test suite by an hour.
+  writeFileSync(join(dir, "agy.cmd"), `@echo off\r\n:loop\r\ntimeout /t 60 >nul\r\ngoto loop\r\n`, "utf8");
   // POSIX equivalent so this is not silently a no-op off Windows.
-  writeFileSync(join(dir, "agy"), `#!/bin/sh\nwhile true; do sleep 3600; done\n`, { encoding: "utf8", mode: 0o755 });
+  writeFileSync(join(dir, "agy"), `#!/bin/sh\nwhile true; do sleep 60; done\n`, { encoding: "utf8", mode: 0o755 });
   const prevPath = process.env.PATH;
   process.env.PATH = dir + delimiter + prevPath;
   return {

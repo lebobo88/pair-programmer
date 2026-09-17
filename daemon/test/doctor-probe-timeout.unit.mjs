@@ -19,7 +19,7 @@
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
-import { mkdtempSync, mkdirSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from "node:fs";
 import test from "node:test";
 import assert from "node:assert/strict";
 
@@ -223,6 +223,91 @@ test("real child: a hung node subprocess bounded by a small execa timeout is act
     }
   }
   assert.equal(alive, false, `pid ${pid} must be terminated well after the ${BUDGET_MS}ms execa timeout, not left running`);
+});
+
+// ─── P1b (gpt-5.6-terra revise pass): a `.cmd`/script LAUNCHER's grandchild must die too ──
+//
+// The "real child" test above spawns node DIRECTLY, so trackedExeca's tracked
+// pid IS the process doing the sleeping — killing that one pid is enough to
+// pass, and cannot distinguish a correct process-TREE kill from the old
+// "kill only the direct pid" behaviour. This test spawns a shim launcher
+// (a `.cmd` on Windows, a shell script on POSIX) that runs a SECOND node
+// process (the "grandchild") in the foreground, so the launcher's own
+// tracked pid blocks on it exactly like a real vendor CLI's npm `.cmd` shim
+// blocks on the underlying node binary. Reverting the process-tree kill (so
+// only the launcher's direct pid is signalled) leaves the grandchild running
+// indefinitely — this test would then fail (alive === true) after the poll
+// window, proving the tree-kill is load-bearing.
+
+test("killProcessTree (via trackedExeca's timeout): a .cmd/script launcher's grandchild is also terminated, not orphaned", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "pp-killtree-"));
+  const pidFile = join(dir, "grandchild.pid");
+  const sleeperPath = join(dir, "sleeper.js");
+  writeFileSync(
+    sleeperPath,
+    `const fs = require("fs");\n` +
+    `fs.writeFileSync(process.argv[2], String(process.pid));\n` +
+    `setTimeout(() => {}, 60000);\n`,
+    "utf8",
+  );
+
+  let shimPath;
+  if (process.platform === "win32") {
+    shimPath = join(dir, "shim.cmd");
+    // Foreground (not `start /B`): cmd.exe BLOCKS on the node grandchild, so
+    // cmd.exe's own pid stays alive for the whole sleep, exactly like a real
+    // `.cmd`-shimmed vendor CLI blocking on its underlying node process.
+    writeFileSync(shimPath, `@echo off\r\nnode "${sleeperPath}" "${pidFile}"\r\n`, "utf8");
+  } else {
+    shimPath = join(dir, "shim.sh");
+    writeFileSync(shimPath, `#!/bin/sh\nnode "${sleeperPath}" "${pidFile}"\n`, { encoding: "utf8", mode: 0o755 });
+  }
+
+  const { trackedExeca, killProcessTree } = await importDist("mcp/cli-runner.js");
+  const BUDGET_MS = 400;
+  let grandchildPid;
+  try {
+    const child = trackedExeca(shimPath, [], { windowsHide: true, timeout: BUDGET_MS });
+
+    let threw = false;
+    try { await child; } catch { threw = true; }
+    assert.ok(threw, "the timed-out launcher must reject");
+
+    // The grandchild writes its own pid as soon as it starts; poll briefly
+    // for the pidfile in case it lands slightly after spawn.
+    const pidWriteDeadline = Date.now() + 5000;
+    while (Date.now() < pidWriteDeadline) {
+      try {
+        const parsed = parseInt(readFileSync(pidFile, "utf8").trim(), 10);
+        if (Number.isFinite(parsed)) { grandchildPid = parsed; break; }
+      } catch { /* not written yet */ }
+      await new Promise((r) => setTimeout(r, 50));
+    }
+    assert.ok(Number.isFinite(grandchildPid), "the grandchild must have written its own pid before the launcher was killed");
+
+    // Poll briefly, then assert the grandchild is genuinely gone — this is
+    // exactly the P1b leak: killing only the launcher's pid leaves this
+    // process running indefinitely.
+    const deadline = Date.now() + 5000;
+    let alive = true;
+    while (Date.now() < deadline) {
+      try {
+        process.kill(grandchildPid, 0); // no signal sent; throws if pid is gone
+        await new Promise((r) => setTimeout(r, 50));
+      } catch {
+        alive = false;
+        break;
+      }
+    }
+    assert.equal(alive, false, `grandchild pid ${grandchildPid} must be terminated by the process-tree kill, not left orphaned`);
+  } finally {
+    // Defense-in-depth: if the assertion above failed (tree-kill regressed),
+    // don't leave the grandchild running past this test file.
+    if (Number.isFinite(grandchildPid)) {
+      try { process.kill(grandchildPid, 0); killProcessTree(grandchildPid, "SIGKILL"); } catch { /* already gone */ }
+    }
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 // ─── doctor-payload composition: cli_probe_timeouts + duration_ms surface end-to-end ──

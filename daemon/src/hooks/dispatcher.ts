@@ -29,41 +29,67 @@ import { evaluateShellSafety } from "./bash-safety.js";
 import { recallProjectContext, recallByQuery, listPriorCritiques } from "../ecosystem/eights-writes.js";
 
 /**
- * Classify a null CLI version against `cli_probe_timeouts` (gpt-5.6-terra
- * finding #2). A `null` version is ambiguous on its own — it means either
- * "genuinely not installed / not on PATH" or "the --version probe exceeded
- * PP_DOCTOR_PROBE_TIMEOUT_MS" (e.g. a slow-cold-start `agy` on some
- * machines). Every hook that renders remediation text off `doctor()`'s
- * `cli_versions` MUST consult this (or `cli_probe_timeouts` directly) before
- * choosing install/login wording — telling an operator whose CLI merely
- * timed out to "log in" or "install" is actively wrong advice. Pure/exported
- * so it is unit-testable without invoking the full hook (which calls
- * `reply()` → `process.exit`).
+ * Classify a CLI probe result against `cli_probe_timeouts` AND, separately,
+ * against whether the vendor actually has usable credentials configured
+ * (gpt-5.6-terra findings #2 and P1a). There are FOUR distinct states, not
+ * two:
+ *   - "timed_out"    — version is null AND the CLI name appears in
+ *                       `cli_probe_timeouts`: the probe merely cold-started
+ *                       slowly, this is NOT evidence of a missing/logged-out
+ *                       CLI.
+ *   - "missing"       — version is null and the probe did not time out: the
+ *                       CLI genuinely isn't installed / on PATH.
+ *   - "unconfigured"  — version resolved (the CLI IS installed) but the
+ *                       caller's `configured` flag is explicitly false: the
+ *                       binary exists yet has no working credentials. This
+ *                       is the case P1a fixes: previously any non-null
+ *                       version short-circuited straight to "ok" and the
+ *                       caller lost all credential/login remediation for an
+ *                       installed-but-logged-out CLI.
+ *   - "ok"            — version resolved and (as far as the caller knows)
+ *                       credentials are configured. `configured` defaults to
+ *                       "unknown" (undefined), which is treated as "ok" for
+ *                       backward compatibility with callers that only know
+ *                       about `cli_versions` and not `vendors_configured`.
+ * Every hook that renders remediation text off `doctor()`'s `cli_versions` /
+ * `vendors_configured` MUST consult this (or `cli_probe_timeouts` directly)
+ * before choosing install/login wording — telling an operator whose CLI
+ * merely timed out to "log in" or "install" is actively wrong advice, and
+ * silently dropping credential guidance for an installed-but-unconfigured
+ * CLI is equally wrong. Pure/exported so it is unit-testable without
+ * invoking the full hook (which calls `reply()` → `process.exit`).
  */
 export function classifyCliProbeResult(
   cli: string,
   version: string | null,
   cliProbeTimeouts: readonly string[] | undefined,
-): "ok" | "missing" | "timed_out" {
-  if (version !== null) return "ok";
-  return (cliProbeTimeouts ?? []).includes(cli) ? "timed_out" : "missing";
+  configured?: boolean,
+): "ok" | "missing" | "timed_out" | "unconfigured" {
+  if (version === null) {
+    return (cliProbeTimeouts ?? []).includes(cli) ? "timed_out" : "missing";
+  }
+  if (configured === false) return "unconfigured";
+  return "ok";
 }
 
 /**
  * Build the operator-facing remediation phrase for a vendor's CLI given its
  * classification. `installLoginHint` is the vendor-specific install/login
- * text to use when the classification is "missing"; timed-out CLIs get a
+ * text to use when the classification is "missing" OR "unconfigured" (both
+ * need the SAME credential/login guidance — the only difference between them
+ * is whether the binary itself is present); timed-out CLIs get a
  * budget-raising hint instead, regardless of vendor.
  */
 export function cliRemediationText(
   cli: string,
-  classification: "ok" | "missing" | "timed_out",
+  classification: "ok" | "missing" | "timed_out" | "unconfigured",
   installLoginHint: string,
 ): string | null {
   if (classification === "ok") return null;
   if (classification === "timed_out") {
     return `the ${cli} version probe exceeded PP_DOCTOR_PROBE_TIMEOUT_MS (not confirmed missing/logged-out) — raise PP_DOCTOR_PROBE_TIMEOUT_MS and retry`;
   }
+  // "missing" and "unconfigured" both need the same install/login hint.
   return installLoginHint;
 }
 
@@ -73,16 +99,24 @@ export function cliRemediationText(
  * that needs to explain WHY a vendor isn't counted as reachable —
  * vendor-matrix here and best-of-n.ts's precondition — so a timed-out probe
  * always gets budget wording (naming PP_DOCTOR_PROBE_TIMEOUT_MS) instead of
- * credential/login advice, and a genuinely-missing CLI still gets the
- * install/login hint. Gating itself is untouched: a timed-out vendor still
- * counts as unavailable to the caller; only the explanation text changes.
+ * credential/login advice, a genuinely-missing CLI still gets the
+ * install/login hint, and (P1a) an INSTALLED-BUT-UNCONFIGURED CLI (version
+ * resolves, but `vendors_configured` says no working credentials) ALSO still
+ * gets the install/login hint instead of being silently treated as "ok".
+ * `vendorsConfigured` is optional (keyed by `vendors_configured`'s own keys,
+ * "openai"/"google") for callers that don't have it; when omitted, a
+ * resolved version is still treated as "ok" (unknown credentials state does
+ * not manufacture a warning out of nothing). Gating itself is untouched: a
+ * timed-out or unconfigured vendor still counts as unavailable to the
+ * caller; only the explanation text changes.
  */
 export function buildVendorRemediationNote(
   cliVersions: Record<string, string | null> | undefined,
   cliProbeTimeouts: readonly string[] | undefined,
+  vendorsConfigured?: Record<string, boolean>,
 ): { codex: string | null; agy: string | null } {
-  const codexClass = classifyCliProbeResult("codex", cliVersions?.codex ?? null, cliProbeTimeouts);
-  const agyClass = classifyCliProbeResult("agy", cliVersions?.agy ?? null, cliProbeTimeouts);
+  const codexClass = classifyCliProbeResult("codex", cliVersions?.codex ?? null, cliProbeTimeouts, vendorsConfigured?.openai);
+  const agyClass = classifyCliProbeResult("agy", cliVersions?.agy ?? null, cliProbeTimeouts, vendorsConfigured?.google);
   return {
     codex: cliRemediationText("codex", codexClass, "OpenAI not configured (set OPENAI_API_KEY or `codex login`)"),
     agy: cliRemediationText("agy", agyClass, "Google not configured (set GEMINI_API_KEY or ANTIGRAVITY_API_KEY, or run `agy` to sign in)"),
@@ -245,7 +279,7 @@ const HANDLERS: Record<string, Record<string, (input: HookInput) => Promise<void
       // advice for a CLI that just cold-starts slowly. Route through the same
       // classifyCliProbeResult/cliRemediationText helpers every other caller
       // uses so a timed-out vendor gets budget wording, not credential advice.
-      const remediation = buildVendorRemediationNote(report.cli_versions, report.cli_probe_timeouts);
+      const remediation = buildVendorRemediationNote(report.cli_versions, report.cli_probe_timeouts, report.vendors_configured);
       const remediationParts = [remediation.codex, remediation.agy].filter((h): h is string => !!h);
       const remediationNote = remediationParts.length ? ` ${remediationParts.join(" ")}` : "";
 
