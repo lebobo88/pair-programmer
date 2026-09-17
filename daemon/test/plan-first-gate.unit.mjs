@@ -16,6 +16,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 import { mkdtempSync, mkdirSync, writeFileSync, readdirSync, readFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import YAML from "yaml";
@@ -49,6 +50,16 @@ async function getDb() {
 async function getPlanFirstGate() {
   if (!_planFirstGate) _planFirstGate = await importDist("orchestrator/plan-first-gate.js");
   return _planFirstGate;
+}
+let _bestOfN = null;
+async function getBestOfN() {
+  if (!_bestOfN) _bestOfN = await importDist("orchestrator/best-of-n.js");
+  return _bestOfN;
+}
+let _forums = null;
+async function getForums() {
+  if (!_forums) _forums = await importDist("orchestrator/forums.js");
+  return _forums;
 }
 
 // ── Shared project directory ───────────────────────────────────────────────
@@ -376,23 +387,28 @@ describe("X1b plan-first gate", () => {
     assert.ok(blocker, "a planning stage that passed AFTER the code stage started must not clear the gate (P1a)");
   });
 
-  it("14a. spec finished_at exactly equal to code started_at, spec inserted first -> allowed (P1b tie-break)", async () => {
+  it("14a. spec finished_at exactly equal to code started_at, spec inserted first -> blocked (strict comparison, no rowid tie-break)", async () => {
+    // Regression for the unsound rowid tie-break: rowid records stage
+    // INSERTion (start), not completion. Insertion order proves nothing
+    // about which event -- spec's finish or code's start -- happened first
+    // at millisecond resolution, so an exact-millisecond tie must BLOCK
+    // regardless of which row was inserted first.
     const runs = await getRuns();
     const run_id = await insertRun({ taxonomy_mapping_json: taxonomyMapping("standard") });
     const tie = new Date().toISOString();
-    // spec inserted first (lower rowid).
+    // spec inserted first (lower rowid) -- must not matter anymore.
     const spec_id = await insertStage(run_id, "spec", { status: "passed", started_at: tie, finished_at: tie });
     const code_id = await insertStage(run_id, "code", { started_at: tie });
     const attempt_id = await setupPassableCodeStage(run_id, code_id);
 
     const readiness = runs.getStageFinalizeReadiness(code_id, attempt_id);
+    assert.equal(readiness.can_pass, false);
     const blocker = readiness.blockers.find(b => b.gate === "plan_first");
-    assert.equal(blocker, undefined,
-      "spec finished_at == code started_at, spec inserted first, must be allowed via rowid tie-break");
-    assert.equal(readiness.can_pass, true);
+    assert.ok(blocker,
+      "spec finished_at == code started_at must BLOCK even when spec was inserted first (no rowid tie-break)");
   });
 
-  it("14b. equal timestamps with CODE inserted first -> blocked (P1b tie-break)", async () => {
+  it("14b. equal timestamps with CODE inserted first -> blocked (strict comparison)", async () => {
     const runs = await getRuns();
     const run_id = await insertRun({ taxonomy_mapping_json: taxonomyMapping("standard") });
     const tie = new Date().toISOString();
@@ -404,7 +420,7 @@ describe("X1b plan-first gate", () => {
     const readiness = runs.getStageFinalizeReadiness(code_id, attempt_id);
     assert.equal(readiness.can_pass, false);
     const blocker = readiness.blockers.find(b => b.gate === "plan_first");
-    assert.ok(blocker, "spec finished_at == code started_at but spec inserted AFTER code must not clear the gate");
+    assert.ok(blocker, "spec finished_at == code started_at must not clear the gate");
   });
 
   it("15. identical started_at for spec and code, spec passed strictly before code start, spec inserted first -> allowed", async () => {
@@ -534,6 +550,180 @@ describe("X1b plan-first gate", () => {
     const parsed = JSON.parse(row.taxonomy_mapping_json);
     assert.deepEqual(parsed.signals, ["a", "b"], "other fields must update on same-scope re-record");
     assert.deepEqual(parsed.missability_required, ["ownership_docs"]);
+  });
+
+  it("20. best-of run (mode='best_of', standard scope) with only a code stage opened via startBestOfStage -> finalize passed succeeds (operator-decided exemption)", async () => {
+    const runs = await getRuns();
+    const bestOfN = await getBestOfN();
+    const db = await getDb();
+
+    // Best-of candidates use `git worktree add` (not a plain recursive copy)
+    // when the project is a real git repo. A plain-directory project would
+    // hit a Windows cpSync self-subdirectory error here, since the candidate
+    // dirs live under <project>/.harness/<run_id>/code/candidate-N -- a git
+    // repo avoids that path entirely.
+    const project = mkdtempSync(join(tmpdir(), "pp-pfg-bestof-"));
+    mkdirSync(join(project, ".harness"), { recursive: true });
+    writeFileSync(join(project, "AGENTS.md"), "# AGENTS\n", "utf8");
+    execFileSync("git", ["init", "-q"], { cwd: project, windowsHide: true });
+    execFileSync("git", ["-c", "user.email=test@pp", "-c", "user.name=pp-test", "add", "-A"], { cwd: project, windowsHide: true });
+    execFileSync("git", ["-c", "user.email=test@pp", "-c", "user.name=pp-test", "commit", "-q", "-m", "init"], { cwd: project, windowsHide: true });
+
+    const started = await runs.startRun({
+      request_text: "best-of exemption test", project_path: project, mode: "best_of", n: 2,
+    });
+    const run_id = started.run_id;
+
+    // Best-of runs DO record a taxonomy mapping (best-of.md step 3) — record
+    // 'standard' so this test actually exercises the exemption rather than
+    // relying on scope being absent.
+    await runs.recordTaxonomyMapping({
+      run_id, scope: "standard", signals: [], sections: [], missability_required: [],
+    });
+
+    const prevEnv = process.env.PP_ALLOW_BEST_OF_WITHOUT_JUDGE;
+    process.env.PP_ALLOW_BEST_OF_WITHOUT_JUDGE = "1"; // isolate from real vendor CLIs in CI
+    let stage_id, candidates;
+    try {
+      const opened = await bestOfN.startBestOfStage({ run_id, kind: "code", gate_type: "code_style", n: 2 });
+      stage_id = opened.stage_id;
+      candidates = opened.candidates;
+    } finally {
+      if (prevEnv === undefined) delete process.env.PP_ALLOW_BEST_OF_WITHOUT_JUDGE;
+      else process.env.PP_ALLOW_BEST_OF_WITHOUT_JUDGE = prevEnv;
+    }
+
+    // startBestOfStage opens the stage as 'open' with started_at set; move it
+    // to 'running' state semantics are irrelevant here -- what matters is
+    // that ONLY this code stage exists in the run (no planning predecessor).
+    const attempt_id = await insertAttempt(stage_id, { notes_json: JSON.stringify({ candidate_index: candidates[0].candidate_index }) });
+    await insertVerdict(attempt_id, { outcome: "pass" });
+    // Merge smoke_results into the existing notes_json (which already carries
+    // the best_of.candidate_paths block) rather than overwriting it.
+    const row = db().prepare(`SELECT notes_json FROM stages WHERE id = ?`).get(stage_id);
+    const notes = JSON.parse(row.notes_json);
+    notes.smoke_results = { [String(candidates[0].candidate_index)]: { status: "pass", reason: null, recorded_at: new Date().toISOString() } };
+    db().prepare(`UPDATE stages SET notes_json = ? WHERE id = ?`).run(JSON.stringify(notes), stage_id);
+
+    const readiness = runs.getStageFinalizeReadiness(stage_id, attempt_id);
+    const blocker = readiness.blockers.find(b => b.gate === "plan_first");
+    assert.equal(blocker, undefined, "best_of-mode run must be exempt from the plan-first gate");
+    assert.equal(readiness.can_pass, true);
+
+    await runs.finalizeStage({ stage_id, winner_attempt_id: attempt_id, status: "passed" });
+    const stageRow = db().prepare(`SELECT status FROM stages WHERE id = ?`).get(stage_id);
+    assert.equal(stageRow.status, "passed", "finalizeStage(passed) must succeed for a best_of-mode run with only a code stage");
+  });
+
+  it("21. single run (mode='single') at standard scope via the public lifecycle: spec finalized passed, code started strictly later -> code passes", async () => {
+    const runs = await getRuns();
+    const started = await runs.startRun({ request_text: "public-lifecycle ordering test", project_path: SHARED_PROJECT, mode: "single" });
+    const run_id = started.run_id;
+    await runs.recordTaxonomyMapping({ run_id, scope: "standard", signals: [], sections: [], missability_required: [] });
+
+    const spec_id = runs.startStage({ run_id, kind: "spec", gate_type: "spec" }).stage_id;
+    const specAttempt = await insertAttempt(spec_id);
+    await insertVerdict(specAttempt, { outcome: "pass" });
+    await runs.finalizeStage({ stage_id: spec_id, winner_attempt_id: specAttempt, status: "passed" });
+
+    // Ensure the next stage's started_at is a genuinely later millisecond
+    // before opening it, per the task's instruction.
+    const specFinishedRow = (await getDb())().prepare(`SELECT finished_at FROM stages WHERE id = ?`).get(spec_id);
+    const specMs = new Date(specFinishedRow.finished_at).getTime();
+    while (Date.now() <= specMs) { /* busy-wait a tick */ }
+
+    const code_id = runs.startStage({ run_id, kind: "code", gate_type: "code_style" }).stage_id;
+    const attempt_id = await setupPassableCodeStage(run_id, code_id);
+
+    const readiness = runs.getStageFinalizeReadiness(code_id, attempt_id);
+    const blocker = readiness.blockers.find(b => b.gate === "plan_first");
+    assert.equal(blocker, undefined, "spec finalized strictly before code's started_at (public lifecycle) must clear the gate");
+    assert.equal(readiness.can_pass, true);
+
+    await runs.finalizeStage({ stage_id: code_id, winner_attempt_id: attempt_id, status: "passed" });
+    const db = await getDb();
+    const row = db().prepare(`SELECT status FROM stages WHERE id = ?`).get(code_id);
+    assert.equal(row.status, "passed");
+  });
+
+  it("22. equal-millisecond timestamps (no insertion-order tie-break) -> blocked regardless of which row was inserted first", async () => {
+    const runs = await getRuns();
+    const run_id = await insertRun({ taxonomy_mapping_json: taxonomyMapping("standard") });
+    const tie = new Date().toISOString();
+    const spec_id = await insertStage(run_id, "spec", { status: "passed", started_at: tie, finished_at: tie });
+    const code_id = await insertStage(run_id, "code", { started_at: tie });
+    const attempt_id = await setupPassableCodeStage(run_id, code_id);
+
+    const readiness = runs.getStageFinalizeReadiness(code_id, attempt_id);
+    assert.equal(readiness.can_pass, false);
+    const blocker = readiness.blockers.find(b => b.gate === "plan_first");
+    assert.ok(blocker, "exact-millisecond tie must BLOCK -- there is no rowid tie-break to resolve it");
+  });
+
+  it("23. a passed planning stage with finished_at NULL does not count -> blocked", async () => {
+    const runs = await getRuns();
+    const db = await getDb();
+    const run_id = await insertRun({ taxonomy_mapping_json: taxonomyMapping("standard") });
+    const spec_id = await insertStage(run_id, "spec", { status: "running" });
+    // Force status='passed' while leaving finished_at NULL -- simulates a
+    // caller mutating status directly without going through finalizeStage.
+    db().prepare(`UPDATE stages SET status = 'passed' WHERE id = ?`).run(spec_id);
+    const specRow = db().prepare(`SELECT finished_at FROM stages WHERE id = ?`).get(spec_id);
+    assert.equal(specRow.finished_at, null, "fixture precondition: finished_at must be NULL");
+
+    const code_id = await insertStage(run_id, "code");
+    const attempt_id = await setupPassableCodeStage(run_id, code_id);
+
+    const readiness = runs.getStageFinalizeReadiness(code_id, attempt_id);
+    assert.equal(readiness.can_pass, false);
+    const blocker = readiness.blockers.find(b => b.gate === "plan_first");
+    assert.ok(blocker, "a passed planning stage with finished_at NULL must never count");
+  });
+
+  it("24. a passed spec stage in a DIFFERENT run of the same project_path does not count -> blocked", async () => {
+    const runs = await getRuns();
+    const other_run_id = await insertRun({ project_path: SHARED_PROJECT, taxonomy_mapping_json: taxonomyMapping("standard") });
+    await insertStage(other_run_id, "spec", { status: "passed", finished_at: new Date().toISOString() });
+
+    // A distinct run, same project_path, with no planning stage of its own.
+    const run_id = await insertRun({ project_path: SHARED_PROJECT, taxonomy_mapping_json: taxonomyMapping("standard") });
+    const code_id = await insertStage(run_id, "code");
+    const attempt_id = await setupPassableCodeStage(run_id, code_id);
+
+    const readiness = runs.getStageFinalizeReadiness(code_id, attempt_id);
+    assert.equal(readiness.can_pass, false);
+    const blocker = readiness.blockers.find(b => b.gate === "plan_first");
+    assert.ok(blocker, "a passed planning stage in a different run must not clear this run's gate, even for the same project_path");
+  });
+
+  it("25. no review forum defines a 'code'-kind stage, so the plan-first gate structurally never engages in review mode", async () => {
+    // Audit finding: /pp:review (mode='review') stages come from forums.ts,
+    // none of which lists kind='code' (governance forums produce docs/specs/
+    // designs, not application code). getStageFinalizeReadiness's plan-first
+    // block is gated on `stageRow.kind === "code"`, so review-mode stages are
+    // structurally never in scope -- this is a property of the forum
+    // definitions, not a special-case in the gate itself. Regression-guard
+    // this so a future forum can't silently reintroduce a code stage without
+    // an explicit decision about plan-first exemption/compliance.
+    const runs = await getRuns();
+    const { FORUMS } = await getForums();
+    const offenders = [];
+    for (const forum of FORUMS) {
+      for (const stage of forum.stages) {
+        if (stage.kind === "code") offenders.push({ forum: forum.id, kind: stage.kind });
+      }
+    }
+    assert.deepEqual(offenders, [],
+      `review forums must not define a 'code'-kind stage without an explicit plan-first decision: ${JSON.stringify(offenders)}`);
+
+    // Belt-and-suspenders: even if a review-mode run's taxonomy mapping
+    // resolves to 'standard'/'major', a non-code stage kind never enters the
+    // plan_first branch of getStageFinalizeReadiness at all.
+    const run_id = await insertRun({ taxonomy_mapping_json: taxonomyMapping("major") });
+    const docs_id = await insertStage(run_id, "problem_statement");
+    const readiness = runs.getStageFinalizeReadiness(docs_id);
+    const blocker = readiness.blockers.find(b => b.gate === "plan_first");
+    assert.equal(blocker, undefined, "non-'code' stage kinds (all review-forum kinds) are never in scope for the plan-first gate");
   });
 
   it("12. get_stage_finalize_readiness (the exported function the MCP handler calls) reports the plan_first blocker", async () => {
