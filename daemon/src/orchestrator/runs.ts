@@ -1485,6 +1485,24 @@ export class PlanFirstGateViolation extends Error {
   }
 }
 
+/**
+ * Thrown by recordTaxonomyMapping when the run already has one or more stage
+ * rows and the write would change (or, if none was ever recorded, establish)
+ * the run's `.scope`. See recordTaxonomyMapping's doc comment for the freeze
+ * rule this protects.
+ */
+export class TaxonomyMappingFrozenError extends Error {
+  constructor(
+    message: string,
+    public readonly run_id: string,
+    public readonly recorded_scope: "trivial" | "standard" | "major" | null,
+    public readonly attempted_scope: "trivial" | "standard" | "major",
+  ) {
+    super(message);
+    this.name = "TaxonomyMappingFrozenError";
+  }
+}
+
 export class VerdictGateViolation extends Error {
   constructor(
     message: string,
@@ -3501,8 +3519,69 @@ export type RecordTaxonomyMappingInput = {
   missability_required: string[];
 };
 
+/**
+ * Persist the taxonomy mapping for a run.
+ *
+ * Mapping freeze (cross-vendor critique gpt-5.6-terra P1c): the docstring
+ * used to say the mapping is written once, at intake -- but the code let any
+ * caller overwrite `.scope` at any point while the run was open, including
+ * mid-run after `code` stages had already started, which lets a generator
+ * dodge the plan-first gate (plan-first-gate.ts) by re-recording 'trivial'
+ * once it's inconvenient, or lets a late first mapping retroactively decide
+ * whether stages that already ran should have been gated. The code now
+ * enforces what the docstring claimed: once `run_id` has ANY stage row,
+ * a write is rejected UNLESS a mapping is already recorded AND the new
+ * `.scope` equals the recorded `.scope` (an idempotent re-record of the same
+ * scope stays allowed, and MAY update the other fields -- signals, sections,
+ * missability_required -- since those don't affect this gate). Before any
+ * stage exists, writes behave exactly as before (freely settable/updatable).
+ *
+ * Caller audit (2026-09): every caller in this repo --
+ * `.claude/commands/pp/run.md` step 5 and `.claude/commands/pp/team.md` step
+ * 5 (and their `.github/commands/pp/*` mirrors), `.claude/agents/taxonomy-mapper.md`
+ * step 5 -- records the mapping immediately after `start_run`, before the
+ * first `start_stage` call. `daemon/test/smoke.mjs` records it right after
+ * `start_run` too (before any `start_stage`). No caller records after stages
+ * begin, so this freeze does not change any existing legitimate flow.
+ */
 export function recordTaxonomyMapping(input: RecordTaxonomyMappingInput): { ok: true } {
   ensureRunOpen(input.run_id);
+
+  const hasStage = db()
+    .prepare(`SELECT 1 FROM stages WHERE run_id = ? LIMIT 1`)
+    .get(input.run_id);
+  if (hasStage) {
+    const existingRow = db()
+      .prepare(`SELECT taxonomy_mapping_json FROM runs WHERE id = ?`)
+      .get(input.run_id) as { taxonomy_mapping_json: string | null } | undefined;
+    let recordedScope: "trivial" | "standard" | "major" | null = null;
+    if (existingRow?.taxonomy_mapping_json) {
+      try {
+        const parsed = JSON.parse(existingRow.taxonomy_mapping_json) as { scope?: unknown };
+        if (parsed.scope === "trivial" || parsed.scope === "standard" || parsed.scope === "major") {
+          recordedScope = parsed.scope;
+        }
+      } catch {
+        recordedScope = null; // unparseable -- treat as "nothing usable recorded"
+      }
+    }
+    if (recordedScope === null || recordedScope !== input.scope) {
+      throw new TaxonomyMappingFrozenError(
+        `record_taxonomy_mapping refused: run ${input.run_id} already has one or more stages, so its taxonomy ` +
+          `mapping scope is frozen. ` +
+          (recordedScope === null
+            ? `No mapping (or none with a valid scope) was recorded before stages began, so a mapping can no ` +
+              `longer be established for this run.`
+            : `The recorded scope is '${recordedScope}'; this call's scope '${input.scope}' differs.`) +
+          ` Re-record with scope='${recordedScope ?? "n/a"}' to update the mapping's other fields, or record ` +
+          `the mapping before calling start_stage next time.`,
+        input.run_id,
+        recordedScope,
+        input.scope,
+      );
+    }
+  }
+
   const json = JSON.stringify(input);
   txImmediate(() => {
     db().prepare(`UPDATE runs SET taxonomy_mapping_json = ? WHERE id = ?`).run(json, input.run_id);

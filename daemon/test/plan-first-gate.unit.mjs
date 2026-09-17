@@ -81,12 +81,25 @@ async function insertRun(overrides = {}) {
   return id;
 }
 
-let _stageCounter = 0;
-/** started_at is monotonically increasing across calls (even within the same ms). */
+let _lastStartedAtMs = 0;
+/**
+ * started_at is monotonically increasing across calls (even within the same
+ * ms) and is a genuine `new Date(ms).toISOString()` value -- same shape as
+ * every other timestamp this fixture (and the daemon's `now()`) produces --
+ * so it lexically compares correctly against finished_at values built via
+ * plain `new Date().toISOString()` calls elsewhere in this file. An earlier
+ * version of this helper faked distinct timestamps by appending extra digits
+ * before the trailing 'Z' (e.g. ".123000005Z"); that format sorts
+ * inconsistently against plain 3-digit-fraction ISO strings (their 'Z'
+ * terminator sorts before a digit), which is exactly the kind of format
+ * mismatch the plan-first gate's ordering rule depends on NOT existing --
+ * see plan-first-gate.ts's tie-break doc comment.
+ */
 function nextStartedAt() {
-  _stageCounter += 1;
-  const base = Date.now();
-  return new Date(base).toISOString().replace("Z", `${String(_stageCounter).padStart(6, "0")}Z`);
+  let ms = Date.now();
+  if (ms <= _lastStartedAtMs) ms = _lastStartedAtMs + 1;
+  _lastStartedAtMs = ms;
+  return new Date(ms).toISOString();
 }
 
 async function insertStage(run_id, kind = "code", overrides = {}) {
@@ -339,6 +352,188 @@ describe("X1b plan-first gate", () => {
     }
     assert.deepEqual(offenders, [],
       `teams with a code stage but no PLAN_FIRST_STAGE_KINDS predecessor: ${JSON.stringify(offenders)}`);
+  });
+
+  it("13. spec started before code but PASSED after code started -> blocked (P1a)", async () => {
+    const runs = await getRuns();
+    const run_id = await insertRun({ taxonomy_mapping_json: taxonomyMapping("standard") });
+    // spec opens first...
+    const spec_id = await insertStage(run_id, "spec", { status: "running" });
+    // ...code opens while spec is still open...
+    const code_id = await insertStage(run_id, "code");
+    const attempt_id = await setupPassableCodeStage(run_id, code_id);
+    // ...then spec passes AFTER code already started. finished_at is after
+    // code's started_at, so it must not clear the gate even though spec
+    // STARTED first.
+    const db = await getDb();
+    const codeRow = db().prepare(`SELECT started_at FROM stages WHERE id = ?`).get(code_id);
+    const lateFinish = new Date(new Date(codeRow.started_at.replace(/\d{6}Z$/, "Z")).getTime() + 5000).toISOString();
+    db().prepare(`UPDATE stages SET status = 'passed', finished_at = ? WHERE id = ?`).run(lateFinish, spec_id);
+
+    const readiness = runs.getStageFinalizeReadiness(code_id, attempt_id);
+    assert.equal(readiness.can_pass, false);
+    const blocker = readiness.blockers.find(b => b.gate === "plan_first");
+    assert.ok(blocker, "a planning stage that passed AFTER the code stage started must not clear the gate (P1a)");
+  });
+
+  it("14a. spec finished_at exactly equal to code started_at, spec inserted first -> allowed (P1b tie-break)", async () => {
+    const runs = await getRuns();
+    const run_id = await insertRun({ taxonomy_mapping_json: taxonomyMapping("standard") });
+    const tie = new Date().toISOString();
+    // spec inserted first (lower rowid).
+    const spec_id = await insertStage(run_id, "spec", { status: "passed", started_at: tie, finished_at: tie });
+    const code_id = await insertStage(run_id, "code", { started_at: tie });
+    const attempt_id = await setupPassableCodeStage(run_id, code_id);
+
+    const readiness = runs.getStageFinalizeReadiness(code_id, attempt_id);
+    const blocker = readiness.blockers.find(b => b.gate === "plan_first");
+    assert.equal(blocker, undefined,
+      "spec finished_at == code started_at, spec inserted first, must be allowed via rowid tie-break");
+    assert.equal(readiness.can_pass, true);
+  });
+
+  it("14b. equal timestamps with CODE inserted first -> blocked (P1b tie-break)", async () => {
+    const runs = await getRuns();
+    const run_id = await insertRun({ taxonomy_mapping_json: taxonomyMapping("standard") });
+    const tie = new Date().toISOString();
+    // code inserted first (lower rowid) this time.
+    const code_id = await insertStage(run_id, "code", { started_at: tie });
+    const spec_id = await insertStage(run_id, "spec", { status: "passed", started_at: tie, finished_at: tie });
+    const attempt_id = await setupPassableCodeStage(run_id, code_id);
+
+    const readiness = runs.getStageFinalizeReadiness(code_id, attempt_id);
+    assert.equal(readiness.can_pass, false);
+    const blocker = readiness.blockers.find(b => b.gate === "plan_first");
+    assert.ok(blocker, "spec finished_at == code started_at but spec inserted AFTER code must not clear the gate");
+  });
+
+  it("15. identical started_at for spec and code, spec passed strictly before code start, spec inserted first -> allowed", async () => {
+    const runs = await getRuns();
+    const run_id = await insertRun({ taxonomy_mapping_json: taxonomyMapping("standard") });
+    const sharedStart = new Date().toISOString();
+    const earlierFinish = new Date(new Date(sharedStart).getTime() - 5000).toISOString();
+    const spec_id = await insertStage(run_id, "spec", {
+      status: "passed", started_at: sharedStart, finished_at: earlierFinish,
+    });
+    const code_id = await insertStage(run_id, "code", { started_at: sharedStart });
+    const attempt_id = await setupPassableCodeStage(run_id, code_id);
+
+    const readiness = runs.getStageFinalizeReadiness(code_id, attempt_id);
+    const blocker = readiness.blockers.find(b => b.gate === "plan_first");
+    assert.equal(blocker, undefined,
+      "spec finished strictly before code's started_at must clear the gate regardless of matching started_at");
+    assert.equal(readiness.can_pass, true);
+  });
+
+  it("16a. spec passed, then re-finalized to surfaced -> blocked", async () => {
+    const runs = await getRuns();
+    const run_id = await insertRun({ taxonomy_mapping_json: taxonomyMapping("standard") });
+    const spec_id = await insertStage(run_id, "spec", { status: "passed", finished_at: new Date().toISOString() });
+    const code_id = await insertStage(run_id, "code");
+    const attempt_id = await setupPassableCodeStage(run_id, code_id);
+
+    // Sanity: currently allowed.
+    let readiness = runs.getStageFinalizeReadiness(code_id, attempt_id);
+    assert.equal(readiness.blockers.find(b => b.gate === "plan_first"), undefined);
+
+    // Re-finalize (re-opened) the planning stage to 'surfaced'.
+    const db = await getDb();
+    db().prepare(`UPDATE stages SET status = 'surfaced' WHERE id = ?`).run(spec_id);
+
+    readiness = runs.getStageFinalizeReadiness(code_id, attempt_id);
+    assert.equal(readiness.can_pass, false);
+    const blocker = readiness.blockers.find(b => b.gate === "plan_first");
+    assert.ok(blocker, "a planning stage re-finalized away from 'passed' must no longer clear the gate");
+  });
+
+  it("16b. spec re-finalized passed with a finished_at LATER than code started_at -> blocked", async () => {
+    const runs = await getRuns();
+    const run_id = await insertRun({ taxonomy_mapping_json: taxonomyMapping("standard") });
+    const spec_id = await insertStage(run_id, "spec", { status: "passed", finished_at: new Date().toISOString() });
+    const code_id = await insertStage(run_id, "code");
+    const attempt_id = await setupPassableCodeStage(run_id, code_id);
+
+    let readiness = runs.getStageFinalizeReadiness(code_id, attempt_id);
+    assert.equal(readiness.blockers.find(b => b.gate === "plan_first"), undefined);
+
+    const db = await getDb();
+    const codeRow = db().prepare(`SELECT started_at FROM stages WHERE id = ?`).get(code_id);
+    const laterFinish = new Date(new Date(codeRow.started_at.replace(/\d{6}Z$/, "Z")).getTime() + 60000).toISOString();
+    db().prepare(`UPDATE stages SET status = 'passed', finished_at = ? WHERE id = ?`).run(laterFinish, spec_id);
+
+    readiness = runs.getStageFinalizeReadiness(code_id, attempt_id);
+    assert.equal(readiness.can_pass, false);
+    const blocker = readiness.blockers.find(b => b.gate === "plan_first");
+    assert.ok(blocker, "a re-finalized-passed planning stage with a later finished_at must not clear the gate");
+  });
+
+  it("17. record mapping trivial, open a stage, then record standard -> rejected; gate still reads trivial (allowed)", async () => {
+    const runs = await getRuns();
+    const run_id = await insertRun();
+    await runs.recordTaxonomyMapping({
+      run_id, scope: "trivial", signals: [], sections: [], missability_required: [],
+    });
+    const code_id = await insertStage(run_id, "code");
+    const attempt_id = await setupPassableCodeStage(run_id, code_id);
+
+    let threw = false;
+    try {
+      await runs.recordTaxonomyMapping({
+        run_id, scope: "standard", signals: ["x"], sections: [], missability_required: [],
+      });
+    } catch (err) {
+      threw = true;
+      assert.equal(err.name, "TaxonomyMappingFrozenError",
+        `expected TaxonomyMappingFrozenError, got ${err.name}: ${err.message}`);
+    }
+    assert.ok(threw, "recording a different scope after stages exist must be rejected");
+
+    // Gate still reads the original 'trivial' scope -> gate does not apply.
+    const readiness = runs.getStageFinalizeReadiness(code_id, attempt_id);
+    const blocker = readiness.blockers.find(b => b.gate === "plan_first");
+    assert.equal(blocker, undefined, "rejected re-record must not have mutated the recorded scope");
+    assert.equal(readiness.can_pass, true);
+  });
+
+  it("18. no mapping, open a stage, then record major -> rejected", async () => {
+    const runs = await getRuns();
+    const run_id = await insertRun(); // no taxonomy_mapping_json
+    const code_id = await insertStage(run_id, "code");
+    await setupPassableCodeStage(run_id, code_id);
+
+    let threw = false;
+    try {
+      await runs.recordTaxonomyMapping({
+        run_id, scope: "major", signals: [], sections: [], missability_required: [],
+      });
+    } catch (err) {
+      threw = true;
+      assert.equal(err.name, "TaxonomyMappingFrozenError",
+        `expected TaxonomyMappingFrozenError, got ${err.name}: ${err.message}`);
+    }
+    assert.ok(threw, "establishing a first mapping after stages exist must be rejected");
+  });
+
+  it("19. mapping standard, open a stage, re-record standard with different signals -> allowed", async () => {
+    const runs = await getRuns();
+    const run_id = await insertRun();
+    await runs.recordTaxonomyMapping({
+      run_id, scope: "standard", signals: ["a"], sections: [], missability_required: [],
+    });
+    const code_id = await insertStage(run_id, "code");
+    await setupPassableCodeStage(run_id, code_id);
+
+    // Idempotent re-record of the SAME scope, different other fields, must succeed.
+    const result = await runs.recordTaxonomyMapping({
+      run_id, scope: "standard", signals: ["a", "b"], sections: [], missability_required: ["ownership_docs"],
+    });
+    assert.deepEqual(result, { ok: true });
+
+    const db = await getDb();
+    const row = db().prepare(`SELECT taxonomy_mapping_json FROM runs WHERE id = ?`).get(run_id);
+    const parsed = JSON.parse(row.taxonomy_mapping_json);
+    assert.deepEqual(parsed.signals, ["a", "b"], "other fields must update on same-scope re-record");
+    assert.deepEqual(parsed.missability_required, ["ownership_docs"]);
   });
 
   it("12. get_stage_finalize_readiness (the exported function the MCP handler calls) reports the plan_first blocker", async () => {
