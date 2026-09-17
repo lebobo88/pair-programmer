@@ -28,6 +28,7 @@ import { codexCritique } from "../mcp/codex-server.js";
 import { agyCritique } from "../mcp/antigravity-server.js";
 import { describeJudgeCapabilities } from "./gates.js";
 import { findPriorTestsPreStage, getLatestTddCheck, type TddCheckRow } from "./tdd-gate.js";
+import { planFirstRequired, findPriorPassedPlanningStage } from "./plan-first-gate.js";
 import {
   requiredValidatorsForStage,
   type ValidatorKind,
@@ -1315,7 +1316,8 @@ export type StageFinalizeNextAction =
   | "surface_stage"
   | "dispatch_cross_vendor_rejudge"
   | "record_verdict"
-  | "record_smoke_or_assertion";
+  | "record_smoke_or_assertion"
+  | "pass_planning_stage";
 
 export type StageFinalizeTddBlocker = {
   gate: "tdd";
@@ -1325,6 +1327,22 @@ export type StageFinalizeTddBlocker = {
   message: string;
   check: TddCheckRow | null;
   prior_stage_id?: string;
+};
+
+/**
+ * X1b: structural plan-first gate. A `code` stage in a run whose recorded
+ * taxonomy mapping scope is 'standard' or 'major' cannot finalize as
+ * 'passed' unless an EARLIER stage in the same run, with a kind in
+ * PLAN_FIRST_STAGE_KINDS, has already finalized 'passed'. See
+ * plan-first-gate.ts for the full rationale and the INVERTED-vs-TDD-gate
+ * doctrine note.
+ */
+export type StageFinalizePlanFirstBlocker = {
+  gate: "plan_first";
+  next_action: "pass_planning_stage";
+  message: string;
+  run_id: string;
+  scope: "standard" | "major";
 };
 
 export type StageFinalizeArtifactBlocker = {
@@ -1419,6 +1437,7 @@ export type StageFinalizeZeroVerdictBlocker = {
 
 export type StageFinalizeBlocker =
   | StageFinalizeTddBlocker
+  | StageFinalizePlanFirstBlocker
   | StageFinalizeArtifactBlocker
   | StageFinalizeVerdictBlocker
   | StageFinalizeRejudgeBlocker
@@ -1446,6 +1465,23 @@ export class TddGateViolation extends Error {
   ) {
     super(message);
     this.name = "TddGateViolation";
+  }
+}
+
+/**
+ * X1b: thrown by finalizeStage when a `code` stage in a standard/major-scope
+ * run has no earlier stage with a kind in PLAN_FIRST_STAGE_KINDS that has
+ * already finalized 'passed'. Mirrors TddGateViolation's shape.
+ */
+export class PlanFirstGateViolation extends Error {
+  constructor(
+    message: string,
+    public readonly stage_id: string,
+    public readonly run_id: string,
+    public readonly scope: "standard" | "major",
+  ) {
+    super(message);
+    this.name = "PlanFirstGateViolation";
   }
 }
 
@@ -1555,6 +1591,29 @@ export function getStageFinalizeReadiness(stage_id: string, winner_attempt_id?: 
       const check = getLatestTddCheck(stage_id, "post");
       if (!check || check.status !== "verified") {
         blockers.push(buildTddFinalizeBlocker({ stage_id, phase: "post", check, prior_stage_id: prior.stage_id }));
+      }
+    }
+  }
+
+  // X1b: structural plan-first gate. Placed immediately after the TDD block
+  // so it surfaces as the first blocker when both would fire. Only `code`
+  // stages are in scope; see plan-first-gate.ts for the run-level scope
+  // check and the "inverted vs TDD gate" doctrine.
+  if (stageRow.kind === "code") {
+    const runIdRow = db()
+      .prepare(`SELECT run_id, taxonomy_mapping_json FROM stages s JOIN runs r ON r.id = s.run_id WHERE s.id = ?`)
+      .get(stage_id) as { run_id: string; taxonomy_mapping_json: string | null } | undefined;
+    if (runIdRow && planFirstRequired(runIdRow.run_id)) {
+      const priorPlanningStage = findPriorPassedPlanningStage(stage_id);
+      if (!priorPlanningStage) {
+        // Re-parse scope for the blocker payload (planFirstRequired already
+        // validated it is 'standard' or 'major').
+        const mapping = JSON.parse(runIdRow.taxonomy_mapping_json!) as { scope: "standard" | "major" };
+        blockers.push(buildPlanFirstFinalizeBlocker({
+          stage_id,
+          run_id: runIdRow.run_id,
+          scope: mapping.scope,
+        }));
       }
     }
   }
@@ -1991,6 +2050,14 @@ export async function finalizeStage(input: FinalizeStageInput): Promise<void> {
           blocker.check,
         );
       }
+      if (blocker.gate === "plan_first") {
+        throw new PlanFirstGateViolation(
+          blocker.message,
+          input.stage_id,
+          blocker.run_id,
+          blocker.scope,
+        );
+      }
       if (blocker.gate === "verdict") {
         throw new VerdictGateViolation(
           blocker.message,
@@ -2083,6 +2150,25 @@ function buildTddFinalizeBlocker(opts: {
     message,
     check: opts.check,
     prior_stage_id: opts.prior_stage_id,
+  };
+}
+
+function buildPlanFirstFinalizeBlocker(opts: {
+  stage_id: string;
+  run_id: string;
+  scope: "standard" | "major";
+}): StageFinalizePlanFirstBlocker {
+  return {
+    gate: "plan_first",
+    next_action: "pass_planning_stage",
+    run_id: opts.run_id,
+    scope: opts.scope,
+    message:
+      `finalize_stage refused: code stage ${opts.stage_id} cannot be marked 'passed' because run ${opts.run_id} ` +
+      `is scope='${opts.scope}' and no earlier stage in this run has finalized 'passed' with a kind in ` +
+      `PLAN_FIRST_STAGE_KINDS (spec, repro, invariants, one_pager, gdd, mechanic_spec, tech_design_doc). ` +
+      `Run and pass the team's planning stage before this code stage, or finalize with status='surfaced' ` +
+      `to accept the unplanned change.`,
   };
 }
 
