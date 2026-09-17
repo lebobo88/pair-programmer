@@ -228,13 +228,36 @@ export function evaluateAgyPin(
   return res;
 }
 
+/**
+ * Injectable seam for the actual `agy models` subprocess invocation
+ * (test-only override point — see doctor-probe-timeout.unit.mjs). Production
+ * code always uses the default below, which routes through trackedExeca so
+ * the child is both registered in ACTIVE_CHILDREN (shutdown drain) AND killed
+ * by execa's own `timeout` option at `timeoutMs`.
+ *
+ * WHY THIS MATTERS (gpt-5.6-terra finding 1): earlier code raced a Promise
+ * that resolved after PP_DOCTOR_PIN_TIMEOUT_MS against `checkAgyPinServed()`,
+ * but the underlying `agy models` child was spawned with the fixed
+ * AGY_MODELS_TIMEOUT_MS (15s) regardless of the configured budget. A caller
+ * setting PP_DOCTOR_PIN_TIMEOUT_MS=100 got a 100ms-bounded doctor RESPONSE
+ * while the real child kept running for up to 15s — repeated doctor calls
+ * could accumulate several live, untracked-by-budget probes. Threading
+ * `timeoutMs` all the way into the exec options means the SAME budget both
+ * bounds the outer race AND is the deadline execa uses to SIGTERM/SIGKILL the
+ * child.
+ */
+export type AgyModelsExecFn = (timeoutMs: number) => ReturnType<typeof trackedExeca>;
+
+const defaultAgyModelsExec: AgyModelsExecFn = (timeoutMs) =>
+  trackedExeca("agy", ["models"], { windowsHide: true, timeout: timeoutMs });
+
 /** Run `agy models` (fail-soft). Returns null stdout when the probe fails. */
-async function probeAgyModels(): Promise<{ stdout: string | null; reason?: string }> {
+async function probeAgyModels(
+  timeoutMs: number = AGY_MODELS_TIMEOUT_MS,
+  exec: AgyModelsExecFn = defaultAgyModelsExec,
+): Promise<{ stdout: string | null; reason?: string }> {
   try {
-    const { stdout } = await trackedExeca("agy", ["models"], {
-      windowsHide: true,
-      timeout: AGY_MODELS_TIMEOUT_MS,
-    });
+    const { stdout } = await exec(timeoutMs);
     return { stdout: (stdout ?? "").toString() };
   } catch (err) {
     return { stdout: null, reason: `\`agy models\` failed: ${(err as Error).message}` };
@@ -245,11 +268,18 @@ async function probeAgyModels(): Promise<{ stdout: string | null; reason?: strin
  * Verify every agy pin (critique default, critique escalated, generate)
  * against the installed CLI's served list. Never throws; callers (doctor) can
  * await it unconditionally.
+ *
+ * `timeoutMs` bounds BOTH the outer race a caller (e.g.
+ * checkAgyPinServedBounded) may wrap this in AND the real `agy models` child
+ * process's own kill deadline — see AgyModelsExecFn above. `exec` is a
+ * test-only injection seam.
  */
 export async function checkAgyPinServed(
   pins: Record<string, string> = defaultAgyPins(),
+  timeoutMs: number = AGY_MODELS_TIMEOUT_MS,
+  exec: AgyModelsExecFn = defaultAgyModelsExec,
 ): Promise<AgyPinCheck> {
-  const { stdout, reason } = await probeAgyModels();
+  const { stdout, reason } = await probeAgyModels(timeoutMs, exec);
   if (stdout === null) return evaluateAgyPins(pins, null, reason);
   return evaluateAgyPins(pins, parseAgyModels(stdout), reason);
 }

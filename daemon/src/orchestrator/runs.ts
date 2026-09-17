@@ -168,7 +168,15 @@ export async function startRun(input: StartRunInput): Promise<StartRunOutput> {
     ? createHash("sha256").update(dirty).digest("hex").slice(0, 16)
     : null;
 
-  const { versions: cliVersions } = await captureCliVersions();
+  // Persist BOTH the resolved versions and which probes (if any) timed out
+  // rather than genuinely failing. Without `cli_probe_timeouts` here, a CLI
+  // that merely exceeded PP_DOCTOR_PROBE_TIMEOUT_MS is indistinguishable, on
+  // replay, from one that was never installed — an operator re-reading
+  // `cli_versions_json` months later would wrongly conclude the CLI was
+  // absent at run-start. `cli_versions_json` stays a superset-compatible JSON
+  // object: existing readers that only look at the per-CLI keys are
+  // unaffected; `probe_timeouts` is an additive sibling key.
+  const { versions: cliVersions, timeouts: cliProbeTimeouts } = await captureCliVersions();
 
   // v7: lift Hydra context fields off the input. parseHydraContext returns
   // null when no workflow_id is set (standalone runs), in which case all
@@ -206,7 +214,7 @@ export async function startRun(input: StartRunInput): Promise<StartRunOutput> {
           null,
           headSha,
           treeDirtyHash,
-          JSON.stringify(cliVersions),
+          JSON.stringify({ ...cliVersions, probe_timeouts: cliProbeTimeouts }),
           startedAt,
           hydraCtx?.workflow_id ?? null,
           hydraCtx?.envelope_id ?? null,
@@ -3547,8 +3555,16 @@ async function tryCmd(cmd: string, args: string[], timeoutMs?: number): Promise<
   }
 }
 
-/** Injectable seam for the bounded agy pin check (test-only override point). */
-export type AgyPinCheckFn = (pins?: Record<string, string>) => Promise<AgyPinCheck>;
+/**
+ * Injectable seam for the bounded agy pin check (test-only override point).
+ * `timeoutMs` is forwarded so a real `checkFn` (checkAgyPinServed) can thread
+ * the SAME budget into its subprocess's kill deadline, not just the outer
+ * race here — see agy-pin.ts:AgyModelsExecFn for why that distinction matters.
+ */
+export type AgyPinCheckFn = (
+  pins?: Record<string, string>,
+  timeoutMs?: number,
+) => Promise<AgyPinCheck>;
 
 /** The degraded-open shape returned when the pin check times out or the CLI is absent. */
 function agyPinInconclusive(pins: Record<string, string>, note: string): AgyPinCheck {
@@ -3570,6 +3586,13 @@ function agyPinInconclusive(pins: Record<string, string>, note: string): AgyPinC
  * already returns when the agy CLI is absent, with a note naming the budget
  * that was exceeded. `checkFn` is an injectable seam so tests can simulate a
  * hang without spawning a real CLI.
+ *
+ * `timeoutMs` is passed to `checkFn` as well as used for this function's own
+ * race: the real implementation (checkAgyPinServed) threads it straight into
+ * the `agy models` child's execa `timeout` option, so a short
+ * PP_DOCTOR_PIN_TIMEOUT_MS both returns doctor promptly AND kills the actual
+ * subprocess at the same deadline, instead of leaving it running for up to
+ * AGY_MODELS_TIMEOUT_MS regardless of the configured budget.
  */
 export async function checkAgyPinServedBounded(
   pins: Record<string, string> = defaultAgyPins(),
@@ -3591,7 +3614,7 @@ export async function checkAgyPinServedBounded(
       timeoutMs,
     );
   });
-  const result = await Promise.race([checkFn(pins), budget]);
+  const result = await Promise.race([checkFn(pins, timeoutMs), budget]);
   clearTimeout(timer!);
   return result;
 }
