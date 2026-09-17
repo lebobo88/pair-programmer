@@ -67,6 +67,28 @@ export function cliRemediationText(
   return installLoginHint;
 }
 
+/**
+ * Build the operator-facing remediation note for the two non-Claude vendors
+ * (codex/openai, agy/google) from a `doctor()` report. Shared by every caller
+ * that needs to explain WHY a vendor isn't counted as reachable —
+ * vendor-matrix here and best-of-n.ts's precondition — so a timed-out probe
+ * always gets budget wording (naming PP_DOCTOR_PROBE_TIMEOUT_MS) instead of
+ * credential/login advice, and a genuinely-missing CLI still gets the
+ * install/login hint. Gating itself is untouched: a timed-out vendor still
+ * counts as unavailable to the caller; only the explanation text changes.
+ */
+export function buildVendorRemediationNote(
+  cliVersions: Record<string, string | null> | undefined,
+  cliProbeTimeouts: readonly string[] | undefined,
+): { codex: string | null; agy: string | null } {
+  const codexClass = classifyCliProbeResult("codex", cliVersions?.codex ?? null, cliProbeTimeouts);
+  const agyClass = classifyCliProbeResult("agy", cliVersions?.agy ?? null, cliProbeTimeouts);
+  return {
+    codex: cliRemediationText("codex", codexClass, "OpenAI not configured (set OPENAI_API_KEY or `codex login`)"),
+    agy: cliRemediationText("agy", agyClass, "Google not configured (set GEMINI_API_KEY or ANTIGRAVITY_API_KEY, or run `agy` to sign in)"),
+  };
+}
+
 type HookInput = {
   hook_event_name?: string;
   tool_name?: string;
@@ -210,6 +232,7 @@ const HANDLERS: Record<string, Record<string, (input: HookInput) => Promise<void
       const report = (await doctor()) as {
         cross_vendor_ready?: boolean;
         vendors_configured?: Record<string, boolean>;
+        cli_versions?: Record<string, string | null>;
         cli_probe_timeouts?: string[];
       };
       if (report.cross_vendor_ready) return reply(true);
@@ -217,25 +240,23 @@ const HANDLERS: Record<string, Record<string, (input: HookInput) => Promise<void
       const configured = Object.entries(report.vendors_configured ?? {}).filter(([, v]) => v).map(([k]) => k);
       const advisory = `[pp] vendor matrix incomplete: only ${configured.join(", ") || "none"} configured. Cross-vendor gates (spec/design/security/contract) will refuse to run.`;
 
-      // A probe that TIMED OUT (per cli_probe_timeouts) is not evidence the
-      // CLI is missing or the operator is logged out — install/login
-      // remediation is actively wrong advice for a CLI that just cold-starts
-      // slowly. Name the timed-out CLIs and point at the budget knob instead.
-      const timedOut = (report.cli_probe_timeouts ?? []).filter((cli) => cli === "codex" || cli === "agy");
-      const timeoutNote = timedOut.length
-        ? ` NOTE: ${timedOut.join(", ")} did not respond within PP_DOCTOR_PROBE_TIMEOUT_MS — ` +
-          `this is a probe timeout, not a missing/logged-out CLI. Raise PP_DOCTOR_PROBE_TIMEOUT_MS ` +
-          `and retry before assuming install/login is needed.`
-        : "";
+      // A probe that TIMED OUT is not evidence the CLI is missing or the
+      // operator is logged out — install/login remediation is actively wrong
+      // advice for a CLI that just cold-starts slowly. Route through the same
+      // classifyCliProbeResult/cliRemediationText helpers every other caller
+      // uses so a timed-out vendor gets budget wording, not credential advice.
+      const remediation = buildVendorRemediationNote(report.cli_versions, report.cli_probe_timeouts);
+      const remediationParts = [remediation.codex, remediation.agy].filter((h): h is string => !!h);
+      const remediationNote = remediationParts.length ? ` ${remediationParts.join(" ")}` : "";
 
       if (process.env.PP_ALLOW_SINGLE_VENDOR === "1") {
-        console.log(`${advisory}${timeoutNote} (PP_ALLOW_SINGLE_VENDOR=1 — proceeding anyway; cross-vendor gates will still refuse).`);
+        console.log(`${advisory}${remediationNote} (PP_ALLOW_SINGLE_VENDOR=1 — proceeding anyway; cross-vendor gates will still refuse).`);
         return reply(true);
       }
 
       reply(
         false,
-        `${advisory}${timeoutNote} Set OPENAI_API_KEY + (GEMINI_API_KEY or ANTIGRAVITY_API_KEY) (or run \`codex login\` / \`agy\` to sign in) before continuing. Session start blocked. Set PP_ALLOW_SINGLE_VENDOR=1 to bypass for read-only / single-vendor sessions.`,
+        `${advisory}${remediationNote} Session start blocked. Set PP_ALLOW_SINGLE_VENDOR=1 to bypass for read-only / single-vendor sessions.`,
       );
     },
     "cli-version-pin": async () => {

@@ -3630,6 +3630,17 @@ export type DoctorOptions = {
    * skill, NOT by internal hook callers that need a fast doctor.
    */
   smoke?: boolean;
+  /**
+   * Test-only injectable seams. Production always uses the defaults
+   * (`tryCmd` / `checkAgyPinServed` / the configured env-var budgets); tests
+   * substitute fakes so doctor()'s REAL composition (not a hand-assembled
+   * stand-in payload) can be exercised deterministically without spawning
+   * real, slow CLIs. See doctor-probe-timeout.unit.mjs.
+   */
+  cliVersionProbe?: CliVersionProbe;
+  cliVersionTimeoutMs?: number;
+  agyPinCheckFn?: AgyPinCheckFn;
+  agyPinTimeoutMs?: number;
 };
 
 export async function doctor(opts: DoctorOptions = {}): Promise<unknown> {
@@ -3642,8 +3653,8 @@ export async function doctor(opts: DoctorOptions = {}): Promise<unknown> {
   // result is discarded below in favour of the "not installed" shape when
   // cliVersions confirms that.
   const [{ versions: cliVersions, timeouts: cli_probe_timeouts }, agyPinResult] = await Promise.all([
-    captureCliVersions(),
-    checkAgyPinServedBounded(),
+    captureCliVersions(opts.cliVersionProbe, opts.cliVersionTimeoutMs),
+    checkAgyPinServedBounded(undefined, opts.agyPinTimeoutMs, opts.agyPinCheckFn),
   ]);
   const dbReachable = (() => {
     try { db().prepare("SELECT 1").get(); return true; } catch { return false; }
@@ -3711,8 +3722,27 @@ export async function doctor(opts: DoctorOptions = {}): Promise<unknown> {
   // the wrong model; it fails hard at the gate, mid-run, after generation cost
   // is already sunk. The probe moves that discovery here, and additionally
   // reports allow-list drift (allowed_models must stay a subset of served).
-  const agy_pin: AgyPinCheck = cliVersions.agy !== null
-    ? agyPinResult
+  // The agy `--version` probe and the agy pin check (checkAgyPinServedBounded)
+  // run CONCURRENTLY above and can time out INDEPENDENTLY of each other. A
+  // timed-out version probe deliberately resolves `cliVersions.agy` to
+  // `null` — exactly the same value a genuinely-absent CLI produces — so
+  // testing `cliVersions.agy !== null` alone cannot tell "CLI absent" from
+  // "CLI present but --version was slow": on a timeout it silently discarded
+  // the bounded pin result already computed above and reported the CLI as
+  // missing outright. `cli_probe_timeouts` disambiguates: only fall back to
+  // the "not installed" shape when the version probe genuinely resolved to
+  // absent (not merely timed out).
+  const agyVersionTimedOut = cli_probe_timeouts.includes("agy");
+  const agy_pin: AgyPinCheck = cliVersions.agy !== null || agyVersionTimedOut
+    ? (agyVersionTimedOut && !agyPinResult.note
+        ? {
+            ...agyPinResult,
+            note:
+              `the agy --version probe exceeded its time budget (PP_DOCTOR_PROBE_TIMEOUT_MS); ` +
+              `this does NOT mean the agy CLI is missing. The pinned-model check ran ` +
+              `independently and completed — see agy_pin_served above.`,
+          }
+        : agyPinResult)
     : {
         agy_pin_served: null,
         pinned_model: DEFAULT_MODELS.agy_critique,

@@ -31,7 +31,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const DIST = join(__dirname, "..", "dist");
 const importDist = (relPath) => import(pathToFileURL(join(DIST, relPath)).href);
 
-const { captureCliVersions, checkAgyPinServedBounded } = await importDist("orchestrator/runs.js");
+const { captureCliVersions, checkAgyPinServedBounded, doctor } = await importDist("orchestrator/runs.js");
 const { defaultAgyPins, checkAgyPinServed } = await importDist("orchestrator/agy-pin.js");
 const { doctorProbeTimeoutMs, doctorPinTimeoutMs } = await importDist("config.js");
 
@@ -227,25 +227,110 @@ test("real child: a hung node subprocess bounded by a small execa timeout is act
 
 // ─── doctor-payload composition: cli_probe_timeouts + duration_ms surface end-to-end ──
 //
-// doctor() itself spawns 5 real CLIs and is intentionally not called directly
-// in unit tests (would be slow / environment-dependent — see
-// doctor-pin-freshness.unit.mjs's convention). This test instead exercises
-// the exact composition doctor() performs -- Promise.all([captureCliVersions,
-// checkAgyPinServedBounded]) plus a duration_ms wall-clock measurement --
-// with injected fakes, proving both fields survive into the assembled payload
-// shape doctor() returns.
+// doctor() itself normally spawns 5 real CLIs plus a real `agy models` call,
+// which is why other doctor tests avoid calling it directly (see
+// doctor-pin-freshness.unit.mjs's convention). doctor() now accepts
+// test-only injectable seams (cliVersionProbe/cliVersionTimeoutMs/
+// agyPinCheckFn/agyPinTimeoutMs) specifically so this can drive the REAL
+// doctor() function end-to-end instead of hand-assembling a stand-in payload
+// object — a hand-assembled payload would still pass if doctor() itself
+// stopped returning cli_probe_timeouts or duration_ms; calling the real
+// function does not.
 
-test("doctor payload composition: cli_probe_timeouts and duration_ms both appear in the assembled result", async () => {
-  const pins = defaultAgyPins();
-  const doctorStart = Date.now();
-  const [{ versions, timeouts: cli_probe_timeouts }, agyPinResult] = await Promise.all([
-    captureCliVersions(async () => null, 50), // every version probe "fails fast" (not a timeout)
-    checkAgyPinServedBounded(pins, 50, () => new Promise(() => {})), // hangs -> exercises the race
-  ]);
-  const duration_ms = Date.now() - doctorStart;
-  const payload = { cli_versions: versions, cli_probe_timeouts, agy_pin_check: agyPinResult, duration_ms };
+test("doctor(): cli_probe_timeouts and duration_ms both appear in doctor()'s OWN returned result", async () => {
+  const fastFailProbe = async () => null; // every version probe "fails fast" (not a timeout)
+  const hangingPinCheck = () => new Promise(() => {}); // never resolves -> exercises the pin-check race
+  const report = await doctor({
+    cliVersionProbe: fastFailProbe,
+    cliVersionTimeoutMs: 50,
+    agyPinCheckFn: hangingPinCheck,
+    agyPinTimeoutMs: 50,
+  });
 
-  assert.ok(Array.isArray(payload.cli_probe_timeouts), "cli_probe_timeouts must be an array in the doctor payload");
-  assert.equal(payload.agy_pin_check.agy_pin_served, null, "a hung pin check must degrade open, not fail closed");
-  assert.ok(typeof payload.duration_ms === "number" && payload.duration_ms >= 0, "duration_ms must be a non-negative number");
+  assert.ok(Array.isArray(report.cli_probe_timeouts), "doctor() must return cli_probe_timeouts as an array");
+  assert.equal(report.agy_pin_check.agy_pin_served, null, "a hung pin check must degrade open, not fail closed");
+  assert.ok(
+    typeof report.duration_ms === "number" && report.duration_ms >= 0,
+    "doctor() must return a non-negative duration_ms",
+  );
+});
+
+// ─── finding 1: a timed-out agy VERSION probe must not discard an already-computed pin result ──
+//
+// gpt-5.6-terra LOGIC BUG: doctor() chose between the bounded pin result and
+// the literal "agy CLI not installed" shape by testing `cliVersions.agy !==
+// null`. A TIMED-OUT agy version probe deliberately resolves to null, so
+// doctor threw away the bounded pin result it had already computed
+// CONCURRENTLY and reported the CLI as absent outright. Fix: consult
+// cli_probe_timeouts to tell "absent" apart from "timed out"; on a timeout,
+// keep the bounded pin result exactly as computed and name the version-probe
+// budget in the note instead of claiming the CLI is missing.
+
+test("doctor(): agy version probe times out while the pin check independently resolves -> pin result preserved, CLI not reported absent", async () => {
+  const versionProbe = (cmd) => (cmd === "agy" ? new Promise(() => {}) : Promise.resolve("1.0.0"));
+  const fakePinResult = {
+    agy_pin_served: true,
+    pinned_model: "gemini-fake-pin",
+    pinned_models: { critique_default: "gemini-fake-pin" },
+    per_pin: { critique_default: true },
+    served_models: ["gemini-fake-pin"],
+    unserved_allowlist: [],
+    note: null,
+  };
+  const fastPinCheck = async () => fakePinResult;
+
+  const report = await doctor({
+    cliVersionProbe: versionProbe,
+    cliVersionTimeoutMs: 100,
+    agyPinCheckFn: fastPinCheck,
+    agyPinTimeoutMs: 5000,
+  });
+
+  assert.equal(report.cli_versions.agy, null, "sanity: the agy --version probe must have timed out to null");
+  assert.ok(report.cli_probe_timeouts.includes("agy"), "sanity: agy must be named in cli_probe_timeouts");
+
+  assert.equal(
+    report.agy_pin_check.agy_pin_served,
+    true,
+    "the bounded pin result already computed concurrently must be preserved, not discarded",
+  );
+  assert.deepEqual(
+    report.agy_pin_check.pinned_models,
+    fakePinResult.pinned_models,
+    "the pin result's own fields must survive unchanged",
+  );
+  assert.equal(report.agy_pin_served, true);
+  assert.match(
+    report.agy_pin_check.note ?? "",
+    /PP_DOCTOR_PROBE_TIMEOUT_MS|time budget|version probe/i,
+    "the note must explain the VERSION probe exceeded its budget",
+  );
+  assert.doesNotMatch(
+    report.agy_pin_check.note ?? "",
+    /not installed/i,
+    "a version-probe timeout must not be reported as the CLI being absent",
+  );
+});
+
+test("doctor(): agy genuinely absent (fast-failing version probe, no timeout) still reports the 'not installed' shape even when the concurrent pin check succeeds", async () => {
+  const fastFailProbe = async () => null; // resolves quickly to null -> genuinely absent, not a timeout
+  const fakePinResult = {
+    agy_pin_served: true,
+    pinned_model: "gemini-fake-pin",
+    pinned_models: { critique_default: "gemini-fake-pin" },
+    per_pin: { critique_default: true },
+    served_models: ["gemini-fake-pin"],
+    unserved_allowlist: [],
+    note: null,
+  };
+  const report = await doctor({
+    cliVersionProbe: fastFailProbe,
+    cliVersionTimeoutMs: 5000,
+    agyPinCheckFn: async () => fakePinResult,
+    agyPinTimeoutMs: 5000,
+  });
+  assert.equal(report.cli_versions.agy, null);
+  assert.ok(!report.cli_probe_timeouts.includes("agy"), "sanity: a fast null resolution is not a timeout");
+  assert.equal(report.agy_pin_check.agy_pin_served, null, "genuinely absent must still report the 'not installed' shape");
+  assert.match(report.agy_pin_check.note ?? "", /not installed/i);
 });

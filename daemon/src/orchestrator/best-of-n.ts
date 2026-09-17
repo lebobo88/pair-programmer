@@ -28,6 +28,7 @@ import { createWorktree } from "./worktree.js";
 import { projectArtifactDir } from "../util/paths.js";
 import { log } from "../util/logger.js";
 import { doctor } from "./runs.js";
+import { buildVendorRemediationNote } from "../hooks/dispatcher.js";
 
 export type CandidateSlot = {
   candidate_index: number;       // 1..N (logical slot id, stable for the user-facing report)
@@ -50,13 +51,28 @@ export async function startBestOfStage(opts: {
   // Without that, every cross-vendor gate would refuse and the run can never
   // pick a winner. Fail fast before candidates burn tokens.
   if (process.env.PP_ALLOW_BEST_OF_WITHOUT_JUDGE !== "1") {
-    const report = (await doctor()) as { vendors_configured?: Record<string, boolean> };
+    const report = (await doctor()) as {
+      vendors_configured?: Record<string, boolean>;
+      cli_versions?: Record<string, string | null>;
+      cli_probe_timeouts?: string[];
+    };
     const vendors = report.vendors_configured ?? {};
     const nonClaudeReachable = !!vendors.openai || !!vendors.google;
     if (!nonClaudeReachable) {
+      // Gating stays fail-closed: a vendor whose probe merely timed out still
+      // counts as unavailable here. Only the explanation text changes — route
+      // through the shared classifyCliProbeResult/cliRemediationText helpers
+      // so a timed-out probe reads as a budget problem
+      // (PP_DOCTOR_PROBE_TIMEOUT_MS), not credential advice.
+      const remediation = buildVendorRemediationNote(report.cli_versions, report.cli_probe_timeouts);
+      const parts = [
+        remediation.codex ? `openai: ${remediation.codex}` : null,
+        remediation.agy ? `google: ${remediation.agy}` : null,
+      ].filter((p): p is string => !!p);
+      const detail = parts.length ? ` (${parts.join("; ")})` : "";
       throw new Error(
-        "best-of-N refused: candidates run as Claude, so judging needs at least one non-Claude vendor (openai or google) reachable. " +
-        "Configure codex (openai) or agy (google) credentials, then retry. " +
+        "best-of-N refused: candidates run as Claude, so judging needs at least one non-Claude vendor (openai or google) reachable." +
+        `${detail} ` +
         "Override with PP_ALLOW_BEST_OF_WITHOUT_JUDGE=1 (same-vendor Claude judging only — cross-vendor gates will refuse).",
       );
     }

@@ -12,16 +12,22 @@
 // keeps the field co-located with the versions it annotates instead of a
 // second column that could drift out of sync with cli_versions_json.
 //
-// Against a temp SQLite DB (no daemon, no MCP peer). captureCliVersions()'s
-// default probe is injected via a fake CliVersionProbe so this test is fast
-// and deterministic (no real CLI spawns, no dependency on the exact CLI
-// timeout budget of the host machine).
+// Against a temp SQLite DB (no daemon, no MCP peer). startRun() itself has no
+// injectable CLI-version-probe seam (captureCliVersions() is called with no
+// args), so a genuine timeout is induced the same way
+// copilot-fallback-runtime.unit.mjs induces genuine CLI behaviour: a
+// PATH-shimmed `agy` that hangs forever, combined with a very small
+// PP_DOCTOR_PROBE_TIMEOUT_MS. This drives the REAL captureCliVersions/tryCmd/
+// trackedExeca path end-to-end — a hard-coded empty probe_timeouts array (or
+// one that never actually raced a hang) would fail this test, whereas the
+// previous version (no shim, default 15s budget, real CLIs that all resolve
+// well under that) could never time out and would pass either way.
 
 import { strict as assert } from "node:assert";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { dirname, join } from "node:path";
+import { dirname, join, delimiter } from "node:path";
 import { tmpdir } from "node:os";
-import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { execSync } from "node:child_process";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -53,6 +59,23 @@ function scaffoldProject() {
   return project;
 }
 
+/** Put a hanging `agy` (never exits) FIRST on PATH so a real spawn of it never resolves. */
+function installHangingAgyShim() {
+  const dir = mkdtempSync(join(tmpdir(), "pp-shim-agy-hang-"));
+  // Windows resolves a bare `agy` via PATHEXT, so the shim must be `.cmd`.
+  writeFileSync(join(dir, "agy.cmd"), `@echo off\r\n:loop\r\ntimeout /t 3600 >nul\r\ngoto loop\r\n`, "utf8");
+  // POSIX equivalent so this is not silently a no-op off Windows.
+  writeFileSync(join(dir, "agy"), `#!/bin/sh\nwhile true; do sleep 3600; done\n`, { encoding: "utf8", mode: 0o755 });
+  const prevPath = process.env.PATH;
+  process.env.PATH = dir + delimiter + prevPath;
+  return {
+    cleanup() {
+      process.env.PATH = prevPath;
+      rmSync(dir, { recursive: true, force: true });
+    },
+  };
+}
+
 await it("startRun persists cli_versions_json with a probe_timeouts sibling key (empty when nothing timed out)", async () => {
   const project = scaffoldProject();
   const r = await runs.startRun({ request_text: "cli versions fixture (all fast)", project_path: project, mode: "single" });
@@ -64,3 +87,27 @@ await it("startRun persists cli_versions_json with a probe_timeouts sibling key 
     assert.ok(Object.prototype.hasOwnProperty.call(parsed, cli), `cli_versions_json must still carry the ${cli} key`);
   }
 });
+
+await it("startRun persists the SPECIFIC timed-out CLI name in cli_versions_json.probe_timeouts when its --version probe genuinely hangs", async () => {
+  const prevBudget = process.env.PP_DOCTOR_PROBE_TIMEOUT_MS;
+  const shim = installHangingAgyShim();
+  process.env.PP_DOCTOR_PROBE_TIMEOUT_MS = "500";
+  try {
+    const project = scaffoldProject();
+    const r = await runs.startRun({ request_text: "cli versions fixture (agy hangs)", project_path: project, mode: "single" });
+    const row = db().prepare("SELECT cli_versions_json FROM runs WHERE id = ?").get(r.run_id);
+    const parsed = JSON.parse(row.cli_versions_json);
+    assert.equal(parsed.agy, null, "a timed-out probe must still resolve the version to null");
+    assert.ok(
+      Array.isArray(parsed.probe_timeouts) && parsed.probe_timeouts.includes("agy"),
+      `probe_timeouts must name "agy" as the CLI whose probe timed out, got ${JSON.stringify(parsed.probe_timeouts)}`,
+    );
+  } finally {
+    shim.cleanup();
+    if (prevBudget === undefined) delete process.env.PP_DOCTOR_PROBE_TIMEOUT_MS;
+    else process.env.PP_DOCTOR_PROBE_TIMEOUT_MS = prevBudget;
+  }
+});
+
+console.log(`\n${passed} passed, ${failed} failed`);
+process.exit(failed === 0 ? 0 : 1);
