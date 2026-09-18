@@ -10,9 +10,12 @@ Call `mcp__pp_harness__doctor` with `smoke: true` (omit `smoke` or pass `false` 
 Present the result as a checklist:
 
 - DB reachable: ✓ / ✗
-- CLI versions:
-  - codex: <version> or "missing"
-  - agy: <version> or "missing"
+- CLI versions (cross-check each `null` entry against `cli_probe_timeouts`
+  before rendering — a name in that array timed out against
+  `PP_DOCTOR_PROBE_TIMEOUT_MS`, it was NOT confirmed missing; render it as
+  "probe timed out (raise PP_DOCTOR_PROBE_TIMEOUT_MS)", not "missing"):
+  - codex: <version> or "missing" or "probe timed out (raise PP_DOCTOR_PROBE_TIMEOUT_MS)"
+  - agy: <version> or "missing" or "probe timed out (raise PP_DOCTOR_PROBE_TIMEOUT_MS)"
   - git: <version>
   - node: <version>
 - Vendors configured:
@@ -22,9 +25,21 @@ Present the result as a checklist:
 - Critique smoke (when run):
   - codex: ✓ / ✗ / skipped — show `model`, and on fail show `reason` + last `stderr_tail`
   - agy: ✓ / ✗ / skipped — same
+- agy pinned-model check (`agy_pin_check` — render even when inconclusive; a
+  passing `agy --version` does NOT mean this resolved cleanly, e.g. `agy
+  models` can independently exceed its own budget):
+  - `agy_pin_served`: ✓ (true) / ✗ (false) / inconclusive (null)
+  - if `agy_pin_check.note` is present, print it verbatim — this is where a
+    pin check that timed out against `PP_DOCTOR_PIN_TIMEOUT_MS` (distinct
+    from the CLI `--version` probe's own `PP_DOCTOR_PROBE_TIMEOUT_MS`)
+    explains itself; do not silently drop an inconclusive result just
+    because `agy --version` looked fine
+- Notes (`notes[]`, when non-empty): print each entry verbatim — this
+  surfaces things like unpriced judge models and the codex pin-freshness
+  note that aren't otherwise part of the checklist above
 - Cross-vendor ready: ✓ / ✗  (need ≥ 2 vendors)
 
-The harness prefers already-authenticated CLI sessions over manually-set API keys. For each ✗, suggest the CLI login first, with the env-var fallback only as a secondary option.
+The harness prefers already-authenticated CLI sessions over manually-set API keys. For each ✗, suggest the CLI login first, with the env-var fallback only as a secondary option. EXCEPTION: if the vendor's CLI name appears in `cli_probe_timeouts`, do NOT suggest install/login — say the probe exceeded its budget and suggest raising `PP_DOCTOR_PROBE_TIMEOUT_MS` (or `PP_DOCTOR_PIN_TIMEOUT_MS` for the agy pin check) and re-running `/pp:doctor`.
 
 - openai ✗ (codex missing or not logged in) → `codex login`. Install: `npm install -g @openai/codex`. Fallback: `setx OPENAI_API_KEY "<your-key>"` (Windows) or `export OPENAI_API_KEY=...` (POSIX).
 - google ✗ (agy — the Antigravity CLI — missing or not logged in) → run `agy` once and sign in interactively. Install (Windows PowerShell): `irm https://antigravity.google/cli/install.ps1 | iex` (macOS/Linux: `curl -fsSL https://antigravity.google/cli/install.sh | bash`). Fallback: set GEMINI_API_KEY or ANTIGRAVITY_API_KEY for headless auth (`setx ANTIGRAVITY_API_KEY "<your-key>"` on Windows / `export ANTIGRAVITY_API_KEY=...` on POSIX).

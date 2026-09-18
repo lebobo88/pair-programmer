@@ -283,6 +283,24 @@ export function trackedExecaNoRefuse(
  * Called by both trackedExeca (after refuse-guard) and trackedExecaNoRefuse
  * (after seal-guard).  Both variants register identically.
  * abortAllInFlightChildren() treats them identically.
+ *
+ * KNOWN LIMITATION: only the direct child pid execa/Node hands back is ever
+ * signalled (`ChildProcess.kill()`, called by `entry.kill` below and by
+ * execa's own timeout/forceKillAfterDelay escalation). A launcher process
+ * (e.g. a `.cmd`/`.bat` shim) whose real work runs in a grandchild is NOT
+ * reaped on timeout or shutdown — the grandchild can outlive the direct
+ * child. A prior revision added a process-TREE sweep (taskkill /T on
+ * Windows, a recursive WMI descendant walk, and POSIX process-group
+ * signalling) to close that gap, but it was withdrawn: three cross-vendor
+ * review passes found the sweep itself introduced new defects — a backstop
+ * timer that could overflow Node's signed-32-bit timer limit and misfire
+ * near-instantly at large configured timeouts, a same-registry-entry guard
+ * that only proves Set membership and cannot detect OS pid reuse (so the
+ * sweep could kill an unrelated process that inherited a recycled pid), and
+ * a `forceKillAfterDelay: false` contract violation (execa deliberately
+ * leaves a SIGTERM-ignoring process alive in that mode; the sweep forced
+ * SIGKILL regardless). The sweep's only measured value was doctor's runtime,
+ * which the bounded/parallel probe work below already delivers without it.
  */
 function _spawnTracked(
   file: string,
