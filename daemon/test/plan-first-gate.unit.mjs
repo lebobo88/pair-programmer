@@ -197,8 +197,14 @@ describe("X1b plan-first gate", () => {
   it("1. standard scope + prior passed spec stage -> allowed", async () => {
     const runs = await getRuns();
     const run_id = await insertRun({ taxonomy_mapping_json: taxonomyMapping("standard") });
-    await insertStage(run_id, "spec", { status: "passed", finished_at: new Date().toISOString() });
-    const code_id = await insertStage(run_id, "code");
+    // Explicit, fixed timestamps with a multi-second margin -- a live
+    // finished_at read compared against insertStage's default
+    // nextStartedAt() could land equal on a coarse clock, which the gate
+    // treats as blocked (see test 14a/14b), flipping this "allowed" case.
+    const specFinished = new Date(Date.UTC(2024, 0, 1, 0, 0, 0, 0)).toISOString();
+    const codeStarted = new Date(Date.UTC(2024, 0, 1, 0, 0, 5, 0)).toISOString();
+    await insertStage(run_id, "spec", { status: "passed", finished_at: specFinished });
+    const code_id = await insertStage(run_id, "code", { started_at: codeStarted });
     const attempt_id = await setupPassableCodeStage(run_id, code_id);
 
     const readiness = runs.getStageFinalizeReadiness(code_id, attempt_id);
@@ -248,9 +254,19 @@ describe("X1b plan-first gate", () => {
   it("4. spec stage started AFTER the code stage -> blocked", async () => {
     const runs = await getRuns();
     const run_id = await insertRun({ taxonomy_mapping_json: taxonomyMapping("standard") });
-    const code_id = await insertStage(run_id, "code");
+    // Explicit, fixed timestamps (seconds apart, not derived from a live
+    // clock read) -- a live `new Date().toISOString()` finished_at raced
+    // against nextStartedAt()'s monotonic-but-can-run-ahead-of-wall-clock
+    // counter on a coarse (~15.6ms) Windows clock, which could land the
+    // spec's finished_at at or before the code stage's started_at even
+    // though the spec was genuinely inserted afterward. Fixed values with a
+    // multi-second margin remove the race entirely.
+    const codeStarted = new Date(Date.UTC(2024, 0, 1, 0, 0, 0, 0)).toISOString();
+    const specStarted = new Date(Date.UTC(2024, 0, 1, 0, 0, 5, 0)).toISOString();
+    const specFinished = new Date(Date.UTC(2024, 0, 1, 0, 0, 10, 0)).toISOString();
+    const code_id = await insertStage(run_id, "code", { started_at: codeStarted });
     // spec started after code -- must not count.
-    await insertStage(run_id, "spec", { status: "passed", finished_at: new Date().toISOString() });
+    await insertStage(run_id, "spec", { status: "passed", started_at: specStarted, finished_at: specFinished });
     const attempt_id = await setupPassableCodeStage(run_id, code_id);
 
     const readiness = runs.getStageFinalizeReadiness(code_id, attempt_id);
@@ -322,8 +338,12 @@ describe("X1b plan-first gate", () => {
   it("10a. standard + prior passed repro (bug-fix shape) -> allowed", async () => {
     const runs = await getRuns();
     const run_id = await insertRun({ taxonomy_mapping_json: taxonomyMapping("standard") });
-    await insertStage(run_id, "repro", { status: "passed", finished_at: new Date().toISOString() });
-    const code_id = await insertStage(run_id, "code");
+    // Explicit, fixed timestamps -- see test 1's comment for why a live
+    // finished_at raced against the default nextStartedAt() is unsafe here.
+    const reproFinished = new Date(Date.UTC(2024, 0, 1, 0, 0, 0, 0)).toISOString();
+    const codeStarted = new Date(Date.UTC(2024, 0, 1, 0, 0, 5, 0)).toISOString();
+    await insertStage(run_id, "repro", { status: "passed", finished_at: reproFinished });
+    const code_id = await insertStage(run_id, "code", { started_at: codeStarted });
     const attempt_id = await setupPassableCodeStage(run_id, code_id);
 
     const readiness = runs.getStageFinalizeReadiness(code_id, attempt_id);
@@ -334,8 +354,12 @@ describe("X1b plan-first gate", () => {
   it("10b. standard + prior passed invariants (refactor shape) -> allowed", async () => {
     const runs = await getRuns();
     const run_id = await insertRun({ taxonomy_mapping_json: taxonomyMapping("standard") });
-    await insertStage(run_id, "invariants", { status: "passed", finished_at: new Date().toISOString() });
-    const code_id = await insertStage(run_id, "code");
+    // Explicit, fixed timestamps -- see test 1's comment for why a live
+    // finished_at raced against the default nextStartedAt() is unsafe here.
+    const invariantsFinished = new Date(Date.UTC(2024, 0, 1, 0, 0, 0, 0)).toISOString();
+    const codeStarted = new Date(Date.UTC(2024, 0, 1, 0, 0, 5, 0)).toISOString();
+    await insertStage(run_id, "invariants", { status: "passed", finished_at: invariantsFinished });
+    const code_id = await insertStage(run_id, "code", { started_at: codeStarted });
     const attempt_id = await setupPassableCodeStage(run_id, code_id);
 
     const readiness = runs.getStageFinalizeReadiness(code_id, attempt_id);
@@ -444,8 +468,12 @@ describe("X1b plan-first gate", () => {
   it("16a. spec passed, then re-finalized to surfaced -> blocked", async () => {
     const runs = await getRuns();
     const run_id = await insertRun({ taxonomy_mapping_json: taxonomyMapping("standard") });
-    const spec_id = await insertStage(run_id, "spec", { status: "passed", finished_at: new Date().toISOString() });
-    const code_id = await insertStage(run_id, "code");
+    // Explicit, fixed timestamps -- see test 1's comment for why a live
+    // finished_at raced against the default nextStartedAt() is unsafe here.
+    const specFinished = new Date(Date.UTC(2024, 0, 1, 0, 0, 0, 0)).toISOString();
+    const codeStarted = new Date(Date.UTC(2024, 0, 1, 0, 0, 5, 0)).toISOString();
+    const spec_id = await insertStage(run_id, "spec", { status: "passed", finished_at: specFinished });
+    const code_id = await insertStage(run_id, "code", { started_at: codeStarted });
     const attempt_id = await setupPassableCodeStage(run_id, code_id);
 
     // Sanity: currently allowed.
@@ -465,8 +493,12 @@ describe("X1b plan-first gate", () => {
   it("16b. spec re-finalized passed with a finished_at LATER than code started_at -> blocked", async () => {
     const runs = await getRuns();
     const run_id = await insertRun({ taxonomy_mapping_json: taxonomyMapping("standard") });
-    const spec_id = await insertStage(run_id, "spec", { status: "passed", finished_at: new Date().toISOString() });
-    const code_id = await insertStage(run_id, "code");
+    // Explicit, fixed timestamps -- see test 1's comment for why a live
+    // finished_at raced against the default nextStartedAt() is unsafe here.
+    const specFinished = new Date(Date.UTC(2024, 0, 1, 0, 0, 0, 0)).toISOString();
+    const codeStarted = new Date(Date.UTC(2024, 0, 1, 0, 0, 5, 0)).toISOString();
+    const spec_id = await insertStage(run_id, "spec", { status: "passed", finished_at: specFinished });
+    const code_id = await insertStage(run_id, "code", { started_at: codeStarted });
     const attempt_id = await setupPassableCodeStage(run_id, code_id);
 
     let readiness = runs.getStageFinalizeReadiness(code_id, attempt_id);
