@@ -21,13 +21,15 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 /**
- * Best-effort backstop (P1b hardening): kill any process whose command line
- * still references `needle` (a unique temp-dir path baked into a shim). The
- * production process-tree kill (killProcessTree in cli-runner.ts) is what's
- * actually under test and should leave nothing behind on its own; this is
- * defense-in-depth so a regression cannot leak a process past this suite's
- * lifetime, per "every test that spawns a shim cleans up its own processes
- * in a finally".
+ * Best-effort backstop: kill any process whose command line still
+ * references `needle` (a unique temp-dir path baked into a shim). The shims
+ * below are built so the hang lives entirely in execa's direct child (no
+ * launcher forking a separate sleeper underneath it — see cli-runner.ts's
+ * KNOWN LIMITATION comment: only the direct child pid is ever signalled, and
+ * the process-tree sweep that would have reaped a grandchild was withdrawn),
+ * so this should find nothing; it's defense-in-depth so a regression cannot
+ * leak a process past this suite's lifetime, per "every test that spawns a
+ * shim cleans up its own processes in a finally".
  */
 function killAnyProcessReferencing(needle) {
   try {
@@ -187,15 +189,27 @@ test("buildVendorRemediationNote: vendors_configured omitted (unknown) still tre
   assert.equal(note.agy, null);
 });
 
-/** Put a hanging `codex`/`agy` (never exits) FIRST on PATH so a real spawn of either never resolves. */
+/**
+ * Put a hanging `codex`/`agy` (never exits) FIRST on PATH so a real spawn of
+ * either never resolves. cli-runner.ts only ever signals the direct child
+ * pid execa hands back (the process-tree sweep that would have reaped a
+ * launcher's grandchild was withdrawn — see its KNOWN LIMITATION comment),
+ * so these shims keep the hang entirely inside that direct child instead of
+ * forking a separate sleeper underneath it.
+ */
 function installHangingVendorShims() {
   const dir = mkdtempSync(join(tmpdir(), "pp-shim-vendor-hang-"));
-  // 60s loops (not 3600s, per P1b hardening): the daemon is expected to
-  // process-tree-kill these on timeout; should that regress, a leaked
-  // process still can't outlive this suite by an hour.
   for (const bin of ["codex", "agy"]) {
-    writeFileSync(join(dir, `${bin}.cmd`), `@echo off\r\n:loop\r\ntimeout /t 60 >nul\r\ngoto loop\r\n`, "utf8");
-    writeFileSync(join(dir, bin), `#!/bin/sh\nwhile true; do sleep 60; done\n`, { encoding: "utf8", mode: 0o755 });
+    // Windows: cross-spawn/execa's direct child for a .cmd is cmd.exe
+    // itself; a pure builtin busy-loop (`goto`) never forks timeout.exe or
+    // any other process, so killing that one direct child ends the hang
+    // completely. Short configured probe timeouts (300-500ms below) keep
+    // the CPU spin brief.
+    writeFileSync(join(dir, `${bin}.cmd`), `@echo off\r\n:loop\r\ngoto loop\r\n`, "utf8");
+    // POSIX: `exec` replaces this shell's own process image with `sleep`
+    // in-place (same pid, no fork), so again the hang lives in the direct
+    // child execa spawned, not a grandchild it can't see.
+    writeFileSync(join(dir, bin), `#!/bin/sh\nexec sleep 60\n`, { encoding: "utf8", mode: 0o755 });
   }
   const prevPath = process.env.PATH;
   process.env.PATH = dir + delimiter + prevPath;

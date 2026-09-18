@@ -59,16 +59,27 @@ function scaffoldProject() {
   return project;
 }
 
-/** Put a hanging `agy` (never exits) FIRST on PATH so a real spawn of it never resolves. */
+/**
+ * Put a hanging `agy` (never exits) FIRST on PATH so a real spawn of it never
+ * resolves. cli-runner.ts's documented KNOWN LIMITATION (only the direct
+ * child pid execa/Node hands back is ever signalled; the process-tree sweep
+ * that would have reaped a launcher's grandchild was withdrawn) means the
+ * hang must live ENTIRELY in the direct child process — no launcher forking
+ * a separate sleeper underneath it, or that grandchild leaks past the test.
+ */
 function installHangingAgyShim() {
   const dir = mkdtempSync(join(tmpdir(), "pp-shim-agy-hang-"));
-  // Windows resolves a bare `agy` via PATHEXT, so the shim must be `.cmd`.
-  // 60s (not 3600s, per P1b hardening): the daemon is now expected to
-  // process-tree-kill this on timeout, but should it ever leak, a stray
-  // process should not be able to outlive the test suite by an hour.
-  writeFileSync(join(dir, "agy.cmd"), `@echo off\r\n:loop\r\ntimeout /t 60 >nul\r\ngoto loop\r\n`, "utf8");
-  // POSIX equivalent so this is not silently a no-op off Windows.
-  writeFileSync(join(dir, "agy"), `#!/bin/sh\nwhile true; do sleep 60; done\n`, { encoding: "utf8", mode: 0o755 });
+  // Windows resolves a bare `agy` via PATHEXT, so the shim must be `.cmd`,
+  // and cross-spawn/execa's direct child for a .cmd is cmd.exe itself. A
+  // pure builtin busy-loop (`goto`) never forks timeout.exe or any other
+  // process, so killing that one direct cmd.exe child (what execa can
+  // actually reach) ends the hang completely — nothing to leak. 500ms probe
+  // timeouts keep the CPU spin brief.
+  writeFileSync(join(dir, "agy.cmd"), `@echo off\r\n:loop\r\ngoto loop\r\n`, "utf8");
+  // POSIX: `exec` replaces this shell's own process image with `sleep`
+  // in-place (same pid, no fork) so again the hang lives in the direct
+  // child execa spawned, not a grandchild it can't see.
+  writeFileSync(join(dir, "agy"), `#!/bin/sh\nexec sleep 60\n`, { encoding: "utf8", mode: 0o755 });
   const prevPath = process.env.PATH;
   process.env.PATH = dir + delimiter + prevPath;
   return {
