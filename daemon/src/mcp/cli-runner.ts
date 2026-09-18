@@ -45,42 +45,10 @@
  *   - SpawnRefusedError           — typed sentinel for "daemon shutting down";
  *                                   callers MUST rethrow this before any
  *                                   destructive fallback.
- *   - killProcessTree()           — process-tree-safe kill (P1b): terminates
- *                                   the whole tree (taskkill /T on Windows,
- *                                   process group kill on POSIX), not just
- *                                   the direct pid. Used by the shutdown
- *                                   drain loop, and layered as an ADDITIONAL
- *                                   best-effort sweep on top of execa's own
- *                                   `timeout` handling for every
- *                                   trackedExeca/trackedExecaNoRefuse call
- *                                   that passes a `timeout` option (P1c, see
- *                                   `_spawnTracked` below); exported for
- *                                   direct use too.
  *   - _activeChildrenSize()       — test-only size accessor.
- *
- * P1c (revise pass): a prior revision stripped execa's own `timeout` option
- * and enforced it manually via a single SIGTERM timer that called
- * killProcessTree(). That regressed two things a cross-vendor judge caught:
- *   - a POSIX child that handles or ignores SIGTERM survived indefinitely
- *     (the manual timer only ever sent one SIGTERM, never escalated);
- *   - `result.timedOut` was never set for `reject:false` callers (execa never
- *     saw a `timeout` option to honor), so daemon/src/orchestrator/tdd-gate.ts
- *     misclassified a hung test command as an ordinary failure instead of a
- *     timeout.
- * Fix: `timeout` (and `forceKillAfterDelay`) are passed straight through to
- * execa again, so `timedOut` and execa's own SIGTERM→SIGKILL escalation are
- * restored. `killProcessTree` remains, but only as an ADDITIONAL sweep layered
- * on top: once execa reports the call timed out (or a backstop timer fires
- * strictly after execa's own escalation window elapses), `_spawnTracked`
- * tree-kills the pid to catch a `.cmd` launcher's grandchild that
- * `ChildProcess.kill()` never reaches. The ACTIVE_CHILDREN entry is retained
- * until that sweep decision has run — not removed the instant the direct
- * child's promise settles — so a launcher that exits (gracefully or via
- * execa's own kill) before the sweep runs is still swept by its recorded pid.
  */
 
 import { execa, type ExecaError, type Options as ExecaOptions } from "execa";
-import { execFileSync } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
@@ -172,16 +140,6 @@ interface ChildEntry {
   exitPromise: Promise<unknown>;
   /** OS PID for diagnostic logging; undefined if spawn failed before assignment. */
   pid: number | undefined;
-  /**
-   * Registration timestamp (ms). Combined with Set membership, this is the
-   * identity check that guards against signalling a REUSED pid (P1c): a
-   * signal is only ever sent when `entry` is still the exact object present
-   * in ACTIVE_CHILDREN AND its pid/startedAt still match what was recorded at
-   * spawn time. Once an entry is removed from the registry its pid must never
-   * be signalled again — the OS may have already handed that pid to an
-   * unrelated process.
-   */
-  startedAt: number;
 }
 
 const ACTIVE_CHILDREN = new Set<ChildEntry>();
@@ -321,164 +279,28 @@ export function trackedExecaNoRefuse(
 }
 
 /**
- * Terminate an entire process TREE rooted at `pid`, not just the single
- * process execa/Node knows about (P1b, gpt-5.6-terra revise pass).
- *
- * Why this exists: on Windows, a `.cmd`/`.bat` launcher (e.g. a shimmed
- * `codex.cmd` or `agy.cmd`, or any real vendor CLI installed as an npm
- * `.cmd` shim) is spawned by Node/execa via a `cmd.exe /c` wrapper. The pid
- * execa hands back is that wrapper's pid; the launcher's actual work often
- * runs in a GRANDCHILD process. `ChildProcess.kill()` (what execa's own
- * `timeout` option and a plain `child.kill(signal)` both call) only signals
- * the direct pid — the grandchild survives and leaks for the lifetime of the
- * daemon (or longer). `taskkill /T` kills the whole tree in one call.
- *
- * On POSIX, `process.kill(-pid, signal)` targets the process GROUP rather
- * than a single pid — but that only reaches descendants if the child was
- * spawned as its own group leader, which is why `_spawnTracked` passes
- * `detached: true` on non-Windows below. Falls back to a single-pid kill if
- * the group-kill fails (e.g. the child already exited, or wasn't actually
- * detached because a caller explicitly overrode it).
- *
- * WINDOWS DEAD-ROOT CASE (P1c, measured): `taskkill /PID <pid> /T /F` only
- * enumerates and kills descendants when `<pid>` ITSELF is still alive — once
- * the root has already exited (the common case here: `_spawnTracked`'s sweep
- * runs AFTER execa's own timeout kill has already ended the direct child),
- * `taskkill /T` fails outright with "process not found" and never reaches a
- * grandchild, even though the grandchild is still running. Measured directly:
- * killing a launcher first, then `taskkill /PID <deadLauncherPid> /T /F`,
- * returns "ERROR: The process ... not found" and the grandchild survives.
- * A child process's `ParentProcessId` (as Win32_Process reports it) is a
- * fixed attribute recorded at creation time and does NOT depend on whether
- * that parent is still alive — a `Get-CimInstance Win32_Process` query for
- * descendants by `ParentProcessId` still finds them after the root has
- * exited (also measured). So the sweep below does BOTH: the fast/common-case
- * `taskkill /T` (works when the root happens to still be alive, e.g. the
- * grandchild-detection test's own launcher before it's been signalled), AND
- * a recursive WMI descendant walk + per-pid `taskkill /F`, which is what
- * actually reaches a grandchild once the root is already gone.
- *
- * Best-effort throughout: a process that already exited (ESRCH / taskkill's
- * "not found") is not an error worth surfacing — the goal was for it to be
- * gone, and it is.
- */
-export function killProcessTree(pid: number | undefined, signal: NodeJS.Signals = "SIGTERM"): void {
-  if (!pid) return;
-  if (process.platform === "win32") {
-    // Windows has no real signal delivery for arbitrary processes — Node's
-    // own ChildProcess.kill() already resolves any non-SIGKILL signal to a
-    // forceful TerminateProcess() call under the hood, so requesting /F here
-    // is not "more forceful than before"; it just now reaches the whole tree
-    // instead of only the wrapper pid.
-    try {
-      execFileSync("taskkill", ["/PID", String(pid), "/T", "/F"], { stdio: "ignore", windowsHide: true });
-    } catch { /* already exited, or the root is already dead — /T can't help; the WMI sweep below covers that case */ }
-    // Belt-and-suspenders (see doc comment): reach descendants even when the
-    // root pid no longer exists, which `taskkill /T` cannot do on its own.
-    for (const descendantPid of windowsDescendantPids(pid)) {
-      try {
-        execFileSync("taskkill", ["/PID", String(descendantPid), "/F"], { stdio: "ignore", windowsHide: true });
-      } catch { /* already exited — best-effort */ }
-    }
-    return;
-  }
-  try {
-    process.kill(-pid, signal);
-  } catch {
-    try { process.kill(pid, signal); } catch { /* already exited — best-effort */ }
-  }
-}
-
-/**
- * Windows-only: recursively enumerate every live descendant pid of `pid` via
- * `Get-CimInstance Win32_Process`, keyed by `ParentProcessId`. Works even
- * when `pid` itself has already exited (see killProcessTree's doc comment) —
- * `ParentProcessId` is a fixed attribute of the CHILD, not a live link to a
- * running parent. Best-effort: returns `[]` on any failure (PowerShell
- * unavailable, WMI query error, etc.) rather than throwing.
- */
-function windowsDescendantPids(pid: number): number[] {
-  try {
-    const script =
-      `$rows = Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId; ` +
-      `$found = New-Object System.Collections.Generic.List[int]; ` +
-      `$frontier = New-Object System.Collections.Generic.List[int]; ` +
-      `$frontier.Add(${pid}); ` +
-      `while ($frontier.Count -gt 0) { ` +
-      `  $next = New-Object System.Collections.Generic.List[int]; ` +
-      `  foreach ($p in $frontier) { ` +
-      `    foreach ($row in ($rows | Where-Object { $_.ParentProcessId -eq $p })) { ` +
-      `      $childPid = [int]$row.ProcessId; ` +
-      `      if (-not $found.Contains($childPid)) { $found.Add($childPid); $next.Add($childPid) } ` +
-      `    } ` +
-      `  } ` +
-      `  $frontier = $next; ` +
-      `} ` +
-      `$found -join ','`;
-    const out = execFileSync("powershell", ["-NoProfile", "-Command", script], {
-      encoding: "utf8",
-      windowsHide: true,
-    }).trim();
-    if (!out) return [];
-    return out
-      .split(",")
-      .map((s) => Number(s.trim()))
-      .filter((n) => Number.isInteger(n) && n > 0);
-  } catch {
-    return [];
-  }
-}
-
-/**
- * execa's own default `forceKillAfterDelay` (ms) when a caller sets `timeout`
- * but doesn't override it. Used only to SIZE the backstop timer below — the
- * actual force-kill escalation is execa's, not ours.
- */
-const EXECA_DEFAULT_FORCE_KILL_DELAY_MS = 5_000;
-
-/**
- * Extra buffer (ms) added on top of execa's own timeout+forceKillAfterDelay
- * window before the backstop sweep fires. Covers the case where execa's own
- * kill sequence has completed but a leftover process (e.g. a `.cmd`
- * launcher's grandchild) survives it — the backstop always fires strictly
- * AFTER execa's own escalation would have finished, so it never races it.
- */
-const SWEEP_BACKSTOP_GRACE_MS = 2_000;
-
-/**
  * Internal: spawn the child and register it in ACTIVE_CHILDREN.
  * Called by both trackedExeca (after refuse-guard) and trackedExecaNoRefuse
  * (after seal-guard).  Both variants register identically.
  * abortAllInFlightChildren() treats them identically.
  *
- * P1c: execa's own `timeout` (and `forceKillAfterDelay`) options are passed
- * straight through to execa, unmodified — this is what restores `timedOut`
- * on the result/error (reject:false and reject:true consumers both need it;
- * see tdd-gate.ts's `timedOut` classification) and execa's own SIGTERM→SIGKILL
- * escalation (which reaches a POSIX child that handles or ignores SIGTERM,
- * unlike a single manual SIGTERM timer).
- *
- * killProcessTree() is layered on top as an ADDITIONAL best-effort sweep, not
- * a replacement: it fires (a) the moment execa itself reports the call
- * `timedOut`, to reap a `.cmd` launcher's grandchild that `ChildProcess.kill()`
- * never reaches, or (b) from a backstop timer sized to fire strictly after
- * execa's own timeout+forceKillAfterDelay window, in case (a) didn't run (e.g.
- * a bug in this wrapper) or didn't fully tear down the tree. Either path is
- * idempotent (`sweepDone` guards a double-fire) and best-effort (killProcessTree
- * itself swallows "already exited").
- *
- * The ACTIVE_CHILDREN entry is deliberately NOT removed until the sweep
- * decision for this spawn has run (synchronously, inline) — so a launcher
- * that has already exited (gracefully, or via execa's own kill) by the time
- * we get here is still swept by its recorded pid; Windows keeps a dead
- * process's pid as the recorded ParentProcessId of any children it spawned,
- * so `taskkill /PID <pid> /T /F` still reaches them.
- *
- * PID-reuse guard: every signal this function or `ChildEntry.kill` sends is
- * gated on the target entry still being the exact object present in
- * ACTIVE_CHILDREN with its original pid/startedAt unchanged. Once an entry is
- * removed, its pid is never signalled again — the OS may have already
- * recycled it for an unrelated process.
+ * KNOWN LIMITATION: only the direct child pid execa/Node hands back is ever
+ * signalled (`ChildProcess.kill()`, called by `entry.kill` below and by
+ * execa's own timeout/forceKillAfterDelay escalation). A launcher process
+ * (e.g. a `.cmd`/`.bat` shim) whose real work runs in a grandchild is NOT
+ * reaped on timeout or shutdown — the grandchild can outlive the direct
+ * child. A prior revision added a process-TREE sweep (taskkill /T on
+ * Windows, a recursive WMI descendant walk, and POSIX process-group
+ * signalling) to close that gap, but it was withdrawn: three cross-vendor
+ * review passes found the sweep itself introduced new defects — a backstop
+ * timer that could overflow Node's signed-32-bit timer limit and misfire
+ * near-instantly at large configured timeouts, a same-registry-entry guard
+ * that only proves Set membership and cannot detect OS pid reuse (so the
+ * sweep could kill an unrelated process that inherited a recycled pid), and
+ * a `forceKillAfterDelay: false` contract violation (execa deliberately
+ * leaves a SIGTERM-ignoring process alive in that mode; the sweep forced
+ * SIGKILL regardless). The sweep's only measured value was doctor's runtime,
+ * which the bounded/parallel probe work below already delivers without it.
  */
 function _spawnTracked(
   file: string,
@@ -486,93 +308,23 @@ function _spawnTracked(
   options?: ExecaOptions,
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 ): ReturnType<typeof execa<any>> {
-  const rawOptions = (options ?? {}) as ExecaOptions & {
-    timeout?: number;
-    forceKillAfterDelay?: number | boolean;
-    detached?: boolean;
-  };
-  const requestedTimeoutMs = typeof rawOptions.timeout === "number" && rawOptions.timeout > 0 ? rawOptions.timeout : undefined;
-  const spawnOptions: ExecaOptions & { detached?: boolean; forceKillAfterDelay?: number | boolean } = { ...rawOptions };
-  // New process group on POSIX so killProcessTree's process.kill(-pid, ...)
-  // reaches descendants. Only applied when the caller hasn't already made an
-  // explicit choice (e.g. a caller that needs to stay attached to the
-  // daemon's own group for some other reason).
-  if (spawnOptions.detached === undefined && process.platform !== "win32") {
-    spawnOptions.detached = true;
-  }
-
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const child = execa(file, args as string[], spawnOptions as any);
-
-  const pid = child.pid;
-  const startedAt = Date.now();
-  let sweepDone = false;
-
-  // `entry` is captured by both closures below; declared before assignment so
-  // `kill`/`sweep` can reference it. `exitPromise` is filled in further down.
+  const child = execa(file, args as string[], options as any);
+  // Wrap the child promise so we can await exit without .kill() interfering.
+  const exitPromise: Promise<unknown> = child.then(
+    () => { /* resolved */ },
+    () => { /* rejected — process exited non-zero or was killed; that's fine */ },
+  );
   const entry: ChildEntry = {
-    pid,
-    startedAt,
-    kill: (signal) => signalIfStillTracked(signal),
-    exitPromise: undefined as unknown as Promise<unknown>,
+    pid: child.pid,
+    kill: (signal) => {
+      try { child.kill(signal); } catch { /* best-effort */ }
+    },
+    exitPromise,
   };
   ACTIVE_CHILDREN.add(entry);
-
-  /** Identity check (P1c): only true while `entry` is still OUR registration. */
-  function isStillTracked(): boolean {
-    return ACTIVE_CHILDREN.has(entry) && entry.pid === pid && entry.startedAt === startedAt;
-  }
-
-  function signalIfStillTracked(signal: NodeJS.Signals): void {
-    if (pid === undefined || !isStillTracked()) return;
-    killProcessTree(pid, signal);
-  }
-
-  /** Tree-wide best-effort sweep, gated on identity and run-once. */
-  function sweep(reason: string): void {
-    if (sweepDone) return;
-    sweepDone = true;
-    if (pid === undefined || !isStillTracked()) return;
-    log.warn({ pid, reason }, "cli-runner: sweeping leftover process tree after timeout");
-    killProcessTree(pid, "SIGKILL");
-  }
-
-  let backstopTimer: ReturnType<typeof setTimeout> | undefined;
-  if (requestedTimeoutMs !== undefined) {
-    const forceKillDelayMs =
-      spawnOptions.forceKillAfterDelay === false
-        ? 0
-        : typeof spawnOptions.forceKillAfterDelay === "number"
-          ? spawnOptions.forceKillAfterDelay
-          : EXECA_DEFAULT_FORCE_KILL_DELAY_MS;
-    const backstopDelayMs = requestedTimeoutMs + forceKillDelayMs + SWEEP_BACKSTOP_GRACE_MS;
-    backstopTimer = setTimeout(() => sweep("backstop timer fired after execa's own escalation window"), backstopDelayMs);
-    // Don't let this timer keep the daemon process alive on its own.
-    backstopTimer.unref?.();
-  }
-  const clearBackstopTimer = () => { if (backstopTimer) clearTimeout(backstopTimer); };
-
-  // Wrap the child promise: run the sweep decision for this entry BEFORE
-  // deregistering it, so a launcher that already exited by the time either
-  // branch runs is still swept by its recorded pid (see doc comment above).
-  const exitPromise: Promise<unknown> = child.then(
-    (result) => {
-      clearBackstopTimer();
-      if (result && (result as { timedOut?: boolean }).timedOut) {
-        sweep("execa reported timedOut (reject:false)");
-      }
-      ACTIVE_CHILDREN.delete(entry);
-    },
-    (err) => {
-      clearBackstopTimer();
-      if (err && (err as ExecaError).timedOut) {
-        sweep("execa reported timedOut (rejected)");
-      }
-      ACTIVE_CHILDREN.delete(entry);
-      /* rejected — process exited non-zero or was killed; that's fine */
-    },
-  );
-  entry.exitPromise = exitPromise;
+  // Auto-deregister when the process finishes (success or failure).
+  void exitPromise.then(() => ACTIVE_CHILDREN.delete(entry));
   return child;
 }
 
