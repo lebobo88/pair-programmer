@@ -5,10 +5,12 @@ import {
   ListToolsRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
-import { mkdirSync, writeFileSync, readFileSync, existsSync } from "node:fs";
+import { mkdirSync, writeFileSync, readFileSync, existsSync, readdirSync } from "node:fs";
 import { join, dirname, resolve } from "node:path";
+import { homedir } from "node:os";
 import { spawnSync } from "node:child_process";
 import { nanoid } from "nanoid";
+import { PNG } from "pngjs";
 import { errorContent, jsonContent, zodToJsonSchema } from "./helpers.js";
 import { extractLastJsonValue, buildCritiqueOutputSchema } from "./critique-schema.js";
 import { stabilizeCritiqueResult } from "./critique-bridge.js";
@@ -81,6 +83,27 @@ const GenerateSchema = z.object({
  * any selection that deviates from the pin requires both an `override_source`
  * and a non-empty `override_reason`.
  */
+/**
+ * `generate_image` — run a codex exec turn and harvest whatever PNGs it wrote
+ * to `~/.codex/generated_images/<session-id>/`, downscaled to fit a byte
+ * budget, written into a caller-supplied output directory.
+ *
+ * `output_dir` is REQUIRED (not defaulted) — the harvested files are copies,
+ * and silently choosing a location for them would surprise a caller more
+ * than an explicit argument.
+ */
+const GenerateImageSchema = z.object({
+  prompt:            z.string().min(1),
+  cwd:               z.string().min(1),
+  model:             z.string().default(DEFAULT_MODELS.codex_generate),
+  output_dir:        z.string().min(1),
+  /** Max width/height a returned image is downscaled to fit within. */
+  max_dimension:     z.number().int().positive().default(768),
+  /** Byte budget per returned file; halved-downscale continues until under this or the 256px floor. */
+  byte_budget_bytes: z.number().int().positive().default(300 * 1024),
+  timeout_ms:        z.number().int().positive().optional(),
+});
+
 const CritiqueSchema = z.object({
   artifact_text:    z.string().min(1),
   rubric_md:        z.string().min(1),
@@ -452,6 +475,205 @@ async function codexGenerate(
   return result;
 }
 
+// ─── generate_image ────────────────────────────────────────────────────────
+
+export type GeneratedImage = {
+  /** Absolute path of the downscaled copy written into the caller's output_dir. */
+  path: string;
+  bytes: number;
+  width: number;
+  height: number;
+  generator: "codex";
+  model: string;
+  prompt: string;
+};
+
+export type CodexGenerateImageResult =
+  | {
+      status: "ok";
+      images: GeneratedImage[];
+      session_id: string;
+      tokens_in: number;
+      tokens_out: number;
+      cost_usd: number;
+      wall_ms: number;
+    }
+  | {
+      status: "no_session_id";
+      reason: string;
+    }
+  | {
+      status: "empty_session_dir";
+      reason: string;
+      session_id: string;
+    };
+
+export type CodexGenerateImageInternalOptions = {
+  /**
+   * Test-only DI seam: replaces the real codex exec turn so tests can control
+   * the returned `session_id` (or omit it) without spawning the CLI.
+   */
+  _invoke?: (genArgs: z.infer<typeof GenerateSchema>) => Promise<CodexResult>;
+  /**
+   * Test-only DI seam: overrides `~/.codex/generated_images` so tests can
+   * point at a fixture directory instead of the real home directory.
+   */
+  _imagesRoot?: string;
+};
+
+/**
+ * Downscale threshold floor (px). `downscaleImageToFit` halves the target
+ * max-dimension cap repeatedly until the encoded PNG fits `byteBudget`, but
+ * never goes below this floor — an unbounded halving loop would eventually
+ * produce a useless 1x1 image chasing an unreachable byte budget.
+ */
+const DOWNSCALE_FLOOR_PX = 256;
+
+/**
+ * Nearest-neighbor resize of a decoded PNG to `(width, height)`. pngjs has no
+ * built-in resize; this is the minimal correct implementation for the
+ * downscale contract (exact pixel fidelity is not required — only "fits
+ * within a byte budget").
+ */
+function resizePng(src: PNG, width: number, height: number): PNG {
+  if (width === src.width && height === src.height) return src;
+  const dst = new PNG({ width, height });
+  for (let y = 0; y < height; y++) {
+    const sy = Math.min(src.height - 1, Math.floor((y * src.height) / height));
+    for (let x = 0; x < width; x++) {
+      const sx = Math.min(src.width - 1, Math.floor((x * src.width) / width));
+      const srcIdx = (src.width * sy + sx) << 2;
+      const dstIdx = (width * y + x) << 2;
+      dst.data[dstIdx] = src.data[srcIdx] as number;
+      dst.data[dstIdx + 1] = src.data[srcIdx + 1] as number;
+      dst.data[dstIdx + 2] = src.data[srcIdx + 2] as number;
+      dst.data[dstIdx + 3] = src.data[srcIdx + 3] as number;
+    }
+  }
+  return dst;
+}
+
+/**
+ * Downscale a decoded PNG to fit within `maxDimension` on its longest side
+ * AND `byteBudget` bytes, halving the dimension cap until both are satisfied
+ * or `DOWNSCALE_FLOOR_PX` is reached. An image already within both bounds is
+ * returned unchanged (same bytes, same dimensions) — this is NOT a
+ * re-encode-always operation.
+ *
+ * Exported so the mutation-proof (removing the byte-budget check) has a
+ * single call site to break, per the task's mutation-proof contract.
+ */
+export function downscaleImageToFit(
+  original: PNG,
+  maxDimension: number,
+  byteBudget: number,
+): { buffer: Buffer; width: number; height: number } {
+  let cap = maxDimension;
+  const scaleTo = (c: number): PNG => {
+    const scale = Math.min(1, c / Math.max(original.width, original.height));
+    const width = Math.max(1, Math.round(original.width * scale));
+    const height = Math.max(1, Math.round(original.height * scale));
+    return resizePng(original, width, height);
+  };
+
+  let resized = scaleTo(cap);
+  let buffer = PNG.sync.write(resized);
+  // Halve the cap until the encoded size fits the byte budget or the floor is
+  // reached. `cap` strictly decreases toward DOWNSCALE_FLOOR_PX each pass, so
+  // this always terminates.
+  while (buffer.length > byteBudget && cap > DOWNSCALE_FLOOR_PX) {
+    cap = Math.max(DOWNSCALE_FLOOR_PX, Math.floor(cap / 2));
+    resized = scaleTo(cap);
+    buffer = PNG.sync.write(resized);
+  }
+  return { buffer, width: resized.width, height: resized.height };
+}
+
+/**
+ * Run a codex exec turn and harvest ONLY the PNGs codex wrote to
+ * `~/.codex/generated_images/<session-id>/` for THAT turn's session id.
+ *
+ * Deliberately does NOT scan `~/.codex/generated_images` for the
+ * newest-mtime directory — that would race any other codex session running
+ * concurrently on the machine (a different worktree, a different stage) and
+ * could harvest someone else's images. If codex reports no session id at
+ * all, this returns a structured `no_session_id` failure rather than
+ * guessing a directory.
+ */
+export async function codexGenerateImage(
+  args: z.infer<typeof GenerateImageSchema>,
+  opts: CodexGenerateImageInternalOptions = {},
+): Promise<CodexGenerateImageResult> {
+  const genArgs: z.infer<typeof GenerateSchema> = {
+    prompt: args.prompt,
+    cwd: args.cwd,
+    model: args.model,
+    sandbox: "read-only",
+    skip_recap: true,
+    timeout_ms: args.timeout_ms,
+  };
+  const invoker = opts._invoke ?? ((ga) => codexGenerate(ga, {}));
+  const result = await invoker(genArgs);
+
+  if (!result.session_id) {
+    return {
+      status: "no_session_id",
+      reason:
+        "codex exec did not report a session_id for this turn; refusing to guess a " +
+        "~/.codex/generated_images directory (scanning by newest mtime would risk " +
+        "harvesting a concurrent codex session's images).",
+    };
+  }
+
+  const imagesRoot = opts._imagesRoot ?? join(homedir(), ".codex", "generated_images");
+  const sessionDir = join(imagesRoot, result.session_id);
+  if (!existsSync(sessionDir)) {
+    return {
+      status: "empty_session_dir",
+      reason: `no generated_images directory exists for session ${result.session_id} (codex did not write an image this turn).`,
+      session_id: result.session_id,
+    };
+  }
+  const files = readdirSync(sessionDir)
+    .filter(f => f.toLowerCase().endsWith(".png"))
+    .sort();
+  if (files.length === 0) {
+    return {
+      status: "empty_session_dir",
+      reason: `session directory ${sessionDir} contains no PNG files.`,
+      session_id: result.session_id,
+    };
+  }
+
+  mkdirSync(args.output_dir, { recursive: true });
+  const images: GeneratedImage[] = [];
+  for (const file of files) {
+    const decoded = PNG.sync.read(readFileSync(join(sessionDir, file)));
+    const { buffer, width, height } = downscaleImageToFit(decoded, args.max_dimension, args.byte_budget_bytes);
+    const destPath = resolve(join(args.output_dir, file));
+    writeFileSync(destPath, buffer);
+    images.push({
+      path: destPath,
+      bytes: buffer.length,
+      width,
+      height,
+      generator: "codex",
+      model: result.model,
+      prompt: args.prompt,
+    });
+  }
+
+  return {
+    status: "ok",
+    images,
+    session_id: result.session_id,
+    tokens_in: result.tokens_in,
+    tokens_out: result.tokens_out,
+    cost_usd: result.cost_usd,
+    wall_ms: result.wall_ms,
+  };
+}
+
 /**
  * Select the pinned critique model based on the escalate flag.
  * escalate selects a PINNED allow-listed model (gpt-5.6-sol); caller-passed args.model remains ignored (invented-id guard).
@@ -652,6 +874,20 @@ const TOOLS = [
       "Run `codex exec` headless against a worktree. Returns text plus token counts and cost. Pass output_schema (JSON Schema object) to constrain the response. Untrusted inputs (file content) should go in `untrusted_inputs` — the daemon wraps them in a no-instructions XML envelope before passing to Codex. Default sandbox is read-only; promote to workspace-write only when the active stage is an editing stage.",
     schema: GenerateSchema,
     handler: (args: unknown) => codexGenerate(GenerateSchema.parse(args)),
+  },
+  {
+    name: "generate_image",
+    description:
+      "Run `codex exec` and harvest any PNGs it wrote for THIS turn's session, downscaled to fit a byte budget, into a caller-supplied output_dir. " +
+      "Harvest contract: codex writes generated images to `~/.codex/generated_images/<session-id>/exec-<call-id>.png`; this tool captures the session id " +
+      "codex reports for its OWN exec turn and harvests ONLY that session's directory — it never scans by newest mtime, which would risk harvesting a " +
+      "concurrent codex session's images. If no session id is reported, or the session directory is missing/empty, a structured failure is returned " +
+      "(status: no_session_id | empty_session_dir) instead of guessing. " +
+      "Downscale contract: each harvested PNG is fit within max_dimension (default 768px, longest side) and byte_budget_bytes (default 300KB), halving " +
+      "the dimension cap until it fits or a 256px floor is reached; an image already within both bounds is returned unchanged. " +
+      "Returns absolute file paths plus width/height/byte size/provenance (generator, model, prompt) for each image — NEVER base64.",
+    schema: GenerateImageSchema,
+    handler: (args: unknown) => codexGenerateImage(GenerateImageSchema.parse(args)),
   },
   {
     name: "critique",
