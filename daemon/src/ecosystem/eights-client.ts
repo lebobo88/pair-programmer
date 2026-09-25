@@ -451,7 +451,43 @@ function scopedEightsEnv(): Record<string, string> {
   return env;
 }
 
+/**
+ * Regression guard (cross-vendor judge finding, 2026-09-25): before the
+ * listTools() lenient-schema fix (1385c2c), probe() failed FAST against a
+ * real TheEights install because the strict schema threw on TheEights'
+ * malformed `eights.evolution.register` tool -- so pp's unit tests that
+ * exercise runs.ts code paths calling the eights-writes.ts fire-and-forget
+ * helpers (archiveArtifact/recordVerdict/finalizeRun -> memory.add etc.,
+ * never awaited) got "unavailable" near-instantly and moved on. Once probe()
+ * started tolerating the malformed schema, those same fire-and-forget calls
+ * could reach and actually CONNECT to a real TheEights daemon (the
+ * `C:\AiAppDeployments\TheEights` sibling-fallback in resolveDaemonEntry()
+ * step 4 exists on dev boxes) -- and because a fire-and-forget caller never
+ * calls `shutdown()`, the spawned child was left running, holding its
+ * parent `node --test` file's process alive past every synchronous
+ * assertion until the file's own test-runner timeout killed it. Reproduced
+ * directly: `[eights-daemon] booting pid=...` in a unit test's own log, with
+ * that pid still alive when node forcibly cancelled the file.
+ *
+ * `PP_ECOSYSTEM_DISABLED=1` short-circuits probe() to "unavailable" before
+ * `resolveDaemonEntry()` is even called -- no transport is constructed, no
+ * subprocess is spawned, period. `scripts/run-tests.mjs` sets this for the
+ * batched `*.unit.mjs` run (alongside its existing PP_DB_PATH/PP_HOME
+ * scrub); a unit test that legitimately needs to exercise probe() against a
+ * fixture or a real daemon (eights-client-listtools.unit.mjs,
+ * eights-integration.smoke.mjs) explicitly clears it first, the same way
+ * those files already set PP_EIGHTS_DAEMON before importing dist/.
+ */
+const ECOSYSTEM_DISABLED_REASON = "ecosystem probe disabled (PP_ECOSYSTEM_DISABLED=1)";
+function ecosystemProbeDisabled(): boolean {
+  return process.env.PP_ECOSYSTEM_DISABLED === "1";
+}
+
 async function probe(): Promise<boolean> {
+  if (ecosystemProbeDisabled()) {
+    state = { kind: "unavailable", reason: ECOSYSTEM_DISABLED_REASON };
+    return false;
+  }
   const entry = resolveDaemonEntry();
   if (!entry) {
     state = { kind: "unavailable", reason: "no eights-daemon entry resolved" };

@@ -44,6 +44,14 @@ const FIXTURE = join(__dirname, "fixtures", "fake-eights-daemon.mjs");
 //   - `HYDRA_OPERATOR_KEY` is a real secret TheEights itself reads
 //     (capability-token signing key) but is explicitly excluded from the
 //     allowlist: must NOT reach the spawned child.
+//
+// `scripts/run-tests.mjs` sets PP_ECOSYSTEM_DISABLED=1 around the batched
+// unit-file run so a fire-and-forget eights-writes.ts call from an unrelated
+// test can never reach/spawn a real TheEights (see eights-client.ts's
+// probe() guard comment). THIS file is the one exception that legitimately
+// needs probe() to run -- against the fixture above, never a real daemon --
+// so it explicitly clears the flag before importing dist/.
+delete process.env.PP_ECOSYSTEM_DISABLED;
 process.env.PP_EIGHTS_DAEMON = FIXTURE;
 process.env.EIGHTS_HOME = "C:\\tmp\\pp-unit-test-eights-home-" + Date.now();
 process.env.EIGHTS_API_KEY = "sk-fake-secret-" + Date.now();

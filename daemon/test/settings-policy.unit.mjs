@@ -365,7 +365,7 @@ describe("settings-policy (Phase J, GitHub #51)", () => {
     assert.ok(DAEMON_SRC_DIR.endsWith(join("daemon", "src")));
   });
 
-  it("the derived PP_* set is exactly the eighteen flags this phase re-derived at authoring time", () => {
+  it("the derived PP_* set is exactly the nineteen flags this phase re-derived at authoring time", () => {
     // This is the one place a concrete list appears, and it exists only to
     // prove the derivation still finds the same flags this phase's prompt
     // asserted -- it is checked FOR EQUALITY against the derived set, not
@@ -387,6 +387,15 @@ describe("settings-policy (Phase J, GitHub #51)", () => {
     // capability-probe wall-clock cap) became env-overridable so a test could
     // widen its own probe window under heavy concurrent process-spawn load
     // without changing the 3000ms production default.
+    //
+    // PP_ECOSYSTEM_DISABLED: eights-client.ts's `probe()` short-circuits to
+    // "unavailable" before constructing a StdioClientTransport at all when
+    // this is "1" -- added so scripts/run-tests.mjs can guarantee unit tests
+    // never spawn/connect to a real TheEights daemon via a fire-and-forget
+    // eights-writes.ts call (cross-vendor judge regression finding,
+    // 2026-09-25: once probe() started tolerating TheEights' malformed
+    // listTools() schema, such a call could actually connect to and leave
+    // running the sibling TheEights install, hanging the unit test file).
     const EXPECTED = new Set([
       "PP_ALLOW_AD_HOC",
       "PP_ALLOW_BEST_OF_WITHOUT_JUDGE",
@@ -400,6 +409,7 @@ describe("settings-policy (Phase J, GitHub #51)", () => {
       "PP_DISABLE_NPX_VALIDATORS",
       "PP_DOCTOR_PIN_TIMEOUT_MS",
       "PP_DOCTOR_PROBE_TIMEOUT_MS",
+      "PP_ECOSYSTEM_DISABLED",
       "PP_ECOSYSTEM_PROBE_TIMEOUT_MS",
       "PP_EIGHTS_DAEMON",
       "PP_HOME",
