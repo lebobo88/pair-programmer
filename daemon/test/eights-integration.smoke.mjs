@@ -28,6 +28,26 @@ import { tmpdir } from "node:os";
 import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import assert from "node:assert/strict";
 
+// TheEights' own `index.ts main()` constructs `AuditEngine` (which eagerly
+// `db.prepare()`s statements against the `events` table) BEFORE calling
+// `sql.migrate()` (that call lives inside `bootstrapAuditedRuntime`, invoked
+// later in boot) — so spawning the real daemon against a genuinely empty
+// EIGHTS_HOME crashes on boot with `SqliteError: no such table: events`
+// before the MCP transport ever comes up. This is a TheEights-side boot
+// ordering bug (confirmed by reproduction and by TheEights' own
+// `audit-checkpoint.test.ts`, which pre-migrates for the identical reason);
+// we don't patch TheEights source here, so the temp EIGHTS_HOME's
+// `state.db` is pre-migrated the same way TheEights' own tests do, via
+// TheEights' own `SqliteStore.migrate()` (read-only use of its migration
+// logic, no schema knowledge duplicated on the pp side).
+async function preMigrateEightsHome(eightsDist, eightsHome) {
+  const sqliteStorePath = join(dirname(eightsDist), "stores", "sqlite.js");
+  const { SqliteStore } = await import(pathToFileURL(sqliteStorePath).href);
+  const store = new SqliteStore(join(eightsHome, "state.db"));
+  store.migrate();
+  store.db.close();
+}
+
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const DIST = join(__dirname, "..", "dist");
 const importDist = (relPath) => import(pathToFileURL(join(DIST, relPath)).href);
@@ -63,13 +83,22 @@ async function main() {
   process.env.PP_EIGHTS_DAEMON = EIGHTS_DIST;
 
   // HERMETIC: the spawned TheEights daemon subprocess inherits process.env
-  // (pp's eights-client passes no explicit `env` to StdioClientTransport),
-  // so setting EIGHTS_HOME here BEFORE the probe spawns it redirects
-  // TheEights' own state.db (TheEights daemon/src/config.ts:
+  // (pp's eights-client's `probe()` now forwards the full parent env to
+  // `StdioClientTransport` — see `inheritedEnv()` in
+  // src/ecosystem/eights-client.ts; previously it passed no explicit `env`,
+  // which meant the MCP SDK's built-in Windows safelist silently dropped
+  // EIGHTS_HOME and the spawned daemon fell back to the operator's real
+  // ~/.eights regardless of this setting — root cause #1 of this test's
+  // original failure), so setting EIGHTS_HOME here BEFORE the probe spawns
+  // it redirects TheEights' own state.db (TheEights daemon/src/config.ts:
   // `join(process.env.EIGHTS_HOME ?? homedir(), "state.db")`-style override)
   // into a throwaway temp dir instead of the operator's real ~/.eights.
   const eightsHome = mkdtempSync(join(tmpdir(), "pp-itest-eights-home-"));
   process.env.EIGHTS_HOME = eightsHome;
+
+  // Pre-migrate the temp home's schema before the probe spawns the daemon —
+  // see `preMigrateEightsHome` above (root cause #2).
+  await preMigrateEightsHome(EIGHTS_DIST, eightsHome);
 
   const mod = await importDist("ecosystem/eights-client.js");
 
@@ -78,6 +107,16 @@ async function main() {
   assert.equal(ok, true, "isAvailable() must be true against the real daemon");
   assert.equal(mod.isAvailableSync(), true, "isAvailableSync() true after connect");
   console.log("✓ probe connected to real TheEights daemon");
+
+  // TheEights' fail-closed readiness gate (mcp/health.ts, index.ts) re-arms
+  // on every fresh stdio spawn: the transport comes up before the audit hash
+  // chain finishes verifying, and every gated tool (memory.add included)
+  // refuses with `{status:"not_ready", retry_after_ms}` until it opens —
+  // root cause #3 (`eights.health` itself is the one ungated probe for this
+  // state, by design). Poll it here rather than weakening the memory.add
+  // assertion below.
+  await waitForAuditReady(EIGHTS_DIST, 15_000);
+  console.log("✓ audit readiness gate open");
 
   const workflow_id = `wf_pp_itest_${Date.now()}`;
   const run_id = `run_pp_itest_${Date.now()}`;
@@ -203,8 +242,96 @@ async function main() {
   }
 
   await mod.shutdown();
-  try { rmSync(eightsHome, { recursive: true, force: true }); } catch { /* best-effort cleanup */ }
+  await removeEightsHomeWithRetry(eightsHome);
+  console.log(`✓ temp EIGHTS_HOME removed: ${eightsHome}`);
   console.log("✓ eights-integration.smoke.mjs: all live assertions passed");
+}
+
+/**
+ * `mod.shutdown()` closes the MCP client, which (StdioClientTransport.close())
+ * ends stdin and SIGTERMs the spawned TheEights subprocess if it hasn't
+ * exited within 2s. On Windows the OS can take a short additional moment to
+ * release the child's open handles on `state.db`/`state.db-wal` after the
+ * process is gone, so an immediate `rmSync` can race an `EBUSY`/`EPERM`. Retry
+ * with backoff instead of silently swallowing the failure (a swallowed
+ * failure here would mean the temp home leaks silently, un-noticed, on every
+ * run — the isolation requirement is to actually remove it, not to best-effort
+ * try).
+ */
+async function removeEightsHomeWithRetry(dir, maxAttempts = 10, delayMs = 300) {
+  let lastErr;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      rmSync(dir, { recursive: true, force: false });
+      return;
+    } catch (e) {
+      lastErr = e;
+      await new Promise((r) => setTimeout(r, delayMs));
+    }
+  }
+  if (existsSync(dir)) {
+    throw new Error(`failed to remove temp EIGHTS_HOME ${dir} after ${maxAttempts} attempts: ${lastErr?.message ?? lastErr}`);
+  }
+}
+
+/**
+ * Env for any raw (non-eights-client) subprocess this test spawns directly.
+ * Forwards the full current process.env (which by the time these helpers run
+ * already carries the test's EIGHTS_HOME override, set in main() before the
+ * probe) — HERMETIC: without this, a raw StdioClientTransport spawn defaults
+ * to the MCP SDK's Windows safelist, which drops EIGHTS_HOME, and the raw
+ * subprocess would silently open the operator's real ~/.eights/state.db.
+ */
+function childEnv() {
+  const env = {};
+  for (const [k, v] of Object.entries(process.env)) {
+    if (v !== undefined) env[k] = v;
+  }
+  return env;
+}
+
+/**
+ * Poll `eights.health` (the one tool exempt from TheEights' fail-closed
+ * audit-readiness gate, mcp/health.ts) via a short-lived raw client until
+ * `ready:true`, `failed:true`, or `maxWaitMs` elapses. Throws on timeout or
+ * `failed:true` so a genuinely broken chain surfaces as a hard failure
+ * rather than a silent null downstream.
+ */
+async function waitForAuditReady(eightsDist, maxWaitMs) {
+  const { Client } = await import("@modelcontextprotocol/sdk/client/index.js");
+  const { StdioClientTransport } = await import(
+    "@modelcontextprotocol/sdk/client/stdio.js"
+  );
+  const transport = new StdioClientTransport({
+    command: process.execPath,
+    args: [eightsDist, "mcp"],
+    env: childEnv(),
+  });
+  const client = new Client(
+    { name: "pp-itest-health-poll", version: "0.1.0" },
+    { capabilities: {} }
+  );
+  await client.connect(transport);
+  const deadline = Date.now() + maxWaitMs;
+  try {
+    for (;;) {
+      const res = await client.callTool({ name: "eights.health", arguments: {} });
+      const text = res.content?.[0]?.text;
+      const health = text ? JSON.parse(text) : {};
+      if (health.ready === true) return;
+      if (health.failed === true) {
+        throw new Error(`TheEights audit gate reports failed: ${JSON.stringify(health)}`);
+      }
+      if (Date.now() >= deadline) {
+        throw new Error(
+          `TheEights audit readiness gate did not open within ${maxWaitMs}ms: ${JSON.stringify(health)}`
+        );
+      }
+      await new Promise((r) => setTimeout(r, Math.min(health.retry_after_ms ?? 500, 1000)));
+    }
+  } finally {
+    try { await client.close(); } catch { /* ignore */ }
+  }
 }
 
 /**
@@ -223,6 +350,7 @@ async function rawCallError(mod, bareTool, args) {
     const transport = new StdioClientTransport({
       command: process.execPath,
       args: [EIGHTS_DIST, "mcp"],
+      env: childEnv(),
     });
     const client = new Client(
       { name: "pp-itest-raw", version: "0.1.0" },

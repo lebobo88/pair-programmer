@@ -29,9 +29,10 @@ import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { z } from "zod";
 import { log } from "../util/logger.js";
 import {
-  ECOSYSTEM_PROBE_TIMEOUT_MS,
+  ecosystemProbeTimeoutMs,
   ECOSYSTEM_BREAKER_THRESHOLD,
   ECOSYSTEM_BREAKER_COOLDOWN_MS,
   ECOSYSTEM_CALL_TIMEOUT_MS,
@@ -314,6 +315,51 @@ function resolveDaemonEntry(): { command: string; args: string[] } | null {
   return { command: "eights-daemon", args: ["mcp"] };
 }
 
+/**
+ * Lenient replacement for the SDK's `ListToolsResultSchema`. The stock schema
+ * (`types.js` `ToolSchema.inputSchema`) requires every listed tool's
+ * `inputSchema.type` to be the zod literal `"object"`. TheEights' hand-rolled
+ * `zodToJsonSchema` (daemon/src/mcp/zod-to-json.ts, TheEights repo) has no
+ * case for a top-level `ZodEffects` node — the shape produced by
+ * `z.object({...}).refine(...)` — and falls through to `default: return {}`,
+ * emitting an `inputSchema` with NO `type` field at all for
+ * `eights.evolution.register` (`RegisterArgs`, evolution.ts:24-38). One
+ * malformed tool anywhere in TheEights' ~60-tool surface then fails
+ * `client.listTools()`'s per-tool zod parse and throws, which `probe()`
+ * catches and reports as `unavailable` — indistinguishable from "daemon not
+ * running". We only need tool *names* to confirm the `eights.memory.*`
+ * surface is present, so we bypass the SDK's strict per-tool validation with
+ * our own name-only schema for this one call.
+ */
+const LenientListToolsResultSchema = z
+  .object({
+    tools: z.array(z.object({ name: z.string() }).passthrough()),
+  })
+  .passthrough();
+
+/**
+ * Environment to hand the spawned TheEights subprocess. `StdioClientTransport`
+ * merges `getDefaultEnvironment()` (a short OS-inherit safelist — on Windows:
+ * APPDATA/HOMEDRIVE/HOMEPATH/LOCALAPPDATA/PATH/PROCESSOR_ARCHITECTURE/
+ * SYSTEMDRIVE/SYSTEMROOT/TEMP/USERNAME/USERPROFILE/PROGRAMFILES) with
+ * `env` if and only if `env` is explicitly passed; omitting `env` entirely
+ * (the prior behavior here) means TheEights-specific vars like `EIGHTS_HOME`
+ * are silently dropped, so the spawned daemon falls back to
+ * `homedir()/.eights` regardless of what pp's own process has set — breaking
+ * both an operator's `EIGHTS_HOME` override and test isolation (a test that
+ * sets `EIGHTS_HOME` to a temp dir before probing would otherwise still hit
+ * the real `~/.eights/state.db`). Forward the full parent env, mirroring how
+ * pp's own smoke tests spawn `pp-daemon` with explicit env
+ * (test/smoke.mjs's `isolatedChildEnv`).
+ */
+function inheritedEnv(): Record<string, string> {
+  const env: Record<string, string> = {};
+  for (const [k, v] of Object.entries(process.env)) {
+    if (v !== undefined) env[k] = v;
+  }
+  return env;
+}
+
 async function probe(): Promise<boolean> {
   const entry = resolveDaemonEntry();
   if (!entry) {
@@ -325,20 +371,28 @@ async function probe(): Promise<boolean> {
     transport = new StdioClientTransport({
       command: entry.command,
       args: entry.args,
+      env: inheritedEnv(),
     });
     const client = new Client(
       { name: "pp-daemon-eights-client", version: "0.1.0" },
       { capabilities: {} }
     );
+    const probeTimeoutMs = ecosystemProbeTimeoutMs();
     const connectPromise = client.connect(transport);
     const timeout = new Promise<never>((_resolve, reject) =>
-      setTimeout(() => reject(new Error("probe timeout")), ECOSYSTEM_PROBE_TIMEOUT_MS)
+      setTimeout(() => reject(new Error("probe timeout")), probeTimeoutMs)
     );
     await Promise.race([connectPromise, timeout]);
     // Sanity-check: listTools must include at least one eights.memory.* tool.
     // TheEights namespaces every tool under `eights.*` (canonical since v0.2.0),
-    // so the memory surface presents as `eights.memory.add` etc.
-    const tools = await withTimeout(client.listTools(), ECOSYSTEM_PROBE_TIMEOUT_MS);
+    // so the memory surface presents as `eights.memory.add` etc. Uses the raw
+    // request + lenient schema above (see comment) instead of
+    // `client.listTools()` so one malformed tool elsewhere in TheEights'
+    // surface can't fail the whole probe.
+    const tools = await withTimeout(
+      client.request({ method: "tools/list", params: {} }, LenientListToolsResultSchema),
+      probeTimeoutMs
+    );
     const names = (tools.tools ?? []).map(t => t.name);
     const hasMemory = names.some(n => n.startsWith(`${EIGHTS_TOOL_PREFIX}memory.`));
     if (!hasMemory) {
