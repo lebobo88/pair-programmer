@@ -510,8 +510,19 @@ export function doctorPinTimeoutMs(): number {
 // MCP peer is unreachable, all wrappers short-circuit to null and pp
 // behavior is observationally identical to a standalone install.
 
-/** Wall-clock cap on the initial eights-daemon capability probe. */
-export const ECOSYSTEM_PROBE_TIMEOUT_MS = 3000;
+/**
+ * Wall-clock cap on the initial eights-daemon capability probe. 3s covers a
+ * warm daemon cold-spawn comfortably in normal operation. Implemented as a
+ * function (not a top-level const), same pattern as `doctorProbeTimeoutMs()`
+ * above, so `PP_ECOSYSTEM_PROBE_TIMEOUT_MS` can extend it for a test running
+ * under heavy concurrent process-spawn load (many `node --test` files each
+ * spawning their own pp-daemon/eights-daemon subprocesses can push a single
+ * child's connect handshake past 3s on a loaded box) WITHOUT changing the
+ * production default — the env var must be set explicitly, never inferred.
+ */
+export function ecosystemProbeTimeoutMs(): number {
+  return parseBoundedTimeoutMs("PP_ECOSYSTEM_PROBE_TIMEOUT_MS", 3000);
+}
 
 /** Consecutive failures before a namespace breaker trips. */
 export const ECOSYSTEM_BREAKER_THRESHOLD = 3;

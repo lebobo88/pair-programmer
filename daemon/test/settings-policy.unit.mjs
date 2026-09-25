@@ -365,7 +365,7 @@ describe("settings-policy (Phase J, GitHub #51)", () => {
     assert.ok(DAEMON_SRC_DIR.endsWith(join("daemon", "src")));
   });
 
-  it("the derived PP_* set is exactly the seventeen flags this phase re-derived at authoring time", () => {
+  it("the derived PP_* set is exactly the eighteen flags this phase re-derived at authoring time", () => {
     // This is the one place a concrete list appears, and it exists only to
     // prove the derivation still finds the same flags this phase's prompt
     // asserted -- it is checked FOR EQUALITY against the derived set, not
@@ -381,6 +381,12 @@ describe("settings-policy (Phase J, GitHub #51)", () => {
     // deriveDaemonReadEnvVars call sites into the same test run and exposed
     // that PP_ENV_READ_RE alone missed this pattern (see PP_ENV_DYNAMIC_RE
     // above).
+    //
+    // PP_ECOSYSTEM_PROBE_TIMEOUT_MS: same `parseBoundedTimeoutMs()` pattern,
+    // added when `ecosystemProbeTimeoutMs()` (eights-client.ts's initial
+    // capability-probe wall-clock cap) became env-overridable so a test could
+    // widen its own probe window under heavy concurrent process-spawn load
+    // without changing the 3000ms production default.
     const EXPECTED = new Set([
       "PP_ALLOW_AD_HOC",
       "PP_ALLOW_BEST_OF_WITHOUT_JUDGE",
@@ -394,6 +400,7 @@ describe("settings-policy (Phase J, GitHub #51)", () => {
       "PP_DISABLE_NPX_VALIDATORS",
       "PP_DOCTOR_PIN_TIMEOUT_MS",
       "PP_DOCTOR_PROBE_TIMEOUT_MS",
+      "PP_ECOSYSTEM_PROBE_TIMEOUT_MS",
       "PP_EIGHTS_DAEMON",
       "PP_HOME",
       "PP_LOG_LEVEL",
