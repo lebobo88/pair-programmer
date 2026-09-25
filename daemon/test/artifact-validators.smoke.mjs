@@ -9,7 +9,8 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { dirname, join } from "node:path";
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const DAEMON = join(__dirname, "..", "dist", "index.js");
@@ -127,9 +128,16 @@ Some consequences will follow.
 `;
 
 async function main() {
+  // HERMETIC: this spawns a real `pp-daemon mcp` subprocess. Without an
+  // isolated PP_HOME, that subprocess's db() call opens the OPERATOR'S REAL
+  // ~/.pair-programmer/state.db and writes av-smoke runs into it (observed:
+  // 22 leaked 'av-smoke' runs). Give the spawned daemon its own throwaway
+  // home so the operator's ledger is never touched.
+  const ppHome = mkdtempSync(join(tmpdir(), "pp-av-smoke-home-"));
   const transport = new StdioClientTransport({
     command: process.execPath,
     args: [DAEMON, "mcp"],
+    env: { ...process.env, PP_HOME: ppHome, EIGHTS_SKIP_AUDIT_CHECK: "1" },
   });
   const client = new Client({ name: "av-smoke", version: "0.0.1" }, { capabilities: {} });
   await client.connect(transport);
@@ -905,6 +913,7 @@ operations:
   } finally {
     await client.close();
     rmSync(runtimeRoot, { recursive: true, force: true });
+    try { rmSync(ppHome, { recursive: true, force: true }); } catch { /* best-effort cleanup */ }
   }
 }
 
