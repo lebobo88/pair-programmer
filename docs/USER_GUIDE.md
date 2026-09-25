@@ -1262,9 +1262,9 @@ Stage-kind → sandbox mapping is in [`daemon/src/hooks/dispatcher.ts`](../daemo
 
 ## 19. MCP tools reference (79)
 
-Three MCP servers register with Claude Code over stdio: **`pp_harness` 92 + `pp_codex` 2 + `pp_agy` 2 = 96 tools**. The `pp_harness` figure is **76 catalogued tools plus 16 generated `hook_<event>_<name>` adapters** added by Phase L (issue #53), which exist so that 16 of the 37 lifecycle hooks run inside the already-connected daemon instead of paying a Node cold start and a SQLite reopen per event. The other 21 stay command hooks deliberately — the short version is that **anything that can deny stays a command hook**, because a not-connected `mcp_tool` hook is a non-blocking error and a guard must not acquire a fail-open failure mode; see `daemon/src/hooks/decision.ts` for the full rule set. **The adapters are invoked by the hook dispatcher, not by you** — the server's `instructions` say so and each adapter's description repeats it, because calling one out of band writes a telemetry row for an event that never happened. The authoritative `pp_harness` list is the `TOOLS` array in [`daemon/src/mcp/harness-server.ts`](../daemon/src/mcp/harness-server.ts) (and mirrored in [`mesh-manifest.yaml`](../mesh-manifest.yaml)). The catalog below documents the most commonly used tools grouped by subsystem; the remaining harness tools (e.g. `force_unlock`, `ensure_run`, `retract_verdict`, `archive_winner_and_losers`, `teardown_candidates`, `detect_profile`, `write_profile`, `get_builtin_profile`, `get_copilot_claude_tier_models`, the ecosystem advisory bridges `request_strategic_framing` / `request_brand_review` / `request_visual_advisory`, `report_hydra_completion`, `hydra_envelope_query`, `audit_status`, `list_evolution_proposals` / `review_evolution_proposal` / `analyze_autogenesis`, `agents_md_*`, `constitution_status`, and `replay`) round out the surface to 75.
+Three MCP servers register with Claude Code over stdio: **`pp_harness` 93 + `pp_codex` 2 + `pp_agy` 2 = 97 tools**. The `pp_harness` figure is **77 catalogued tools plus 16 generated `hook_<event>_<name>` adapters** added by Phase L (issue #53), which exist so that 16 of the 37 lifecycle hooks run inside the already-connected daemon instead of paying a Node cold start and a SQLite reopen per event. The other 21 stay command hooks deliberately — the short version is that **anything that can deny stays a command hook**, because a not-connected `mcp_tool` hook is a non-blocking error and a guard must not acquire a fail-open failure mode; see `daemon/src/hooks/decision.ts` for the full rule set. **The adapters are invoked by the hook dispatcher, not by you** — the server's `instructions` say so and each adapter's description repeats it, because calling one out of band writes a telemetry row for an event that never happened. The authoritative `pp_harness` list is the `TOOLS` array in [`daemon/src/mcp/harness-server.ts`](../daemon/src/mcp/harness-server.ts) (and mirrored in [`mesh-manifest.yaml`](../mesh-manifest.yaml)). The catalog below documents the most commonly used tools grouped by subsystem; the remaining harness tools (e.g. `force_unlock`, `ensure_run`, `retract_verdict`, `archive_winner_and_losers`, `teardown_candidates`, `detect_profile`, `write_profile`, `get_builtin_profile`, `get_copilot_claude_tier_models`, the ecosystem advisory bridges `request_strategic_framing` / `request_brand_review` / `request_visual_advisory`, `report_hydra_completion`, `hydra_envelope_query`, `audit_status`, `list_evolution_proposals` / `review_evolution_proposal` / `analyze_autogenesis`, `agents_md_*`, `constitution_status`, and `replay`) round out the surface to 76.
 
-### `pp_harness` (75 tools)
+### `pp_harness` (76 tools)
 
 #### Run lifecycle (7)
 
@@ -1293,7 +1293,7 @@ Three MCP servers register with Claude Code over stdio: **`pp_harness` 92 + `pp_
 |---|---|
 | `archive_artifact` | Write bytes under `.harness/<run_id>/<relative_path>`; secret-scanned; sha256-hashed; manual-edit detection. |
 
-#### Taxonomy + master plan (8)
+#### Taxonomy + master plan (9)
 
 | Tool | Purpose |
 |---|---|
@@ -1303,6 +1303,7 @@ Three MCP servers register with Claude Code over stdio: **`pp_harness` 92 + `pp_
 | `list_taxonomy_sections` | Return the 16 sections + master-plan section mappings. |
 | `ensure_master_plan` | Create `PROJECT_MASTER.md` if absent (idempotent). |
 | `apply_master_plan_patch` | Patch a section (`create | update | append`); SHA-tracked. |
+| `apply_run_master_plan` | Write a run's PROJECT_MASTER.md block(s) into a validated `target_dir` (a worktree or another checkout of the run's own repo) instead of `project_path`. Pair with `finalize_run({master_plan_applied: true})` after merging back. |
 | `master_plan_status` | Populated sections + bytes + Section 10 checklist. |
 | `completion_checklist` | Just Section 10's 15-item checklist. |
 

@@ -12,6 +12,7 @@ import {
   startRun, ensureRun, startStage, recordAttempt, recordVerdict, retractVerdict, finalizeStage,
   finalizeRun, archiveArtifact, listRuns, getRun, budgetStatus, doctor,
   recordTaxonomyMapping, getStageFinalizeReadiness, ackRun,
+  applyRunMasterPlan,
 } from "../orchestrator/runs.js";
 import { evaluateGate, listAllowedJudges, describeJudgeCapabilities, type GateType, type Profile } from "../orchestrator/gates.js";
 import { heuristicTriage, heuristicMapping, TAXONOMY_SECTIONS, COMPLETION_CHECKLIST } from "../orchestrator/taxonomy.js";
@@ -258,9 +259,16 @@ const GetStageFinalizeReadinessSchema = z.object({
 });
 
 const FinalizeRunSchema = z.object({
+  run_id:              z.string().min(1),
+  status:              z.enum(["complete", "surfaced", "aborted"] as const),
+  summary_md:          z.string().optional(),
+  // See apply_run_master_plan's description for the intended call order.
+  master_plan_applied: z.boolean().optional(),
+});
+
+const ApplyRunMasterPlanSchema = z.object({
   run_id:     z.string().min(1),
-  status:     z.enum(["complete", "surfaced", "aborted"] as const),
-  summary_md: z.string().optional(),
+  target_dir: z.string().min(1),
 });
 
 const ArchiveArtifactSchema = z.object({
@@ -729,9 +737,35 @@ const TOOLS: ToolDef[] = [
       "Close a run with status complete | surfaced | aborted. If summary_md is provided, writes it to <project>/.harness/<run_id>/run.summary.md. " +
       "PP-VG-7: returns {effective_status, requested_status, downgraded, surfaced_stage_count}. " +
       "When downgraded=true the caller's requested 'complete' was written as 'surfaced' because child stages are in the 'surfaced' state. " +
-      "Always check downgraded before treating the run as cleanly complete.",
+      "Always check downgraded before treating the run as cleanly complete. " +
+      "Pass master_plan_applied=true when the run's PROJECT_MASTER.md block was already written elsewhere (typically via " +
+      "apply_run_master_plan against a worktree, then merged into project_path) — this skips the default auto-patch that " +
+      "would otherwise re-derive the same content against project_path, and records an audit row noting the skip. Leave " +
+      "it false/omitted for the default behaviour (auto-patch project_path directly from this run's artifacts).",
     schema: FinalizeRunSchema,
     handler: (args) => finalizeRun(FinalizeRunSchema.parse(args)),
+  },
+  {
+    name: "apply_run_master_plan",
+    description:
+      "Writes this run's PROJECT_MASTER.md block(s) into target_dir instead of the run's own project_path — for applying " +
+      "the master-plan patch inside a worktree or a second checkout of the same repository before merging it back. " +
+      "target_dir is validated before anything is written: it must either resolve (realpath) to the run's project_path, " +
+      "or `git -C target_dir rev-parse --git-common-dir` must resolve to the SAME common git directory as project_path " +
+      "(i.e. target_dir is a linked worktree or another checkout of project_path's own repository). Path comparison is " +
+      "case-insensitive on win32. Any other directory — an unrelated git repo, a plain non-git directory, a typo — is " +
+      "rejected with a clear error and nothing is written. " +
+      "Intended call order: (1) apply_run_master_plan(run_id, target_dir=<worktree>), (2) commit the change in the " +
+      "worktree, (3) merge it into the run's project_path, (4) finalize_run(run_id, status='complete', " +
+      "master_plan_applied=true) — step 4 skips the default project_path auto-patch since this call already wrote it. " +
+      "Idempotent per section like apply_master_plan_patch: re-applying for the same run_id and section is a no-op once " +
+      "the run's block is present, so calling this before a later default-path finalize_run (without master_plan_applied) " +
+      "does not duplicate content. Returns {run_id, path, created, sections: [{section, status, patch_id | error}]}.",
+    schema: ApplyRunMasterPlanSchema,
+    handler: (args) => {
+      const p = ApplyRunMasterPlanSchema.parse(args);
+      return applyRunMasterPlan(p.run_id, p.target_dir);
+    },
   },
   {
     name: "archive_artifact",

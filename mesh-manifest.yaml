@@ -77,6 +77,7 @@ mcp:
     - "ensure_constitution"
     - "constitution_status"
     - "apply_master_plan_patch"
+    - "apply_run_master_plan"
     - "master_plan_status"
     - "ensure_agents_md"
     - "apply_agents_md_patch"
