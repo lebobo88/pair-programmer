@@ -42,7 +42,7 @@ export const FORUMS: Forum[] = [
     description: "Locks scope boundaries, functional + non-functional requirements, acceptance criteria.",
     produces: "PRD, acceptance criteria, NFRs",
     stages: [
-      { kind: "prd",                  gate_type: "spec", generator_agent: "spec-author",       judge_tier: "cross_vendor", rubric_id: "rfc-2119-normative@1" },
+      { kind: "prd",                  gate_type: "spec", generator_agent: "spec-author",       judge_tier: "cross_vendor", rubric_id: "prd-quality@1" },
       { kind: "acceptance_criteria",  gate_type: "spec", generator_agent: "spec-author",       judge_tier: "cross_vendor", rubric_id: "rfc-2119-normative@1" },
       { kind: "non_functional_reqs",  gate_type: "spec", generator_agent: "spec-author",       judge_tier: "cross_vendor", rubric_id: "rfc-2119-normative@1" },
     ],

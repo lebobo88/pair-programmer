@@ -23,6 +23,7 @@ import { tmpdir } from "node:os";
 import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, readdirSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
+import { setIsolatedProcessEnv, isolatedChildEnv } from "./fixtures/isolated-env.mjs";
 
 /** Recursive *.md finder — avoids node:fs globSync (Node 22+ only; this
  * project targets Node 20+ per AGENTS.md). */
@@ -44,9 +45,11 @@ const SRC = join(__dirname, "..", "src");
 const REPO_ROOT = join(__dirname, "..", "..");
 const INDEX_JS = join(DIST, "index.js");
 
-const SUITE_DIR = mkdtempSync(join(tmpdir(), "pp-cost-derivation-"));
+// setIsolatedProcessEnv also scrubs any ambient PP_DB_PATH first (it WINS
+// over PP_HOME in src/util/paths.ts, so leaving it in place would silently
+// defeat this override).
+const { ppHome: SUITE_DIR, ppDbPath: SUITE_DB_PATH } = setIsolatedProcessEnv({ prefix: "pp-cost-derivation-" });
 mkdirSync(join(SUITE_DIR, ".pair-programmer"), { recursive: true });
-process.env.PP_HOME = SUITE_DIR;
 process.env.EIGHTS_SKIP_AUDIT_CHECK = "1";
 
 const importDist = (relPath) => import(pathToFileURL(join(DIST, relPath)).href);
@@ -95,7 +98,11 @@ function seedRunAndStage() {
 function runHookChild(event, name, payload, extraEnv = {}) {
   return spawnSync(process.execPath, [INDEX_JS, "hook", event, name], {
     input: JSON.stringify(payload ?? {}),
-    env: { ...process.env, PP_HOME: SUITE_DIR, EIGHTS_SKIP_AUDIT_CHECK: "1", ...extraEnv },
+    env: isolatedChildEnv({
+      ppHome: SUITE_DIR,
+      ppDbPath: SUITE_DB_PATH,
+      extra: { EIGHTS_SKIP_AUDIT_CHECK: "1", ...extraEnv },
+    }).env,
     encoding: "utf8",
     timeout: 20_000,
   });
@@ -203,7 +210,8 @@ it("R25 falsifiability (direct, on the production symbol): computeCost returns 0
     })();
   `;
   const child = spawnSync(process.execPath, ["--input-type=module", "-e", probe], {
-    env: { ...process.env, PP_HOME: noteOnlyHome, EIGHTS_SKIP_AUDIT_CHECK: "1" }, encoding: "utf8",
+    env: isolatedChildEnv({ base: process.env, extra: { EIGHTS_SKIP_AUDIT_CHECK: "1" }, ppHome: noteOnlyHome, ppDbPath: join(noteOnlyHome, ".pair-programmer", "state.db") }).env,
+    encoding: "utf8",
   });
   assert.equal(child.status, 0, `child failed: ${child.stderr}`);
   const result = Number(child.stdout);
@@ -245,10 +253,12 @@ it("AC-H42: computeCost returns the VENDOR-BLOCK rate, not the notes-block strin
     })();
   `;
   const normalChild = spawnSync(process.execPath, ["--input-type=module", "-e", probe], {
-    env: { ...process.env, PP_HOME: normalOrderHome, EIGHTS_SKIP_AUDIT_CHECK: "1" }, encoding: "utf8",
+    env: isolatedChildEnv({ base: process.env, extra: { EIGHTS_SKIP_AUDIT_CHECK: "1" }, ppHome: normalOrderHome, ppDbPath: join(normalOrderHome, ".pair-programmer", "state.db") }).env,
+    encoding: "utf8",
   });
   const reversedChild = spawnSync(process.execPath, ["--input-type=module", "-e", probe], {
-    env: { ...process.env, PP_HOME: reversedOrderHome, EIGHTS_SKIP_AUDIT_CHECK: "1" }, encoding: "utf8",
+    env: isolatedChildEnv({ base: process.env, extra: { EIGHTS_SKIP_AUDIT_CHECK: "1" }, ppHome: reversedOrderHome, ppDbPath: join(reversedOrderHome, ".pair-programmer", "state.db") }).env,
+    encoding: "utf8",
   });
   assert.equal(normalChild.status, 0, `normal-order child failed: ${normalChild.stderr}`);
   assert.equal(reversedChild.status, 0, `reversed-order child failed: ${reversedChild.stderr}`);

@@ -11,7 +11,9 @@
     "typecheck": "tsc --noEmit",
     "start": "node dist/index.js",
     "dev": "tsx watch src/index.ts",
-    "test": "npm run build && node --test --test-timeout=180000 test/*.unit.mjs && node test/smoke.mjs && node test/artifact-validators.smoke.mjs && node test/eights-integration.smoke.mjs"
+    "pretest": "node scripts/hermetic-guard.mjs snapshot",
+    "test": "node scripts/run-tests.mjs",
+    "posttest": "node scripts/hermetic-guard.mjs verify"
   },
   "engines": {
     "node": ">=22.0.0"

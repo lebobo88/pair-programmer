@@ -166,6 +166,19 @@ function walkTree(rootDir, extFilter) {
 
 // ─── Invariant 2/4 shared derivation: PP_* vars daemon/src actually reads ──
 const PP_ENV_READ_RE = /process\.env\.(PP_[A-Z0-9_]+)/g;
+// Some reads go through a bounded-parse helper (e.g. config.ts's
+// `parseBoundedTimeoutMs(envVar, default)`) that does `process.env[envVar]`
+// with the var name passed in as a string literal, rather than
+// `process.env.PP_X` dot-notation. A file that contains a dynamic
+// `process.env[` bracket read is treated as "this file reads env vars
+// dynamically", and every quoted `PP_*` string literal in that SAME file is
+// then counted as a read var too. Scoping the quoted-literal scan to files
+// that actually contain the dynamic-read pattern (rather than scanning
+// every .ts file for any quoted PP_ token) keeps this from picking up
+// unrelated string literals (e.g. a var name mentioned only in an error
+// message) as a false "read".
+const PP_ENV_DYNAMIC_RE = /process\.env\[/;
+const PP_QUOTED_TOKEN_RE = /["'](PP_[A-Z0-9_]+)["']/g;
 // Token must END in an alphanumeric, not an underscore -- prose like
 // "`PP_ALLOW_*`/`PP_DISABLE_*`" (used to describe the whole family of
 // escape-hatch flags, not one specific var) would otherwise match a bogus
@@ -230,6 +243,11 @@ function deriveDaemonReadEnvVars(srcDir) {
   for (const f of files) {
     for (const m of f.content.matchAll(PP_ENV_READ_RE)) {
       set.add(m[1]);
+    }
+    if (PP_ENV_DYNAMIC_RE.test(f.content)) {
+      for (const m of f.content.matchAll(PP_QUOTED_TOKEN_RE)) {
+        set.add(m[1]);
+      }
     }
   }
   return { set, filesScanned: files.map(f => f.relPath) };
@@ -347,12 +365,22 @@ describe("settings-policy (Phase J, GitHub #51)", () => {
     assert.ok(DAEMON_SRC_DIR.endsWith(join("daemon", "src")));
   });
 
-  it("the derived PP_* set is exactly the fifteen flags this phase re-derived at authoring time", () => {
+  it("the derived PP_* set is exactly the seventeen flags this phase re-derived at authoring time", () => {
     // This is the one place a concrete list appears, and it exists only to
     // prove the derivation still finds the same flags this phase's prompt
     // asserted -- it is checked FOR EQUALITY against the derived set, not
     // used to constrain the walk itself, so a future daemon-side add/remove
     // shows up here as a red test rather than silent drift either way.
+    //
+    // PP_DOCTOR_PIN_TIMEOUT_MS / PP_DOCTOR_PROBE_TIMEOUT_MS: read via
+    // config.ts's `parseBoundedTimeoutMs(envVar, default)` helper, which
+    // does `process.env[envVar]` (dynamic bracket access) rather than
+    // `process.env.PP_X` dot-notation -- added to the fifteen originally
+    // re-derived at authoring time once the merge with the vendor-matrix /
+    // hooks-alignment history (feat/plan-first-gate <- main) brought the two
+    // deriveDaemonReadEnvVars call sites into the same test run and exposed
+    // that PP_ENV_READ_RE alone missed this pattern (see PP_ENV_DYNAMIC_RE
+    // above).
     const EXPECTED = new Set([
       "PP_ALLOW_AD_HOC",
       "PP_ALLOW_BEST_OF_WITHOUT_JUDGE",
@@ -364,6 +392,8 @@ describe("settings-policy (Phase J, GitHub #51)", () => {
       "PP_DEBUG",
       "PP_DISABLE_AGY",
       "PP_DISABLE_NPX_VALIDATORS",
+      "PP_DOCTOR_PIN_TIMEOUT_MS",
+      "PP_DOCTOR_PROBE_TIMEOUT_MS",
       "PP_EIGHTS_DAEMON",
       "PP_HOME",
       "PP_LOG_LEVEL",

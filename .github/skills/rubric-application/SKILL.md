@@ -1,6 +1,6 @@
 ---
 name: rubric-application
-description: How to invoke a rubric and emit structured rubric scores. Loaded by judge agents. The 13 standard-aligned rubrics live in the daemon registry; mirror copies under `.claude/rubrics/<id>.md` are generated via `pp-daemon dump-rubrics`.
+description: How to invoke a rubric and emit structured rubric scores. Loaded by judge agents. The standard-aligned rubrics live in the daemon registry (call list_rubrics for the current roster); mirror copies under `.claude/rubrics/<id>.md` are generated via `pp-daemon dump-rubrics`.
 user-invocable: false
 ---
 
@@ -30,7 +30,7 @@ Rubric ids are version-suffixed: `wcag-2.2-aa@1`, `owasp-asvs-l1@1`, `c4-system-
 }
 ```
 
-If `get_rubric` returns `null`, the rubric id is wrong or the rubric was deleted from the registry. Fall back to the closest match (`list_rubrics` returns all 13 with their kinds) and surface a warning.
+If `get_rubric` returns `null`, the rubric id is wrong or the rubric was deleted from the registry. Fall back to the closest match (`list_rubrics` returns all registered rubrics with their kinds) and surface a warning.
 
 ## How to emit a verdict
 

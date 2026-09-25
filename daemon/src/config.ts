@@ -8,6 +8,7 @@ import { z } from "zod";
 // time), so whichever module is entered first finishes initializing before any
 // cross-module value is read.
 import { resolveAgyInvocation } from "./mcp/agy-model.js";
+import { log } from "./util/logger.js";
 
 /** Default ceiling on validator (judge) calls per single run. Phase 4 enforces. */
 export const DEFAULT_LOOP_CEILING = 6;
@@ -439,6 +440,69 @@ export function resolveJudgeSelection(opts: {
  */
 export function agyEnabled(): boolean {
   return (process.env.PP_DISABLE_AGY ?? "0") !== "1";
+}
+
+/**
+ * setTimeout/setInterval (and execa's `timeout` option, which delegates to
+ * setTimeout under the hood) take a signed 32-bit millisecond delay on
+ * Node/V8. Anything above this wraps/overflows and the timer fires almost
+ * immediately (observed: PP_DOCTOR_PROBE_TIMEOUT_MS=6000000000 made every
+ * probe look instantly "missing" because the clamp fired in ~1ms instead of
+ * 6,000,000 seconds later). Env-driven timeout parsers must reject values
+ * outside [1, MAX_TIMER_MS] rather than pass them through.
+ */
+const MAX_TIMER_MS = 2_147_483_647;
+
+/**
+ * Parse an env var as a bounded positive integer millisecond timeout. Accepts
+ * only safe integers in [1, MAX_TIMER_MS] — no fractional values (which
+ * execa/setTimeout would silently floor), no zero/negative values, and no
+ * values that would overflow Node's timer implementation. Anything else
+ * (unset, non-numeric, fractional, <=0, or > MAX_TIMER_MS) falls back to
+ * `defaultMs` and logs a warning so a malformed override doesn't silently
+ * become "every probe times out instantly".
+ */
+function parseBoundedTimeoutMs(envVar: string, defaultMs: number): number {
+  const raw = process.env[envVar];
+  if (raw === undefined || raw === "") return defaultMs;
+  const n = Number(raw);
+  if (Number.isSafeInteger(n) && n >= 1 && n <= MAX_TIMER_MS) return n;
+  log.warn(
+    { env_var: envVar, raw_value: raw, default_ms: defaultMs },
+    `${envVar} must be a positive integer between 1 and ${MAX_TIMER_MS} (ms); ` +
+      `got ${JSON.stringify(raw)} — falling back to the default.`,
+  );
+  return defaultMs;
+}
+
+/**
+ * Wall-clock cap on each of doctor's five CLI `--version` probes (codex, agy,
+ * claude, git, node). These probes run CONCURRENTLY (Promise.all), so this
+ * bounds doctor's total version-probe latency to ~this value regardless of how
+ * slow any single CLI cold-starts on the host machine (measured: `agy
+ * --version` 127s cold on some machines, well past the MCP client's fixed
+ * 60s per-request timeout). A timed-out probe resolves to `null` — the same
+ * value a genuinely-missing CLI produces — so callers must consult
+ * `cli_probe_timeouts` to distinguish "timed out" from "not installed".
+ * Implemented as a function (not a top-level const) so tests can toggle the
+ * env var between calls; see agyEnabled() above for the same pattern.
+ */
+export function doctorProbeTimeoutMs(): number {
+  return parseBoundedTimeoutMs("PP_DOCTOR_PROBE_TIMEOUT_MS", 15_000);
+}
+
+/**
+ * Wall-clock cap on doctor's `checkAgyPinServed` call (the `agy models` list
+ * probe used to verify pinned judge/generation models are still served). On
+ * timeout, doctor degrades open: it reports the same inconclusive shape it
+ * already returns when the agy CLI is absent, rather than failing the whole
+ * doctor call. Runs concurrently with the version probes, not after them.
+ * This same budget is also threaded into the underlying `agy models`
+ * subprocess's own kill deadline (see checkAgyPinServedBounded) so a short
+ * budget actually terminates the child instead of merely abandoning the race.
+ */
+export function doctorPinTimeoutMs(): number {
+  return parseBoundedTimeoutMs("PP_DOCTOR_PIN_TIMEOUT_MS", 20_000);
 }
 
 // ─── Ecosystem integration (Hydra / TheEights / Constitution) ───────────

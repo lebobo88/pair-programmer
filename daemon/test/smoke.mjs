@@ -8,10 +8,23 @@ import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
-import { mkdtempSync, writeFileSync, existsSync } from "node:fs";
+import { mkdtempSync, writeFileSync, existsSync, rmSync } from "node:fs";
+import { isolatedChildEnv } from "./fixtures/isolated-env.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const DAEMON = join(__dirname, "..", "dist", "index.js");
+
+// HERMETIC: this spawns a real `pp-daemon mcp` subprocess. isolatedChildEnv
+// scrubs any ambient PP_DB_PATH/PP_HOME out of the base env FIRST, then sets
+// an explicit temp PP_HOME and explicit temp PP_DB_PATH inside it — an
+// operator-exported PP_DB_PATH (which WINS over PP_HOME in
+// src/util/paths.ts) can never leak the OPERATOR'S REAL
+// ~/.pair-programmer/state.db into this run. Cleaned up in the `finally`
+// below regardless of outcome.
+const { env: DAEMON_ENV, ppHome: PP_HOME } = isolatedChildEnv({
+  extra: { EIGHTS_SKIP_AUDIT_CHECK: "1" },
+  prefix: "pp-smoke-home-",
+});
 
 function pretty(json) {
   return JSON.stringify(json, null, 2);
@@ -28,6 +41,7 @@ async function main() {
   const transport = new StdioClientTransport({
     command: process.execPath,        // node
     args: [DAEMON, "mcp"],
+    env: DAEMON_ENV,
   });
   const client = new Client({ name: "smoke-test", version: "0.0.1" }, { capabilities: {} });
   await client.connect(transport);
@@ -72,9 +86,16 @@ async function main() {
     console.log(`✓ start_stage -> ${stage.stage_id}`);
 
     // 4. Record an attempt (no real CLI call — synthetic data).
+    // producer: "claude", not "codex" -- since GitHub #58's producer-domain
+    // split (see runs.ts tallyBudgets call site / dispatcher.ts cost-tally),
+    // recordAttempt SKIPS its own budget tally for "codex"/"agy" producers;
+    // that spend is tallied exclusively by the cost-tally PostToolUse hook
+    // on a real pp_codex/pp_agy tool call, which this synthetic-data smoke
+    // test never fires. "claude" is still tallied directly by recordAttempt
+    // (R28), which is what step 10 below asserts against budget_status.
     const att = await callTool(client, "record_attempt", {
       stage_id: stage.stage_id,
-      producer: "codex",
+      producer: "claude",
       model_id: "gpt-5.6-luna",
       tokens_in: 1234,
       tokens_out: 567,
@@ -96,7 +117,8 @@ async function main() {
     });
     console.log(`✓ archive_artifact -> ${artifact.artifact_id} (${artifact.sha256.slice(0, 12)}…)`);
 
-    // 6. Record a verdict — judge uses gpt-5.6-terra (different model, same vendor).
+    // 6. Record a verdict — judge uses gpt-5.6-terra (codex), attempt producer
+    //    is claude (see step 4), so this is now a cross-vendor verdict.
     //    critique_md must be ≥80 non-whitespace chars to satisfy the
     //    anti-vacuous-pass refine on RecordVerdictSchema.
     const verdict = await callTool(client, "record_verdict", {
@@ -629,9 +651,10 @@ async function main() {
     //     that path through Client.callTool here — it's defensive code for
     //     raw JSON-RPC clients.
 
-    // 21. Phase 6: rubric registry has 27 rubrics (added igda-gasig@1).
+    // 21. Phase 6: rubric registry has 31 rubrics (added prd-quality@1,
+    //     plan-decomposition-quality@1).
     const rubricList = await callTool(client, "list_rubrics");
-    if (rubricList.length !== 29) throw new Error(`expected 29 rubrics, got ${rubricList.length}`);
+    if (rubricList.length !== 31) throw new Error(`expected 31 rubrics, got ${rubricList.length}`);
     const wcag = await callTool(client, "get_rubric", { id: "wcag-2.2-aa@1" });
     if (!wcag?.markdown.includes("8-state matrix")) throw new Error(`wcag rubric body missing expected content`);
     const wrv2 = await callTool(client, "get_rubric", { id: "web-runtime-validation@2" });
@@ -762,7 +785,12 @@ async function main() {
   }
 }
 
-main().catch(err => {
-  console.error("SMOKE FAILED:", err);
-  process.exit(1);
-});
+main()
+  .catch(err => {
+    console.error("SMOKE FAILED:", err);
+    process.exitCode = 1;
+  })
+  .finally(() => {
+    try { rmSync(PP_HOME, { recursive: true, force: true }); } catch { /* best-effort cleanup */ }
+    process.exit(process.exitCode ?? 0);
+  });

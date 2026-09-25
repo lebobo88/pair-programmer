@@ -9,6 +9,7 @@ import { projectArtifactDir } from "../util/paths.js";
 import {
   RunMode, RunStatus, StageStatus, AttemptStatus, VerdictOutcome, vendorFor,
   ClaudeTier, isClaudeTier, normalizeProducer, PRODUCERS,
+  doctorProbeTimeoutMs, doctorPinTimeoutMs,
 } from "../config.js";
 import { log } from "../util/logger.js";
 import { scanForSecrets, SecretsFoundError } from "../security/secret-scan.js";
@@ -28,6 +29,7 @@ import { codexCritique } from "../mcp/codex-server.js";
 import { agyCritique } from "../mcp/antigravity-server.js";
 import { describeJudgeCapabilities } from "./gates.js";
 import { findPriorTestsPreStage, getLatestTddCheck, type TddCheckRow } from "./tdd-gate.js";
+import { planFirstRequired, findPriorPassedPlanningStage } from "./plan-first-gate.js";
 import {
   requiredValidatorsForStage,
   type ValidatorKind,
@@ -167,7 +169,15 @@ export async function startRun(input: StartRunInput): Promise<StartRunOutput> {
     ? createHash("sha256").update(dirty).digest("hex").slice(0, 16)
     : null;
 
-  const cliVersions = await captureCliVersions();
+  // Persist BOTH the resolved versions and which probes (if any) timed out
+  // rather than genuinely failing. Without `cli_probe_timeouts` here, a CLI
+  // that merely exceeded PP_DOCTOR_PROBE_TIMEOUT_MS is indistinguishable, on
+  // replay, from one that was never installed — an operator re-reading
+  // `cli_versions_json` months later would wrongly conclude the CLI was
+  // absent at run-start. `cli_versions_json` stays a superset-compatible JSON
+  // object: existing readers that only look at the per-CLI keys are
+  // unaffected; `probe_timeouts` is an additive sibling key.
+  const { versions: cliVersions, timeouts: cliProbeTimeouts } = await captureCliVersions();
 
   // v7: lift Hydra context fields off the input. parseHydraContext returns
   // null when no workflow_id is set (standalone runs), in which case all
@@ -205,7 +215,7 @@ export async function startRun(input: StartRunInput): Promise<StartRunOutput> {
           null,
           headSha,
           treeDirtyHash,
-          JSON.stringify(cliVersions),
+          JSON.stringify({ ...cliVersions, probe_timeouts: cliProbeTimeouts }),
           startedAt,
           hydraCtx?.workflow_id ?? null,
           hydraCtx?.envelope_id ?? null,
@@ -1351,7 +1361,8 @@ export type StageFinalizeNextAction =
   | "surface_stage"
   | "dispatch_cross_vendor_rejudge"
   | "record_verdict"
-  | "record_smoke_or_assertion";
+  | "record_smoke_or_assertion"
+  | "pass_planning_stage";
 
 export type StageFinalizeTddBlocker = {
   gate: "tdd";
@@ -1361,6 +1372,22 @@ export type StageFinalizeTddBlocker = {
   message: string;
   check: TddCheckRow | null;
   prior_stage_id?: string;
+};
+
+/**
+ * X1b: structural plan-first gate. A `code` stage in a run whose recorded
+ * taxonomy mapping scope is 'standard' or 'major' cannot finalize as
+ * 'passed' unless an EARLIER stage in the same run, with a kind in
+ * PLAN_FIRST_STAGE_KINDS, has already finalized 'passed'. See
+ * plan-first-gate.ts for the full rationale and the INVERTED-vs-TDD-gate
+ * doctrine note.
+ */
+export type StageFinalizePlanFirstBlocker = {
+  gate: "plan_first";
+  next_action: "pass_planning_stage";
+  message: string;
+  run_id: string;
+  scope: "standard" | "major";
 };
 
 export type StageFinalizeArtifactBlocker = {
@@ -1455,6 +1482,7 @@ export type StageFinalizeZeroVerdictBlocker = {
 
 export type StageFinalizeBlocker =
   | StageFinalizeTddBlocker
+  | StageFinalizePlanFirstBlocker
   | StageFinalizeArtifactBlocker
   | StageFinalizeVerdictBlocker
   | StageFinalizeRejudgeBlocker
@@ -1482,6 +1510,41 @@ export class TddGateViolation extends Error {
   ) {
     super(message);
     this.name = "TddGateViolation";
+  }
+}
+
+/**
+ * X1b: thrown by finalizeStage when a `code` stage in a standard/major-scope
+ * run has no earlier stage with a kind in PLAN_FIRST_STAGE_KINDS that has
+ * already finalized 'passed'. Mirrors TddGateViolation's shape.
+ */
+export class PlanFirstGateViolation extends Error {
+  constructor(
+    message: string,
+    public readonly stage_id: string,
+    public readonly run_id: string,
+    public readonly scope: "standard" | "major",
+  ) {
+    super(message);
+    this.name = "PlanFirstGateViolation";
+  }
+}
+
+/**
+ * Thrown by recordTaxonomyMapping when the run already has one or more stage
+ * rows and the write would change (or, if none was ever recorded, establish)
+ * the run's `.scope`. See recordTaxonomyMapping's doc comment for the freeze
+ * rule this protects.
+ */
+export class TaxonomyMappingFrozenError extends Error {
+  constructor(
+    message: string,
+    public readonly run_id: string,
+    public readonly recorded_scope: "trivial" | "standard" | "major" | null,
+    public readonly attempted_scope: "trivial" | "standard" | "major",
+  ) {
+    super(message);
+    this.name = "TaxonomyMappingFrozenError";
   }
 }
 
@@ -1591,6 +1654,29 @@ export function getStageFinalizeReadiness(stage_id: string, winner_attempt_id?: 
       const check = getLatestTddCheck(stage_id, "post");
       if (!check || check.status !== "verified") {
         blockers.push(buildTddFinalizeBlocker({ stage_id, phase: "post", check, prior_stage_id: prior.stage_id }));
+      }
+    }
+  }
+
+  // X1b: structural plan-first gate. Placed immediately after the TDD block
+  // so it surfaces as the first blocker when both would fire. Only `code`
+  // stages are in scope; see plan-first-gate.ts for the run-level scope
+  // check and the "inverted vs TDD gate" doctrine.
+  if (stageRow.kind === "code") {
+    const runIdRow = db()
+      .prepare(`SELECT run_id, taxonomy_mapping_json FROM stages s JOIN runs r ON r.id = s.run_id WHERE s.id = ?`)
+      .get(stage_id) as { run_id: string; taxonomy_mapping_json: string | null } | undefined;
+    if (runIdRow && planFirstRequired(runIdRow.run_id)) {
+      const priorPlanningStage = findPriorPassedPlanningStage(stage_id);
+      if (!priorPlanningStage) {
+        // Re-parse scope for the blocker payload (planFirstRequired already
+        // validated it is 'standard' or 'major').
+        const mapping = JSON.parse(runIdRow.taxonomy_mapping_json!) as { scope: "standard" | "major" };
+        blockers.push(buildPlanFirstFinalizeBlocker({
+          stage_id,
+          run_id: runIdRow.run_id,
+          scope: mapping.scope,
+        }));
       }
     }
   }
@@ -2027,6 +2113,14 @@ export async function finalizeStage(input: FinalizeStageInput): Promise<void> {
           blocker.check,
         );
       }
+      if (blocker.gate === "plan_first") {
+        throw new PlanFirstGateViolation(
+          blocker.message,
+          input.stage_id,
+          blocker.run_id,
+          blocker.scope,
+        );
+      }
       if (blocker.gate === "verdict") {
         throw new VerdictGateViolation(
           blocker.message,
@@ -2119,6 +2213,25 @@ function buildTddFinalizeBlocker(opts: {
     message,
     check: opts.check,
     prior_stage_id: opts.prior_stage_id,
+  };
+}
+
+function buildPlanFirstFinalizeBlocker(opts: {
+  stage_id: string;
+  run_id: string;
+  scope: "standard" | "major";
+}): StageFinalizePlanFirstBlocker {
+  return {
+    gate: "plan_first",
+    next_action: "pass_planning_stage",
+    run_id: opts.run_id,
+    scope: opts.scope,
+    message:
+      `finalize_stage refused: code stage ${opts.stage_id} cannot be marked 'passed' because run ${opts.run_id} ` +
+      `is scope='${opts.scope}' and no earlier stage in this run has finalized 'passed' with a kind in ` +
+      `PLAN_FIRST_STAGE_KINDS (spec, repro, invariants, one_pager, gdd, mechanic_spec, tech_design_doc). ` +
+      `Run and pass the team's planning stage before this code stage, or finalize with status='surfaced' ` +
+      `to accept the unplanned change.`,
   };
 }
 
@@ -3451,8 +3564,69 @@ export type RecordTaxonomyMappingInput = {
   missability_required: string[];
 };
 
+/**
+ * Persist the taxonomy mapping for a run.
+ *
+ * Mapping freeze (cross-vendor critique gpt-5.6-terra P1c): the docstring
+ * used to say the mapping is written once, at intake -- but the code let any
+ * caller overwrite `.scope` at any point while the run was open, including
+ * mid-run after `code` stages had already started, which lets a generator
+ * dodge the plan-first gate (plan-first-gate.ts) by re-recording 'trivial'
+ * once it's inconvenient, or lets a late first mapping retroactively decide
+ * whether stages that already ran should have been gated. The code now
+ * enforces what the docstring claimed: once `run_id` has ANY stage row,
+ * a write is rejected UNLESS a mapping is already recorded AND the new
+ * `.scope` equals the recorded `.scope` (an idempotent re-record of the same
+ * scope stays allowed, and MAY update the other fields -- signals, sections,
+ * missability_required -- since those don't affect this gate). Before any
+ * stage exists, writes behave exactly as before (freely settable/updatable).
+ *
+ * Caller audit (2026-09): every caller in this repo --
+ * `.claude/commands/pp/run.md` step 5 and `.claude/commands/pp/team.md` step
+ * 5 (and their `.github/commands/pp/*` mirrors), `.claude/agents/taxonomy-mapper.md`
+ * step 5 -- records the mapping immediately after `start_run`, before the
+ * first `start_stage` call. `daemon/test/smoke.mjs` records it right after
+ * `start_run` too (before any `start_stage`). No caller records after stages
+ * begin, so this freeze does not change any existing legitimate flow.
+ */
 export function recordTaxonomyMapping(input: RecordTaxonomyMappingInput): { ok: true } {
   ensureRunOpen(input.run_id);
+
+  const hasStage = db()
+    .prepare(`SELECT 1 FROM stages WHERE run_id = ? LIMIT 1`)
+    .get(input.run_id);
+  if (hasStage) {
+    const existingRow = db()
+      .prepare(`SELECT taxonomy_mapping_json FROM runs WHERE id = ?`)
+      .get(input.run_id) as { taxonomy_mapping_json: string | null } | undefined;
+    let recordedScope: "trivial" | "standard" | "major" | null = null;
+    if (existingRow?.taxonomy_mapping_json) {
+      try {
+        const parsed = JSON.parse(existingRow.taxonomy_mapping_json) as { scope?: unknown };
+        if (parsed.scope === "trivial" || parsed.scope === "standard" || parsed.scope === "major") {
+          recordedScope = parsed.scope;
+        }
+      } catch {
+        recordedScope = null; // unparseable -- treat as "nothing usable recorded"
+      }
+    }
+    if (recordedScope === null || recordedScope !== input.scope) {
+      throw new TaxonomyMappingFrozenError(
+        `record_taxonomy_mapping refused: run ${input.run_id} already has one or more stages, so its taxonomy ` +
+          `mapping scope is frozen. ` +
+          (recordedScope === null
+            ? `No mapping (or none with a valid scope) was recorded before stages began, so a mapping can no ` +
+              `longer be established for this run.`
+            : `The recorded scope is '${recordedScope}'; this call's scope '${input.scope}' differs.`) +
+          ` Re-record with scope='${recordedScope ?? "n/a"}' to update the mapping's other fields, or record ` +
+          `the mapping before calling start_stage next time.`,
+        input.run_id,
+        recordedScope,
+        input.scope,
+      );
+    }
+  }
+
   const json = JSON.stringify(input);
   txImmediate(() => {
     db().prepare(`UPDATE runs SET taxonomy_mapping_json = ? WHERE id = ?`).run(json, input.run_id);
@@ -3518,23 +3692,132 @@ async function tryGitCommand(cwd: string, args: string[]): Promise<string | null
   }
 }
 
-async function captureCliVersions(): Promise<Record<string, string | null>> {
-  const out: Record<string, string | null> = {};
-  for (const cli of ["codex", "agy", "claude", "git", "node"]) {
-    out[cli] = (await tryCmd(cli, ["--version"])) ?? null;
-  }
-  return out;
+/** The five CLIs doctor / start_run probe for `--version`. */
+const CLI_VERSION_TARGETS = ["codex", "agy", "claude", "git", "node"] as const;
+
+/**
+ * Injectable probe seam (PP-doctor-timeout). Production code always uses
+ * `tryCmd` (below); tests substitute a fake that never resolves, or resolves
+ * after a short controllable delay, so the concurrency/timeout behaviour of
+ * `captureCliVersions` can be asserted without spawning real (slow) CLIs.
+ */
+export type CliVersionProbe = (cmd: string, args: string[], timeoutMs: number) => Promise<string | null>;
+
+/**
+ * Run all five `--version` probes CONCURRENTLY, each individually bounded by
+ * `timeoutMs` (default `doctorProbeTimeoutMs()`). A probe that does not settle
+ * within its budget resolves to `null` — exactly like a probe that fails or a
+ * CLI that isn't installed — but its name is additionally recorded in
+ * `timeouts` so callers (doctor) can distinguish "timed out" from "missing".
+ *
+ * The outer per-probe race (not just `tryCmd`'s own execa `timeout` option) is
+ * what makes this testable: an injected `probe` that hangs forever (no execa
+ * involved) is still bounded by this function, not by whatever timeout logic
+ * the injected probe itself may or may not implement.
+ */
+export async function captureCliVersions(
+  probe: CliVersionProbe = tryCmd,
+  timeoutMs: number = doctorProbeTimeoutMs(),
+): Promise<{ versions: Record<string, string | null>; timeouts: string[] }> {
+  const versions: Record<string, string | null> = {};
+  const timeouts: string[] = [];
+  await Promise.all(
+    CLI_VERSION_TARGETS.map(async (cli) => {
+      let timer: ReturnType<typeof setTimeout>;
+      const budget = new Promise<{ value: string | null; timedOut: boolean }>((resolve) => {
+        timer = setTimeout(() => resolve({ value: null, timedOut: true }), timeoutMs);
+      });
+      const attempt = probe(cli, ["--version"], timeoutMs)
+        .then((value) => ({ value, timedOut: false }))
+        .catch(() => ({ value: null, timedOut: false }));
+      const result = await Promise.race([attempt, budget]);
+      clearTimeout(timer!);
+      versions[cli] = result.value;
+      if (result.timedOut) timeouts.push(cli);
+    }),
+  );
+  return { versions, timeouts };
 }
 
-async function tryCmd(cmd: string, args: string[]): Promise<string | null> {
+async function tryCmd(cmd: string, args: string[], timeoutMs?: number): Promise<string | null> {
   try {
     // trackedExeca so doctor's CLI-version probes are registered in
-    // ACTIVE_CHILDREN and aborted on shutdown (PP-RS-3 issue 1).
-    const { stdout } = await trackedExeca(cmd, args, { windowsHide: true });
+    // ACTIVE_CHILDREN and aborted on shutdown (PP-RS-3 issue 1). The `timeout`
+    // option makes execa kill the child itself when a probe outlives its
+    // budget, so a slow-cold-start CLI (e.g. agy) never leaks a process even
+    // when the outer race in captureCliVersions has already moved on.
+    const { stdout } = await trackedExeca(cmd, args, {
+      windowsHide: true,
+      ...(timeoutMs !== undefined ? { timeout: timeoutMs } : {}),
+    });
     return (stdout ?? "").toString().trim();
   } catch {
     return null;
   }
+}
+
+/**
+ * Injectable seam for the bounded agy pin check (test-only override point).
+ * `timeoutMs` is forwarded so a real `checkFn` (checkAgyPinServed) can thread
+ * the SAME budget into its subprocess's kill deadline, not just the outer
+ * race here — see agy-pin.ts:AgyModelsExecFn for why that distinction matters.
+ */
+export type AgyPinCheckFn = (
+  pins?: Record<string, string>,
+  timeoutMs?: number,
+) => Promise<AgyPinCheck>;
+
+/** The degraded-open shape returned when the pin check times out or the CLI is absent. */
+function agyPinInconclusive(pins: Record<string, string>, note: string): AgyPinCheck {
+  return {
+    agy_pin_served: null,
+    pinned_model: pins.critique_default ?? DEFAULT_MODELS.agy_critique,
+    pinned_models: { ...pins },
+    per_pin: Object.fromEntries(Object.keys(pins).map((k) => [k, null])),
+    served_models: null,
+    unserved_allowlist: [],
+    note,
+  };
+}
+
+/**
+ * Bound `checkAgyPinServed` (default `PP_DOCTOR_PIN_TIMEOUT_MS`, 20s) so a
+ * slow/hung `agy models` call can never make doctor itself hang or fail.
+ * Degrades open: on timeout it returns the same inconclusive shape doctor
+ * already returns when the agy CLI is absent, with a note naming the budget
+ * that was exceeded. `checkFn` is an injectable seam so tests can simulate a
+ * hang without spawning a real CLI.
+ *
+ * `timeoutMs` is passed to `checkFn` as well as used for this function's own
+ * race: the real implementation (checkAgyPinServed) threads it straight into
+ * the `agy models` child's execa `timeout` option, so a short
+ * PP_DOCTOR_PIN_TIMEOUT_MS both returns doctor promptly AND kills the actual
+ * subprocess at the same deadline, instead of leaving it running for up to
+ * AGY_MODELS_TIMEOUT_MS regardless of the configured budget.
+ */
+export async function checkAgyPinServedBounded(
+  pins: Record<string, string> = defaultAgyPins(),
+  timeoutMs: number = doctorPinTimeoutMs(),
+  checkFn: AgyPinCheckFn = checkAgyPinServed,
+): Promise<AgyPinCheck> {
+  let timer: ReturnType<typeof setTimeout>;
+  const budget = new Promise<AgyPinCheck>((resolve) => {
+    timer = setTimeout(
+      () =>
+        resolve(
+          agyPinInconclusive(
+            pins,
+            `agy pinned-model check exceeded its time budget (${timeoutMs}ms). Could not ` +
+              `confirm any agy pin is served; run \`agy models\` manually before trusting any ` +
+              `agy judge_model_id in the ledger.`,
+          ),
+        ),
+      timeoutMs,
+    );
+  });
+  const result = await Promise.race([checkFn(pins, timeoutMs), budget]);
+  clearTimeout(timer!);
+  return result;
 }
 
 export type DoctorOptions = {
@@ -3548,10 +3831,32 @@ export type DoctorOptions = {
    * skill, NOT by internal hook callers that need a fast doctor.
    */
   smoke?: boolean;
+  /**
+   * Test-only injectable seams. Production always uses the defaults
+   * (`tryCmd` / `checkAgyPinServed` / the configured env-var budgets); tests
+   * substitute fakes so doctor()'s REAL composition (not a hand-assembled
+   * stand-in payload) can be exercised deterministically without spawning
+   * real, slow CLIs. See doctor-probe-timeout.unit.mjs.
+   */
+  cliVersionProbe?: CliVersionProbe;
+  cliVersionTimeoutMs?: number;
+  agyPinCheckFn?: AgyPinCheckFn;
+  agyPinTimeoutMs?: number;
 };
 
 export async function doctor(opts: DoctorOptions = {}): Promise<unknown> {
-  const cliVersions = await captureCliVersions();
+  const doctorStart = Date.now();
+  // Version probes and the agy pin check run CONCURRENTLY: previously the pin
+  // check awaited cliVersions.agy sequentially, which meant a slow-cold-start
+  // CLI (agy: ~127s cold on some machines) plus a slow pin probe stacked their
+  // wall-clock cost. Neither depends on the other's OUTCOME here — the pin
+  // probe fails fast (ENOENT) on its own if agy truly isn't installed, and its
+  // result is discarded below in favour of the "not installed" shape when
+  // cliVersions confirms that.
+  const [{ versions: cliVersions, timeouts: cli_probe_timeouts }, agyPinResult] = await Promise.all([
+    captureCliVersions(opts.cliVersionProbe, opts.cliVersionTimeoutMs),
+    checkAgyPinServedBounded(undefined, opts.agyPinTimeoutMs, opts.agyPinCheckFn),
+  ]);
   const dbReachable = (() => {
     try { db().prepare("SELECT 1").get(); return true; } catch { return false; }
   })();
@@ -3618,8 +3923,27 @@ export async function doctor(opts: DoctorOptions = {}): Promise<unknown> {
   // the wrong model; it fails hard at the gate, mid-run, after generation cost
   // is already sunk. The probe moves that discovery here, and additionally
   // reports allow-list drift (allowed_models must stay a subset of served).
-  const agy_pin: AgyPinCheck = cliVersions.agy !== null
-    ? await checkAgyPinServed()
+  // The agy `--version` probe and the agy pin check (checkAgyPinServedBounded)
+  // run CONCURRENTLY above and can time out INDEPENDENTLY of each other. A
+  // timed-out version probe deliberately resolves `cliVersions.agy` to
+  // `null` — exactly the same value a genuinely-absent CLI produces — so
+  // testing `cliVersions.agy !== null` alone cannot tell "CLI absent" from
+  // "CLI present but --version was slow": on a timeout it silently discarded
+  // the bounded pin result already computed above and reported the CLI as
+  // missing outright. `cli_probe_timeouts` disambiguates: only fall back to
+  // the "not installed" shape when the version probe genuinely resolved to
+  // absent (not merely timed out).
+  const agyVersionTimedOut = cli_probe_timeouts.includes("agy");
+  const agy_pin: AgyPinCheck = cliVersions.agy !== null || agyVersionTimedOut
+    ? (agyVersionTimedOut && !agyPinResult.note
+        ? {
+            ...agyPinResult,
+            note:
+              `the agy --version probe exceeded its time budget (PP_DOCTOR_PROBE_TIMEOUT_MS); ` +
+              `this does NOT mean the agy CLI is missing. The pinned-model check ran ` +
+              `independently and completed — see agy_pin_served above.`,
+          }
+        : agyPinResult)
     : {
         agy_pin_served: null,
         pinned_model: DEFAULT_MODELS.agy_critique,
@@ -3684,6 +4008,7 @@ export async function doctor(opts: DoctorOptions = {}): Promise<unknown> {
 
   return {
     cli_versions: cliVersions,
+    cli_probe_timeouts,
     db_reachable: dbReachable,
     vendors_configured: vendors,
     vendor_credentials,
@@ -3705,6 +4030,7 @@ export async function doctor(opts: DoctorOptions = {}): Promise<unknown> {
     critique_smoke,
     browser_engines,
     db_path: (await import("../util/paths.js")).DB_PATH,
+    duration_ms: Date.now() - doctorStart,
   };
 }
 

@@ -46,6 +46,101 @@ import {
   markDispatchReconciled,
 } from "../orchestrator/execution-events.js";
 
+/**
+ * Classify a CLI probe result against `cli_probe_timeouts` AND, separately,
+ * against whether the vendor actually has usable credentials configured
+ * (gpt-5.6-terra findings #2 and P1a). There are FOUR distinct states, not
+ * two:
+ *   - "timed_out"    — version is null AND the CLI name appears in
+ *                       `cli_probe_timeouts`: the probe merely cold-started
+ *                       slowly, this is NOT evidence of a missing/logged-out
+ *                       CLI.
+ *   - "missing"       — version is null and the probe did not time out: the
+ *                       CLI genuinely isn't installed / on PATH.
+ *   - "unconfigured"  — version resolved (the CLI IS installed) but the
+ *                       caller's `configured` flag is explicitly false: the
+ *                       binary exists yet has no working credentials. This
+ *                       is the case P1a fixes: previously any non-null
+ *                       version short-circuited straight to "ok" and the
+ *                       caller lost all credential/login remediation for an
+ *                       installed-but-logged-out CLI.
+ *   - "ok"            — version resolved and (as far as the caller knows)
+ *                       credentials are configured. `configured` defaults to
+ *                       "unknown" (undefined), which is treated as "ok" for
+ *                       backward compatibility with callers that only know
+ *                       about `cli_versions` and not `vendors_configured`.
+ * Every hook that renders remediation text off `doctor()`'s `cli_versions` /
+ * `vendors_configured` MUST consult this (or `cli_probe_timeouts` directly)
+ * before choosing install/login wording — telling an operator whose CLI
+ * merely timed out to "log in" or "install" is actively wrong advice, and
+ * silently dropping credential guidance for an installed-but-unconfigured
+ * CLI is equally wrong. Pure/exported so it is unit-testable without
+ * invoking the full hook (which calls `reply()` → `process.exit`).
+ */
+export function classifyCliProbeResult(
+  cli: string,
+  version: string | null,
+  cliProbeTimeouts: readonly string[] | undefined,
+  configured?: boolean,
+): "ok" | "missing" | "timed_out" | "unconfigured" {
+  if (version === null) {
+    return (cliProbeTimeouts ?? []).includes(cli) ? "timed_out" : "missing";
+  }
+  if (configured === false) return "unconfigured";
+  return "ok";
+}
+
+/**
+ * Build the operator-facing remediation phrase for a vendor's CLI given its
+ * classification. `installLoginHint` is the vendor-specific install/login
+ * text to use when the classification is "missing" OR "unconfigured" (both
+ * need the SAME credential/login guidance — the only difference between them
+ * is whether the binary itself is present); timed-out CLIs get a
+ * budget-raising hint instead, regardless of vendor.
+ */
+export function cliRemediationText(
+  cli: string,
+  classification: "ok" | "missing" | "timed_out" | "unconfigured",
+  installLoginHint: string,
+): string | null {
+  if (classification === "ok") return null;
+  if (classification === "timed_out") {
+    return `the ${cli} version probe exceeded PP_DOCTOR_PROBE_TIMEOUT_MS (not confirmed missing/logged-out) — raise PP_DOCTOR_PROBE_TIMEOUT_MS and retry`;
+  }
+  // "missing" and "unconfigured" both need the same install/login hint.
+  return installLoginHint;
+}
+
+/**
+ * Build the operator-facing remediation note for the two non-Claude vendors
+ * (codex/openai, agy/google) from a `doctor()` report. Shared by every caller
+ * that needs to explain WHY a vendor isn't counted as reachable —
+ * vendor-matrix here and best-of-n.ts's precondition — so a timed-out probe
+ * always gets budget wording (naming PP_DOCTOR_PROBE_TIMEOUT_MS) instead of
+ * credential/login advice, a genuinely-missing CLI still gets the
+ * install/login hint, and (P1a) an INSTALLED-BUT-UNCONFIGURED CLI (version
+ * resolves, but `vendors_configured` says no working credentials) ALSO still
+ * gets the install/login hint instead of being silently treated as "ok".
+ * `vendorsConfigured` is optional (keyed by `vendors_configured`'s own keys,
+ * "openai"/"google") for callers that don't have it; when omitted, a
+ * resolved version is still treated as "ok" (unknown credentials state does
+ * not manufacture a warning out of nothing). Gating itself is untouched: a
+ * timed-out or unconfigured vendor still counts as unavailable to the
+ * caller; only the explanation text changes.
+ */
+export function buildVendorRemediationNote(
+  cliVersions: Record<string, string | null> | undefined,
+  cliProbeTimeouts: readonly string[] | undefined,
+  vendorsConfigured?: Record<string, boolean>,
+): { codex: string | null; agy: string | null } {
+  const codexClass = classifyCliProbeResult("codex", cliVersions?.codex ?? null, cliProbeTimeouts, vendorsConfigured?.openai);
+  const agyClass = classifyCliProbeResult("agy", cliVersions?.agy ?? null, cliProbeTimeouts, vendorsConfigured?.google);
+  return {
+    codex: cliRemediationText("codex", codexClass, "OpenAI not configured (set OPENAI_API_KEY or `codex login`)"),
+    agy: cliRemediationText("agy", agyClass, "Google not configured (set GEMINI_API_KEY or ANTIGRAVITY_API_KEY, or run `agy` to sign in)"),
+  };
+}
+
 type HookInput = {
   hook_event_name?: string;
   tool_name?: string;
@@ -333,27 +428,52 @@ const HANDLERS: Record<string, Record<string, (input: HookInput) => Promise<void
       // first /pp:run reaches a spec/design/security/contract gate; better
       // to refuse the session up front and tell the user to fix the matrix.
       // Override with PP_ALLOW_SINGLE_VENDOR=1 for read-only Codex-only use.
-      const report = (await doctor()) as { cross_vendor_ready?: boolean; vendors_configured?: Record<string, boolean> };
+      const report = (await doctor()) as {
+        cross_vendor_ready?: boolean;
+        vendors_configured?: Record<string, boolean>;
+        cli_versions?: Record<string, string | null>;
+        cli_probe_timeouts?: string[];
+      };
       if (report.cross_vendor_ready) return reply(true);
 
       const configured = Object.entries(report.vendors_configured ?? {}).filter(([, v]) => v).map(([k]) => k);
       const advisory = `[pp] vendor matrix incomplete: only ${configured.join(", ") || "none"} configured. Cross-vendor gates (spec/design/security/contract) will refuse to run.`;
 
+      // A probe that TIMED OUT is not evidence the CLI is missing or the
+      // operator is logged out — install/login remediation is actively wrong
+      // advice for a CLI that just cold-starts slowly. Route through the same
+      // classifyCliProbeResult/cliRemediationText helpers every other caller
+      // uses so a timed-out vendor gets budget wording, not credential advice.
+      const remediation = buildVendorRemediationNote(report.cli_versions, report.cli_probe_timeouts, report.vendors_configured);
+      const remediationParts = [remediation.codex, remediation.agy].filter((h): h is string => !!h);
+      const remediationNote = remediationParts.length ? ` ${remediationParts.join(" ")}` : "";
+
       if (process.env.PP_ALLOW_SINGLE_VENDOR === "1") {
-        console.log(`${advisory} (PP_ALLOW_SINGLE_VENDOR=1 — proceeding anyway; cross-vendor gates will still refuse).`);
+        console.log(`${advisory}${remediationNote} (PP_ALLOW_SINGLE_VENDOR=1 — proceeding anyway; cross-vendor gates will still refuse).`);
         return reply(true);
       }
 
       reply(
         false,
-        `${advisory} Set OPENAI_API_KEY + (GEMINI_API_KEY or ANTIGRAVITY_API_KEY) (or run \`codex login\` / \`agy\` to sign in) before continuing. Session start blocked. Set PP_ALLOW_SINGLE_VENDOR=1 to bypass for read-only / single-vendor sessions.`,
+        `${advisory}${remediationNote} Session start blocked. Set PP_ALLOW_SINGLE_VENDOR=1 to bypass for read-only / single-vendor sessions.`,
       );
     },
     "cli-version-pin": async () => {
-      const report = (await doctor()) as { cli_versions?: Record<string, string | null> };
+      const report = (await doctor()) as {
+        cli_versions?: Record<string, string | null>;
+        cli_probe_timeouts?: string[];
+      };
       const v = report.cli_versions ?? {};
-      const missing = Object.entries(v).filter(([, ver]) => !ver).map(([k]) => k);
+      const classified = Object.keys(v).map((k) => [k, classifyCliProbeResult(k, v[k] ?? null, report.cli_probe_timeouts)] as const);
+      const missing = classified.filter(([, c]) => c === "missing").map(([k]) => k);
+      const timeoutOnly = classified.filter(([, c]) => c === "timed_out").map(([k]) => k);
       if (missing.length) console.log(`[pp] missing CLIs: ${missing.join(", ")}`);
+      if (timeoutOnly.length) {
+        console.log(
+          `[pp] CLI version probe(s) exceeded their budget (not missing — raise ` +
+          `PP_DOCTOR_PROBE_TIMEOUT_MS if this is a slow-cold-start machine): ${timeoutOnly.join(", ")}`,
+        );
+      }
       reply(true);
     },
     "master-plan-load": (input) => {
@@ -461,17 +581,33 @@ const HANDLERS: Record<string, Record<string, (input: HookInput) => Promise<void
     "enforce-vendor-matrix": async (input) => {
       const tool = input.tool_name ?? "";
       if (!/pp_(codex|agy)/.test(tool)) return reply(true);
-      const report = (await doctor()) as { vendors_configured?: Record<string, boolean>; cross_vendor_ready?: boolean };
+      const report = (await doctor()) as {
+        vendors_configured?: Record<string, boolean>;
+        cross_vendor_ready?: boolean;
+        cli_probe_timeouts?: string[];
+      };
       const v = report.vendors_configured ?? {};
+      const codexClassification = classifyCliProbeResult("codex", v.openai ? "configured" : null, report.cli_probe_timeouts);
+      const agyClassification = classifyCliProbeResult("agy", v.google ? "configured" : null, report.cli_probe_timeouts);
       const wantsCodex = /pp_codex/.test(tool);
       const wantsAgy = /pp_agy/.test(tool);
 
       // 1. Direct vendor presence — block if the requested vendor is missing.
-      if (wantsCodex && !v.openai)  reply(false, "[pp] pp_codex tools blocked: OpenAI not configured (set OPENAI_API_KEY or `codex login`).");
+      // A CLI that merely exceeded its probe budget (cli_probe_timeouts) is
+      // NOT "not configured" — install/login remediation is wrong advice for
+      // a slow-cold-start CLI, so name the timeout explicitly instead.
+      if (wantsCodex && !v.openai) {
+        reply(
+          false,
+          `[pp] pp_codex tools blocked: ${cliRemediationText("codex", codexClassification, "OpenAI not configured (set OPENAI_API_KEY or `codex login`)")}.`,
+        );
+      }
       if (wantsAgy && !v.google) {
-        const why = !agyEnabled()
-          ? "disabled via PP_DISABLE_AGY=1 (unset it to re-enable)"
-          : "Google not configured (set GEMINI_API_KEY/ANTIGRAVITY_API_KEY or sign in via `agy`)";
+        const why = agyClassification === "timed_out"
+          ? cliRemediationText("agy", agyClassification, "")
+          : !agyEnabled()
+            ? "disabled via PP_DISABLE_AGY=1 (unset it to re-enable)"
+            : "Google not configured (set GEMINI_API_KEY/ANTIGRAVITY_API_KEY or sign in via `agy`)";
         reply(false, `[pp] pp_agy tools blocked: ${why}.`);
       }
 

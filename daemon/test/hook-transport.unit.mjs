@@ -50,6 +50,7 @@ import {
 import { join, dirname } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { setIsolatedProcessEnv, isolatedChildEnv } from "./fixtures/isolated-env.mjs";
 
 // Tracked files arrive CRLF on any checkout with core.autocrlf=true (the
 // Windows default). Normalize once, at the only place the bytes enter this
@@ -84,7 +85,10 @@ const DIST = join(__dirname, "..", "dist");
 // resolved at import time, so setting this later would touch the real
 // ~/.pair-programmer/state.db — which is the live-database prohibition in
 // AGENTS.md, and which cost Phase H its own migration test subject.
-process.env.PP_HOME = mkdtempSync(join(tmpdir(), "pp-hook-transport-"));
+// setIsolatedProcessEnv also scrubs any ambient PP_DB_PATH first (it WINS
+// over PP_HOME in src/util/paths.ts, so leaving it in place would silently
+// defeat this override).
+const { ppHome: ISOLATED_PP_HOME, ppDbPath: ISOLATED_PP_DB_PATH } = setIsolatedProcessEnv({ prefix: "pp-hook-transport-" });
 
 const importDist = (rel) => import(pathToFileURL(join(DIST, rel)).href);
 
@@ -545,10 +549,18 @@ describe("activeRunForProject ancestor ownership (Phase L, #53)", () => {
   const runEnforceActiveRun = async (filePath, cwd) => {
     const { execFileSync } = await import("node:child_process");
     const payload = JSON.stringify({ tool_name: "Write", tool_input: { file_path: filePath }, cwd });
+    // Reuse this same process's already-isolated PP_HOME/PP_DB_PATH (captured
+    // from setIsolatedProcessEnv's return above, never re-read off
+    // process.env) rather than spreading process.env and re-setting only
+    // PP_HOME.
     const stdout = execFileSync(
       process.execPath,
       [join(DIST, "index.js"), "hook", "PreToolUse", "enforce-active-run"],
-      { input: payload, encoding: "utf8", env: { ...process.env, PP_HOME: process.env.PP_HOME } },
+      {
+        input: payload,
+        encoding: "utf8",
+        env: isolatedChildEnv({ ppHome: ISOLATED_PP_HOME, ppDbPath: ISOLATED_PP_DB_PATH }).env,
+      },
     );
     const trimmed = stdout.trim();
     if (!trimmed) return { denied: false, raw: "" };
