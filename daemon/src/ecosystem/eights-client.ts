@@ -25,13 +25,17 @@
  */
 
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+import {
+  getDefaultEnvironment,
+  StdioClientTransport,
+} from "@modelcontextprotocol/sdk/client/stdio.js";
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { z } from "zod";
 import { log } from "../util/logger.js";
 import {
-  ECOSYSTEM_PROBE_TIMEOUT_MS,
+  ecosystemProbeTimeoutMs,
   ECOSYSTEM_BREAKER_THRESHOLD,
   ECOSYSTEM_BREAKER_COOLDOWN_MS,
   ECOSYSTEM_CALL_TIMEOUT_MS,
@@ -262,7 +266,7 @@ function recordFailure(ns: NamespaceKey): void {
 type ClientState =
   | { kind: "uninit" }
   | { kind: "probing"; promise: Promise<boolean> }
-  | { kind: "available"; client: Client }
+  | { kind: "available"; client: Client; transport: StdioClientTransport }
   | { kind: "unavailable"; reason: string };
 
 let state: ClientState = { kind: "uninit" };
@@ -314,7 +318,176 @@ function resolveDaemonEntry(): { command: string; args: string[] } | null {
   return { command: "eights-daemon", args: ["mcp"] };
 }
 
+/**
+ * Lenient replacement for the SDK's `ListToolsResultSchema`. The stock schema
+ * (`types.js` `ToolSchema.inputSchema`) requires every listed tool's
+ * `inputSchema.type` to be the zod literal `"object"`. TheEights' hand-rolled
+ * `zodToJsonSchema` (daemon/src/mcp/zod-to-json.ts, TheEights repo) has no
+ * case for a top-level `ZodEffects` node — the shape produced by
+ * `z.object({...}).refine(...)` — and falls through to `default: return {}`,
+ * emitting an `inputSchema` with NO `type` field at all for
+ * `eights.evolution.register` (`RegisterArgs`, evolution.ts:24-38). One
+ * malformed tool anywhere in TheEights' ~60-tool surface then fails
+ * `client.listTools()`'s per-tool zod parse and throws, which `probe()`
+ * catches and reports as `unavailable` — indistinguishable from "daemon not
+ * running". We only need tool *names* to confirm the `eights.memory.*`
+ * surface is present, so we bypass the SDK's strict per-tool validation with
+ * our own name-only schema for this one call.
+ */
+const LenientListToolsResultSchema = z
+  .object({
+    tools: z.array(z.object({ name: z.string() }).passthrough()),
+  })
+  .passthrough();
+
+/**
+ * The subprocess env is an explicit, exact-name ALLOWLIST layered on top of
+ * the MCP SDK's own `getDefaultEnvironment()` baseline (a short OS-inherit
+ * safelist — on Windows: APPDATA/HOMEDRIVE/HOMEPATH/LOCALAPPDATA/PATH/
+ * PROCESSOR_ARCHITECTURE/SYSTEMDRIVE/SYSTEMROOT/TEMP/USERNAME/USERPROFILE/
+ * PROGRAMFILES) — NOT a full parent-env copy and NOT a prefix match.
+ * Forwarding the whole parent environment (or an open-ended `EIGHTS_*`
+ * prefix) would let any future `EIGHTS_`-prefixed secret or credential name
+ * pp doesn't know about leak into a third-party subprocess by construction;
+ * an exact list means adding a name is a deliberate, reviewable diff.
+ *
+ * Every name below is verified against TheEights' own source
+ * (`C:\AiAppDeployments\TheEights\daemon\src`, `grep -rnoE
+ * 'process\.env(\.|\[["'"'"'])EIGHTS_[A-Z_]+' daemon/src | sort -u`, run
+ * 2026-09-25 — this pattern catches BOTH `process.env.X` dot-access AND
+ * `process.env["X"]` / `process.env['X']` bracket-access reads; a dot-only
+ * pattern previously missed four bracket-access names, corrected here.
+ * Full output saved at `.harness/evidence/eights-env-inventory.txt`):
+ *
+ *   EIGHTS_ALLOW_CLOUD_PROVIDERS       (config.ts:37)
+ *   EIGHTS_DB_BLOAT_BYTES              (cognitive/memory-steward.ts:97)
+ *   EIGHTS_DISABLE_WATCHERS            (index.ts:277)
+ *   EIGHTS_EMBEDDING_DIM               (config.ts:33, embeddings.ts:25)
+ *   EIGHTS_EMBEDDING_MODEL             (embeddings.ts:24)
+ *   EIGHTS_EMBED_PROVIDER              (config.ts:35)
+ *   EIGHTS_EXEC_OUTPUT_ROOT            (engines/execsuite-watcher.ts:36)
+ *   EIGHTS_GRAPH_DRIVER                (config.ts:32)
+ *   EIGHTS_HOME                        (config.ts:23, index.ts:570, paths.ts:34)
+ *   EIGHTS_LLM_COMPLETIONS             (engines/eval/completer.ts:35)
+ *   EIGHTS_LLM_FALLBACK                (engines/eval/completer.ts:29)
+ *   EIGHTS_LLM_MODEL                   (engines/eval/completer.ts:28)
+ *   EIGHTS_LLM_PROVIDER                (config.ts:36)
+ *   EIGHTS_LOG_LEVEL                   (logger.ts:10)
+ *   EIGHTS_MEMORY_BLOAT_RATE_PER_HOUR  (cognitive/memory-steward.ts:98)
+ *   EIGHTS_MEMORY_BLOAT_ROWS           (cognitive/memory-steward.ts:96)
+ *   EIGHTS_MEM_GAUGE_MS                (index.ts:430)
+ *   EIGHTS_OLLAMA_TIMEOUT_MS           (embeddings.ts:28, engines/eval/completer.ts:32)
+ *   EIGHTS_OLLAMA_URL                  (embeddings.ts:23, engines/eval/completer.ts:27)
+ *   EIGHTS_OPERATOR_ACTOR_ID           (index.ts:356)
+ *   EIGHTS_OTEL_ENABLED                (index.ts:252)
+ *   EIGHTS_OTEL_ENDPOINT               (index.ts:253)
+ *   EIGHTS_PROVIDER                    (config.ts:34)
+ *   EIGHTS_RLM_ROOT                    (engines/rlm-watcher.ts:34)
+ *   EIGHTS_SKIP_AUDIT_CHECK            (index.ts:383, cognitive/audit-verifier.ts:49)
+ *   EIGHTS_TOOL_DEADLINE_MS            (index.ts:483)
+ *   EIGHTS_TOOL_SLOW_WARN_MS           (index.ts:484)
+ *   EIGHTS_XENIA_ROOT                  (engines/registrars/xenia-registrar.ts:28,
+ *                                       engines/xenia-watcher.ts:40)
+ *
+ * Plus `AIAPP_BASE` — TheEights' `paths.ts:83` reads it for ecosystem-relative
+ * path resolution (the AIAPP_BASE portability convention shared across the
+ * AiAppDeployments repos; see MEMORY project_aiapp_base_portability).
+ *
+ * Explicitly EXCLUDED, even though TheEights reads it: `HYDRA_OPERATOR_KEY`
+ * and `HYDRA_OPERATOR_KEY_ID` (TheEights `auth/capability.ts:150,159` —
+ * `deriveSigningKey()`/`configuredKeyId()`, used to mint/verify capability
+ * tokens). `HYDRA_OPERATOR_KEY` is a signing secret, not ecosystem
+ * configuration; forwarding it would hand the spawned subprocess the
+ * operator's capability-minting key. Before this allowlist existed the SDK's
+ * own default env (`getDefaultEnvironment()`) never forwarded it either — this
+ * is a defended exclusion, not a functional regression. If TheEights ever
+ * requires this daemon to mint capability tokens, that needs an explicit,
+ * separately-reviewed decision, not an accidental sweep-in via a namespace or
+ * prefix match.
+ *
+ * Everything else — credentials, unrelated API keys, other tools'
+ * configuration, and any `EIGHTS_`-prefixed name not cited above — is
+ * intentionally NOT forwarded. Adding a name to this list requires a fresh
+ * grep citation against TheEights' source, not just a prefix match.
+ */
+const EIGHTS_FORWARDED_ENV_VARS = Object.freeze([
+  "EIGHTS_ALLOW_CLOUD_PROVIDERS",
+  "EIGHTS_DB_BLOAT_BYTES",
+  "EIGHTS_DISABLE_WATCHERS",
+  "EIGHTS_EMBEDDING_DIM",
+  "EIGHTS_EMBEDDING_MODEL",
+  "EIGHTS_EMBED_PROVIDER",
+  "EIGHTS_EXEC_OUTPUT_ROOT",
+  "EIGHTS_GRAPH_DRIVER",
+  "EIGHTS_HOME",
+  "EIGHTS_LLM_COMPLETIONS",
+  "EIGHTS_LLM_FALLBACK",
+  "EIGHTS_LLM_MODEL",
+  "EIGHTS_LLM_PROVIDER",
+  "EIGHTS_LOG_LEVEL",
+  "EIGHTS_MEMORY_BLOAT_RATE_PER_HOUR",
+  "EIGHTS_MEMORY_BLOAT_ROWS",
+  "EIGHTS_MEM_GAUGE_MS",
+  "EIGHTS_OLLAMA_TIMEOUT_MS",
+  "EIGHTS_OLLAMA_URL",
+  "EIGHTS_OPERATOR_ACTOR_ID",
+  "EIGHTS_OTEL_ENABLED",
+  "EIGHTS_OTEL_ENDPOINT",
+  "EIGHTS_PROVIDER",
+  "EIGHTS_RLM_ROOT",
+  "EIGHTS_SKIP_AUDIT_CHECK",
+  "EIGHTS_TOOL_DEADLINE_MS",
+  "EIGHTS_TOOL_SLOW_WARN_MS",
+  "EIGHTS_XENIA_ROOT",
+  "AIAPP_BASE",
+]);
+
+function scopedEightsEnv(): Record<string, string> {
+  const env: Record<string, string> = { ...getDefaultEnvironment() };
+  for (const name of EIGHTS_FORWARDED_ENV_VARS) {
+    const v = process.env[name];
+    if (v !== undefined) env[name] = v;
+  }
+  return env;
+}
+
+/**
+ * Regression guard (cross-vendor judge finding, 2026-09-25): before the
+ * listTools() lenient-schema fix (1385c2c), probe() failed FAST against a
+ * real TheEights install because the strict schema threw on TheEights'
+ * malformed `eights.evolution.register` tool -- so pp's unit tests that
+ * exercise runs.ts code paths calling the eights-writes.ts fire-and-forget
+ * helpers (archiveArtifact/recordVerdict/finalizeRun -> memory.add etc.,
+ * never awaited) got "unavailable" near-instantly and moved on. Once probe()
+ * started tolerating the malformed schema, those same fire-and-forget calls
+ * could reach and actually CONNECT to a real TheEights daemon (the
+ * `C:\AiAppDeployments\TheEights` sibling-fallback in resolveDaemonEntry()
+ * step 4 exists on dev boxes) -- and because a fire-and-forget caller never
+ * calls `shutdown()`, the spawned child was left running, holding its
+ * parent `node --test` file's process alive past every synchronous
+ * assertion until the file's own test-runner timeout killed it. Reproduced
+ * directly: `[eights-daemon] booting pid=...` in a unit test's own log, with
+ * that pid still alive when node forcibly cancelled the file.
+ *
+ * `PP_ECOSYSTEM_DISABLED=1` short-circuits probe() to "unavailable" before
+ * `resolveDaemonEntry()` is even called -- no transport is constructed, no
+ * subprocess is spawned, period. `scripts/run-tests.mjs` sets this for the
+ * batched `*.unit.mjs` run (alongside its existing PP_DB_PATH/PP_HOME
+ * scrub); a unit test that legitimately needs to exercise probe() against a
+ * fixture or a real daemon (eights-client-listtools.unit.mjs,
+ * eights-integration.smoke.mjs) explicitly clears it first, the same way
+ * those files already set PP_EIGHTS_DAEMON before importing dist/.
+ */
+const ECOSYSTEM_DISABLED_REASON = "ecosystem probe disabled (PP_ECOSYSTEM_DISABLED=1)";
+function ecosystemProbeDisabled(): boolean {
+  return process.env.PP_ECOSYSTEM_DISABLED === "1";
+}
+
 async function probe(): Promise<boolean> {
+  if (ecosystemProbeDisabled()) {
+    state = { kind: "unavailable", reason: ECOSYSTEM_DISABLED_REASON };
+    return false;
+  }
   const entry = resolveDaemonEntry();
   if (!entry) {
     state = { kind: "unavailable", reason: "no eights-daemon entry resolved" };
@@ -325,20 +498,28 @@ async function probe(): Promise<boolean> {
     transport = new StdioClientTransport({
       command: entry.command,
       args: entry.args,
+      env: scopedEightsEnv(),
     });
     const client = new Client(
       { name: "pp-daemon-eights-client", version: "0.1.0" },
       { capabilities: {} }
     );
+    const probeTimeoutMs = ecosystemProbeTimeoutMs();
     const connectPromise = client.connect(transport);
     const timeout = new Promise<never>((_resolve, reject) =>
-      setTimeout(() => reject(new Error("probe timeout")), ECOSYSTEM_PROBE_TIMEOUT_MS)
+      setTimeout(() => reject(new Error("probe timeout")), probeTimeoutMs)
     );
     await Promise.race([connectPromise, timeout]);
     // Sanity-check: listTools must include at least one eights.memory.* tool.
     // TheEights namespaces every tool under `eights.*` (canonical since v0.2.0),
-    // so the memory surface presents as `eights.memory.add` etc.
-    const tools = await withTimeout(client.listTools(), ECOSYSTEM_PROBE_TIMEOUT_MS);
+    // so the memory surface presents as `eights.memory.add` etc. Uses the raw
+    // request + lenient schema above (see comment) instead of
+    // `client.listTools()` so one malformed tool elsewhere in TheEights'
+    // surface can't fail the whole probe.
+    const tools = await withTimeout(
+      client.request({ method: "tools/list", params: {} }, LenientListToolsResultSchema),
+      probeTimeoutMs
+    );
     const names = (tools.tools ?? []).map(t => t.name);
     const hasMemory = names.some(n => n.startsWith(`${EIGHTS_TOOL_PREFIX}memory.`));
     if (!hasMemory) {
@@ -346,7 +527,7 @@ async function probe(): Promise<boolean> {
       try { await client.close(); } catch { /* ignore */ }
       return false;
     }
-    state = { kind: "available", client };
+    state = { kind: "available", client, transport };
     log.info({ tool_count: names.length }, "eights-client: connected");
     return true;
   } catch (err) {
@@ -449,6 +630,16 @@ export function resetBreakersForTesting(): void {
     breakers[ns].consecutive_failures = 0;
     breakers[ns].tripped_until_ms = null;
   }
+}
+
+/**
+ * Diagnostics-only accessor for the currently-connected daemon subprocess's
+ * PID, or `null` if no connection is established. Used by
+ * eights-integration.smoke.mjs to prove the spawned child is actually
+ * terminated (not just orphaned) after a mid-test failure triggers cleanup.
+ */
+export function getConnectedDaemonPidForTesting(): number | null {
+  return state.kind === "available" ? (state.transport.pid ?? null) : null;
 }
 
 export const memory = {
