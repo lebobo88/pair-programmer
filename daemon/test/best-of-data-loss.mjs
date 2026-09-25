@@ -13,7 +13,7 @@ import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
-import { mkdtempSync, mkdirSync, writeFileSync, existsSync, readFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync, existsSync, readFileSync } from "node:fs";
 import { execaSync } from "execa";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -45,10 +45,17 @@ function gitInit(dir) {
 }
 
 async function withClient(env, fn) {
+  // HERMETIC: this spawns a real `pp-daemon mcp` subprocess. Without an
+  // isolated PP_HOME, that subprocess's db() call opens the OPERATOR'S REAL
+  // ~/.pair-programmer/state.db and writes this test's runs into it. Give
+  // the spawned daemon its own throwaway home unless the caller already
+  // supplied one, and always clean it up.
+  const ownsHome = !env.PP_HOME;
+  const ppHome = env.PP_HOME ?? mkdtempSync(join(tmpdir(), "pp-bof-home-"));
   const transport = new StdioClientTransport({
     command: process.execPath,
     args: [DAEMON, "mcp"],
-    env: { ...process.env, ...env },
+    env: { ...process.env, PP_HOME: ppHome, EIGHTS_SKIP_AUDIT_CHECK: "1", ...env },
   });
   const client = new Client({ name: "best-of-data-loss-test", version: "0.0.1" }, { capabilities: {} });
   await client.connect(transport);
@@ -56,6 +63,9 @@ async function withClient(env, fn) {
     await fn(client);
   } finally {
     try { await client.close(); } catch { /* ignore */ }
+    if (ownsHome) {
+      try { rmSync(ppHome, { recursive: true, force: true }); } catch { /* best-effort cleanup */ }
+    }
   }
 }
 

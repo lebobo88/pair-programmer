@@ -1,9 +1,9 @@
 ---
 name: game-design
-description: Skill for producing distinctive, professional-grade game-design artifacts (GDD, mechanic specs, level greybox, narrative bibles, economy spreadsheets) that avoid generic AI aesthetics and standard "explore a world / engage in combat / build relationships" pitfalls. Invoked by spec-author, narrative-designer, level-designer, encounter-designer, economy-designer when the active profile is in the game-dev family.
+description: Skill for producing distinctive, professional game-design artifacts (GDD, mechanic specs, level greybox, narrative bibles, economy spreadsheets) avoiding generic AI aesthetics and stock "explore/combat/relationships" pitfalls. Invoked by spec-author, narrative-designer, level-designer, encounter-designer, economy-designer for game-dev profiles.
 ---
 
-<!-- Generated from .claude\skills\game-design.md. Edit the .claude source file and rerun node scripts/sync-copilot-assets.mjs. -->
+<!-- Generated from .claude\skills\game-design\SKILL.md. Edit the .claude source file and rerun node scripts/sync-copilot-assets.mjs. -->
 
 # Game-design skill
 

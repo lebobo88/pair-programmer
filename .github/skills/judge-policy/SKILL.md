@@ -1,9 +1,10 @@
 ---
 name: judge-policy
 description: Tiered cross-vendor vs same-vendor judge policy. Read this before invoking any judge so the gate is enforced correctly. Loaded on demand by the `pair-programmer` skill. Authoritative source is `mcp__pp_harness__gate_eligible_judges`; this document explains why the policy is the way it is.
+user-invocable: false
 ---
 
-<!-- Generated from .claude\skills\judge-policy.md. Edit the .claude source file and rerun node scripts/sync-copilot-assets.mjs. -->
+<!-- Generated from .claude\skills\judge-policy\SKILL.md. Edit the .claude source file and rerun node scripts/sync-copilot-assets.mjs. -->
 
 # Judge policy (tiered + content-aware + profile-aware)
 
@@ -168,10 +169,10 @@ Mirror checklist:
 - `ARCHITECTURE.md` §5.1 / §5.2 (including the mermaid and ascii diagrams)
 - `docs/USER_GUIDE.md`
 - `docs/validator-policy.md`
-- `.claude/skills/judge-policy.md` (this file)
+- `.github/skills/judge-policy/SKILL.md` (this file)
 - `.github/skills/pair-programmer/SKILL.md`
-- `.claude/skills/profile-aware-gating.md`
-- `.claude/skills/rubric-application.md`
+- `.github/skills/profile-aware-gating/SKILL.md`
+- `.github/skills/rubric-application/SKILL.md`
 - `.github/agents/judge-cross-vendor.agent.md`
 - `.github/agents/judge-same-vendor.agent.md`
 - `.github/agents/judge-router.agent.md`
