@@ -60,7 +60,13 @@ async function withClient(env, fn) {
   const client = new Client({ name: "best-of-data-loss-test", version: "0.0.1" }, { capabilities: {} });
   await client.connect(transport);
   try {
-    await fn(client);
+    // Mirror src/util/paths.ts's DB_PATH derivation: PP_DB_PATH wins if the
+    // caller set it, otherwise it's <PP_HOME>/.pair-programmer/state.db.
+    // Callers that need to open the daemon's own SQLite file (bypassing the
+    // MCP tool layer) must use this path — NEVER the operator's real
+    // ~/.pair-programmer/state.db.
+    const dbPath = env.PP_DB_PATH ?? process.env.PP_DB_PATH ?? join(ppHome, ".pair-programmer", "state.db");
+    await fn(client, dbPath);
   } finally {
     try { await client.close(); } catch { /* ignore */ }
     if (ownsHome) {
@@ -73,7 +79,7 @@ async function main() {
   // All tests bypass the cross-vendor judge precondition so they can run in
   // any environment. Test 4 specifically removes this override to verify
   // the precondition fires.
-  await withClient({ PP_ALLOW_BEST_OF_WITHOUT_JUDGE: "1" }, async (client) => {
+  await withClient({ PP_ALLOW_BEST_OF_WITHOUT_JUDGE: "1" }, async (client, dbPath) => {
 
     // ─── Setup ────────────────────────────────────────────────────────────
     const projectPath = mkdtempSync(join(tmpdir(), "pp-bof-"));
@@ -180,9 +186,10 @@ async function main() {
     // worktree, simulating the regression. Path is relative to .harness/<run_id>/.
     const harnessRoot = join(projectPath, ".harness", run.run_id);
     const relInsideWorktree = `code2/candidate-1/lost-treasure.txt`;
-    // Use the daemon's own SQLite file so we hit the same DB the MCP tools see.
+    // Use the daemon's own SQLite file (the temp PP_HOME this test spawned
+    // the daemon with, per src/util/paths.ts's derivation) so we hit the
+    // same DB the MCP tools see — never the operator's real ledger.
     const Database = (await import("better-sqlite3")).default;
-    const dbPath = join(process.env.USERPROFILE ?? process.env.HOME, ".pair-programmer", "state.db");
     const dbConn = new Database(dbPath);
     const testArtifactId = `artifact_test_lost_${run.run_id.slice(-6)}`;
     dbConn.prepare(
