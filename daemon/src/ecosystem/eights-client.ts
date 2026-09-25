@@ -266,7 +266,7 @@ function recordFailure(ns: NamespaceKey): void {
 type ClientState =
   | { kind: "uninit" }
   | { kind: "probing"; promise: Promise<boolean> }
-  | { kind: "available"; client: Client }
+  | { kind: "available"; client: Client; transport: StdioClientTransport }
   | { kind: "unavailable"; reason: string };
 
 let state: ClientState = { kind: "uninit" };
@@ -341,57 +341,89 @@ const LenientListToolsResultSchema = z
   .passthrough();
 
 /**
- * Every `EIGHTS_*`-prefixed variable is forwarded by prefix, plus the
- * ecosystem-wide `AIAPP_BASE` path var. This is an explicit ALLOWLIST layered
- * on top of the MCP SDK's own `getDefaultEnvironment()` baseline (a short
- * OS-inherit safelist — on Windows: APPDATA/HOMEDRIVE/HOMEPATH/
- * LOCALAPPDATA/PATH/PROCESSOR_ARCHITECTURE/SYSTEMDRIVE/SYSTEMROOT/TEMP/
- * USERNAME/USERPROFILE/PROGRAMFILES) — NOT a full parent-env copy. Forwarding
- * the whole parent environment would leak unrelated secrets (API keys,
- * tokens, other tools' credentials) into a third-party subprocess.
+ * The subprocess env is an explicit, exact-name ALLOWLIST layered on top of
+ * the MCP SDK's own `getDefaultEnvironment()` baseline (a short OS-inherit
+ * safelist — on Windows: APPDATA/HOMEDRIVE/HOMEPATH/LOCALAPPDATA/PATH/
+ * PROCESSOR_ARCHITECTURE/SYSTEMDRIVE/SYSTEMROOT/TEMP/USERNAME/USERPROFILE/
+ * PROGRAMFILES) — NOT a full parent-env copy and NOT a prefix match.
+ * Forwarding the whole parent environment (or an open-ended `EIGHTS_*`
+ * prefix) would let any future `EIGHTS_`-prefixed secret or credential name
+ * pp doesn't know about leak into a third-party subprocess by construction;
+ * an exact list means adding a name is a deliberate, reviewable diff.
  *
- * Both forwarding rules are verified against TheEights' own source
- * (`C:\AiAppDeployments\TheEights\daemon\src`, grepped for `process.env.`):
+ * Every name below is verified against TheEights' own source
+ * (`C:\AiAppDeployments\TheEights\daemon\src`, `grep -rno
+ * "process\.env\.EIGHTS_[A-Z_]*" daemon/src | sed -E
+ * 's/.*process\.env\.(EIGHTS_[A-Z_]+)/\1/' | sort -u`, run 2026-09-25):
  *
- * 1. `EIGHTS_*` prefix — TheEights reads ~20 vars under this namespace for
- *    its own configuration: `EIGHTS_HOME` (config.ts:23, paths.ts:34),
- *    `EIGHTS_PROVIDER`/`EIGHTS_LLM_PROVIDER`/`EIGHTS_EMBED_PROVIDER`
- *    (config.ts:34-36), `EIGHTS_GRAPH_DRIVER` (config.ts:32),
- *    `EIGHTS_EMBEDDING_DIM` (config.ts:33, embeddings.ts:25),
- *    `EIGHTS_LLM_MODEL`/`EIGHTS_LLM_FALLBACK`/`EIGHTS_LLM_COMPLETIONS`
- *    (engines/eval/completer.ts:28-35), `EIGHTS_OLLAMA_URL`/
- *    `EIGHTS_OLLAMA_TIMEOUT_MS`/`EIGHTS_EMBEDDING_MODEL` (embeddings.ts:23-28),
- *    `EIGHTS_ALLOW_CLOUD_PROVIDERS` (config.ts:37), `EIGHTS_TOOL_DEADLINE_MS`/
- *    `EIGHTS_TOOL_SLOW_WARN_MS` (index.ts:483-484), `EIGHTS_OTEL_ENABLED`/
- *    `EIGHTS_OTEL_ENDPOINT` (index.ts:252-253), `EIGHTS_SKIP_AUDIT_CHECK`
- *    (index.ts:383, audit-verifier.ts:49), `EIGHTS_MEM_GAUGE_MS`
- *    (index.ts:430), `EIGHTS_DISABLE_WATCHERS` (index.ts:277),
- *    `EIGHTS_LOG_LEVEL` (logger.ts:10), `EIGHTS_XENIA_ROOT`
- *    (engines/registrars/xenia-registrar.ts:28, engines/xenia-watcher.ts:40),
- *    `EIGHTS_RLM_ROOT` (engines/rlm-watcher.ts:34), `EIGHTS_EXEC_OUTPUT_ROOT`
- *    (engines/execsuite-watcher.ts:36). Rather than hand-enumerate every one
- *    (which silently drifts as TheEights adds config vars), pp forwards the
- *    whole `EIGHTS_*` namespace by prefix — a namespace pp doesn't control
- *    the meaning of and one that can never collide with a secret/credential
- *    naming convention.
- * 2. `AIAPP_BASE` — TheEights' `paths.ts:83` reads it for ecosystem-relative
- *    path resolution (the AIAPP_BASE portability convention shared across
- *    the AiAppDeployments repos; see MEMORY project_aiapp_base_portability).
+ *   EIGHTS_ALLOW_CLOUD_PROVIDERS  (config.ts:37)
+ *   EIGHTS_DISABLE_WATCHERS       (index.ts:277)
+ *   EIGHTS_EMBEDDING_DIM          (config.ts:33, embeddings.ts:25)
+ *   EIGHTS_EMBEDDING_MODEL        (embeddings.ts:24)
+ *   EIGHTS_EMBED_PROVIDER         (config.ts:35)
+ *   EIGHTS_EXEC_OUTPUT_ROOT       (engines/execsuite-watcher.ts:36)
+ *   EIGHTS_GRAPH_DRIVER           (config.ts:32)
+ *   EIGHTS_HOME                   (config.ts:23, index.ts:570, paths.ts:34)
+ *   EIGHTS_LLM_COMPLETIONS        (engines/eval/completer.ts:35)
+ *   EIGHTS_LLM_FALLBACK           (engines/eval/completer.ts:29)
+ *   EIGHTS_LLM_MODEL              (engines/eval/completer.ts:28)
+ *   EIGHTS_LLM_PROVIDER           (config.ts:36)
+ *   EIGHTS_LOG_LEVEL              (logger.ts:10)
+ *   EIGHTS_MEM_GAUGE_MS           (index.ts:430)
+ *   EIGHTS_OLLAMA_TIMEOUT_MS      (embeddings.ts:28, engines/eval/completer.ts:32)
+ *   EIGHTS_OLLAMA_URL             (embeddings.ts:23, engines/eval/completer.ts:27)
+ *   EIGHTS_OTEL_ENABLED           (index.ts:252)
+ *   EIGHTS_OTEL_ENDPOINT          (index.ts:253)
+ *   EIGHTS_PROVIDER               (config.ts:34)
+ *   EIGHTS_RLM_ROOT                (engines/rlm-watcher.ts:34)
+ *   EIGHTS_SKIP_AUDIT_CHECK        (index.ts:383, cognitive/audit-verifier.ts:49)
+ *   EIGHTS_TOOL_DEADLINE_MS        (index.ts:483)
+ *   EIGHTS_TOOL_SLOW_WARN_MS       (index.ts:484)
+ *   EIGHTS_XENIA_ROOT              (engines/registrars/xenia-registrar.ts:28,
+ *                                   engines/xenia-watcher.ts:40)
+ *
+ * Plus `AIAPP_BASE` — TheEights' `paths.ts:83` reads it for ecosystem-relative
+ * path resolution (the AIAPP_BASE portability convention shared across the
+ * AiAppDeployments repos; see MEMORY project_aiapp_base_portability).
  *
  * Everything else — credentials, unrelated API keys, other tools'
- * configuration — is intentionally NOT forwarded. Fixes a prior full-env
- * copy that forwarded every parent variable unscoped.
+ * configuration, and any `EIGHTS_`-prefixed name not cited above — is
+ * intentionally NOT forwarded. Adding a name to this list requires a fresh
+ * grep citation against TheEights' source, not just a prefix match.
  */
-const EIGHTS_ENV_PREFIX = "EIGHTS_";
-const ADDITIONAL_FORWARDED_ENV_VARS = Object.freeze(["AIAPP_BASE"]);
+const EIGHTS_FORWARDED_ENV_VARS = Object.freeze([
+  "EIGHTS_ALLOW_CLOUD_PROVIDERS",
+  "EIGHTS_DISABLE_WATCHERS",
+  "EIGHTS_EMBEDDING_DIM",
+  "EIGHTS_EMBEDDING_MODEL",
+  "EIGHTS_EMBED_PROVIDER",
+  "EIGHTS_EXEC_OUTPUT_ROOT",
+  "EIGHTS_GRAPH_DRIVER",
+  "EIGHTS_HOME",
+  "EIGHTS_LLM_COMPLETIONS",
+  "EIGHTS_LLM_FALLBACK",
+  "EIGHTS_LLM_MODEL",
+  "EIGHTS_LLM_PROVIDER",
+  "EIGHTS_LOG_LEVEL",
+  "EIGHTS_MEM_GAUGE_MS",
+  "EIGHTS_OLLAMA_TIMEOUT_MS",
+  "EIGHTS_OLLAMA_URL",
+  "EIGHTS_OTEL_ENABLED",
+  "EIGHTS_OTEL_ENDPOINT",
+  "EIGHTS_PROVIDER",
+  "EIGHTS_RLM_ROOT",
+  "EIGHTS_SKIP_AUDIT_CHECK",
+  "EIGHTS_TOOL_DEADLINE_MS",
+  "EIGHTS_TOOL_SLOW_WARN_MS",
+  "EIGHTS_XENIA_ROOT",
+  "AIAPP_BASE",
+]);
 
 function scopedEightsEnv(): Record<string, string> {
   const env: Record<string, string> = { ...getDefaultEnvironment() };
-  for (const [k, v] of Object.entries(process.env)) {
-    if (v === undefined) continue;
-    if (k.startsWith(EIGHTS_ENV_PREFIX) || ADDITIONAL_FORWARDED_ENV_VARS.includes(k)) {
-      env[k] = v;
-    }
+  for (const name of EIGHTS_FORWARDED_ENV_VARS) {
+    const v = process.env[name];
+    if (v !== undefined) env[name] = v;
   }
   return env;
 }
@@ -436,7 +468,7 @@ async function probe(): Promise<boolean> {
       try { await client.close(); } catch { /* ignore */ }
       return false;
     }
-    state = { kind: "available", client };
+    state = { kind: "available", client, transport };
     log.info({ tool_count: names.length }, "eights-client: connected");
     return true;
   } catch (err) {
@@ -539,6 +571,16 @@ export function resetBreakersForTesting(): void {
     breakers[ns].consecutive_failures = 0;
     breakers[ns].tripped_until_ms = null;
   }
+}
+
+/**
+ * Diagnostics-only accessor for the currently-connected daemon subprocess's
+ * PID, or `null` if no connection is established. Used by
+ * eights-integration.smoke.mjs to prove the spawned child is actually
+ * terminated (not just orphaned) after a mid-test failure triggers cleanup.
+ */
+export function getConnectedDaemonPidForTesting(): number | null {
+  return state.kind === "available" ? (state.transport.pid ?? null) : null;
 }
 
 export const memory = {

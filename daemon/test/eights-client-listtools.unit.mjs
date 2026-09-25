@@ -6,14 +6,15 @@
 //      `fixtures/fake-eights-daemon.mjs` header) does not fail the whole
 //      probe / make `isAvailable()` return false.
 //   2. `probe()` passes an explicit `env` to `StdioClientTransport` built by
-//      `scopedEightsEnv()` — an ALLOWLIST (SDK's `getDefaultEnvironment()`
-//      baseline + the `EIGHTS_*` namespace + `AIAPP_BASE`), not a full
-//      parent-env copy. This test proves BOTH sides of that allowlist:
-//        - an `EIGHTS_*`-prefixed var (not on the SDK's default safelist)
-//          DOES reach the spawned child.
-//        - a secret-shaped var that is NOT `EIGHTS_*`-prefixed does NOT
-//          reach the spawned child — i.e. the allowlist actually excludes
-//          things, it isn't a relabeled full-env copy.
+//      `scopedEightsEnv()` — an exact-name ALLOWLIST (SDK's
+//      `getDefaultEnvironment()` baseline + the frozen `EIGHTS_FORWARDED_ENV_VARS`
+//      list + `AIAPP_BASE`), not a prefix match and not a full parent-env
+//      copy. This test proves BOTH sides of that allowlist:
+//        - `EIGHTS_HOME` (on the frozen list, not on the SDK's default
+//          safelist) DOES reach the spawned child, with the parent's value.
+//        - `EIGHTS_API_KEY` (`EIGHTS_*`-prefixed but NOT on the frozen list)
+//          does NOT reach the spawned child — i.e. the allowlist is an exact
+//          list, not a prefix match, and it actually excludes things.
 //
 // Self-contained: spawns its own fake MCP stdio server (fixtures/
 // fake-eights-daemon.mjs), no live TheEights daemon, no network.
@@ -29,12 +30,16 @@ const importDist = (relPath) => import(pathToFileURL(join(DIST, relPath)).href);
 const FIXTURE = join(__dirname, "fixtures", "fake-eights-daemon.mjs");
 
 // Point eights-client at the fixture BEFORE importing it (module captures
-// resolution at first use). Set one `EIGHTS_*` marker (must be forwarded by
-// the allowlist) and one secret-shaped marker that is deliberately NOT
-// `EIGHTS_*`-prefixed (must NOT be forwarded).
+// resolution at first use). `PP_EIGHTS_DAEMON` is the explicit, top-priority
+// override in `resolveDaemonEntry()`, so setting `EIGHTS_HOME` here does NOT
+// affect which daemon is spawned — it's purely a forwarding-allowlist probe.
+//   - `EIGHTS_HOME` is on the frozen `EIGHTS_FORWARDED_ENV_VARS` list: must
+//     reach the spawned child, with this exact parent value.
+//   - `EIGHTS_API_KEY` is `EIGHTS_*`-prefixed but NOT on the list: must NOT
+//     reach the spawned child.
 process.env.PP_EIGHTS_DAEMON = FIXTURE;
-process.env.EIGHTS_UNIT_TEST_MARKER = "pp-unit-test-marker-" + Date.now();
-process.env.PP_TEST_FAKE_SECRET_TOKEN = "sk-fake-secret-" + Date.now();
+process.env.EIGHTS_HOME = "C:\\tmp\\pp-unit-test-eights-home-" + Date.now();
+process.env.EIGHTS_API_KEY = "sk-fake-secret-" + Date.now();
 
 // Test-only extension of the probe timeout (config.ts `ecosystemProbeTimeoutMs()`,
 // default 3000ms in production). `node --test` runs every `*.unit.mjs` file
@@ -73,22 +78,22 @@ async function main() {
   });
   assert.ok(added, "memory.add must succeed against the fixture daemon");
   assert.equal(
-    added.eights_env_marker,
-    process.env.EIGHTS_UNIT_TEST_MARKER,
-    "the spawned fixture child must have received EIGHTS_UNIT_TEST_MARKER via the " +
-      "EIGHTS_* allowlist in probe()'s StdioClientTransport call — a missing/undefined " +
-      "eights_env_marker here means eights-client stopped forwarding EIGHTS_* vars"
+    added.eights_home_marker,
+    process.env.EIGHTS_HOME,
+    "the spawned fixture child must have received EIGHTS_HOME (with the parent's exact " +
+      "value) via the EIGHTS_FORWARDED_ENV_VARS allowlist in probe()'s StdioClientTransport " +
+      "call — a missing/mismatched eights_home_marker here means eights-client stopped " +
+      "forwarding a listed EIGHTS_* var"
   );
-  console.log("✓ probe forwards EIGHTS_*-prefixed vars to the spawned peer");
+  console.log("✓ probe forwards a listed EIGHTS_* var (EIGHTS_HOME) to the spawned peer, unchanged");
   assert.equal(
-    added.secret_env_marker,
+    added.eights_api_key_marker,
     null,
-    "the spawned fixture child must NOT have received PP_TEST_FAKE_SECRET_TOKEN — it is " +
-      "not EIGHTS_*-prefixed and not in ADDITIONAL_FORWARDED_ENV_VARS, so a non-null " +
-      "secret_env_marker here means scopedEightsEnv() regressed back to a full parent-env " +
-      "copy (the leak this allowlist exists to prevent)"
+    "the spawned fixture child must NOT have received EIGHTS_API_KEY — it is EIGHTS_*-" +
+      "prefixed but not on EIGHTS_FORWARDED_ENV_VARS, so a non-null eights_api_key_marker " +
+      "here means scopedEightsEnv() regressed to prefix matching (or a full parent-env copy)"
   );
-  console.log("✓ probe does NOT forward unrelated/secret-shaped vars to the spawned peer");
+  console.log("✓ probe does NOT forward an EIGHTS_*-prefixed var absent from the frozen allowlist");
 
   await mod.shutdown();
   console.log("✓ eights-client-listtools.unit.mjs: all assertions passed");
