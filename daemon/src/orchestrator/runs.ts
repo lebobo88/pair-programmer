@@ -3323,6 +3323,31 @@ export type MasterPlanTargetValidation =
  *       (i.e. targetDir is a linked worktree, or another checkout, of the
  *       SAME repository as projectPath).
  * Comparison is case-insensitive on win32. Any other directory is rejected.
+ *
+ * Symlinks / Windows junctions: both `targetDir` and `projectPath` are
+ * resolved with `realpathSync` BEFORE any comparison, so a junction or
+ * symlink is followed to its physical target before this function ever
+ * looks at it — there is no separate "is this a link" branch. Consequences,
+ * by design:
+ *   - A junction/symlink whose target resolves OUTSIDE the project (and
+ *     outside a git worktree/checkout that shares the project's common git
+ *     dir) is REJECTED — the realpath comparison and the git-common-dir
+ *     fallback both operate on the resolved (real) target, so the link
+ *     itself grants no bypass.
+ *   - A junction/symlink that points AT a real linked worktree of the
+ *     SAME repository (or at project_path itself) IS ACCEPTED — realpath
+ *     resolves it to the worktree's/project's own physical path, which
+ *     then passes check (a) or (b) exactly as if the caller had passed
+ *     that physical path directly. This is intentional: the link is
+ *     transparent, and what is actually validated is always the resolved
+ *     destination on disk, never the link path string.
+ *
+ * Fail-closed on git unavailability: if `git` cannot be spawned or
+ * `rev-parse --git-common-dir` errors for either side, resolveGitCommonDir
+ * returns null (never a placeholder/sentinel value treated as a match) —
+ * a null on either side means the git-common-dir check can never pass, so
+ * an unavailable/broken git falls through to rejection rather than being
+ * silently treated as "same repository".
  */
 export function validateMasterPlanTargetDir(
   projectPath: string,

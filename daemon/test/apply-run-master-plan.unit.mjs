@@ -21,11 +21,25 @@
  *     once master_plan_applied=true is set.
  *   - Idempotency: a worktree apply followed by a default-path finalize on
  *     the merged root does not duplicate the run's block.
+ *   - Symlink/junction target_dir: a junction resolving OUTSIDE the project's
+ *     repository is rejected (nothing written at either the link path or its
+ *     real target); a junction resolving AT a real linked worktree of the
+ *     SAME repository is accepted (realpath makes the link transparent).
+ *   - Nonexistent target_dir: rejected with a clear error, nothing created.
+ *   - git unavailable for the common-dir check: fails closed (rejected),
+ *     even for a target_dir that would otherwise validate as a real worktree
+ *     of the project.
  *
  * Anti-stall contract:
  *   - Uses a temp sqlite DB (PP_HOME override), direct dist function calls.
  *   - No MCP server, no daemon socket, no *.smoke.mjs files touched.
  *   - Uses real `git` via execFileSync against temp repos/worktrees only.
+ *   - The git-unavailable test scrubs process.env.PATH for the duration of
+ *     one `applyRunMasterPlan` call (inside a try/finally) rather than
+ *     adding a git-runner DI seam to production code — this is the actual
+ *     failure mode (git missing/broken on the host) the gate needs to
+ *     survive, and tests in this file run sequentially so no other test
+ *     observes the scrubbed PATH.
  *   - Run: timeout 90 node --test --test-timeout=60000 test/apply-run-master-plan.unit.mjs
  */
 
@@ -33,7 +47,7 @@ import { execFileSync } from "node:child_process";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, symlinkSync } from "node:fs";
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
@@ -87,6 +101,18 @@ function commitAll(dir, msg) {
 
 function mergeBranch(repoDir, branch) {
   git(["merge", "--no-edit", "-q", branch], repoDir);
+}
+
+/**
+ * Create a directory reparse point (Windows junction) / symlink at `linkPath`
+ * pointing at `target`. Junctions don't require elevation on Windows, unlike
+ * symlinks, which is why 'junction' is used there; POSIX uses a plain
+ * directory symlink. `linkPath`'s parent must already exist; `linkPath`
+ * itself must not.
+ */
+function makeDirLink(target, linkPath) {
+  symlinkSync(target, linkPath, process.platform === "win32" ? "junction" : "dir");
+  return linkPath;
 }
 
 // ── SQL helpers (mirrors finalize-gates-c.unit.mjs) ────────────────────────
@@ -378,5 +404,125 @@ describe("apply_run_master_plan + finalize_run: idempotency", () => {
     const content = readMasterPlan(repo);
     assert.equal(countRunBlocks(content, run_id), 1,
       "default-path finalize after a worktree apply must not duplicate the run's block");
+  });
+});
+
+// ─── target_dir validation: symlinks / junctions ───────────────────────────
+
+describe("apply_run_master_plan: target_dir validation — symlinks/junctions", () => {
+  it("rejects a junction whose target resolves OUTSIDE the project's repository, writing nothing at either path", async () => {
+    const runs = await getRuns();
+    const proj = initRepo(mkdtempSync(join(tmpdir(), "pp-arm-junc-proj-")));
+
+    // The junction's real (physical) target — a directory with no relation
+    // to `proj` at all, not even a git repo.
+    const outsideReal = mkdtempSync(join(tmpdir(), "pp-arm-junc-outside-"));
+
+    const linkBase = mkdtempSync(join(tmpdir(), "pp-arm-junc-link-"));
+    const link = makeDirLink(outsideReal, join(linkBase, "link-to-outside"));
+
+    const run_id = await insertRun({ project_path: proj });
+    await insertArtifact(run_id, "4.6");
+
+    assert.throws(
+      () => runs.applyRunMasterPlan(run_id, link),
+      (err) => {
+        assert.equal(err.name, "MasterPlanTargetDirError");
+        return true;
+      },
+    );
+    assert.equal(existsSync(masterPlanFile(outsideReal)), false,
+      "nothing must be written at the junction's real (outside) target");
+    assert.equal(existsSync(masterPlanFile(link)), false,
+      "nothing must be written when read through the junction path either");
+  });
+
+  it("accepts a junction pointing AT a real linked worktree of the project (transparent via realpath)", async () => {
+    const runs = await getRuns();
+    const repo = initRepo(mkdtempSync(join(tmpdir(), "pp-arm-junc-wt-repo-")));
+    const wtBase = mkdtempSync(join(tmpdir(), "pp-arm-junc-wt-"));
+    const wt = join(wtBase, "wt");
+    addWorktree(repo, wt, "arm-junc-feature");
+
+    const linkBase = mkdtempSync(join(tmpdir(), "pp-arm-junc-wt-link-"));
+    const link = makeDirLink(wt, join(linkBase, "link-to-worktree"));
+
+    const run_id = await insertRun({ project_path: repo });
+    await insertArtifact(run_id, "4.6");
+
+    // Documented behaviour: a junction resolving (via realpath) to a real
+    // linked worktree of project_path's own repository is ACCEPTED — the
+    // link is transparent and only the resolved destination is validated.
+    const result = runs.applyRunMasterPlan(run_id, link);
+    assert.ok(result.sections.some(s => s.status === "applied"));
+
+    const wtContent = readMasterPlan(wt);
+    assert.match(wtContent, /## 11\. Architecture and technical strategy/);
+    const linkContent = readMasterPlan(link);
+    assert.equal(linkContent, wtContent,
+      "reading through the junction must see the exact same physical file the write landed in");
+  });
+});
+
+// ─── target_dir validation: nonexistent path ───────────────────────────────
+
+describe("apply_run_master_plan: target_dir validation — nonexistent path", () => {
+  it("rejects a nonexistent target_dir with a clear error, creating nothing there", async () => {
+    const runs = await getRuns();
+    const proj = mkdtempSync(join(tmpdir(), "pp-arm-nonexist-proj-"));
+    const base = mkdtempSync(join(tmpdir(), "pp-arm-nonexist-base-"));
+    const missing = join(base, "does-not-exist", "nested");
+
+    const run_id = await insertRun({ project_path: proj });
+    await insertArtifact(run_id, "4.6");
+
+    assert.equal(existsSync(missing), false, "sanity: target must not pre-exist");
+
+    assert.throws(
+      () => runs.applyRunMasterPlan(run_id, missing),
+      (err) => {
+        assert.equal(err.name, "MasterPlanTargetDirError");
+        assert.match(err.message, /does not resolve on disk/);
+        return true;
+      },
+    );
+    assert.equal(existsSync(missing), false,
+      "a rejected apply against a nonexistent target_dir must not create it");
+  });
+});
+
+// ─── target_dir validation: git unavailable ────────────────────────────────
+
+describe("apply_run_master_plan: target_dir validation — git unavailable fails closed", () => {
+  it("rejects (fails closed) when git cannot be spawned, even for a target_dir that is otherwise a real worktree of the project", async () => {
+    const runs = await getRuns();
+    const repo = initRepo(mkdtempSync(join(tmpdir(), "pp-arm-nogit-repo-")));
+    const wtBase = mkdtempSync(join(tmpdir(), "pp-arm-nogit-wt-"));
+    const wt = join(wtBase, "wt");
+    addWorktree(repo, wt, "arm-nogit-feature");
+
+    const run_id = await insertRun({ project_path: repo });
+    await insertArtifact(run_id, "4.6");
+
+    const savedPath = process.env.PATH;
+    // Scrub PATH so `git` cannot be spawned for the git-common-dir check.
+    // This is the actual failure mode being guarded against (git missing or
+    // broken on the host) — not a mocked seam. Tests in this file run
+    // sequentially, so no other test observes the scrubbed PATH.
+    process.env.PATH = "";
+    try {
+      assert.throws(
+        () => runs.applyRunMasterPlan(run_id, wt),
+        (err) => {
+          assert.equal(err.name, "MasterPlanTargetDirError");
+          return true;
+        },
+      );
+    } finally {
+      process.env.PATH = savedPath;
+    }
+
+    assert.equal(existsSync(masterPlanFile(wt)), false,
+      "nothing must be written to the worktree when git is unavailable for the common-dir check");
   });
 });

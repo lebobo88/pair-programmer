@@ -753,7 +753,12 @@ const TOOLS: ToolDef[] = [
       "target_dir is validated before anything is written: it must either resolve (realpath) to the run's project_path, " +
       "or `git -C target_dir rev-parse --git-common-dir` must resolve to the SAME common git directory as project_path " +
       "(i.e. target_dir is a linked worktree or another checkout of project_path's own repository). Path comparison is " +
-      "case-insensitive on win32. Any other directory — an unrelated git repo, a plain non-git directory, a typo — is " +
+      "case-insensitive on win32. Both target_dir and project_path are resolved with realpath BEFORE comparison, so a " +
+      "symlink/junction is followed to its physical target first: one that resolves outside project_path's repository is " +
+      "rejected (the link grants no bypass), while one that resolves to project_path itself or to a real linked worktree " +
+      "of the same repository is accepted. If `git` cannot be spawned or rev-parse errors on either side, that side's " +
+      "check fails closed (never treated as a match) — an unavailable/broken git falls through to rejection. Any other " +
+      "directory — an unrelated git repo, a plain non-git directory, a nonexistent path, a typo — is " +
       "rejected with a clear error and nothing is written. " +
       "Intended call order: (1) apply_run_master_plan(run_id, target_dir=<worktree>), (2) commit the change in the " +
       "worktree, (3) merge it into the run's project_path, (4) finalize_run(run_id, status='complete', " +
