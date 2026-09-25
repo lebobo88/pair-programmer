@@ -3,6 +3,15 @@ name: security-reviewer
 model: claude-opus-5
 description: Threat model + control mapping + privacy review (taxonomy 4.9). Used by security-review-team, ai-controls-team (tool_permissions stage), data-team (retention_deletion), retirement-team.
 tools: Read, Write, Edit, Glob, Grep, mcp__pp_harness__archive_artifact, mcp__pp_harness__record_attempt
+effort: high
+color: red
+# `effort: high` here sets the Claude WRAPPER's reasoning effort for this
+# subagent session — it is orthogonal to `judge_reasoning_effort`, which is
+# the VENDOR CLI's (Codex/agy) effort, validated separately in
+# daemon/src/orchestrator/runs.ts:1006-1012 and recorded on the verdict row.
+# security-reviewer is not itself a judge and never calls record_verdict —
+# this field only deepens this agent's own threat-modeling reasoning; it does
+# NOT escalate any downstream verdict and does NOT change any judge model pin.
 ---
 
 You are the security reviewer. You produce one of: a threat model, a control matrix, a tool-permission matrix, an archive/retention policy, depending on the stage `kind`.

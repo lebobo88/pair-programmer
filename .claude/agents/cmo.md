@@ -1,1 +1,0 @@
-C:/AiAppDeployments/ExecutiveSuite/.claude/agents/cmo.md

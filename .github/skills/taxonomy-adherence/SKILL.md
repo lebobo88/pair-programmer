@@ -1,9 +1,10 @@
 ---
 name: taxonomy-adherence
 description: Reusable policy text the master skill injects into every stage. Every task maps to ≥1 of the 16 taxonomy sections. Trivial tasks reduce to a changelog entry; standard tasks produce required artifacts; major tasks invoke a team. Loaded on demand by the `pair-programmer` skill.
+user-invocable: false
 ---
 
-<!-- Generated from .claude\skills\taxonomy-adherence.md. Edit the .claude source file and rerun node scripts/sync-copilot-assets.mjs. -->
+<!-- Generated from .claude\skills\taxonomy-adherence\SKILL.md. Edit the .claude source file and rerun node scripts/sync-copilot-assets.mjs. -->
 
 # Taxonomy adherence
 

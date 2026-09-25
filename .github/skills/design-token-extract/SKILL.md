@@ -3,7 +3,7 @@ name: design-token-extract
 description: Procedure for extracting concrete design-token values and a component inventory from an existing codebase, brand, or screenshots. Adapted from claude-design-system-prompt's design-system-extract + component-extract skills. Invoked by design-system-curator's design_tokens/component_specs stages when an existing token/theme source is found.
 ---
 
-<!-- Generated from .claude\skills\design-token-extract.md. Edit the .claude source file and rerun node scripts/sync-copilot-assets.mjs. -->
+<!-- Generated from .claude\skills\design-token-extract\SKILL.md. Edit the .claude source file and rerun node scripts/sync-copilot-assets.mjs. -->
 
 # Design token extract
 
