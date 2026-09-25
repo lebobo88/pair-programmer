@@ -67,6 +67,24 @@ export type ReplayBundle = {
   }>;
   artifacts: Array<{ kind: string | null; path: string; sha256: string }>;
   /**
+   * Phase H (R4a): recovery observations from the execution-event ledger,
+   * scoped to this run. Rows with a NULL run_id (e.g. a StopFailure with no
+   * resolvable cwd match) MUST NOT appear here — they belong to no run.
+   * These are never attempts/verdicts; see execution-events.ts R3.
+   */
+  execution_events: Array<{
+    id: string;
+    event_kind: string;
+    tool_name: string | null;
+    producer: string | null;
+    stage_id: string | null;
+    status: string;
+    reason: string | null;
+    detail: string | null;
+    cost_usd: number | null;
+    created_at: string;
+  }>;
+  /**
    * Parsed contents of `<run_id>/tier_decisions.json` if the driver
    * archived one. Captures the per-stage resolver trace + cli_flags +
    * profile_policy snapshot so the replayer can re-issue with identical
@@ -146,6 +164,17 @@ export function buildReplayBundle(run_id: string): ReplayBundle | null {
     kind: string | null; path: string; sha256: string;
   }>;
 
+  // R4a: execution events are scoped to run_id explicitly — a NULL run_id
+  // row (a StopFailure or SessionEnd observation with no run to attach to)
+  // MUST NOT leak into any bundle, which is why this is `WHERE run_id = ?`
+  // rather than a LEFT JOIN or an unscoped scan.
+  const executionEvents = db()
+    .prepare(
+      `SELECT id, event_kind, tool_name, producer, stage_id, status, reason, detail, cost_usd, created_at
+         FROM execution_events WHERE run_id = ? ORDER BY created_at ASC`,
+    )
+    .all(run_id) as ReplayBundle["execution_events"];
+
   const profile = run.profile_snapshot_json ? safeJson(run.profile_snapshot_json) : null;
   const taxonomy = run.taxonomy_mapping_json ? safeJson(run.taxonomy_mapping_json) : null;
   const cliVersions = run.cli_versions_json ? safeJson(run.cli_versions_json) : null;
@@ -190,6 +219,7 @@ export function buildReplayBundle(run_id: string): ReplayBundle | null {
     finished_at: run.finished_at,
     stages: stageBundles,
     artifacts,
+    execution_events: executionEvents,
     tier_resolution: tierResolution,
     cli_flags: cliFlags,
     judge_resolution: judgeResolution,
@@ -203,6 +233,11 @@ export function buildReplayBundle(run_id: string): ReplayBundle | null {
         ? ` NOTE: ${overriddenJudges.length} verdict(s) used a non-default judge ` +
           `selection and must be re-issued at the same model/effort to replay ` +
           `faithfully -- ${overriddenJudges.join("; ")}.`
+        : ``) +
+      // R4a: name the count when non-zero so a reader doesn't have to scan
+      // the array to notice recovery observations exist for this run.
+      (executionEvents.length > 0
+        ? ` NOTE: ${executionEvents.length} execution_event(s) recorded (recovery observations, not attempts) -- see execution_events[].`
         : ``),
   };
 }

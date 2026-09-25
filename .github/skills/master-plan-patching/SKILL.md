@@ -1,9 +1,10 @@
 ---
 name: master-plan-patching
 description: Protocol for the `master-plan-patcher` and `run-finalizer` agents. The per-project `<project>/PROJECT_MASTER.md` follows the Section 9 20-section template. Every successful run patches the relevant sections with cross-references to the run's artifacts.
+user-invocable: false
 ---
 
-<!-- Generated from .claude\skills\master-plan-patching.md. Edit the .claude source file and rerun node scripts/sync-copilot-assets.mjs. -->
+<!-- Generated from .claude\skills\master-plan-patching\SKILL.md. Edit the .claude source file and rerun node scripts/sync-copilot-assets.mjs. -->
 
 # Master plan patching
 

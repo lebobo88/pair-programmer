@@ -8,10 +8,17 @@ import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
-import { mkdtempSync, writeFileSync, existsSync } from "node:fs";
+import { mkdtempSync, writeFileSync, existsSync, rmSync } from "node:fs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const DAEMON = join(__dirname, "..", "dist", "index.js");
+
+// HERMETIC: this spawns a real `pp-daemon mcp` subprocess. Without an
+// isolated PP_HOME, that subprocess's db() call opens the OPERATOR'S REAL
+// ~/.pair-programmer/state.db and writes smoke runs into it. Give the
+// spawned daemon its own throwaway home so the operator's ledger is never
+// touched; cleaned up in the `finally` below regardless of outcome.
+const PP_HOME = mkdtempSync(join(tmpdir(), "pp-smoke-home-"));
 
 function pretty(json) {
   return JSON.stringify(json, null, 2);
@@ -28,6 +35,7 @@ async function main() {
   const transport = new StdioClientTransport({
     command: process.execPath,        // node
     args: [DAEMON, "mcp"],
+    env: { ...process.env, PP_HOME, EIGHTS_SKIP_AUDIT_CHECK: "1" },
   });
   const client = new Client({ name: "smoke-test", version: "0.0.1" }, { capabilities: {} });
   await client.connect(transport);
@@ -72,9 +80,16 @@ async function main() {
     console.log(`✓ start_stage -> ${stage.stage_id}`);
 
     // 4. Record an attempt (no real CLI call — synthetic data).
+    // producer: "claude", not "codex" -- since GitHub #58's producer-domain
+    // split (see runs.ts tallyBudgets call site / dispatcher.ts cost-tally),
+    // recordAttempt SKIPS its own budget tally for "codex"/"agy" producers;
+    // that spend is tallied exclusively by the cost-tally PostToolUse hook
+    // on a real pp_codex/pp_agy tool call, which this synthetic-data smoke
+    // test never fires. "claude" is still tallied directly by recordAttempt
+    // (R28), which is what step 10 below asserts against budget_status.
     const att = await callTool(client, "record_attempt", {
       stage_id: stage.stage_id,
-      producer: "codex",
+      producer: "claude",
       model_id: "gpt-5.6-luna",
       tokens_in: 1234,
       tokens_out: 567,
@@ -96,7 +111,8 @@ async function main() {
     });
     console.log(`✓ archive_artifact -> ${artifact.artifact_id} (${artifact.sha256.slice(0, 12)}…)`);
 
-    // 6. Record a verdict — judge uses gpt-5.6-terra (different model, same vendor).
+    // 6. Record a verdict — judge uses gpt-5.6-terra (codex), attempt producer
+    //    is claude (see step 4), so this is now a cross-vendor verdict.
     //    critique_md must be ≥80 non-whitespace chars to satisfy the
     //    anti-vacuous-pass refine on RecordVerdictSchema.
     const verdict = await callTool(client, "record_verdict", {
@@ -763,7 +779,12 @@ async function main() {
   }
 }
 
-main().catch(err => {
-  console.error("SMOKE FAILED:", err);
-  process.exit(1);
-});
+main()
+  .catch(err => {
+    console.error("SMOKE FAILED:", err);
+    process.exitCode = 1;
+  })
+  .finally(() => {
+    try { rmSync(PP_HOME, { recursive: true, force: true }); } catch { /* best-effort cleanup */ }
+    process.exit(process.exitCode ?? 0);
+  });

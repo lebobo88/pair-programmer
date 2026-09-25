@@ -74,14 +74,26 @@ function mergeMissingBundledRates(table: PriceTable): void {
   }
 }
 
-/** Compute USD cost for tokens against a model id. Falls back to 0 silently. */
+/**
+ * Compute USD cost for tokens against a model id. Falls back to 0 silently
+ * on a miss.
+ *
+ * R17 (Phase H, GitHub #58 latent finding D4): a top-level block in
+ * prices.json need not hold PriceEntry shapes — `_pricing_notes` holds
+ * model-id-shaped keys with **string** values. Without the same
+ * `isPriceEntry` guard `mergeMissingBundledRates` already applies at
+ * prices.ts:66, a hit inside such a block would compute
+ * `tokensIn * undefined` = `NaN` rather than a price or a zero. Today this
+ * is masked purely by JSON key order (the three vendor blocks precede
+ * `_pricing_notes`); this guard makes the fix independent of key order.
+ */
 export function computeCost(modelId: string, tokensIn: number, tokensOut: number): number {
   const table = prices();
   for (const vendor of Object.keys(table)) {
     const vendorTable = table[vendor];
-    if (!vendorTable) continue;
-    const entry = vendorTable[modelId];
-    if (entry) {
+    if (typeof vendorTable !== "object" || vendorTable === null) continue;
+    const entry = (vendorTable as Record<string, unknown>)[modelId];
+    if (isPriceEntry(entry)) {
       return (tokensIn * entry.input + tokensOut * entry.output) / 1_000_000;
     }
   }

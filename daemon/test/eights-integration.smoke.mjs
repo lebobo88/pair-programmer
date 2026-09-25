@@ -24,7 +24,8 @@
 
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { dirname, join } from "node:path";
-import { existsSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import assert from "node:assert/strict";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -38,6 +39,18 @@ const EIGHTS_DIST =
   "C:\\AiAppDeployments\\TheEights\\daemon\\dist\\index.js";
 
 async function main() {
+  // OPT-IN live-daemon gate: this test spawns a REAL TheEights daemon
+  // subprocess and fails the whole `npm test` `&&` chain when that peer is
+  // unavailable. Default `npm test` must stay green without a live daemon
+  // on the box, so this test only runs when the operator explicitly asks
+  // for it via PP_LIVE_EIGHTS=1 (see AGENTS.md live-daemon test contract).
+  if (process.env.PP_LIVE_EIGHTS !== "1") {
+    console.log(
+      "↷ eights-integration.smoke.mjs SKIPPED — set PP_LIVE_EIGHTS=1 to run against a live TheEights daemon"
+    );
+    return;
+  }
+
   if (!existsSync(EIGHTS_DIST)) {
     console.log(
       `↷ eights-integration.smoke.mjs SKIPPED — TheEights dist not found at ${EIGHTS_DIST}`
@@ -48,6 +61,15 @@ async function main() {
   // Point the client at the real daemon BEFORE importing it (the module
   // captures the resolution at first use).
   process.env.PP_EIGHTS_DAEMON = EIGHTS_DIST;
+
+  // HERMETIC: the spawned TheEights daemon subprocess inherits process.env
+  // (pp's eights-client passes no explicit `env` to StdioClientTransport),
+  // so setting EIGHTS_HOME here BEFORE the probe spawns it redirects
+  // TheEights' own state.db (TheEights daemon/src/config.ts:
+  // `join(process.env.EIGHTS_HOME ?? homedir(), "state.db")`-style override)
+  // into a throwaway temp dir instead of the operator's real ~/.eights.
+  const eightsHome = mkdtempSync(join(tmpdir(), "pp-itest-eights-home-"));
+  process.env.EIGHTS_HOME = eightsHome;
 
   const mod = await importDist("ecosystem/eights-client.js");
 
@@ -181,6 +203,7 @@ async function main() {
   }
 
   await mod.shutdown();
+  try { rmSync(eightsHome, { recursive: true, force: true }); } catch { /* best-effort cleanup */ }
   console.log("✓ eights-integration.smoke.mjs: all live assertions passed");
 }
 
