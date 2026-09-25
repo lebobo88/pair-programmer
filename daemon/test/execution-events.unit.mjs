@@ -1055,15 +1055,21 @@ it("AC-H35/R22: the subagent handlers write no attempts INSERT, call no attempt-
   }
 });
 
-it("AC-H36: specs/cc-standards-alignment.html carries data-st=\"f\" on the SubagentStop attempt-row sub-task, and the changelog contains the R14 reason text", () => {
+it("AC-H36: specs/cc-standards-alignment.html carries data-st=\"f\" on the SubagentStop attempt-row sub-task, and PROJECT_MASTER.md contains the R14 reason text", () => {
+  // The original R14 reason text lived at `.harness/run_p8JPpVhDonUA/docs/changelog.md`,
+  // a per-run harness artifact path that `.gitignore` excludes (`.harness/run_*/`)
+  // and that therefore does not exist on a clean checkout — AC-H36 failed
+  // deterministically there. The same reason text is carried in the tracked
+  // PROJECT_MASTER.md changelog (search "no UPDATE path"), so assert against
+  // that tracked fixture instead of the gitignored per-run doc.
   const specHtmlPath = join(__dirname, "..", "..", "specs", "cc-standards-alignment.html");
-  const changelogPath = join(__dirname, "..", "..", ".harness", "run_p8JPpVhDonUA", "docs", "changelog.md");
+  const changelogPath = join(__dirname, "..", "..", "PROJECT_MASTER.md");
   assert.ok(existsSync(specHtmlPath) && existsSync(changelogPath));
   const html = readFileSync(specHtmlPath, "utf8");
   const changelog = readFileSync(changelogPath, "utf8");
   assert.ok(html.length > 0 && changelog.length > 0);
   assert.ok(/data-st="f"[^>]*>\s*\[f\]\s*<\/code>\s*<b>[^<]*SubagentStop.*?attempt.*?row.*?engineer.*?metadata/s.test(html) || (html.includes("SubagentStop") && html.includes('data-st="f"')), "spec HTML must mark the SubagentStop attempt-row sub-task [f]");
-  assert.ok(changelog.includes("recordAttempt") && changelog.includes("no update path") || changelog.includes("no UPDATE path"), "changelog must carry the R14 reason");
+  assert.ok(changelog.includes("recordAttempt") && changelog.includes("no update path") || changelog.includes("no UPDATE path"), "PROJECT_MASTER.md must carry the R14 reason");
 });
 
 // ═══════════════════════════════════════════════════════════════════════
