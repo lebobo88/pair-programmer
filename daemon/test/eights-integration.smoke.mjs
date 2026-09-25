@@ -86,8 +86,9 @@ async function main() {
 
   // HERMETIC: the spawned TheEights daemon subprocess receives pp's
   // `scopedEightsEnv()` allowlist (see src/ecosystem/eights-client.ts),
-  // which forwards every `EIGHTS_*`-prefixed var plus `AIAPP_BASE` — NOT the
-  // full parent env. `EIGHTS_HOME` is `EIGHTS_*`-prefixed, so it IS
+  // which forwards ONLY the exact names on the frozen `EIGHTS_FORWARDED_ENV_VARS`
+  // list (not an `EIGHTS_*` prefix match) plus `AIAPP_BASE` — NOT the full
+  // parent env. `EIGHTS_HOME` is on that exact-name list, so it IS
   // forwarded (this is the fix for root cause #1: previously `probe()`
   // passed no explicit `env` at all, so the MCP SDK's built-in Windows
   // safelist silently dropped `EIGHTS_HOME` and the spawned daemon fell back

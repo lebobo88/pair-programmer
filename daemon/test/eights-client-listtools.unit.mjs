@@ -15,6 +15,10 @@
 //        - `EIGHTS_API_KEY` (`EIGHTS_*`-prefixed but NOT on the frozen list)
 //          does NOT reach the spawned child — i.e. the allowlist is an exact
 //          list, not a prefix match, and it actually excludes things.
+//        - `HYDRA_OPERATOR_KEY` (a real secret TheEights itself reads to mint
+//          capability tokens, auth/capability.ts:150 — explicitly excluded,
+//          see eights-client.ts's doc comment) does NOT reach the spawned
+//          child either, even though TheEights genuinely consumes it.
 //
 // Self-contained: spawns its own fake MCP stdio server (fixtures/
 // fake-eights-daemon.mjs), no live TheEights daemon, no network.
@@ -37,9 +41,13 @@ const FIXTURE = join(__dirname, "fixtures", "fake-eights-daemon.mjs");
 //     reach the spawned child, with this exact parent value.
 //   - `EIGHTS_API_KEY` is `EIGHTS_*`-prefixed but NOT on the list: must NOT
 //     reach the spawned child.
+//   - `HYDRA_OPERATOR_KEY` is a real secret TheEights itself reads
+//     (capability-token signing key) but is explicitly excluded from the
+//     allowlist: must NOT reach the spawned child.
 process.env.PP_EIGHTS_DAEMON = FIXTURE;
 process.env.EIGHTS_HOME = "C:\\tmp\\pp-unit-test-eights-home-" + Date.now();
 process.env.EIGHTS_API_KEY = "sk-fake-secret-" + Date.now();
+process.env.HYDRA_OPERATOR_KEY = "hok-fake-signing-key-" + Date.now();
 
 // Test-only extension of the probe timeout (config.ts `ecosystemProbeTimeoutMs()`,
 // default 3000ms in production). `node --test` runs every `*.unit.mjs` file
@@ -94,6 +102,15 @@ async function main() {
       "here means scopedEightsEnv() regressed to prefix matching (or a full parent-env copy)"
   );
   console.log("✓ probe does NOT forward an EIGHTS_*-prefixed var absent from the frozen allowlist");
+  assert.equal(
+    added.hydra_operator_key_marker,
+    null,
+    "the spawned fixture child must NOT have received HYDRA_OPERATOR_KEY — TheEights itself " +
+      "reads it (auth/capability.ts:150) but it is a capability-token signing secret, " +
+      "explicitly excluded from EIGHTS_FORWARDED_ENV_VARS; a non-null marker here means that " +
+      "exclusion regressed"
+  );
+  console.log("✓ probe does NOT forward HYDRA_OPERATOR_KEY (explicitly excluded secret)");
 
   await mod.shutdown();
   console.log("✓ eights-client-listtools.unit.mjs: all assertions passed");

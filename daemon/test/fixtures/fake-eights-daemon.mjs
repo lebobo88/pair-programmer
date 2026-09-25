@@ -16,7 +16,7 @@
 //      throws on this tools/list response — even though the tool the caller
 //      actually cares about (`eights.memory.*`) is perfectly well-formed.
 //
-//   2. The `eights.memory.add` handler echoes back two env vars so the test
+//   2. The `eights.memory.add` handler echoes back three env vars so the test
 //      can prove `eights-client.ts`'s `scopedEightsEnv()` allowlist forwards
 //      exactly what's on the frozen exact-name list and nothing more:
 //        - `process.env.EIGHTS_HOME` (on the frozen `EIGHTS_FORWARDED_ENV_VARS`
@@ -26,6 +26,10 @@
 //          NOT on the frozen list) must NOT reach the spawned child — proves
 //          the allowlist is an exact-name list, not a prefix match, and
 //          doesn't degrade back into a full parent-env copy.
+//        - `process.env.HYDRA_OPERATOR_KEY` (a real secret TheEights itself
+//          reads, auth/capability.ts:150 — explicitly excluded from the
+//          allowlist, see eights-client.ts's doc comment) must NOT reach the
+//          spawned child either.
 
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
@@ -71,6 +75,7 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
             id: "mem_fixture_1",
             eights_home_marker: process.env.EIGHTS_HOME ?? null,
             eights_api_key_marker: process.env.EIGHTS_API_KEY ?? null,
+            hydra_operator_key_marker: process.env.HYDRA_OPERATOR_KEY ?? null,
           }),
         },
       ],

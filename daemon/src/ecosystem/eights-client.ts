@@ -352,39 +352,58 @@ const LenientListToolsResultSchema = z
  * an exact list means adding a name is a deliberate, reviewable diff.
  *
  * Every name below is verified against TheEights' own source
- * (`C:\AiAppDeployments\TheEights\daemon\src`, `grep -rno
- * "process\.env\.EIGHTS_[A-Z_]*" daemon/src | sed -E
- * 's/.*process\.env\.(EIGHTS_[A-Z_]+)/\1/' | sort -u`, run 2026-09-25):
+ * (`C:\AiAppDeployments\TheEights\daemon\src`, `grep -rnoE
+ * 'process\.env(\.|\[["'"'"'])EIGHTS_[A-Z_]+' daemon/src | sort -u`, run
+ * 2026-09-25 — this pattern catches BOTH `process.env.X` dot-access AND
+ * `process.env["X"]` / `process.env['X']` bracket-access reads; a dot-only
+ * pattern previously missed four bracket-access names, corrected here.
+ * Full output saved at `.harness/evidence/eights-env-inventory.txt`):
  *
- *   EIGHTS_ALLOW_CLOUD_PROVIDERS  (config.ts:37)
- *   EIGHTS_DISABLE_WATCHERS       (index.ts:277)
- *   EIGHTS_EMBEDDING_DIM          (config.ts:33, embeddings.ts:25)
- *   EIGHTS_EMBEDDING_MODEL        (embeddings.ts:24)
- *   EIGHTS_EMBED_PROVIDER         (config.ts:35)
- *   EIGHTS_EXEC_OUTPUT_ROOT       (engines/execsuite-watcher.ts:36)
- *   EIGHTS_GRAPH_DRIVER           (config.ts:32)
- *   EIGHTS_HOME                   (config.ts:23, index.ts:570, paths.ts:34)
- *   EIGHTS_LLM_COMPLETIONS        (engines/eval/completer.ts:35)
- *   EIGHTS_LLM_FALLBACK           (engines/eval/completer.ts:29)
- *   EIGHTS_LLM_MODEL              (engines/eval/completer.ts:28)
- *   EIGHTS_LLM_PROVIDER           (config.ts:36)
- *   EIGHTS_LOG_LEVEL              (logger.ts:10)
- *   EIGHTS_MEM_GAUGE_MS           (index.ts:430)
- *   EIGHTS_OLLAMA_TIMEOUT_MS      (embeddings.ts:28, engines/eval/completer.ts:32)
- *   EIGHTS_OLLAMA_URL             (embeddings.ts:23, engines/eval/completer.ts:27)
- *   EIGHTS_OTEL_ENABLED           (index.ts:252)
- *   EIGHTS_OTEL_ENDPOINT          (index.ts:253)
- *   EIGHTS_PROVIDER               (config.ts:34)
- *   EIGHTS_RLM_ROOT                (engines/rlm-watcher.ts:34)
- *   EIGHTS_SKIP_AUDIT_CHECK        (index.ts:383, cognitive/audit-verifier.ts:49)
- *   EIGHTS_TOOL_DEADLINE_MS        (index.ts:483)
- *   EIGHTS_TOOL_SLOW_WARN_MS       (index.ts:484)
- *   EIGHTS_XENIA_ROOT              (engines/registrars/xenia-registrar.ts:28,
- *                                   engines/xenia-watcher.ts:40)
+ *   EIGHTS_ALLOW_CLOUD_PROVIDERS       (config.ts:37)
+ *   EIGHTS_DB_BLOAT_BYTES              (cognitive/memory-steward.ts:97)
+ *   EIGHTS_DISABLE_WATCHERS            (index.ts:277)
+ *   EIGHTS_EMBEDDING_DIM               (config.ts:33, embeddings.ts:25)
+ *   EIGHTS_EMBEDDING_MODEL             (embeddings.ts:24)
+ *   EIGHTS_EMBED_PROVIDER              (config.ts:35)
+ *   EIGHTS_EXEC_OUTPUT_ROOT            (engines/execsuite-watcher.ts:36)
+ *   EIGHTS_GRAPH_DRIVER                (config.ts:32)
+ *   EIGHTS_HOME                        (config.ts:23, index.ts:570, paths.ts:34)
+ *   EIGHTS_LLM_COMPLETIONS             (engines/eval/completer.ts:35)
+ *   EIGHTS_LLM_FALLBACK                (engines/eval/completer.ts:29)
+ *   EIGHTS_LLM_MODEL                   (engines/eval/completer.ts:28)
+ *   EIGHTS_LLM_PROVIDER                (config.ts:36)
+ *   EIGHTS_LOG_LEVEL                   (logger.ts:10)
+ *   EIGHTS_MEMORY_BLOAT_RATE_PER_HOUR  (cognitive/memory-steward.ts:98)
+ *   EIGHTS_MEMORY_BLOAT_ROWS           (cognitive/memory-steward.ts:96)
+ *   EIGHTS_MEM_GAUGE_MS                (index.ts:430)
+ *   EIGHTS_OLLAMA_TIMEOUT_MS           (embeddings.ts:28, engines/eval/completer.ts:32)
+ *   EIGHTS_OLLAMA_URL                  (embeddings.ts:23, engines/eval/completer.ts:27)
+ *   EIGHTS_OPERATOR_ACTOR_ID           (index.ts:356)
+ *   EIGHTS_OTEL_ENABLED                (index.ts:252)
+ *   EIGHTS_OTEL_ENDPOINT               (index.ts:253)
+ *   EIGHTS_PROVIDER                    (config.ts:34)
+ *   EIGHTS_RLM_ROOT                    (engines/rlm-watcher.ts:34)
+ *   EIGHTS_SKIP_AUDIT_CHECK            (index.ts:383, cognitive/audit-verifier.ts:49)
+ *   EIGHTS_TOOL_DEADLINE_MS            (index.ts:483)
+ *   EIGHTS_TOOL_SLOW_WARN_MS           (index.ts:484)
+ *   EIGHTS_XENIA_ROOT                  (engines/registrars/xenia-registrar.ts:28,
+ *                                       engines/xenia-watcher.ts:40)
  *
  * Plus `AIAPP_BASE` — TheEights' `paths.ts:83` reads it for ecosystem-relative
  * path resolution (the AIAPP_BASE portability convention shared across the
  * AiAppDeployments repos; see MEMORY project_aiapp_base_portability).
+ *
+ * Explicitly EXCLUDED, even though TheEights reads it: `HYDRA_OPERATOR_KEY`
+ * and `HYDRA_OPERATOR_KEY_ID` (TheEights `auth/capability.ts:150,159` —
+ * `deriveSigningKey()`/`configuredKeyId()`, used to mint/verify capability
+ * tokens). `HYDRA_OPERATOR_KEY` is a signing secret, not ecosystem
+ * configuration; forwarding it would hand the spawned subprocess the
+ * operator's capability-minting key. Before this allowlist existed the SDK's
+ * own default env (`getDefaultEnvironment()`) never forwarded it either — this
+ * is a defended exclusion, not a functional regression. If TheEights ever
+ * requires this daemon to mint capability tokens, that needs an explicit,
+ * separately-reviewed decision, not an accidental sweep-in via a namespace or
+ * prefix match.
  *
  * Everything else — credentials, unrelated API keys, other tools'
  * configuration, and any `EIGHTS_`-prefixed name not cited above — is
@@ -393,6 +412,7 @@ const LenientListToolsResultSchema = z
  */
 const EIGHTS_FORWARDED_ENV_VARS = Object.freeze([
   "EIGHTS_ALLOW_CLOUD_PROVIDERS",
+  "EIGHTS_DB_BLOAT_BYTES",
   "EIGHTS_DISABLE_WATCHERS",
   "EIGHTS_EMBEDDING_DIM",
   "EIGHTS_EMBEDDING_MODEL",
@@ -405,9 +425,12 @@ const EIGHTS_FORWARDED_ENV_VARS = Object.freeze([
   "EIGHTS_LLM_MODEL",
   "EIGHTS_LLM_PROVIDER",
   "EIGHTS_LOG_LEVEL",
+  "EIGHTS_MEMORY_BLOAT_RATE_PER_HOUR",
+  "EIGHTS_MEMORY_BLOAT_ROWS",
   "EIGHTS_MEM_GAUGE_MS",
   "EIGHTS_OLLAMA_TIMEOUT_MS",
   "EIGHTS_OLLAMA_URL",
+  "EIGHTS_OPERATOR_ACTOR_ID",
   "EIGHTS_OTEL_ENABLED",
   "EIGHTS_OTEL_ENDPOINT",
   "EIGHTS_PROVIDER",
