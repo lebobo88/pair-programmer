@@ -25,9 +25,10 @@
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync } from "node:fs";
 import assert from "node:assert/strict";
 import { getDefaultEnvironment } from "@modelcontextprotocol/sdk/client/stdio.js";
+import { shutdownAndCleanup } from "./fixtures/eights-cleanup.mjs";
 
 // TheEights' own `index.ts main()` constructs `AuditEngine` (which eagerly
 // `db.prepare()`s statements against the `events` table) BEFORE calling
@@ -111,19 +112,26 @@ async function main() {
 
     mod = await importDist("ecosystem/eights-client.js");
 
-    // Escape hatch for the forced-failure cleanup demonstration (see the
-    // engineer's changelog note below main()): PP_ITEST_FORCE_FAIL_AFTER_SPAWN=1
-    // throws right after the daemon spawns, before any assertions run, so the
-    // finally block's cleanup path can be exercised in isolation.
-    if (process.env.PP_ITEST_FORCE_FAIL_AFTER_SPAWN === "1") {
-      throw new Error("PP_ITEST_FORCE_FAIL_AFTER_SPAWN injected failure");
-    }
-
     // ── 1. Probe connects ────────────────────────────────────────────────
     const ok = await mod.isAvailable();
     assert.equal(ok, true, "isAvailable() must be true against the real daemon");
     assert.equal(mod.isAvailableSync(), true, "isAvailableSync() true after connect");
     console.log("✓ probe connected to real TheEights daemon");
+
+    // Escape hatch for the forced-failure cleanup demonstration (see the
+    // engineer's changelog note below main()): PP_ITEST_FORCE_FAIL_AFTER_SPAWN=1
+    // throws immediately after the FIRST isAvailable() call — i.e. AFTER the
+    // daemon subprocess has actually spawned and connected, not before — so
+    // the finally block's cleanup path is exercised against a real live
+    // child (temp EIGHTS_HOME removal + child-process termination), not a
+    // no-op. (Injecting the failure before isAvailable() — the prior
+    // position — never spawns a child at all, which this test also
+    // demonstrates below for contrast.)
+    if (process.env.PP_ITEST_FORCE_FAIL_AFTER_SPAWN === "1") {
+      const pid = mod.getConnectedDaemonPidForTesting();
+      console.log(`↷ PP_ITEST_FORCE_FAIL_AFTER_SPAWN injected after spawn (pid=${pid})`);
+      throw new Error("PP_ITEST_FORCE_FAIL_AFTER_SPAWN injected failure");
+    }
 
     // TheEights' fail-closed readiness gate (mcp/health.ts, index.ts) re-arms
     // on every fresh stdio spawn: the transport comes up before the audit hash
@@ -261,46 +269,52 @@ async function main() {
     console.log("✓ eights-integration.smoke.mjs: all live assertions passed");
   } finally {
     // Cleanup runs on EVERY path — success, an assertion throw above, or the
-    // forced-failure injection. Failures here are surfaced (rethrown after
-    // logging), never silently swallowed — a swallowed cleanup failure would
-    // mean the temp home leaks silently, un-noticed, on every run.
-    if (mod) {
-      try {
-        await mod.shutdown();
-      } catch (e) {
-        console.error(`✗ mod.shutdown() failed during cleanup: ${e?.message ?? e}`);
-        throw e;
-      }
-    }
-    await removeEightsHomeWithRetry(eightsHome);
+    // forced-failure injection. `shutdownAndCleanup` (fixtures/eights-cleanup.mjs)
+    // guarantees the temp EIGHTS_HOME removal step ALWAYS runs even when
+    // mod.shutdown() throws (a prior version threw straight out of the
+    // shutdown catch block, which skipped removal entirely on that path —
+    // the exact leak the isolation requirement forbids), and rethrows
+    // whichever step(s) failed rather than swallowing them.
+    const spawnedPid = mod ? mod.getConnectedDaemonPidForTesting() : null;
+    await shutdownAndCleanup(mod, eightsHome);
     console.log(`✓ temp EIGHTS_HOME removed: ${eightsHome}`);
+    if (spawnedPid !== null) {
+      await assertPidGone(spawnedPid, 5_000);
+      console.log(`✓ spawned daemon pid ${spawnedPid} is gone`);
+    }
   }
 }
 
 /**
- * `mod.shutdown()` closes the MCP client, which (StdioClientTransport.close())
- * ends stdin and SIGTERMs the spawned TheEights subprocess if it hasn't
- * exited within 2s. On Windows the OS can take a short additional moment to
- * release the child's open handles on `state.db`/`state.db-wal` after the
- * process is gone, so an immediate `rmSync` can race an `EBUSY`/`EPERM`. Retry
- * with backoff instead of silently swallowing the failure (a swallowed
- * failure here would mean the temp home leaks silently, un-noticed, on every
- * run — the isolation requirement is to actually remove it, not to best-effort
- * try).
+ * Assert a PID is no longer alive, distinguishing ESRCH (process gone — the
+ * only condition that actually proves it) from EPERM (process exists but
+ * this user can't signal it — NOT proof of death) per the Windows-liveness
+ * guidance in this run's operating contract. `process.kill(pid, 0)` sends no
+ * signal, just probes existence; retries briefly because Windows can take a
+ * moment to fully reap a child after transport.close()'s SIGTERM/2s-timeout
+ * path.
  */
-async function removeEightsHomeWithRetry(dir, maxAttempts = 10, delayMs = 300) {
-  let lastErr;
-  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+async function assertPidGone(pid, maxWaitMs) {
+  const deadline = Date.now() + maxWaitMs;
+  for (;;) {
     try {
-      rmSync(dir, { recursive: true, force: false });
-      return;
+      process.kill(pid, 0);
+      // No throw means the PID is still alive (or, ambiguously, EPERM would
+      // have thrown a *different* code below) — keep polling until timeout.
     } catch (e) {
-      lastErr = e;
-      await new Promise((r) => setTimeout(r, delayMs));
+      if (e && e.code === "ESRCH") return; // proven gone
+      if (e && e.code === "EPERM") {
+        throw new Error(
+          `pid ${pid} exists but is not signalable (EPERM) — this does NOT prove it exited; ` +
+            `treating as still-alive for isolation purposes`
+        );
+      }
+      throw e;
     }
-  }
-  if (existsSync(dir)) {
-    throw new Error(`failed to remove temp EIGHTS_HOME ${dir} after ${maxAttempts} attempts: ${lastErr?.message ?? lastErr}`);
+    if (Date.now() >= deadline) {
+      throw new Error(`pid ${pid} still alive ${maxWaitMs}ms after cleanup`);
+    }
+    await new Promise((r) => setTimeout(r, 200));
   }
 }
 
