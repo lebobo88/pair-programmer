@@ -386,12 +386,20 @@ async function main() {
     }
 
     // ─── Sanity: unrelated artifact kinds don't get gated. ───────────────────
+    // A 'diff' artifact binds to no artifact validator, so no validator call
+    // is needed here. But it DOES trip PP-VG-5 (the code/diff smoke gate) —
+    // satisfy that the way a real run would: record the winner's
+    // candidate_index on the attempt and call record_smoke_status(pass) for
+    // it before finalize_stage(passed). This is a distinct gate from the
+    // artifact-validator gate under test, so we also assert no
+    // artifact_validations row was created for this stage.
     {
       const run = await callTool(client, "start_run", { request_text: "av-smoke unrelated", project_path: projectPath, mode: "single" });
       const stage = await callTool(client, "start_stage", { run_id: run.run_id, kind: "code", gate_type: "code_style" });
       const att = await callTool(client, "record_attempt", {
         stage_id: stage.stage_id, producer: "claude", model_id: GENERATOR_MODEL,
         tokens_in: 1, tokens_out: 1, cost_usd: 0.0001, status: "ok",
+        notes: { candidate_index: 1 },
       });
       await callTool(client, "archive_artifact", {
         run_id: run.run_id, stage_id: stage.stage_id,
@@ -405,10 +413,18 @@ async function main() {
         critique_md: "Diff-only artifact that does NOT bind to any validator. finalize_stage(passed) should succeed without any validator calls. Anti-vacuous-pass guard text continues here to clear the 80-char floor.",
         score_json: { correctness: 0.9 },
       });
+      await callTool(client, "record_smoke_status", {
+        stage_id: stage.stage_id, candidate_index: 1, status: "pass",
+        reason: "synthetic-smoke exit=0 (artifact-validator sanity fixture, PP-VG-5)",
+      });
 
       await callTool(client, "finalize_stage", { stage_id: stage.stage_id, status: "passed", winner_attempt_id: att.attempt_id });
       await callTool(client, "finalize_run", { run_id: run.run_id, status: "complete" });
       console.log(`✓ unrelated artifact kinds (diff) bypass the validator gate`);
+
+      const noValidation = await callTool(client, "get_artifact_validation", { stage_id: stage.stage_id, validator_kind: "adr_structure_lint" });
+      if (noValidation.check !== null) throw new Error(`expected no artifact_validations row for a diff-only stage, got ${pretty(noValidation)}`);
+      console.log(`✓ no artifact_validations row created for the diff-only stage`);
     }
 
     // ─── Schema sanity: artifact_validations table query works. ──────────────
