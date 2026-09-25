@@ -29,15 +29,18 @@ import { tmpdir } from "node:os";
 import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, existsSync, readdirSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
+import { setIsolatedProcessEnv, isolatedChildEnv } from "./fixtures/isolated-env.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const DIST = join(__dirname, "..", "dist");
 const SRC = join(__dirname, "..", "src");
 const INDEX_JS = join(DIST, "index.js");
 
-const SUITE_DIR = mkdtempSync(join(tmpdir(), "pp-exec-events-"));
+// setIsolatedProcessEnv also scrubs any ambient PP_DB_PATH first (it WINS
+// over PP_HOME in src/util/paths.ts, so leaving it in place would silently
+// defeat this override).
+const { ppHome: SUITE_DIR, ppDbPath: SUITE_DB_PATH } = setIsolatedProcessEnv({ prefix: "pp-exec-events-" });
 mkdirSync(join(SUITE_DIR, ".pair-programmer"), { recursive: true });
-process.env.PP_HOME = SUITE_DIR;
 process.env.EIGHTS_SKIP_AUDIT_CHECK = "1";
 
 const importDist = (relPath) => import(pathToFileURL(join(DIST, relPath)).href);
@@ -127,7 +130,11 @@ function countRuns() {
 function runHookChild(event, name, payload, extraEnv = {}) {
   const res = spawnSync(process.execPath, [INDEX_JS, "hook", event, name], {
     input: JSON.stringify(payload ?? {}),
-    env: { ...process.env, PP_HOME: SUITE_DIR, EIGHTS_SKIP_AUDIT_CHECK: "1", ...extraEnv },
+    env: isolatedChildEnv({
+      ppHome: SUITE_DIR,
+      ppDbPath: SUITE_DB_PATH,
+      extra: { EIGHTS_SKIP_AUDIT_CHECK: "1", ...extraEnv },
+    }).env,
     encoding: "utf8",
     timeout: 20_000,
   });
@@ -566,7 +573,11 @@ it("AC-H17/NFR9: a DB write failure inside record-execution-failure still fails 
   const res = runHookChild(
     "PostToolUseFailure", "record-execution-failure",
     { hook_event_name: "PostToolUseFailure", tool_name: "mcp__pp_agy__critique", cwd: "/tmp/whatever", session_id: "s", tool_response: { error: "x" } },
-    { PP_HOME: brokenHome },
+    // Override BOTH PP_HOME and PP_DB_PATH to point at the broken home — the
+    // isolatedChildEnv default PP_DB_PATH (this suite's own SUITE_DB_PATH)
+    // would otherwise still win over the swapped PP_HOME and silently defeat
+    // this test's forced-write-failure setup.
+    { PP_HOME: brokenHome, PP_DB_PATH: join(brokenHome, ".pair-programmer", "state.db") },
   );
   assert.equal(res.status, 0, `a hook that cannot write MUST still exit 0 (fail-open, NFR9): got ${res.status}, stderr=${res.stderr}`);
 });

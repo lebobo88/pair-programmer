@@ -76,6 +76,7 @@ import {
 } from "node:fs";
 import { execFileSync } from "node:child_process";
 import assert from "node:assert/strict";
+import { setIsolatedProcessEnv, isolatedChildEnv } from "./fixtures/isolated-env.mjs";
 
 const SUITE_STARTED_AT = Date.now();
 
@@ -90,8 +91,10 @@ const REPO_ROOT = join(__dirname, "..", "..");
 const DIST = join(__dirname, "..", "dist");
 const CONSTITUTION_PATH = join(REPO_ROOT, "CONSTITUTION.md");
 
-const PP_HOME = mkdtempSync(join(tmpdir(), "pp-mcp-instructions-"));
-process.env.PP_HOME = PP_HOME;
+// setIsolatedProcessEnv also scrubs any ambient PP_DB_PATH first (it WINS
+// over PP_HOME in src/util/paths.ts, so leaving it in place would silently
+// defeat this override).
+const { ppHome: PP_HOME, ppDbPath: PP_DB_PATH } = setIsolatedProcessEnv({ prefix: "pp-mcp-instructions-" });
 
 // Runtime proof (not just a top-to-bottom read at review) that PP_HOME was
 // pointed at an isolated temp dir before anything else happened.
@@ -154,7 +157,7 @@ test("R1.3: import side effects — no state.db, nothing beyond the logger's dir
     "the ONLY subdirectories created by import must be logs/ and sandboxes/ (ensureDirs); " +
       "in particular, no state.db, no prices.json, no daemon.lock",
   );
-  const dbPath = process.env.PP_DB_PATH ?? join(PP_HOME, ".pair-programmer", "state.db");
+  const dbPath = PP_DB_PATH;
   assert.ok(
     !existsSync(dbPath),
     "importing the MCP server modules must not open or create state.db",
@@ -261,15 +264,15 @@ test("R1.6: instructions are byte-identical across PP_DISABLE_AGY=0 vs PP_DISABL
   const agyDistPath = join(DIST, "mcp", "antigravity-server.js");
 
   function runChild(disableAgyValue) {
-    const childHome = mkdtempSync(join(tmpdir(), `pp-mcp-instructions-r16-home-${disableAgyValue}-`));
+    const { env: childEnv, ppHome: childHome } = isolatedChildEnv({
+      prefix: `pp-mcp-instructions-r16-home-${disableAgyValue}-`,
+      extra: { PP_DISABLE_AGY: disableAgyValue },
+    });
     cleanupDirs.push(childHome);
     const out = execFileSync(
       process.execPath,
       [childScriptPath, harnessDistPath, codexDistPath, agyDistPath],
-      {
-        env: { ...process.env, PP_HOME: childHome, PP_DISABLE_AGY: disableAgyValue },
-        encoding: "utf8",
-      },
+      { env: childEnv, encoding: "utf8" },
     );
     return JSON.parse(out);
   }

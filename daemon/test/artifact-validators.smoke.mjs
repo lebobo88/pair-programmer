@@ -9,8 +9,8 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { dirname, join } from "node:path";
-import { tmpdir } from "node:os";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { isolatedChildEnv } from "./fixtures/isolated-env.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const DAEMON = join(__dirname, "..", "dist", "index.js");
@@ -128,16 +128,21 @@ Some consequences will follow.
 `;
 
 async function main() {
-  // HERMETIC: this spawns a real `pp-daemon mcp` subprocess. Without an
-  // isolated PP_HOME, that subprocess's db() call opens the OPERATOR'S REAL
-  // ~/.pair-programmer/state.db and writes av-smoke runs into it (observed:
-  // 22 leaked 'av-smoke' runs). Give the spawned daemon its own throwaway
-  // home so the operator's ledger is never touched.
-  const ppHome = mkdtempSync(join(tmpdir(), "pp-av-smoke-home-"));
+  // HERMETIC: this spawns a real `pp-daemon mcp` subprocess. isolatedChildEnv
+  // scrubs any ambient PP_DB_PATH/PP_HOME out of the base env FIRST, then
+  // sets an explicit temp PP_HOME and explicit temp PP_DB_PATH inside it —
+  // an operator-exported PP_DB_PATH (which WINS over PP_HOME in
+  // src/util/paths.ts) can never leak the OPERATOR'S REAL
+  // ~/.pair-programmer/state.db into this run (observed: 22 leaked
+  // 'av-smoke' runs from the old PP_HOME-only override).
+  const { env: daemonEnv, ppHome } = isolatedChildEnv({
+    extra: { EIGHTS_SKIP_AUDIT_CHECK: "1" },
+    prefix: "pp-av-smoke-home-",
+  });
   const transport = new StdioClientTransport({
     command: process.execPath,
     args: [DAEMON, "mcp"],
-    env: { ...process.env, PP_HOME: ppHome, EIGHTS_SKIP_AUDIT_CHECK: "1" },
+    env: daemonEnv,
   });
   const client = new Client({ name: "av-smoke", version: "0.0.1" }, { capabilities: {} });
   await client.connect(transport);

@@ -15,6 +15,7 @@ import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync, existsSync, readFileSync } from "node:fs";
 import { execaSync } from "execa";
+import { isolatedChildEnv } from "./fixtures/isolated-env.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const DAEMON = join(__dirname, "..", "dist", "index.js");
@@ -44,34 +45,33 @@ function gitInit(dir) {
   execaSync("git", ["commit", "-q", "-m", "init"], { cwd: dir });
 }
 
-async function withClient(env, fn) {
-  // HERMETIC: this spawns a real `pp-daemon mcp` subprocess. Without an
-  // isolated PP_HOME, that subprocess's db() call opens the OPERATOR'S REAL
-  // ~/.pair-programmer/state.db and writes this test's runs into it. Give
-  // the spawned daemon its own throwaway home unless the caller already
-  // supplied one, and always clean it up.
-  const ownsHome = !env.PP_HOME;
-  const ppHome = env.PP_HOME ?? mkdtempSync(join(tmpdir(), "pp-bof-home-"));
+async function withClient(extraEnv, fn) {
+  // HERMETIC: this spawns a real `pp-daemon mcp` subprocess. isolatedChildEnv
+  // scrubs any ambient PP_DB_PATH/PP_HOME out of the base env FIRST, then
+  // sets an explicit temp PP_HOME and an explicit temp PP_DB_PATH inside it
+  // (extraEnv, e.g. PP_ALLOW_BEST_OF_WITHOUT_JUDGE, is applied on top and
+  // never touches the ledger location) — so no operator-exported PP_DB_PATH
+  // can ever cause this test to open the OPERATOR'S REAL
+  // ~/.pair-programmer/state.db. Always cleaned up.
+  const { env, ppHome, ppDbPath } = isolatedChildEnv({
+    extra: { EIGHTS_SKIP_AUDIT_CHECK: "1", ...extraEnv },
+    prefix: "pp-bof-home-",
+  });
   const transport = new StdioClientTransport({
     command: process.execPath,
     args: [DAEMON, "mcp"],
-    env: { ...process.env, PP_HOME: ppHome, EIGHTS_SKIP_AUDIT_CHECK: "1", ...env },
+    env,
   });
   const client = new Client({ name: "best-of-data-loss-test", version: "0.0.1" }, { capabilities: {} });
   await client.connect(transport);
   try {
-    // Mirror src/util/paths.ts's DB_PATH derivation: PP_DB_PATH wins if the
-    // caller set it, otherwise it's <PP_HOME>/.pair-programmer/state.db.
-    // Callers that need to open the daemon's own SQLite file (bypassing the
-    // MCP tool layer) must use this path — NEVER the operator's real
-    // ~/.pair-programmer/state.db.
-    const dbPath = env.PP_DB_PATH ?? process.env.PP_DB_PATH ?? join(ppHome, ".pair-programmer", "state.db");
-    await fn(client, dbPath);
+    // The explicit temp path the isolated child env above actually opens —
+    // NEVER an inherited env.PP_DB_PATH / process.env.PP_DB_PATH, both of
+    // which could resolve to the operator's real ledger.
+    await fn(client, ppDbPath);
   } finally {
     try { await client.close(); } catch { /* ignore */ }
-    if (ownsHome) {
-      try { rmSync(ppHome, { recursive: true, force: true }); } catch { /* best-effort cleanup */ }
-    }
+    try { rmSync(ppHome, { recursive: true, force: true }); } catch { /* best-effort cleanup */ }
   }
 }
 

@@ -9,16 +9,22 @@ import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 import { mkdtempSync, writeFileSync, existsSync, rmSync } from "node:fs";
+import { isolatedChildEnv } from "./fixtures/isolated-env.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const DAEMON = join(__dirname, "..", "dist", "index.js");
 
-// HERMETIC: this spawns a real `pp-daemon mcp` subprocess. Without an
-// isolated PP_HOME, that subprocess's db() call opens the OPERATOR'S REAL
-// ~/.pair-programmer/state.db and writes smoke runs into it. Give the
-// spawned daemon its own throwaway home so the operator's ledger is never
-// touched; cleaned up in the `finally` below regardless of outcome.
-const PP_HOME = mkdtempSync(join(tmpdir(), "pp-smoke-home-"));
+// HERMETIC: this spawns a real `pp-daemon mcp` subprocess. isolatedChildEnv
+// scrubs any ambient PP_DB_PATH/PP_HOME out of the base env FIRST, then sets
+// an explicit temp PP_HOME and explicit temp PP_DB_PATH inside it — an
+// operator-exported PP_DB_PATH (which WINS over PP_HOME in
+// src/util/paths.ts) can never leak the OPERATOR'S REAL
+// ~/.pair-programmer/state.db into this run. Cleaned up in the `finally`
+// below regardless of outcome.
+const { env: DAEMON_ENV, ppHome: PP_HOME } = isolatedChildEnv({
+  extra: { EIGHTS_SKIP_AUDIT_CHECK: "1" },
+  prefix: "pp-smoke-home-",
+});
 
 function pretty(json) {
   return JSON.stringify(json, null, 2);
@@ -35,7 +41,7 @@ async function main() {
   const transport = new StdioClientTransport({
     command: process.execPath,        // node
     args: [DAEMON, "mcp"],
-    env: { ...process.env, PP_HOME, EIGHTS_SKIP_AUDIT_CHECK: "1" },
+    env: DAEMON_ENV,
   });
   const client = new Client({ name: "smoke-test", version: "0.0.1" }, { capabilities: {} });
   await client.connect(transport);
