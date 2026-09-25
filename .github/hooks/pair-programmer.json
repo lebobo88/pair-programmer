@@ -18,19 +18,25 @@
         "type": "command",
         "bash": "node \"daemon/dist/index.js\" hook SessionStart cli-version-pin",
         "powershell": "node \"daemon/dist/index.js\" hook SessionStart cli-version-pin",
-        "timeoutSec": 30
+        "timeoutSec": 20
       },
       {
         "type": "command",
         "bash": "node \"daemon/dist/index.js\" hook SessionStart master-plan-load",
         "powershell": "node \"daemon/dist/index.js\" hook SessionStart master-plan-load",
-        "timeoutSec": 30
+        "timeoutSec": 20
       },
       {
         "type": "command",
         "bash": "node \"daemon/dist/index.js\" hook SessionStart surfaced-runs",
         "powershell": "node \"daemon/dist/index.js\" hook SessionStart surfaced-runs",
-        "timeoutSec": 30
+        "timeoutSec": 20
+      },
+      {
+        "type": "command",
+        "bash": "node \"daemon/dist/index.js\" hook SessionStart eights-recall-project",
+        "powershell": "node \"daemon/dist/index.js\" hook SessionStart eights-recall-project",
+        "timeoutSec": 20
       }
     ],
     "PreToolUse": [
@@ -82,6 +88,13 @@
         "powershell": "node \"daemon/dist/index.js\" hook PreToolUse enforce-rfc2119-language",
         "timeoutSec": 30,
         "matcher": "create|edit|mcp__pp_harness__archive_artifact"
+      },
+      {
+        "type": "command",
+        "bash": "node \"daemon/dist/index.js\" hook PreToolUse eights-recall-stage",
+        "powershell": "node \"daemon/dist/index.js\" hook PreToolUse eights-recall-stage",
+        "timeoutSec": 20,
+        "matcher": "mcp__pp_harness__start_stage"
       }
     ],
     "PostToolUse": [
@@ -89,7 +102,7 @@
         "type": "command",
         "bash": "node \"daemon/dist/index.js\" hook PostToolUse cost-tally",
         "powershell": "node \"daemon/dist/index.js\" hook PostToolUse cost-tally",
-        "timeoutSec": 30,
+        "timeoutSec": 20,
         "matcher": "mcp__pp_codex__.*|mcp__pp_agy__.*"
       },
       {
@@ -103,7 +116,7 @@
         "type": "command",
         "bash": "node \"daemon/dist/index.js\" hook PostToolUse taxonomy-coverage-update",
         "powershell": "node \"daemon/dist/index.js\" hook PostToolUse taxonomy-coverage-update",
-        "timeoutSec": 30,
+        "timeoutSec": 20,
         "matcher": "mcp__pp_harness__archive_artifact"
       },
       {
@@ -117,14 +130,14 @@
         "type": "command",
         "bash": "node \"daemon/dist/index.js\" hook PostToolUse loop-ceiling-tally",
         "powershell": "node \"daemon/dist/index.js\" hook PostToolUse loop-ceiling-tally",
-        "timeoutSec": 30,
+        "timeoutSec": 20,
         "matcher": "mcp__pp_harness__record_verdict"
       },
       {
         "type": "command",
         "bash": "node \"daemon/dist/index.js\" hook PostToolUse verdict-rubric-coverage",
         "powershell": "node \"daemon/dist/index.js\" hook PostToolUse verdict-rubric-coverage",
-        "timeoutSec": 30,
+        "timeoutSec": 20,
         "matcher": "mcp__pp_harness__record_verdict"
       },
       {
@@ -135,36 +148,108 @@
         "matcher": "mcp__pp_harness__finalize_run"
       }
     ],
+    "PostToolUseFailure": [
+      {
+        "type": "command",
+        "bash": "node \"daemon/dist/index.js\" hook PostToolUseFailure record-execution-failure",
+        "powershell": "node \"daemon/dist/index.js\" hook PostToolUseFailure record-execution-failure",
+        "timeoutSec": 30,
+        "matcher": "mcp__pp_codex__.*|mcp__pp_agy__.*"
+      }
+    ],
+    "StopFailure": [
+      {
+        "type": "command",
+        "bash": "node \"daemon/dist/index.js\" hook StopFailure surface-api-killed-run",
+        "powershell": "node \"daemon/dist/index.js\" hook StopFailure surface-api-killed-run",
+        "timeoutSec": 30
+      }
+    ],
+    "FileChanged": [
+      {
+        "type": "command",
+        "bash": "node \"daemon/dist/index.js\" hook FileChanged constitution-drift-detect",
+        "powershell": "node \"daemon/dist/index.js\" hook FileChanged constitution-drift-detect",
+        "timeoutSec": 20,
+        "matcher": "CONSTITUTION.md"
+      }
+    ],
+    "PreCompact": [
+      {
+        "type": "command",
+        "bash": "node \"daemon/dist/index.js\" hook PreCompact run-context-save",
+        "powershell": "node \"daemon/dist/index.js\" hook PreCompact run-context-save",
+        "timeoutSec": 20
+      }
+    ],
+    "PostCompact": [
+      {
+        "type": "command",
+        "bash": "node \"daemon/dist/index.js\" hook PostCompact run-context-reinject",
+        "powershell": "node \"daemon/dist/index.js\" hook PostCompact run-context-reinject",
+        "timeoutSec": 20
+      }
+    ],
+    "SessionEnd": [
+      {
+        "type": "command",
+        "bash": "node \"daemon/dist/index.js\" hook SessionEnd session-orphan-sweep",
+        "powershell": "node \"daemon/dist/index.js\" hook SessionEnd session-orphan-sweep",
+        "timeoutSec": 20
+      }
+    ],
+    "SubagentStart": [
+      {
+        "type": "command",
+        "bash": "node \"daemon/dist/index.js\" hook SubagentStart subagent-dispatch-record",
+        "powershell": "node \"daemon/dist/index.js\" hook SubagentStart subagent-dispatch-record",
+        "timeoutSec": 20
+      }
+    ],
+    "SubagentStop": [
+      {
+        "type": "command",
+        "bash": "node \"daemon/dist/index.js\" hook SubagentStop subagent-stop-observe",
+        "powershell": "node \"daemon/dist/index.js\" hook SubagentStop subagent-stop-observe",
+        "timeoutSec": 20
+      }
+    ],
     "UserPromptSubmit": [
       {
         "type": "command",
         "bash": "node \"daemon/dist/index.js\" hook UserPromptSubmit taxonomy-nudge",
         "powershell": "node \"daemon/dist/index.js\" hook UserPromptSubmit taxonomy-nudge",
-        "timeoutSec": 30
+        "timeoutSec": 20
       },
       {
         "type": "command",
         "bash": "node \"daemon/dist/index.js\" hook UserPromptSubmit team-suggester",
         "powershell": "node \"daemon/dist/index.js\" hook UserPromptSubmit team-suggester",
-        "timeoutSec": 30
+        "timeoutSec": 20
       },
       {
         "type": "command",
         "bash": "node \"daemon/dist/index.js\" hook UserPromptSubmit risk-flag",
         "powershell": "node \"daemon/dist/index.js\" hook UserPromptSubmit risk-flag",
-        "timeoutSec": 30
+        "timeoutSec": 20
       },
       {
         "type": "command",
         "bash": "node \"daemon/dist/index.js\" hook UserPromptSubmit surfaced-run-reminder",
         "powershell": "node \"daemon/dist/index.js\" hook UserPromptSubmit surfaced-run-reminder",
-        "timeoutSec": 30
+        "timeoutSec": 20
       },
       {
         "type": "command",
         "bash": "node \"daemon/dist/index.js\" hook UserPromptSubmit profile-aware-nudge",
         "powershell": "node \"daemon/dist/index.js\" hook UserPromptSubmit profile-aware-nudge",
-        "timeoutSec": 30
+        "timeoutSec": 20
+      },
+      {
+        "type": "command",
+        "bash": "node \"daemon/dist/index.js\" hook UserPromptSubmit eights-recall-request",
+        "powershell": "node \"daemon/dist/index.js\" hook UserPromptSubmit eights-recall-request",
+        "timeoutSec": 20
       }
     ],
     "Stop": [
@@ -178,7 +263,7 @@
         "type": "command",
         "bash": "node \"daemon/dist/index.js\" hook Stop summary-format-check",
         "powershell": "node \"daemon/dist/index.js\" hook Stop summary-format-check",
-        "timeoutSec": 30
+        "timeoutSec": 20
       }
     ]
   }

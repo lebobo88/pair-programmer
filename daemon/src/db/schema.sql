@@ -22,6 +22,8 @@ CREATE TABLE IF NOT EXISTS runs (
   head_sha                 TEXT,
   tree_dirty_hash          TEXT,
   cli_versions_json        TEXT,
+  -- v11: cause a StopFailure-surfaced run was surfaced for (see schema.ts).
+  surfaced_reason          TEXT,
   started_at               TEXT NOT NULL,
   finished_at              TEXT
 );
@@ -205,3 +207,37 @@ CREATE TABLE IF NOT EXISTS artifact_validations (
 );
 CREATE INDEX IF NOT EXISTS idx_av_stage ON artifact_validations(stage_id, validator_kind);
 CREATE INDEX IF NOT EXISTS idx_av_run   ON artifact_validations(run_id);
+
+-- v11 (Phase H, GitHub #49): recovery observations. Never a claim that a
+-- producer generated an artifact -- that is what the attempts table means.
+-- run_id is intentionally NOT a foreign key: a StopFailure or SessionEnd
+-- observation can legitimately reference no run, and must not be
+-- cascade-deleted with an unrelated run.
+-- HAZARD (LOW-1): tokens_in/tokens_out/cost_usd here are per-event context,
+-- NOT an independent spend ledger. Summing them (across event_kind, or
+-- alongside attempts) double-counts money already tallied into `budgets`
+-- (run:/day:/model: for successful spend, failed:* for failed spend). Query
+-- `budgets` for totals; see schema.ts for the full reasoning.
+CREATE TABLE IF NOT EXISTS execution_events (
+  id                  TEXT PRIMARY KEY,
+  call_key            TEXT NOT NULL,
+  event_kind          TEXT NOT NULL,
+  tool_name           TEXT,
+  producer            TEXT,
+  run_id              TEXT,
+  stage_id            TEXT,
+  session_id          TEXT,
+  agent_id            TEXT,
+  attempt_slot_id     TEXT,
+  status              TEXT NOT NULL,
+  reason              TEXT,
+  detail              TEXT,
+  tokens_in           INTEGER,
+  tokens_out          INTEGER,
+  cost_usd            REAL,
+  wall_ms             INTEGER,
+  created_at          TEXT NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_execution_events_call_key ON execution_events(call_key);
+CREATE INDEX IF NOT EXISTS idx_execution_events_run  ON execution_events(run_id);
+CREATE INDEX IF NOT EXISTS idx_execution_events_kind ON execution_events(event_kind);
