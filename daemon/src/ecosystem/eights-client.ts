@@ -25,7 +25,10 @@
  */
 
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+import {
+  getDefaultEnvironment,
+  StdioClientTransport,
+} from "@modelcontextprotocol/sdk/client/stdio.js";
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -338,24 +341,57 @@ const LenientListToolsResultSchema = z
   .passthrough();
 
 /**
- * Environment to hand the spawned TheEights subprocess. `StdioClientTransport`
- * merges `getDefaultEnvironment()` (a short OS-inherit safelist — on Windows:
- * APPDATA/HOMEDRIVE/HOMEPATH/LOCALAPPDATA/PATH/PROCESSOR_ARCHITECTURE/
- * SYSTEMDRIVE/SYSTEMROOT/TEMP/USERNAME/USERPROFILE/PROGRAMFILES) with
- * `env` if and only if `env` is explicitly passed; omitting `env` entirely
- * (the prior behavior here) means TheEights-specific vars like `EIGHTS_HOME`
- * are silently dropped, so the spawned daemon falls back to
- * `homedir()/.eights` regardless of what pp's own process has set — breaking
- * both an operator's `EIGHTS_HOME` override and test isolation (a test that
- * sets `EIGHTS_HOME` to a temp dir before probing would otherwise still hit
- * the real `~/.eights/state.db`). Forward the full parent env, mirroring how
- * pp's own smoke tests spawn `pp-daemon` with explicit env
- * (test/smoke.mjs's `isolatedChildEnv`).
+ * Every `EIGHTS_*`-prefixed variable is forwarded by prefix, plus the
+ * ecosystem-wide `AIAPP_BASE` path var. This is an explicit ALLOWLIST layered
+ * on top of the MCP SDK's own `getDefaultEnvironment()` baseline (a short
+ * OS-inherit safelist — on Windows: APPDATA/HOMEDRIVE/HOMEPATH/
+ * LOCALAPPDATA/PATH/PROCESSOR_ARCHITECTURE/SYSTEMDRIVE/SYSTEMROOT/TEMP/
+ * USERNAME/USERPROFILE/PROGRAMFILES) — NOT a full parent-env copy. Forwarding
+ * the whole parent environment would leak unrelated secrets (API keys,
+ * tokens, other tools' credentials) into a third-party subprocess.
+ *
+ * Both forwarding rules are verified against TheEights' own source
+ * (`C:\AiAppDeployments\TheEights\daemon\src`, grepped for `process.env.`):
+ *
+ * 1. `EIGHTS_*` prefix — TheEights reads ~20 vars under this namespace for
+ *    its own configuration: `EIGHTS_HOME` (config.ts:23, paths.ts:34),
+ *    `EIGHTS_PROVIDER`/`EIGHTS_LLM_PROVIDER`/`EIGHTS_EMBED_PROVIDER`
+ *    (config.ts:34-36), `EIGHTS_GRAPH_DRIVER` (config.ts:32),
+ *    `EIGHTS_EMBEDDING_DIM` (config.ts:33, embeddings.ts:25),
+ *    `EIGHTS_LLM_MODEL`/`EIGHTS_LLM_FALLBACK`/`EIGHTS_LLM_COMPLETIONS`
+ *    (engines/eval/completer.ts:28-35), `EIGHTS_OLLAMA_URL`/
+ *    `EIGHTS_OLLAMA_TIMEOUT_MS`/`EIGHTS_EMBEDDING_MODEL` (embeddings.ts:23-28),
+ *    `EIGHTS_ALLOW_CLOUD_PROVIDERS` (config.ts:37), `EIGHTS_TOOL_DEADLINE_MS`/
+ *    `EIGHTS_TOOL_SLOW_WARN_MS` (index.ts:483-484), `EIGHTS_OTEL_ENABLED`/
+ *    `EIGHTS_OTEL_ENDPOINT` (index.ts:252-253), `EIGHTS_SKIP_AUDIT_CHECK`
+ *    (index.ts:383, audit-verifier.ts:49), `EIGHTS_MEM_GAUGE_MS`
+ *    (index.ts:430), `EIGHTS_DISABLE_WATCHERS` (index.ts:277),
+ *    `EIGHTS_LOG_LEVEL` (logger.ts:10), `EIGHTS_XENIA_ROOT`
+ *    (engines/registrars/xenia-registrar.ts:28, engines/xenia-watcher.ts:40),
+ *    `EIGHTS_RLM_ROOT` (engines/rlm-watcher.ts:34), `EIGHTS_EXEC_OUTPUT_ROOT`
+ *    (engines/execsuite-watcher.ts:36). Rather than hand-enumerate every one
+ *    (which silently drifts as TheEights adds config vars), pp forwards the
+ *    whole `EIGHTS_*` namespace by prefix — a namespace pp doesn't control
+ *    the meaning of and one that can never collide with a secret/credential
+ *    naming convention.
+ * 2. `AIAPP_BASE` — TheEights' `paths.ts:83` reads it for ecosystem-relative
+ *    path resolution (the AIAPP_BASE portability convention shared across
+ *    the AiAppDeployments repos; see MEMORY project_aiapp_base_portability).
+ *
+ * Everything else — credentials, unrelated API keys, other tools'
+ * configuration — is intentionally NOT forwarded. Fixes a prior full-env
+ * copy that forwarded every parent variable unscoped.
  */
-function inheritedEnv(): Record<string, string> {
-  const env: Record<string, string> = {};
+const EIGHTS_ENV_PREFIX = "EIGHTS_";
+const ADDITIONAL_FORWARDED_ENV_VARS = Object.freeze(["AIAPP_BASE"]);
+
+function scopedEightsEnv(): Record<string, string> {
+  const env: Record<string, string> = { ...getDefaultEnvironment() };
   for (const [k, v] of Object.entries(process.env)) {
-    if (v !== undefined) env[k] = v;
+    if (v === undefined) continue;
+    if (k.startsWith(EIGHTS_ENV_PREFIX) || ADDITIONAL_FORWARDED_ENV_VARS.includes(k)) {
+      env[k] = v;
+    }
   }
   return env;
 }
@@ -371,7 +407,7 @@ async function probe(): Promise<boolean> {
     transport = new StdioClientTransport({
       command: entry.command,
       args: entry.args,
-      env: inheritedEnv(),
+      env: scopedEightsEnv(),
     });
     const client = new Client(
       { name: "pp-daemon-eights-client", version: "0.1.0" },

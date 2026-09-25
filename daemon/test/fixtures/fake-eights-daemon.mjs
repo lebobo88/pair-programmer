@@ -16,14 +16,17 @@
 //      throws on this tools/list response — even though the tool the caller
 //      actually cares about (`eights.memory.*`) is perfectly well-formed.
 //
-//   2. The `eights.memory.add` handler echoes back
-//      `process.env.PP_UNIT_TEST_ENV_MARKER` so the test can prove the
-//      spawned child actually received an env var that is NOT on the MCP
-//      SDK's default Windows/POSIX inherited-env safelist (see
-//      `DEFAULT_INHERITED_ENV_VARS` in
-//      @modelcontextprotocol/sdk/client/stdio.js) — i.e. that
-//      `eights-client.ts`'s `probe()` is passing `env` explicitly to
-//      `StdioClientTransport` rather than relying on the SDK's default.
+//   2. The `eights.memory.add` handler echoes back two env vars so the test
+//      can prove `eights-client.ts`'s `scopedEightsEnv()` allowlist forwards
+//      exactly what it should and nothing more:
+//        - `process.env.EIGHTS_UNIT_TEST_MARKER` (an `EIGHTS_*`-prefixed var,
+//          not on the MCP SDK's default Windows/POSIX inherited-env safelist)
+//          MUST reach the spawned child — proves the allowlist forwards the
+//          `EIGHTS_*` namespace.
+//        - `process.env.PP_TEST_FAKE_SECRET_TOKEN` (a secret-shaped var that
+//          is NOT `EIGHTS_*`-prefixed and NOT in `ADDITIONAL_FORWARDED_ENV_VARS`)
+//          must NOT reach the spawned child — proves the allowlist doesn't
+//          degrade back into a full parent-env copy.
 
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
@@ -67,7 +70,8 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
           type: "text",
           text: JSON.stringify({
             id: "mem_fixture_1",
-            env_marker: process.env.PP_UNIT_TEST_ENV_MARKER ?? null,
+            eights_env_marker: process.env.EIGHTS_UNIT_TEST_MARKER ?? null,
+            secret_env_marker: process.env.PP_TEST_FAKE_SECRET_TOKEN ?? null,
           }),
         },
       ],
