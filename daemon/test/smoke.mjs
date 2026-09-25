@@ -80,9 +80,16 @@ async function main() {
     console.log(`✓ start_stage -> ${stage.stage_id}`);
 
     // 4. Record an attempt (no real CLI call — synthetic data).
+    // producer: "claude", not "codex" -- since GitHub #58's producer-domain
+    // split (see runs.ts tallyBudgets call site / dispatcher.ts cost-tally),
+    // recordAttempt SKIPS its own budget tally for "codex"/"agy" producers;
+    // that spend is tallied exclusively by the cost-tally PostToolUse hook
+    // on a real pp_codex/pp_agy tool call, which this synthetic-data smoke
+    // test never fires. "claude" is still tallied directly by recordAttempt
+    // (R28), which is what step 10 below asserts against budget_status.
     const att = await callTool(client, "record_attempt", {
       stage_id: stage.stage_id,
-      producer: "codex",
+      producer: "claude",
       model_id: "gpt-5.6-luna",
       tokens_in: 1234,
       tokens_out: 567,
@@ -104,7 +111,8 @@ async function main() {
     });
     console.log(`✓ archive_artifact -> ${artifact.artifact_id} (${artifact.sha256.slice(0, 12)}…)`);
 
-    // 6. Record a verdict — judge uses gpt-5.6-terra (different model, same vendor).
+    // 6. Record a verdict — judge uses gpt-5.6-terra (codex), attempt producer
+    //    is claude (see step 4), so this is now a cross-vendor verdict.
     //    critique_md must be ≥80 non-whitespace chars to satisfy the
     //    anti-vacuous-pass refine on RecordVerdictSchema.
     const verdict = await callTool(client, "record_verdict", {
