@@ -24,8 +24,53 @@
 import { listActiveLocks } from "./lock.js";
 import { log } from "./logger.js";
 import { abortAllInFlightChildren, _refuseNewSpawns } from "../mcp/cli-runner.js";
+import { shutdown as shutdownEightsClient } from "../ecosystem/eights-client.js";
 
 let shuttingDown = false;
+
+/**
+ * L1B: wall-clock cap on the graceful TheEights `eights-client.shutdown()`
+ * call below. `eights-client.shutdown()` -> MCP `client.close()` ->
+ * `transport.close()` already runs its own bounded stdin-end -> 2s SIGTERM
+ * grace -> 2s SIGKILL sequence (MCP SDK stdio.js, all `.unref()`'d timers),
+ * so this cap is a backstop against that whole sequence hanging (e.g. a
+ * child that never emits a 'close' event even after SIGKILL, on some
+ * platforms), not the primary mechanism. Deliberately a SEPARATE budget from
+ * `ABORT_TOTAL_CAP_MS` (cli-runner.ts) — a slow/hung TheEights child must
+ * never borrow from or extend the existing, already-tuned CLI-child abort
+ * budget that the lock-retention invariant below depends on.
+ */
+const EIGHTS_SHUTDOWN_CAP_MS = 5_000;
+
+/**
+ * Await `fn()` but never wait past `capMs` for it. On timeout the eights
+ * child may still be alive (mechanism (d) in eights-client.ts — the
+ * process-`exit` handler — is the backstop for that case), but we do not let
+ * it block the daemon's own shutdown/exit.
+ */
+function withCap(fn: () => Promise<void>, capMs: number): Promise<void> {
+  return new Promise<void>((resolve) => {
+    let settled = false;
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      log.warn({ cap_ms: capMs }, "shutdown: eights-client.shutdown() exceeded cap — proceeding without it");
+      resolve();
+    }, capMs);
+    timer.unref();
+    fn().then(
+      () => { if (!settled) { settled = true; clearTimeout(timer); resolve(); } },
+      (err) => {
+        if (!settled) {
+          settled = true;
+          clearTimeout(timer);
+          log.warn({ err }, "shutdown: eights-client.shutdown() rejected");
+          resolve();
+        }
+      },
+    );
+  });
+}
 
 /** True once the first shutdownAndExit call has been made. */
 export function isShuttingDown(): boolean {
@@ -70,7 +115,17 @@ export async function shutdownAndExit(reason: string, opts: ShutdownOpts = {}): 
 
   // Step 1: Abort in-flight CLI children and wait for confirmed exit.
   // Returns true when any children were unconfirmed-alive at the cap deadline.
-  const hadUnconfirmedSurvivors = await abortAllInFlightChildren();
+  // Run concurrently with the (separately-capped, best-effort) TheEights
+  // client shutdown below — CLI-child abort and the eights-client connection
+  // are independent resources, and the lock-retention invariant below reads
+  // ONLY `hadUnconfirmedSurvivors` (CLI children), never the eights-client
+  // outcome — an eights child that outlives this cap is handled by the
+  // process-`exit` best-effort kill (eights-client.ts), never by retaining a
+  // project lock.
+  const [hadUnconfirmedSurvivors] = await Promise.all([
+    abortAllInFlightChildren(),
+    withCap(shutdownEightsClient, EIGHTS_SHUTDOWN_CAP_MS),
+  ]);
 
   // Step 2: Release every project lock held by this process — but only when
   // all children were confirmed terminated.  If any survivor remains after the

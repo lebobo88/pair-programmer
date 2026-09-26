@@ -365,7 +365,7 @@ describe("settings-policy (Phase J, GitHub #51)", () => {
     assert.ok(DAEMON_SRC_DIR.endsWith(join("daemon", "src")));
   });
 
-  it("the derived PP_* set is exactly the nineteen flags this phase re-derived at authoring time", () => {
+  it("the derived PP_* set is exactly the twenty flags this phase re-derived at authoring time", () => {
     // This is the one place a concrete list appears, and it exists only to
     // prove the derivation still finds the same flags this phase's prompt
     // asserted -- it is checked FOR EQUALITY against the derived set, not
@@ -410,6 +410,7 @@ describe("settings-policy (Phase J, GitHub #51)", () => {
       "PP_DOCTOR_PIN_TIMEOUT_MS",
       "PP_DOCTOR_PROBE_TIMEOUT_MS",
       "PP_ECOSYSTEM_DISABLED",
+      "PP_ECOSYSTEM_IDLE_CLOSE_MS",
       "PP_ECOSYSTEM_PROBE_TIMEOUT_MS",
       "PP_EIGHTS_DAEMON",
       "PP_HOME",

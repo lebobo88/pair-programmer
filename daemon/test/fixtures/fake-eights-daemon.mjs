@@ -37,6 +37,32 @@ import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
+import { writeFileSync, mkdirSync } from "node:fs";
+import { join } from "node:path";
+
+// L1B: eights-lifecycle.unit.mjs needs to assert this fixture process is
+// actually DEAD (not just orphaned-but-unref'd) after a caller finishes with
+// it -- including a caller that spawns it as a GRANDCHILD (a bare Node
+// script that imports eights-client, which itself spawns this fixture), so
+// there is no in-process way for the top-level test to learn this fixture's
+// pid directly.
+//
+// Deliberately reuses `EIGHTS_HOME` -- already on eights-client.ts's frozen
+// `EIGHTS_FORWARDED_ENV_VARS` allowlist and already forwarded to every
+// spawned peer (see eights-client-listtools.unit.mjs, which sets it for an
+// unrelated echo-back assertion) -- as the carrier for the pid-file
+// directory, instead of adding a new test-only variable to that
+// production-audited, exact-name allowlist. When `EIGHTS_HOME` is set, this
+// fixture writes its own pid to `<EIGHTS_HOME>/fixture.pid` on startup.
+const eightsHome = process.env.EIGHTS_HOME;
+if (eightsHome) {
+  try {
+    mkdirSync(eightsHome, { recursive: true });
+    writeFileSync(join(eightsHome, "fixture.pid"), String(process.pid), "utf8");
+  } catch {
+    // best-effort; a failure here must not stop the fixture from serving.
+  }
+}
 
 const server = new Server(
   { name: "fake-eights-daemon", version: "0.0.1" },
