@@ -98,23 +98,26 @@ export function makeTempLedger(prefix = "pp-isolated-") {
 export function isolatedChildEnv({ ppHome, ppDbPath, extra = {}, base = process.env, prefix, eights } = {}) {
   const temp = ppHome && ppDbPath ? { ppHome, ppDbPath } : makeTempLedger(prefix);
   const eightsOpts = eights ?? {};
-  const eightsEnv = {};
+  const env = {
+    ...scrubLedgerEnv(base),
+    PP_HOME: temp.ppHome,
+    PP_DB_PATH: temp.ppDbPath,
+  };
   if (eightsOpts.enabled) {
+    // An ambient PP_ECOSYSTEM_DISABLED=1 may already be sitting in `base`
+    // (e.g. scripts/run-tests.mjs sets it process-wide around the batched
+    // *.unit.mjs run) -- explicit opt-in must actually re-enable the probe,
+    // not silently inherit a disable that predates this call.
+    delete env.PP_ECOSYSTEM_DISABLED;
     if (!("PP_EIGHTS_DAEMON" in extra) && !("EIGHTS_HOME" in extra)) {
-      eightsEnv.EIGHTS_HOME =
-        eightsOpts.eightsHome ?? mkdtempSync(join(tmpdir(), "pp-isolated-eights-home-"));
+      env.EIGHTS_HOME = eightsOpts.eightsHome ?? mkdtempSync(join(tmpdir(), "pp-isolated-eights-home-"));
     }
   } else {
-    eightsEnv.PP_ECOSYSTEM_DISABLED = "1";
+    env.PP_ECOSYSTEM_DISABLED = "1";
   }
+  Object.assign(env, extra);
   return {
-    env: {
-      ...scrubLedgerEnv(base),
-      PP_HOME: temp.ppHome,
-      PP_DB_PATH: temp.ppDbPath,
-      ...eightsEnv,
-      ...extra,
-    },
+    env,
     ppHome: temp.ppHome,
     ppDbPath: temp.ppDbPath,
   };
