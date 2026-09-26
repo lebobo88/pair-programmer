@@ -524,6 +524,23 @@ export function ecosystemProbeTimeoutMs(): number {
   return parseBoundedTimeoutMs("PP_ECOSYSTEM_PROBE_TIMEOUT_MS", 3000);
 }
 
+/**
+ * How long the eights-client connection may sit idle (no in-flight
+ * `safeCall`) before it proactively self-closes (L1B lifecycle fix,
+ * 2026-09-26). Without this, a long-lived `pp-daemon mcp` process that
+ * probes TheEights once keeps that child alive for its entire lifetime even
+ * across long idle stretches between hook/tool invocations — the child is
+ * only ever closed if `shutdownAndExit` runs (see shutdown.ts), which never
+ * fires for a process that just keeps serving MCP requests. 30s default:
+ * long enough that back-to-back stage/gate calls within one lifecycle phase
+ * don't thrash reconnect, short enough that an idle daemon releases its
+ * TheEights child promptly. Implemented as a function (not a top-level
+ * const), same pattern as `ecosystemProbeTimeoutMs()`, so tests can override.
+ */
+export function ecosystemIdleCloseMs(): number {
+  return parseBoundedTimeoutMs("PP_ECOSYSTEM_IDLE_CLOSE_MS", 30_000);
+}
+
 /** Consecutive failures before a namespace breaker trips. */
 export const ECOSYSTEM_BREAKER_THRESHOLD = 3;
 

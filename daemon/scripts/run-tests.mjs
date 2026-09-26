@@ -37,8 +37,10 @@
 // pid=...` reproduced directly in a hung unit test's log). Unit tests must
 // never depend on -- or accidentally reach -- a live TheEights; only
 // eights-integration.smoke.mjs (gated on PP_LIVE_EIGHTS=1, run separately
-// below) and the two unit tests that explicitly clear this flag before
-// importing dist/ (eights-client-listtools.unit.mjs, against a fixture; see
+// below) and the unit tests that explicitly clear this flag before
+// importing dist/ against ONLY a fixture -- never a real daemon --
+// (eights-client-listtools.unit.mjs; eights-lifecycle.unit.mjs, L1B, which
+// additionally redirects HOME/USERPROFILE to an isolated temp dir first; see
 // PP_ECOSYSTEM_DISABLED in src/ecosystem/eights-client.ts) may probe.
 
 import { readdirSync } from "node:fs";
