@@ -268,6 +268,12 @@ type ClientState =
   | { kind: "uninit" }
   | { kind: "probing"; promise: Promise<boolean> }
   | { kind: "available"; client: Client; transport: StdioClientTransport }
+  // L1B idle-close race fix: an in-between state entered the instant shutdown()
+  // decides to close an 'available' connection, held until `client.close()`
+  // settles. Exists so `ensureReady()` never hands a `safeCall` the client
+  // instance that `shutdown()` is in the middle of closing (see shutdown()'s
+  // and ensureReady()'s comments below for the full race this closes).
+  | { kind: "closing"; promise: Promise<void> }
   | { kind: "unavailable"; reason: string };
 
 let state: ClientState = { kind: "uninit" };
@@ -721,6 +727,17 @@ async function ensureReady(): Promise<Client | null> {
   const s0 = currentState();
   if (s0.kind === "available") return s0.client;
   if (s0.kind === "unavailable") return null;
+  if (s0.kind === "closing") {
+    // L1B idle-close race fix: a shutdown (idle-timer-triggered or explicit)
+    // is in flight against the connection we'd otherwise have reused. Never
+    // hand out that closing client — await the same close the closer is
+    // already awaiting, then re-probe fresh once the old connection is
+    // actually gone. Recursing (rather than inlining) means a second
+    // shutdown or probe racing in during the await is handled by the same
+    // state-machine rules a fresh ensureReady() call would apply anyway.
+    await s0.promise;
+    return ensureReady();
+  }
   if (s0.kind === "probing") {
     await s0.promise;
     const s1 = currentState();
@@ -802,33 +819,83 @@ export async function isAvailable(): Promise<boolean> {
   return c !== null;
 }
 
+/**
+ * Close an 'available' connection. Split out of `shutdown()` so the caller
+ * can install the returned promise onto a `{ kind: "closing" }` state BEFORE
+ * awaiting it — see `shutdown()` below for why that ordering is load-bearing.
+ */
+async function closeAvailableClient(s: Extract<ClientState, { kind: "available" }>): Promise<void> {
+  // (b): re-ref the child for the duration of this awaited close. If the
+  // connection was idle (the common case — shutdown() is usually called with
+  // no call in flight), (a)/(b) already unref'd the child; without
+  // re-referencing it here, this awaited `close()` races against Node's own
+  // "nothing left ref'd, may as well finish the tick" exit heuristic and can
+  // lose — the caller's `await shutdown()` would then never observe the
+  // graceful close complete even though the underlying 'close' event does
+  // eventually fire.
+  refChild();
+  // client.close() -> transport.close() already performs the graceful
+  // stdin-end -> 2s SIGTERM grace -> 2s SIGKILL fallback sequence with its
+  // own .unref()'d timers (MCP SDK stdio.js) — no separate kill needed here
+  // on the happy path; mechanism (d) is strictly the backstop for when this
+  // await never runs at all (the hook `process.exit()` path).
+  try { await s.client.close(); } catch { /* ignore */ }
+}
+
 /** Force-close the underlying MCP connection (used at daemon shutdown / tests). */
 export async function shutdown(): Promise<void> {
   // (a): whether this call came from the idle timer firing or an explicit
   // caller (shutdownAndExit, a test), cancel any pending timer so it can't
   // fire again against the now-reset state.
   cancelIdleClose();
-  inFlightCallCount = 0;
-  if (state.kind === "available") {
-    // (b): re-ref the child for the duration of this explicit, awaited
-    // close. If the connection was idle (the common case — shutdown() is
-    // usually called with no call in flight), (a)/(b) already unref'd the
-    // child; without re-referencing it here, this awaited `close()` races
-    // against Node's own "nothing left ref'd, may as well finish the tick"
-    // exit heuristic and can lose — the caller's `await shutdown()` would
-    // then never observe the graceful close complete even though the
-    // underlying 'close' event does eventually fire. An explicit shutdown is
-    // exactly the kind of "operation in flight" (b)'s ref/unref toggle
-    // exists to protect.
-    refChild();
-    // client.close() -> transport.close() already performs the graceful
-    // stdin-end -> 2s SIGTERM grace -> 2s SIGKILL fallback sequence with its
-    // own .unref()'d timers (MCP SDK stdio.js) — no separate kill needed
-    // here on the happy path; mechanism (d) below is strictly the backstop
-    // for when this await never runs at all (the hook `process.exit()` path).
-    try { await state.client.close(); } catch { /* ignore */ }
+  // L1B idle-close race fix (final-judge finding): the previous version set
+  // `state = { kind: "uninit" }` only AFTER `await state.client.close()`
+  // resolved, so for the entire duration of that await `state.kind` was
+  // still `"available"` — any `safeCall` whose `ensureReady()` ran during
+  // that window read `s0.kind === "available"` and was hand-back the very
+  // client instance this function is in the middle of closing. That call
+  // then failed against the closing/closed transport, `safeCall`'s catch
+  // block recorded a namespace breaker failure, and its `finally` re-armed
+  // `scheduleIdleClose()` — a race entirely invisible to callers.
+  //
+  // Fix: move `state` OUT of `"available"` (to `"closing"`, carrying the
+  // close promise) in the same synchronous tick that reads it, BEFORE the
+  // first `await` on `client.close()`. JS's single-threaded execution means
+  // no other code can observe `"available"` for this connection once this
+  // assignment runs — `ensureReady()` (above) checks for `"closing"` and
+  // awaits the same promise instead of reading a stale client.
+  //
+  // Also: the previous version unconditionally did `inFlightCallCount = 0`
+  // here, even when a live `safeCall` had incremented it and was still
+  // in-flight (its own `finally` block reads/decrements the same counter).
+  // That's removed — a live call's own `finally` is the only writer that
+  // should ever decrement `inFlightCallCount` for that call. The idle timer
+  // itself already refuses to invoke `shutdown()` at all while
+  // `inFlightCallCount > 0` (see `scheduleIdleClose()`'s callback above), so
+  // an idle fire during an in-flight call never reaches this function in the
+  // first place; an *explicit* `shutdown()` (shutdownAndExit, a test) racing
+  // a live call is allowed to proceed and close the connection out from
+  // under it, same as before this fix — that call's own timeout/catch
+  // handles the resulting failure, which is a pre-existing, orthogonal
+  // behavior this fix does not change.
+  const s = currentState();
+  if (s.kind === "closing") {
+    // Someone else (the idle timer, a concurrent explicit shutdown() call)
+    // already initiated the close this call would otherwise duplicate.
+    // Await the same promise instead of racing a second `client.close()`.
+    await s.promise;
+  } else if (s.kind === "available") {
+    const closePromise = closeAvailableClient(s);
+    state = { kind: "closing", promise: closePromise };
+    await closePromise;
   }
-  state = { kind: "uninit" };
+  // Only flip to 'uninit' if nothing else has already moved state further
+  // (e.g. a fresh probe that started once we let go of the CPU inside the
+  // awaits above — leave that in place rather than clobbering it back to
+  // 'uninit').
+  if (state.kind === "closing" || state.kind === "available") {
+    state = { kind: "uninit" };
+  }
   for (const ns of Object.keys(breakers) as NamespaceKey[]) {
     breakers[ns].consecutive_failures = 0;
     breakers[ns].tripped_until_ms = null;
@@ -841,6 +908,25 @@ export function resetBreakersForTesting(): void {
     breakers[ns].consecutive_failures = 0;
     breakers[ns].tripped_until_ms = null;
   }
+}
+
+/**
+ * Diagnostics-only accessor for a namespace breaker's current counters (test
+ * hook, same pattern as `resetBreakersForTesting`/`getConnectedDaemonPidForTesting`
+ * below). Used by the idle-close race regression test to assert a `safeCall`
+ * that raced an expiring idle close recorded zero breaker failures.
+ */
+export function getBreakerStateForTesting(ns: NamespaceKey): { consecutive_failures: number; tripped_until_ms: number | null } {
+  return { ...breakers[ns] };
+}
+
+/**
+ * Diagnostics-only accessor for the current in-flight `safeCall` count (test
+ * hook). Used by the idle-close race regression test to assert an idle timer
+ * firing while a call is in flight does not proceed to close the client.
+ */
+export function getInFlightCallCountForTesting(): number {
+  return inFlightCallCount;
 }
 
 /**

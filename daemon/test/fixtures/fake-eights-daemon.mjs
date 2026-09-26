@@ -30,6 +30,26 @@
 //          reads, auth/capability.ts:150 — explicitly excluded from the
 //          allowlist, see eights-client.ts's doc comment) must NOT reach the
 //          spawned child either.
+//
+// L1B idle-close race regression (eights-lifecycle-idle-race.unit.mjs) needs
+// two more controllable knobs, both opt-in (default: no delay, identical
+// behavior to every other test using this fixture):
+//   - `closeDelayMs`: when the client ends stdin (the first step of
+//     `StdioClientTransport.close()`), this fixture waits that many ms
+//     before actually exiting, instead of exiting immediately on EOF. That
+//     widens the window `eights-client.ts`'s `shutdown()` spends awaiting
+//     `client.close()` — which is exactly the window the idle-close race
+//     needs a concurrent `safeCall` to land in.
+//   - `callDelayMs`: when set, `eights.memory.add` waits that many ms before
+//     responding — used to keep a call "in flight" long enough to span an
+//     idle-close timer's deadline.
+// `eights-client.ts`'s `scopedEightsEnv()` forwards only its frozen
+// exact-name `EIGHTS_*`/`AIAPP_BASE` allowlist to this spawned child — a
+// bare `PP_TEST_FIXTURE_*` env var set in the parent test process would
+// silently NOT reach here. So, same as the pid-file carrier below, these two
+// knobs are read from a JSON control file the test writes to
+// `<EIGHTS_HOME>/fixture-control.json` BEFORE the parent triggers the first
+// connect, rather than from the environment.
 
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
@@ -37,7 +57,7 @@ import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
-import { writeFileSync, mkdirSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 
 // L1B: eights-lifecycle.unit.mjs needs to assert this fixture process is
@@ -53,14 +73,28 @@ import { join } from "node:path";
 // unrelated echo-back assertion) -- as the carrier for the pid-file
 // directory, instead of adding a new test-only variable to that
 // production-audited, exact-name allowlist. When `EIGHTS_HOME` is set, this
-// fixture writes its own pid to `<EIGHTS_HOME>/fixture.pid` on startup.
+// fixture writes its own pid to `<EIGHTS_HOME>/fixture.pid` on startup, and
+// reads `<EIGHTS_HOME>/fixture-control.json` (if present) for the two
+// idle-close-race knobs described above.
 const eightsHome = process.env.EIGHTS_HOME;
+let closeDelayMs = 0;
+let callDelayMs = 0;
 if (eightsHome) {
   try {
     mkdirSync(eightsHome, { recursive: true });
     writeFileSync(join(eightsHome, "fixture.pid"), String(process.pid), "utf8");
   } catch {
     // best-effort; a failure here must not stop the fixture from serving.
+  }
+  try {
+    const controlPath = join(eightsHome, "fixture-control.json");
+    if (existsSync(controlPath)) {
+      const cfg = JSON.parse(readFileSync(controlPath, "utf8"));
+      if (Number.isFinite(cfg.closeDelayMs)) closeDelayMs = cfg.closeDelayMs;
+      if (Number.isFinite(cfg.callDelayMs)) callDelayMs = cfg.callDelayMs;
+    }
+  } catch {
+    // best-effort; a malformed/missing control file just means no delay.
   }
 }
 
@@ -93,6 +127,9 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
 server.setRequestHandler(CallToolRequestSchema, async (req) => {
   const { name, arguments: args } = req.params;
   if (name === "eights.memory.add") {
+    if (callDelayMs > 0) {
+      await new Promise((resolve) => setTimeout(resolve, callDelayMs));
+    }
     return {
       content: [
         {
@@ -112,6 +149,18 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
     content: [{ type: "text", text: `fixture: unknown tool ${name}` }],
   };
 });
+
+// L1B idle-close race regression: when `closeDelayMs` (read from the control
+// file above) is set, delay this fixture's own exit after the client ends
+// stdin (StdioClientTransport.close()'s first step), instead of letting
+// Node's default "exit when stdin ends and nothing else is ref'd" behavior
+// close it near-instantly. Widens the window the client's awaited `close()`
+// spends unresolved.
+if (closeDelayMs > 0) {
+  process.stdin.on("end", () => {
+    setTimeout(() => process.exit(0), closeDelayMs);
+  });
+}
 
 const transport = new StdioServerTransport();
 await server.connect(transport);
