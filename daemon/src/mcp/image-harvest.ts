@@ -765,6 +765,8 @@ export type SettleOptions = {
   maxOpensPerCall?: number;
   maxBytes?: number;
   maxPolls?: number;
+  /** Test-only seam: replaces the inter-poll sleep (e.g. to simulate a timer firing late). */
+  sleep?: (ms: number) => Promise<void>;
 };
 
 export type SettledHarvest =
@@ -847,6 +849,7 @@ export async function pollForSettledPngs(
   // Stop after this poll if the poll cap is reached, or if the NEXT poll
   // would start after the deadline: no poll ever starts after `deadline`.
   const noFurtherPoll = (): boolean => polls >= maxPolls || Date.now() + intervalMs > deadline;
+  let lastOutcome: SettledHarvest | undefined;
 
   for (;;) {
     polls += 1;
@@ -908,11 +911,10 @@ export async function pollForSettledPngs(
         return !pending.has(n) && a !== undefined && b !== undefined && sameObservation(a, b);
       });
       const done = tracked.length > 0 && settled.length === live.length;
-      if (done || budgetExhausted || noFurtherPoll()) {
-        const why = budgetExhausted
-          ? `polling stopped: per-call ${budgetExhausted === "entries" ? `directory-entry budget (${maxEntriesPerCall})` : `open budget (${maxOpensPerCall})`} exhausted`
-          : `did not settle within ${timeoutMs}ms / ${maxPolls} polls`;
-        return {
+      const why = budgetExhausted
+        ? `polling stopped: per-call ${budgetExhausted === "entries" ? `directory-entry budget (${maxEntriesPerCall})` : `open budget (${maxOpensPerCall})`} exhausted`
+        : `did not settle within ${timeoutMs}ms / ${maxPolls} polls`;
+      const outcome: SettledHarvest = {
           kind: "ok",
           dirReal: res.dirReal,
           dirId: res.dirId,
@@ -931,12 +933,17 @@ export async function pollForSettledPngs(
           deadlineMs: deadline,
           ...(budgetExhausted ? { budgetExhausted } : {}),
         };
-      }
+      if (done || budgetExhausted || noFurtherPoll()) return outcome;
+      lastOutcome = outcome;
       prev = seen;
-    } else if (noFurtherPoll()) {
-      return res;
+    } else {
+      if (noFurtherPoll()) return res;
+      lastOutcome = res;
     }
-    await sleep(intervalMs);
+    await (opts.sleep ?? sleep)(intervalMs);
+    // A timer can fire late under load: never START a poll after the deadline —
+    // report the previous poll's outcome instead.
+    if (Date.now() > deadline && lastOutcome) return lastOutcome;
   }
 }
 

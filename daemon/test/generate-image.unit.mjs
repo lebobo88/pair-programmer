@@ -1710,6 +1710,18 @@ describe("pp_codex.generate_image: settle observation and per-call budgets", () 
     assert.ok(r.polls <= 3, `${r.polls} polls in a 250ms window at 100ms`);
   });
 
+  test("deadline: a sleep that overruns the deadline does not start another poll (timer firing late under load)", async () => {
+    const { pollForSettledPngs } = await importDist("mcp/image-harvest.js");
+    const root = tmp("pp-img-root-");
+    const sessionId = newSessionId();
+    writePngs({ "a.png": make24ByteHeaderPng() })(join(root, sessionId));
+    const lateSleep = (ms) => new Promise((r) => setTimeout(r, ms + 300)); // always fires 300ms late
+    const r = await pollForSettledPngs(root, sessionId, { timeoutMs: 250, intervalMs: 100, sleep: lateSleep });
+    assert.equal(r.polls, 1, "the late wake-up lands past the deadline, so no second poll starts");
+    assert.ok(r.lastPollStartMs <= r.deadlineMs);
+    assert.match(r.unsettled[0]?.reason ?? "", /did not settle/);
+  });
+
   test("listSessionEntries counts the truncation probe as a read entry", async () => {
     const { listSessionEntries } = await importDist("mcp/image-harvest.js");
     const dir = tmp("pp-img-list-");
@@ -1897,6 +1909,10 @@ describe("pp_agy.generate_image", () => {
  *   hard poll cap removed                        -> 30-poll cap
  *   poll allowed to start after the deadline     -> no poll starts after the deadline
  *   truncation probe not counted / no room left  -> probe counted; cumulative entry budget exactly 1000
+ *   deadline not re-checked after the sleep      -> a late-firing sleep does not start another poll (found under
+ *                                                   full-suite load, now deterministic via the sleep seam)
+ *   NOTE: the pre-sleep "next poll would start after the deadline" check now stays GREEN when removed — the
+ *   post-sleep check subsumes it for the invariant; it only avoids a useless sleep.
  *   NOT FALSIFIABLE (disclosed): re-validating the RE-ENCODED output with acceptPng — pngjs always emits a valid PNG, so
  *   no fixture can make that defence-in-depth check fire without replacing the encoder.
  *   NOTE: removing only the link/type clause of the output_dir check stays GREEN — it is subsumed, not missing:
