@@ -88,8 +88,8 @@ const GenerateImageSchema = z.object({
   cwd:               z.string().min(1),
   model:             z.string().optional(),
   output_dir:        z.string().min(1),
-  max_dimension:     z.number().int().positive().default(768),
-  byte_budget_bytes: z.number().int().positive().default(300 * 1024),
+  max_dimension:     z.number().int().min(256).max(4096).default(768),
+  byte_budget_bytes: z.number().int().positive().max(32 * 1024 * 1024).default(300 * 1024),
   timeout_ms:        z.number().int().positive().optional(),
 });
 

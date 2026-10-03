@@ -5,8 +5,8 @@ import {
   ListToolsRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
-import { mkdirSync, writeFileSync, readFileSync, existsSync, readdirSync, lstatSync } from "node:fs";
-import { join, dirname, resolve, sep, extname, basename } from "node:path";
+import { mkdirSync, writeFileSync, readFileSync, existsSync, closeSync } from "node:fs";
+import { join, dirname, resolve } from "node:path";
 import { homedir } from "node:os";
 import { spawnSync } from "node:child_process";
 import { nanoid } from "nanoid";
@@ -19,6 +19,7 @@ import { computeCost } from "../util/prices.js";
 import { SANDBOX_DIR, ensureDirs } from "../util/paths.js";
 import { log } from "../util/logger.js";
 import {
+  DEFAULT_CLI_TIMEOUT_MS,
   DEFAULT_MODELS,
   JUDGE_REASONING_EFFORTS,
   JUDGE_OVERRIDE_SOURCES,
@@ -26,7 +27,27 @@ import {
   type JudgeReasoningEffort,
   type JudgeOverrideSource,
 } from "../config.js";
-import { runCliWithRetry, type CliAttempt } from "./cli-runner.js";
+import { runCliWithRetry, type CliAttempt, type CliRunOptions, type CliRunResult } from "./cli-runner.js";
+import {
+  DOWNSCALE_FLOOR_PX,
+  MAX_DIMENSION_PX,
+  MAX_SOURCE_BYTES,
+  MAX_DECODED_PIXELS_PER_IMAGE,
+  MAX_IMAGES_PER_CALL,
+  MAX_DIR_ENTRIES_SCANNED,
+  MAX_OUTPUT_NAME_COLLISIONS,
+  HARVEST_POLL_TIMEOUT_MS,
+  STALE_MTIME_SLACK_MS,
+  isValidSessionId,
+  pollForSettledPngs,
+  openVerifiedFile,
+  readFdFully,
+  validatePngStructure,
+  prepareOutputDir,
+  writeImageSafely,
+  downscaleImageToFit,
+  type FileOpenHooks,
+} from "./image-harvest.js";
 import { shutdownAndExit } from "../util/shutdown.js";
 import { getSession, setSession, synthesizeRecap } from "../orchestrator/sub-cli-sessions.js";
 
@@ -74,6 +95,41 @@ const GenerateSchema = z.object({
 });
 
 /**
+ * `generate_image` — run ONE fresh codex exec turn and harvest the PNGs it
+ * wrote to `~/.codex/generated_images/<session-id>/`, downscaled to fit a byte
+ * budget, into a caller-supplied output directory.
+ *
+ * `output_dir` is REQUIRED (not defaulted) — the harvested files are copies,
+ * and silently choosing a location for them would surprise a caller more
+ * than an explicit argument.
+ */
+/**
+ * `timeout_ms` ceiling for `generate_image`. A larger value is CLAMPED (not
+ * rejected) so a caller cannot hold a CLI process and daemon worker slot open
+ * indefinitely. With the runner's retry disabled for this tool, this is also
+ * the bound on the codex turn's wall clock.
+ */
+export const MAX_GENERATE_IMAGE_TIMEOUT_MS = 15 * 60 * 1000;
+
+/** Effective codex-turn timeout for `generate_image`: default when omitted, clamped to the ceiling. */
+export function clampImageTimeoutMs(requested: number | undefined): number {
+  return Math.min(requested ?? DEFAULT_CLI_TIMEOUT_MS, MAX_GENERATE_IMAGE_TIMEOUT_MS);
+}
+
+export const GenerateImageSchema = z.object({
+  prompt:            z.string().min(1),
+  cwd:               z.string().min(1),
+  model:             z.string().default(DEFAULT_MODELS.codex_generate),
+  output_dir:        z.string().min(1),
+  /** Longest side a returned image is fit within. Outside [256, 4096] is REJECTED, not clamped. */
+  max_dimension:     z.number().int().min(DOWNSCALE_FLOOR_PX).max(MAX_DIMENSION_PX).default(768),
+  /** Byte budget per returned file. Bounded by the per-source size cap. */
+  byte_budget_bytes: z.number().int().positive().max(MAX_SOURCE_BYTES).default(300 * 1024),
+  /** Clamped (not rejected) to MAX_GENERATE_IMAGE_TIMEOUT_MS by `clampImageTimeoutMs`. */
+  timeout_ms:        z.number().int().positive().optional(),
+});
+
+/**
  * Shared critique option surface (J5). `pp_agy.critique` carries an IDENTICAL
  * set — a judge call must read the same way whichever vendor serves it.
  *
@@ -83,36 +139,6 @@ const GenerateSchema = z.object({
  * any selection that deviates from the pin requires both an `override_source`
  * and a non-empty `override_reason`.
  */
-/**
- * `generate_image` — run a codex exec turn and harvest whatever PNGs it wrote
- * to `~/.codex/generated_images/<session-id>/`, downscaled to fit a byte
- * budget, written into a caller-supplied output directory.
- *
- * `output_dir` is REQUIRED (not defaulted) — the harvested files are copies,
- * and silently choosing a location for them would surprise a caller more
- * than an explicit argument.
- */
-/**
- * Caller-supplied `timeout_ms` clamp for `generate_image`. Without a ceiling
- * a caller could request an arbitrarily large timeout, holding a CLI process
- * (and the daemon worker slot) open indefinitely. 15 minutes comfortably
- * covers image-generation turns while bounding worst case.
- */
-const MAX_GENERATE_IMAGE_TIMEOUT_MS = 15 * 60 * 1000;
-
-const GenerateImageSchema = z.object({
-  prompt:            z.string().min(1),
-  cwd:               z.string().min(1),
-  model:             z.string().default(DEFAULT_MODELS.codex_generate),
-  output_dir:        z.string().min(1),
-  /** Max width/height a returned image is downscaled to fit within. */
-  max_dimension:     z.number().int().positive().default(768),
-  /** Byte budget per returned file; halved-downscale continues until under this or the 256px floor. */
-  byte_budget_bytes: z.number().int().positive().default(300 * 1024),
-  /** Clamped to MAX_GENERATE_IMAGE_TIMEOUT_MS (15 minutes) — see constant doc. */
-  timeout_ms:        z.number().int().positive().max(MAX_GENERATE_IMAGE_TIMEOUT_MS).optional(),
-});
-
 const CritiqueSchema = z.object({
   artifact_text:    z.string().min(1),
   rubric_md:        z.string().min(1),
@@ -182,6 +208,14 @@ type CodexGenerateInternalOptions = {
    * directory, which is exactly the stale-image path this flag closes.
    */
   fresh_session?: boolean;
+  /** Forwarded to `runCliWithRetry`; `generate_image` passes false (single attempt). */
+  retry_on_transient?: boolean;
+  /**
+   * Test-only DI seam: replaces `runCliWithRetry` so a test can drive the REAL
+   * `codexGenerate` (session lookup, argv construction, session persistence)
+   * without spawning the CLI. Production code never sets this.
+   */
+  _runCli?: (opts: CliRunOptions) => Promise<CliRunResult>;
 };
 
 /**
@@ -408,13 +442,14 @@ async function codexGenerate(
     linkedWorktreeCommonDir,
   });
 
-  const run = await runCliWithRetry({
+  const run = await (opts._runCli ?? runCliWithRetry)({
     bin: "codex",
     cliArgs,
     cwd: args.cwd,
     vendor: "codex",
     input: prompt,
     timeout_ms: args.timeout_ms,
+    ...(opts.retry_on_transient === false ? { retry_on_transient: false } : {}),
   });
 
   const parsed = parseCodexJsonl(run.stdout);
@@ -506,7 +541,7 @@ async function codexGenerate(
 // ─── generate_image ────────────────────────────────────────────────────────
 
 export type GeneratedImage = {
-  /** Absolute path of the downscaled copy written into the caller's output_dir. */
+  /** Absolute (real) path of the copy written into the caller's output_dir. */
   path: string;
   bytes: number;
   width: number;
@@ -525,7 +560,7 @@ export type OverBudgetImage = {
   height: number;
 };
 
-/** A file in the session directory that could not be turned into a returned image. */
+/** A session-directory entry that could not be turned into a returned image, and why. */
 export type ImageFailure = {
   file: string;
   reason: string;
@@ -534,294 +569,84 @@ export type ImageFailure = {
 export type CodexGenerateImageResult =
   | {
       /**
-       * "ok" only when every harvested PNG produced a budget-compliant
-       * image with no failures. "partial" means SOME images succeeded but at
-       * least one is over budget and/or failed — callers must check
-       * `over_budget`/`failures`, not just `images.length > 0`.
+       * "ok": at least one image, nothing over budget, no failures.
+       * "partial": something was written, but at least one image is over
+       * budget and/or failed — check `over_budget` and `failures`.
+       * "failed": nothing was written; `failures` says why per file.
        */
-      status: "ok" | "partial";
+      status: "ok" | "partial" | "failed";
       images: GeneratedImage[];
       over_budget: OverBudgetImage[];
       failures: ImageFailure[];
       session_id: string;
+      /** Session-directory entries visited (never more than MAX_DIR_ENTRIES_SCANNED). */
+      scanned_entries: number;
+      /** True when the session directory held more entries than were examined. */
+      enumeration_truncated: boolean;
       tokens_in: number;
       tokens_out: number;
       cost_usd: number;
       wall_ms: number;
     }
-  | {
-      status: "no_session_id";
-      reason: string;
-    }
-  | {
-      status: "invalid_session_id";
-      reason: string;
-      session_id: string;
-    }
-  | {
-      status: "cli_failure";
-      reason: string;
-      exit_code: number;
-      session_id?: string;
-    }
-  | {
-      status: "empty_session_dir";
-      reason: string;
-      session_id: string;
-    };
+  | { status: "no_session_id"; reason: string }
+  | { status: "invalid_session_id"; reason: string; session_id: string }
+  | { status: "invalid_session_dir"; reason: string; session_id: string }
+  | { status: "invalid_output_dir"; reason: string }
+  | { status: "cli_failure"; reason: string; exit_code: number; session_id?: string }
+  | { status: "empty_session_dir"; reason: string; session_id: string };
 
 export type CodexGenerateImageInternalOptions = {
   /**
-   * Test-only DI seam: replaces the real codex exec turn so tests can control
-   * the returned `session_id` (or omit it) without spawning the CLI.
+   * Test-only DI seam: replaces the whole codex turn (`codexGenerate`) so a
+   * test controls the reported `session_id` without spawning the CLI.
    */
   _invoke?: (genArgs: z.infer<typeof GenerateSchema>) => Promise<CodexResult>;
   /**
-   * Test-only DI seam: overrides `~/.codex/generated_images` so tests can
-   * point at a fixture directory instead of the real home directory.
+   * Test-only DI seam: keeps the REAL `codexGenerate` but replaces the CLI
+   * runner, so a test can prove the fresh-session / single-attempt wiring.
    */
+  _runCli?: (opts: CliRunOptions) => Promise<CliRunResult>;
+  /** Test-only DI seam: overrides `~/.codex/generated_images`. */
   _imagesRoot?: string;
+  /** Test-only DI seam: fired around each source file's verified open. */
+  _fileHooks?: FileOpenHooks;
 };
 
 /**
- * Downscale threshold floor (px). `downscaleImageToFit` halves the target
- * max-dimension cap repeatedly until the encoded PNG fits `byteBudget`, but
- * never goes below this floor — an unbounded halving loop would eventually
- * produce a useless 1x1 image chasing an unreachable byte budget.
- */
-const DOWNSCALE_FLOOR_PX = 256;
-
-/**
- * Nearest-neighbor resize of a decoded PNG to `(width, height)`. pngjs has no
- * built-in resize; this is the minimal correct implementation for the
- * downscale contract (exact pixel fidelity is not required — only "fits
- * within a byte budget").
- */
-function resizePng(src: PNG, width: number, height: number): PNG {
-  if (width === src.width && height === src.height) return src;
-  const dst = new PNG({ width, height });
-  for (let y = 0; y < height; y++) {
-    const sy = Math.min(src.height - 1, Math.floor((y * src.height) / height));
-    for (let x = 0; x < width; x++) {
-      const sx = Math.min(src.width - 1, Math.floor((x * src.width) / width));
-      const srcIdx = (src.width * sy + sx) << 2;
-      const dstIdx = (width * y + x) << 2;
-      dst.data[dstIdx] = src.data[srcIdx] as number;
-      dst.data[dstIdx + 1] = src.data[srcIdx + 1] as number;
-      dst.data[dstIdx + 2] = src.data[srcIdx + 2] as number;
-      dst.data[dstIdx + 3] = src.data[srcIdx + 3] as number;
-    }
-  }
-  return dst;
-}
-
-/**
- * Downscale a decoded PNG to fit within `maxDimension` on its longest side
- * AND `byteBudget` bytes, halving the dimension cap until both are satisfied
- * or `DOWNSCALE_FLOOR_PX` is reached. An image already within both bounds is
- * returned unchanged (same bytes, same dimensions) — this is NOT a
- * re-encode-always operation.
+ * Run ONE fresh codex exec turn and harvest ONLY the PNGs codex wrote to
+ * `<imagesRoot>/<session-id>/` for THAT turn's reported session id.
  *
- * Exported so the mutation-proof (removing the byte-budget check) has a
- * single call site to break, per the task's mutation-proof contract.
- */
-export function downscaleImageToFit(
-  original: PNG,
-  maxDimension: number,
-  byteBudget: number,
-): { buffer: Buffer; width: number; height: number } {
-  let cap = maxDimension;
-  const scaleTo = (c: number): PNG => {
-    const scale = Math.min(1, c / Math.max(original.width, original.height));
-    const width = Math.max(1, Math.round(original.width * scale));
-    const height = Math.max(1, Math.round(original.height * scale));
-    return resizePng(original, width, height);
-  };
-
-  let resized = scaleTo(cap);
-  let buffer = PNG.sync.write(resized);
-  // Halve the cap until the encoded size fits the byte budget or the floor is
-  // reached. `cap` strictly decreases toward DOWNSCALE_FLOOR_PX each pass, so
-  // this always terminates.
-  while (buffer.length > byteBudget && cap > DOWNSCALE_FLOOR_PX) {
-    cap = Math.max(DOWNSCALE_FLOOR_PX, Math.floor(cap / 2));
-    resized = scaleTo(cap);
-    buffer = PNG.sync.write(resized);
-  }
-  return { buffer, width: resized.width, height: resized.height };
-}
-
-/**
- * Session ids are used as a bare path segment (`<imagesRoot>/<session_id>`).
- * Restrict to hex digits and dashes, length-bounded, so a value like
- * `../other-session` or an absolute path can never escape the images root —
- * REJECTED outright rather than sanitized, per the path-handling hardening.
- */
-const SESSION_ID_PATTERN = /^[0-9a-fA-F-]{1,64}$/;
-
-function isValidSessionId(id: string): boolean {
-  return SESSION_ID_PATTERN.test(id);
-}
-
-/** True when resolved path `p` is `root` itself or strictly nested under it. */
-function isInside(root: string, p: string): boolean {
-  const r = resolve(root);
-  const rp = resolve(p);
-  return rp === r || rp.startsWith(r + sep);
-}
-
-/**
- * Read only the PNG signature + IHDR chunk (first 24 bytes) to recover
- * width/height WITHOUT a full decode. Used to decide whether an already
- * budget-compliant file can be copied verbatim (no decode/re-encode) —
- * decoding via pngjs always re-encodes as 8-bit RGBA, which would silently
- * rewrite palette/grayscale/16-bit/interlaced originals.
- */
-const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
-function readPngDimensionsFast(buffer: Buffer): { width: number; height: number } | null {
-  if (buffer.length < 24) return null;
-  if (!buffer.subarray(0, 8).equals(PNG_SIGNATURE)) return null;
-  if (buffer.toString("ascii", 12, 16) !== "IHDR") return null;
-  const width = buffer.readUInt32BE(16);
-  const height = buffer.readUInt32BE(20);
-  if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) return null;
-  return { width, height };
-}
-
-/**
- * Enumerate `dir` with `lstat` (never following symlinks) and return only
- * the names of REGULAR files ending in `.png`. A symlink named `x.png`
- * (however it resolves) and a DIRECTORY named `x.png` are both excluded —
- * `lstat(...).isFile()` is false for both.
- */
-function listRegularPngFiles(dir: string): string[] {
-  let entries: string[];
-  try { entries = readdirSync(dir); } catch { return []; }
-  const out: string[] = [];
-  for (const name of entries) {
-    if (!name.toLowerCase().endsWith(".png")) continue;
-    let st;
-    try { st = lstatSync(join(dir, name)); } catch { continue; }
-    if (!st.isFile()) continue;
-    out.push(name);
-  }
-  return out.sort();
-}
-
-/** Flattened `"<sessionDirName>/<file>"` keys of every regular file under `imagesRoot`'s immediate subdirectories. */
-function snapshotImagesRoot(imagesRoot: string): Set<string> {
-  const out = new Set<string>();
-  let dirNames: string[];
-  try { dirNames = readdirSync(imagesRoot); } catch { return out; }
-  for (const dirName of dirNames) {
-    const dirPath = join(imagesRoot, dirName);
-    let st;
-    try { st = lstatSync(dirPath); } catch { continue; }
-    if (!st.isDirectory()) continue;
-    for (const f of listRegularPngFiles(dirPath)) out.add(`${dirName}/${f}`);
-  }
-  return out;
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise(resolve_ => setTimeout(resolve_, ms));
-}
-
-/**
- * Codex's `exec` process can exit before its own image-write flush is
- * visible to a subsequent `readdirSync` — harvesting immediately after the
- * CLI returns can therefore see an empty/missing session directory that
- * fills in moments later. Poll briefly (bounded) rather than declaring
- * failure on the first look, and give up honestly if nothing ever appears.
- */
-const HARVEST_POLL_TIMEOUT_MS = 2000;
-const HARVEST_POLL_INTERVAL_MS = 100;
-
-async function pollForPngFiles(dir: string): Promise<string[]> {
-  const deadline = Date.now() + HARVEST_POLL_TIMEOUT_MS;
-  for (;;) {
-    const found = listRegularPngFiles(dir);
-    if (found.length > 0) return found;
-    if (Date.now() >= deadline) return listRegularPngFiles(dir);
-    await sleep(HARVEST_POLL_INTERVAL_MS);
-  }
-}
-
-/**
- * Per-call caps stated in the tool description. Bound both the number of
- * images processed and the decoded pixel budget so a runaway or malicious
- * session directory cannot make one MCP call decode unboundedly many or
- * unboundedly large images.
- */
-const MAX_IMAGES_PER_CALL = 20;
-const MAX_DECODED_PIXELS_PER_IMAGE = 4096 * 4096;
-
-/**
- * Write `buffer` under `outputDirResolved` as `filename`, refusing to follow
- * or overwrite an existing path (symlink or otherwise) at that name — `wx`
- * fails with EEXIST for ANY existing entry, symlink or not, dangling or not.
- * On collision, a fresh unique name is chosen instead of clobbering.
- * Also asserts the resolved destination never escapes `outputDirResolved`.
- */
-function writeImageSafely(outputDirResolved: string, filename: string, buffer: Buffer): string {
-  let candidate = filename;
-  let attempt = 0;
-  for (;;) {
-    const destPath = resolve(join(outputDirResolved, candidate));
-    if (!isInside(outputDirResolved, destPath)) {
-      throw new Error(`refusing to write image outside output_dir: ${destPath}`);
-    }
-    try {
-      writeFileSync(destPath, buffer, { flag: "wx" });
-      return destPath;
-    } catch (err) {
-      if ((err as NodeJS.ErrnoException).code === "EEXIST") {
-        attempt += 1;
-        const ext = extname(filename);
-        const base = basename(filename, ext);
-        candidate = `${base}-${attempt}${ext}`;
-        continue;
-      }
-      throw err;
-    }
-  }
-}
-
-/**
- * Run a codex exec turn and harvest ONLY the PNGs codex wrote to
- * `~/.codex/generated_images/<session-id>/` for THAT turn's session id.
- *
- * Deliberately does NOT scan `~/.codex/generated_images` for the
- * newest-mtime directory — that would race any other codex session running
- * concurrently on the machine (a different worktree, a different stage) and
- * could harvest someone else's images. If codex reports no session id at
- * all, this returns a structured `no_session_id` failure rather than
- * guessing a directory.
- *
- * The underlying `generate` call is ALWAYS a fresh, non-resumable session
- * (`fresh_session: true`) — resumption would let a later call silently
- * re-return an earlier turn's images. A non-zero CLI exit is honoured as a
- * hard failure rather than proceeding to harvest stale files.
+ * Never scans the images root (no newest-mtime guess, no global snapshot):
+ * a concurrent codex session's directory is never read. A missing or unsafe
+ * session id is a structured failure. The turn is never resumed and never
+ * retried (`fresh_session`, `retry_on_transient: false`), and a non-zero exit
+ * is a hard failure rather than a harvest of whatever happens to be on disk.
+ * Files whose mtime pre-dates the call are stale carry-over and are refused.
  */
 export async function codexGenerateImage(
-  args: z.infer<typeof GenerateImageSchema>,
+  rawArgs: z.input<typeof GenerateImageSchema>,
   opts: CodexGenerateImageInternalOptions = {},
 ): Promise<CodexGenerateImageResult> {
+  const args = GenerateImageSchema.parse(rawArgs);
+  const callStartMs = Date.now();
+
+  // Validate (and create) the destination BEFORE spending a codex turn.
+  const out = prepareOutputDir(args.output_dir);
+  if (!out.ok) return { status: "invalid_output_dir", reason: out.reason };
+
   const genArgs: z.infer<typeof GenerateSchema> = {
     prompt: args.prompt,
     cwd: args.cwd,
     model: args.model,
     sandbox: "read-only",
     skip_recap: true,
-    timeout_ms: args.timeout_ms,
+    timeout_ms: clampImageTimeoutMs(args.timeout_ms),
   };
   const imagesRoot = opts._imagesRoot ?? join(homedir(), ".codex", "generated_images");
-  // Snapshot BEFORE the call: if the returned session id ever collides with a
-  // pre-existing directory (defense-in-depth beyond fresh_session), files
-  // already present before this call started are excluded from the harvest.
-  const preCallSnapshot = snapshotImagesRoot(imagesRoot);
-
-  const invoker = opts._invoke ?? ((ga) => codexGenerate(ga, { fresh_session: true }));
+  const invoker =
+    opts._invoke ??
+    ((ga: z.infer<typeof GenerateSchema>) =>
+      codexGenerate(ga, { fresh_session: true, retry_on_transient: false, _runCli: opts._runCli }));
   const result = await invoker(genArgs);
 
   if (result.exit_code !== 0) {
@@ -832,7 +657,6 @@ export async function codexGenerateImage(
       session_id: result.session_id,
     };
   }
-
   if (!result.session_id) {
     return {
       status: "no_session_id",
@@ -842,146 +666,128 @@ export async function codexGenerateImage(
         "harvesting a concurrent codex session's images).",
     };
   }
-
-  if (!isValidSessionId(result.session_id)) {
-    return {
-      status: "invalid_session_id",
-      reason:
-        `codex reported a session_id ("${result.session_id}") that does not match the expected ` +
-        `hex/dash pattern; refusing to use it as a path segment.`,
-      session_id: result.session_id,
-    };
-  }
-
   const sessionId: string = result.session_id;
-  const imagesRootResolved = resolve(imagesRoot);
-  const sessionDir = resolve(join(imagesRootResolved, sessionId));
-  // Belt-and-suspenders: the regex above already forbids path separators and
-  // "..", so this should always hold, but assert it explicitly rather than
-  // trusting the regex alone.
-  if (dirname(sessionDir) !== imagesRootResolved) {
+  if (!isValidSessionId(sessionId)) {
     return {
       status: "invalid_session_id",
-      reason: `resolved session directory ${sessionDir} is not a direct child of the images root ${imagesRootResolved}.`,
+      reason: `codex reported a session_id ("${sessionId}") that does not match the expected hex/dash pattern; refusing to use it as a path segment.`,
       session_id: sessionId,
     };
   }
 
-  const polled = await pollForPngFiles(sessionDir);
-  if (polled.length === 0) {
+  const harvest = await pollForSettledPngs(imagesRoot, sessionId);
+  if (harvest.kind === "rejected") {
+    return { status: "invalid_session_dir", reason: harvest.reason, session_id: sessionId };
+  }
+  if (harvest.kind === "absent") {
     return {
       status: "empty_session_dir",
-      reason: existsSync(sessionDir)
-        ? `session directory ${sessionDir} contains no PNG files (polled for ${HARVEST_POLL_TIMEOUT_MS}ms).`
-        : `no generated_images directory exists for session ${sessionId} (codex did not write an image this turn; polled for ${HARVEST_POLL_TIMEOUT_MS}ms).`,
+      reason: `${harvest.reason} codex did not write an image this turn (polled for ${HARVEST_POLL_TIMEOUT_MS}ms).`,
       session_id: sessionId,
     };
   }
 
-  // Exclude anything that existed in this exact directory before the call —
-  // a stale carry-over defense on top of fresh_session (see doc comment).
-  const preExistingHere = new Set(
-    [...preCallSnapshot].filter(k => k.startsWith(`${sessionId}/`)).map(k => k.slice(sessionId.length + 1)),
-  );
-  const newFiles = polled.filter(f => !preExistingHere.has(f));
-
-  if (newFiles.length === 0) {
+  const failures: ImageFailure[] = [
+    ...harvest.rejected.map(r => ({ file: r.name, reason: r.reason })),
+    ...harvest.unsettled.map(u => ({ file: u.name, reason: u.reason })),
+    ...harvest.overCap.map(file => ({ file, reason: `skipped: per-call image cap (${MAX_IMAGES_PER_CALL}) reached; not opened.` })),
+  ];
+  if (harvest.truncated) {
+    failures.push({
+      file: "*",
+      reason: `enumeration stopped after ${MAX_DIR_ENTRIES_SCANNED} directory entries; the rest were not examined.`,
+    });
+  }
+  const staleBefore = callStartMs - STALE_MTIME_SLACK_MS;
+  const fresh = harvest.settled.filter(s => s.mtimeMs >= staleBefore);
+  const stale = harvest.settled.filter(s => s.mtimeMs < staleBefore);
+  if (fresh.length === 0 && failures.length === 0) {
     return {
       status: "empty_session_dir",
-      reason: `session directory ${sessionDir} contains only files that pre-date this call (stale carry-over); no new images this turn.`,
+      reason:
+        stale.length > 0
+          ? `session directory ${harvest.dirReal} contains only files that pre-date this call (stale carry-over); no new images this turn.`
+          : `session directory ${harvest.dirReal} contains no PNG files (polled for ${HARVEST_POLL_TIMEOUT_MS}ms).`,
       session_id: sessionId,
     };
   }
-
-  const outputDirResolved = resolve(args.output_dir);
-  mkdirSync(outputDirResolved, { recursive: true });
+  for (const s of stale) failures.push({ file: s.name, reason: "pre-dates this call (stale carry-over); not harvested." });
 
   const images: GeneratedImage[] = [];
   const overBudget: OverBudgetImage[] = [];
-  const failures: ImageFailure[] = [];
-
-  const cappedFiles = newFiles.slice(0, MAX_IMAGES_PER_CALL);
-  for (const f of newFiles.slice(MAX_IMAGES_PER_CALL)) {
-    failures.push({
-      file: f,
-      reason: `skipped: per-call image cap (${MAX_IMAGES_PER_CALL}) reached.`,
-    });
-  }
-
-  for (const file of cappedFiles) {
+  for (const { name } of fresh) {
     try {
-      const srcPath = join(sessionDir, file);
-      const raw = readFileSync(srcPath);
-      const dims = readPngDimensionsFast(raw);
-      if (!dims) {
-        failures.push({ file, reason: "not a well-formed PNG (bad signature/IHDR)." });
+      const v = openVerifiedFile(harvest.dirReal, name, MAX_SOURCE_BYTES, opts._fileHooks);
+      if (!v.ok) {
+        failures.push({ file: name, reason: v.reason });
         continue;
       }
-      if (dims.width * dims.height > MAX_DECODED_PIXELS_PER_IMAGE) {
+      let raw: Buffer;
+      try {
+        if (v.mtimeMs < staleBefore) {
+          failures.push({ file: name, reason: "pre-dates this call (stale carry-over); not harvested." });
+          continue;
+        }
+        raw = readFdFully(v.fd, v.size);
+      } finally {
+        closeSync(v.fd);
+      }
+      const png = validatePngStructure(raw);
+      if (!png.ok) {
+        failures.push({ file: name, reason: `malformed PNG: ${png.reason}` });
+        continue;
+      }
+      if (png.width * png.height > MAX_DECODED_PIXELS_PER_IMAGE) {
         failures.push({
-          file,
-          reason: `exceeds decoded pixel budget (${dims.width}x${dims.height} > ${MAX_DECODED_PIXELS_PER_IMAGE}px cap).`,
+          file: name,
+          reason: `exceeds decoded pixel budget (${png.width}x${png.height} > ${MAX_DECODED_PIXELS_PER_IMAGE}px cap); not decoded.`,
         });
         continue;
       }
-
-      const fitsAsIs = raw.length <= args.byte_budget_bytes && Math.max(dims.width, dims.height) <= args.max_dimension;
-      if (fitsAsIs) {
-        // Already within both bounds: copy bytes VERBATIM. No decode/re-encode
-        // — preserves palette/grayscale/16-bit/interlaced originals exactly.
-        const destPath = writeImageSafely(outputDirResolved, file, raw);
-        images.push({
-          path: destPath,
-          bytes: raw.length,
-          width: dims.width,
-          height: dims.height,
-          generator: "codex",
-          model: result.model,
-          prompt: args.prompt,
-        });
+      const provenance = { generator: "codex" as const, model: result.model, prompt: args.prompt };
+      if (raw.length <= args.byte_budget_bytes && Math.max(png.width, png.height) <= args.max_dimension) {
+        // Already within both bounds: copy the validated bytes VERBATIM — no
+        // decode/re-encode, so palette/grayscale/16-bit/interlaced survive.
+        const path = writeImageSafely(out.outReal, name, raw);
+        images.push({ path, bytes: raw.length, width: png.width, height: png.height, ...provenance });
         continue;
       }
-
       let decoded: PNG;
       try {
         decoded = PNG.sync.read(raw);
       } catch (err) {
-        failures.push({ file, reason: `failed to decode: ${(err as Error).message}` });
+        failures.push({ file: name, reason: `failed to decode: ${(err as Error).message}` });
         continue;
       }
       const { buffer, width, height } = downscaleImageToFit(decoded, args.max_dimension, args.byte_budget_bytes);
-      const destPath = writeImageSafely(outputDirResolved, file, buffer);
+      const path = writeImageSafely(out.outReal, name, buffer);
       if (buffer.length > args.byte_budget_bytes) {
-        // Floor reached and still over budget: NEVER report this as ok.
-        overBudget.push({ file, path: destPath, bytes: buffer.length, width, height });
+        // Floor reached and still over budget: NEVER reported as ok.
+        overBudget.push({ file: name, path, bytes: buffer.length, width, height });
       } else {
-        images.push({
-          path: destPath,
-          bytes: buffer.length,
-          width,
-          height,
-          generator: "codex",
-          model: result.model,
-          prompt: args.prompt,
-        });
+        images.push({ path, bytes: buffer.length, width, height, ...provenance });
       }
     } catch (err) {
-      failures.push({ file, reason: `unexpected error: ${(err as Error).message}` });
+      failures.push({ file: name, reason: `unexpected error: ${(err as Error).message}` });
     }
   }
 
+  const wroteSomething = images.length + overBudget.length > 0;
   return {
-    status: overBudget.length === 0 && failures.length === 0 ? "ok" : "partial",
+    status: !wroteSomething ? "failed" : overBudget.length === 0 && failures.length === 0 ? "ok" : "partial",
     images,
     over_budget: overBudget,
     failures,
     session_id: sessionId,
+    scanned_entries: harvest.scanned,
+    enumeration_truncated: harvest.truncated,
     tokens_in: result.tokens_in,
     tokens_out: result.tokens_out,
     cost_usd: result.cost_usd,
     wall_ms: result.wall_ms,
   };
 }
+
 
 /**
  * Select the pinned critique model based on the escalate flag.
@@ -1220,25 +1026,27 @@ const TOOLS = [
   {
     name: "generate_image",
     description:
-      "Run `codex exec` and harvest any PNGs it wrote for THIS turn's session, downscaled to fit a byte budget, into a caller-supplied output_dir. " +
-      "Harvest contract: codex writes generated images to `~/.codex/generated_images/<session-id>/exec-<call-id>.png`; this tool captures the session id " +
-      "codex reports for its OWN exec turn and harvests ONLY that session's directory — it never scans by newest mtime, which would risk harvesting a " +
-      "concurrent codex session's images. The underlying turn is ALWAYS a fresh, non-resumable session, so a later call can never re-return an earlier " +
-      "call's images; a non-zero codex exit is a hard failure (status: cli_failure), never a stale-but-ok result. The session id is validated (hex/dash, " +
-      "length-bounded) before use as a path segment — an unexpected id is rejected (status: invalid_session_id) rather than used to build a path. Only " +
-      "regular files (no symlinks, no directories) named *.png are harvested, and the harness briefly polls (up to 2s) for the directory/files to appear " +
-      "before giving up. If no session id is reported, or the session directory is missing/empty after polling, a structured failure is returned " +
-      "(status: no_session_id | empty_session_dir) instead of guessing. " +
-      "Caps: at most 20 images and 4096x4096 decoded pixels per image are processed per call; anything past the cap is reported in `failures`, not silently dropped. " +
-      "Downscale contract: each harvested PNG is fit within max_dimension (default 768px, longest side) and byte_budget_bytes (default 300KB), halving " +
-      "the dimension cap until it fits or a 256px floor is reached. An image that ALREADY fits both bounds is copied byte-for-byte with no decode/re-encode " +
-      "(preserves palette/grayscale/16-bit/interlaced originals exactly). An image that still exceeds byte_budget_bytes at the 256px floor is NEVER reported " +
-      "as ok — it is written but listed in `over_budget` (with its final bytes/width/height), and the overall `status` becomes \"partial\" rather than \"ok\". " +
-      "A malformed/unreadable PNG becomes a per-file entry in `failures` instead of failing the whole call. " +
-      "Destination writes refuse to follow or overwrite an existing path (symlink or otherwise) at the target name, picking a fresh unique name on collision, " +
-      "and every destination is asserted to stay inside output_dir. " +
-      "timeout_ms is clamped to 15 minutes. " +
-      "Returns absolute file paths plus width/height/byte size/provenance (generator, model, prompt) for each image — NEVER base64.",
+      "Run ONE fresh `codex exec` turn and harvest the PNGs it wrote for THAT turn's session into a caller-supplied output_dir, downscaled to a byte budget. " +
+      "Returns absolute file paths plus width/height/bytes/provenance (generator, model, prompt) — NEVER base64. " +
+      "HARVEST: codex writes images to `~/.codex/generated_images/<session-id>/`; only the directory of the session id codex reports for this turn is read — " +
+      "never a newest-mtime scan, never another session's directory. The session id must be a hex/dash single path segment (else status invalid_session_id); " +
+      "no reported id is status no_session_id. The turn is never resumed and never retried; a non-zero codex exit is status cli_failure. " +
+      "CONTAINMENT: containment is physical (realpath), not lexical. A session directory that is a symlink/junction or resolves outside the images root is " +
+      "status invalid_session_dir. Each source file is opened, then the open fd is fstat-checked (regular file, size cap) and its dev/ino re-checked against an " +
+      "lstat of the path and its realpath confined to the session directory; bytes are read from that fd only. An output_dir that is a symlink/junction (or a " +
+      "component created for it that is one) is status invalid_output_dir, checked before the codex turn. Writes use exclusive create (never follow or overwrite), " +
+      "re-check output_dir before and after each write, and verify the written file's realpath parent is output_dir. " +
+      "VALIDATION: every PNG — including one copied verbatim — must pass a full structure check (signature, IHDR length 13 with legal fields, every chunk CRC, " +
+      "at least one IDAT, terminating IEND, no trailing bytes). A file is harvested only once settled: size and mtime unchanged across two polls and ending in IEND. " +
+      "Files whose mtime pre-dates the call are stale and refused. Malformed, unsettled, stale, linked or capped files are per-file `failures`, not a whole-call failure. " +
+      "LIMITS: max_dimension must be in [256, 4096] (default 768; outside that range is REJECTED, not clamped). byte_budget_bytes default 300KB, max 32MiB. " +
+      "Per call: at most 200 session-directory entries are examined (more sets enumeration_truncated), at most 20 PNGs are opened, each at most 32MiB " +
+      "(checked by fstat before reading) and 4096x4096 pixels (checked from IHDR before decoding); at most 100 alternative names are tried on an output name " +
+      "collision. Downscaling starts directly at min(max_dimension, longest side) and halves toward the 256px floor: at most 5 encodes per image. " +
+      "An image already within both bounds is copied byte-for-byte. One still over budget at the floor is written but listed in `over_budget` and the status is " +
+      "\"partial\", never \"ok\". status: ok (all images clean) | partial (something written, plus over_budget/failures) | failed (nothing written). " +
+      "WORST-CASE WALL CLOCK: one codex attempt bounded by timeout_ms (default 5 minutes; larger values are CLAMPED to 15 minutes; the runner's transient " +
+      "retry is disabled for this tool), plus a git worktree probe capped at 5s, plus at most 3s of settle polling, plus the capped image processing above.",
     schema: GenerateImageSchema,
     handler: (args: unknown) => codexGenerateImage(GenerateImageSchema.parse(args)),
   },

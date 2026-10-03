@@ -584,6 +584,18 @@ export interface CliRunOptions {
   input?: string;
   /** Per-call timeout. Falls back to DEFAULT_CLI_TIMEOUT_MS. */
   timeout_ms?: number;
+  /**
+   * Default true. When false the call makes exactly ONE attempt, so its
+   * worst-case wall clock is `timeout_ms` rather than twice that plus backoff.
+   * `pp_codex.generate_image` sets it: a retried turn is a second, different
+   * codex session, and its tool description states a single-attempt bound.
+   */
+  retry_on_transient?: boolean;
+}
+
+/** Attempts `runCliWithRetry` will make at most for these options. */
+export function cliAttemptBudget(opts: Pick<CliRunOptions, "retry_on_transient">): number {
+  return opts.retry_on_transient === false ? 1 : 1 + Math.max(0, CRITIQUE_RETRY_ATTEMPTS);
 }
 
 export interface CliFailureArchiveOptions {
@@ -698,7 +710,7 @@ export function isPersistentStdout(stdout: string): boolean {
  * emits those as JSONL on stdout rather than stderr.
  */
 export async function runCliWithRetry(opts: CliRunOptions): Promise<CliRunResult> {
-  const totalAttempts = 1 + Math.max(0, CRITIQUE_RETRY_ATTEMPTS);
+  const totalAttempts = cliAttemptBudget(opts);
   const attempts: CliAttempt[] = [];
   let lastStdout = "";
   let lastStderr = "";
