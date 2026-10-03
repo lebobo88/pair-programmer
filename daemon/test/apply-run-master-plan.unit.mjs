@@ -20,7 +20,10 @@
  *     is blocked until the worktree-applied block is merged in, then passes
  *     once master_plan_applied=true is set.
  *   - Idempotency: a worktree apply followed by a default-path finalize on
- *     the merged root does not duplicate the run's block.
+ *     the merged root does not duplicate the run's block; and a direct
+ *     repeated applyRunMasterPlan(run_id, target_dir) against the same
+ *     worktree leaves PROJECT_MASTER.md byte-identical, with the run's block
+ *     present exactly once in every section it maps to.
  *   - Symlink/junction target_dir: a junction resolving OUTSIDE the project's
  *     repository is rejected (nothing written at either the link path or its
  *     real target); a junction resolving AT a real linked worktree of the
@@ -29,9 +32,11 @@
  *   - git unavailable for the common-dir check: fails closed (rejected),
  *     even for a target_dir that would otherwise validate as a real worktree
  *     of the project.
+ *   - git spawnable but `rev-parse --git-common-dir` erroring: also fails
+ *     closed for an otherwise-valid worktree.
  *
  * Anti-stall contract:
- *   - Uses a temp sqlite DB (PP_HOME override), direct dist function calls.
+ *   - Uses a temp sqlite DB (setIsolatedProcessEnv), direct dist function calls.
  *   - No MCP server, no daemon socket, no *.smoke.mjs files touched.
  *   - Uses real `git` via execFileSync against temp repos/worktrees only.
  *   - The git-unavailable test scrubs process.env.PATH for the duration of
@@ -50,11 +55,13 @@ import { tmpdir } from "node:os";
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, symlinkSync } from "node:fs";
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
+import { setIsolatedProcessEnv } from "./fixtures/isolated-env.mjs";
 
-// Set PP_HOME BEFORE any dist import so the DB is isolated.
-const SUITE_DIR = mkdtempSync(join(tmpdir(), "pp-apply-run-master-plan-"));
+// Isolate the ledger BEFORE any dist import: scrubs an ambient PP_DB_PATH
+// (which would otherwise win over PP_HOME and point at the live state.db)
+// and pins an explicit temp PP_HOME + PP_DB_PATH.
+const { ppHome: SUITE_DIR } = setIsolatedProcessEnv({ prefix: "pp-apply-run-master-plan-" });
 mkdirSync(join(SUITE_DIR, ".pair-programmer"), { recursive: true });
-process.env.PP_HOME = SUITE_DIR;
 process.env.EIGHTS_SKIP_AUDIT_CHECK = "1";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -156,6 +163,21 @@ function masterPlanFile(dir) {
 
 function readMasterPlan(dir) {
   return readFileSync(masterPlanFile(dir), "utf8");
+}
+
+/**
+ * Body of the `## <section>` heading up to the next `## ` heading, or null
+ * when the heading is absent. CRLF-normalized at the read.
+ */
+function sectionBody(content, section) {
+  const lines = content.replace(/\r\n/g, "\n").split("\n");
+  const start = lines.indexOf(`## ${section}`);
+  if (start === -1) return null;
+  let end = lines.length;
+  for (let i = start + 1; i < lines.length; i++) {
+    if (lines[i].startsWith("## ")) { end = i; break; }
+  }
+  return lines.slice(start + 1, end).join("\n");
 }
 
 function countRunBlocks(content, runId) {
@@ -405,6 +427,50 @@ describe("apply_run_master_plan + finalize_run: idempotency", () => {
     assert.equal(countRunBlocks(content, run_id), 1,
       "default-path finalize after a worktree apply must not duplicate the run's block");
   });
+
+  it("a direct repeated applyRunMasterPlan on the same worktree target is byte-identical and never duplicates a block", async () => {
+    const runs = await getRuns();
+    const repo = initRepo(mkdtempSync(join(tmpdir(), "pp-arm-rep-repo-")));
+    const wtBase = mkdtempSync(join(tmpdir(), "pp-arm-rep-wt-"));
+    const wt = join(wtBase, "wt");
+    addWorktree(repo, wt, "arm-rep-feature");
+
+    const run_id = await insertRun({ project_path: repo });
+    // Two artifacts mapping to two DIFFERENT master-plan sections, so the
+    // per-section idempotency is exercised more than once per call.
+    await insertArtifact(run_id, "4.6");                            // -> 11. Architecture
+    await insertArtifact(run_id, "4.9", "code", "src/security.ts"); // -> 14. Security
+
+    const first = runs.applyRunMasterPlan(run_id, wt);
+    const appliedSections = first.sections.map(s => s.section);
+    assert.equal(appliedSections.length, 2, "first apply must touch both mapped sections");
+    assert.deepEqual(first.sections.map(s => s.status), ["applied", "applied"]);
+    const afterFirst = readFileSync(masterPlanFile(wt), "utf8");
+
+    const second = runs.applyRunMasterPlan(run_id, wt);
+    const afterSecond = readFileSync(masterPlanFile(wt), "utf8");
+
+    assert.equal(afterSecond, afterFirst,
+      "a second applyRunMasterPlan to the same target must leave PROJECT_MASTER.md byte-identical");
+    assert.equal(second.created, false, "the second apply must not re-scaffold PROJECT_MASTER.md");
+    assert.deepEqual(second.sections.map(s => s.section), appliedSections,
+      "the second apply must visit the same sections as the first");
+    assert.deepEqual(second.sections.map(s => s.status), ["noop_already_applied", "noop_already_applied"],
+      "every section must report noop_already_applied on the second apply");
+
+    // Exactly one block per mapped section, checked section by section over
+    // the sections actually written (derived from the result, not
+    // hardcoded), so a duplicate in one section cannot hide behind a
+    // missing block in another.
+    for (const section of appliedSections) {
+      const body = sectionBody(afterSecond, section);
+      assert.ok(body !== null, `section '${section}' must exist in PROJECT_MASTER.md`);
+      assert.equal(countRunBlocks(body, run_id), 1,
+        `run block must appear exactly once in section '${section}' after two applies`);
+    }
+    assert.equal(countRunBlocks(afterSecond, run_id), appliedSections.length,
+      "total run blocks must equal the number of mapped sections");
+  });
 });
 
 // ─── target_dir validation: symlinks / junctions ───────────────────────────
@@ -524,5 +590,45 @@ describe("apply_run_master_plan: target_dir validation — git unavailable fails
 
     assert.equal(existsSync(masterPlanFile(wt)), false,
       "nothing must be written to the worktree when git is unavailable for the common-dir check");
+  });
+
+  it("rejects (fails closed) when git spawns but rev-parse --git-common-dir errors, even for a real worktree of the project", async () => {
+    const runs = await getRuns();
+    const repo = initRepo(mkdtempSync(join(tmpdir(), "pp-arm-revfail-repo-")));
+    const wtBase = mkdtempSync(join(tmpdir(), "pp-arm-revfail-wt-"));
+    const wt = join(wtBase, "wt");
+    addWorktree(repo, wt, "arm-revfail-feature");
+
+    const run_id = await insertRun({ project_path: repo });
+    await insertArtifact(run_id, "4.6");
+
+    // Point GIT_DIR at a path that is not a repository: git still spawns,
+    // but `rev-parse --git-common-dir` exits non-zero on BOTH sides. Two
+    // failures must never be treated as "the same repository".
+    const bogusGitDir = join(mkdtempSync(join(tmpdir(), "pp-arm-revfail-bogus-")), "not-a-repo");
+    assert.throws(
+      () => execFileSync("git", ["-C", wt, "rev-parse", "--git-common-dir"], {
+        env: { ...process.env, GIT_DIR: bogusGitDir }, stdio: "pipe", windowsHide: true,
+      }),
+      "sanity: rev-parse must actually fail under the bogus GIT_DIR",
+    );
+
+    const savedGitDir = process.env.GIT_DIR;
+    process.env.GIT_DIR = bogusGitDir;
+    try {
+      assert.throws(
+        () => runs.applyRunMasterPlan(run_id, wt),
+        (err) => {
+          assert.equal(err.name, "MasterPlanTargetDirError");
+          return true;
+        },
+      );
+    } finally {
+      if (savedGitDir === undefined) delete process.env.GIT_DIR;
+      else process.env.GIT_DIR = savedGitDir;
+    }
+
+    assert.equal(existsSync(masterPlanFile(wt)), false,
+      "nothing must be written to the worktree when rev-parse fails for the common-dir check");
   });
 });
