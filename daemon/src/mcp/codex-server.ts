@@ -1102,9 +1102,13 @@ const TOOLS = [
       "call sweeps them; Node has no handle-bound rename/unlink/rmdir, so a same-user process swapping a path inside the daemon-private staging parent " +
       "(0700 on POSIX) in the instant between a re-check and the following syscall is not excluded. (2) Node has no " +
       "openat, so if output_dir or an ancestor is swapped for a link in the instant before the link syscall, the finished image can land in the link target; " +
-      "that is detected and the image is refused, and because the handed-off object IS the staged inode it is also truncated through the staging fd (a " +
-      "failed truncation is reported as such, with the content described as unknown). After a " +
-      "successful hand-off, any process with write access to output_dir can of course move, replace or modify the finished file. " +
+      "that is detected and the image is refused; the staged object is truncated through the staging fd (reported as applying to the staged object " +
+      "only, or as FAILED with its content UNKNOWN), and the state of the object at the published name is reported as UNKNOWN — never claimed to be " +
+      "truncated, removed or safe. After a successful hand-off, any process with write access to output_dir can of course move, replace or modify the " +
+      "finished file. (3) The per-call staging directory is private to the daemon's own OS user (0700 on POSIX; user-profile ACLs on Windows). A process " +
+      "able to substitute files inside it already runs with the daemon's privileges, so a substitution there is an accepted residual. It is still " +
+      "detected: if the published inode does not equal the verified staged object, the result is a per-file failure and the published object's state " +
+      "is reported as UNKNOWN — never as truncated, removed, or safe. " +
       "VALIDATION: every PNG — including one copied verbatim — must pass a full structure check (signature, IHDR length 13 with legal fields, every chunk CRC, " +
       "PLTE rules incl. palette size, no unknown critical chunks, terminating IEND, no bytes after IEND). ONLY the four critical chunks IHDR, PLTE, IDAT " +
       "and IEND are accepted: a PNG carrying ANY ancillary chunk (gAMA, cHRM, sRGB, iCCP, tEXt, zTXt, iTXt, eXIf, pHYs, tIME, tRNS, bKGD, …) is " +

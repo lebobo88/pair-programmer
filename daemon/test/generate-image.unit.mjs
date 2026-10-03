@@ -69,6 +69,12 @@ after(async () => {
 
 const real = (p) => realpathSync.native(p);
 
+/** Make a directory and its direct entries look stale (entries first: touching them would refresh the directory). */
+function ageTree(dir, when = new Date(Date.now() - 48 * 3600_000)) {
+  for (const e of readdirSync(dir)) utimesSync(join(dir, e), when, when);
+  utimesSync(dir, when, when);
+}
+
 // A private staging directory for direct writeImageSafely calls (PP_HOME is
 // already isolated above, so this import cannot reach the real ledger).
 const { createStagingDir } = await importDist("mcp/image-harvest.js");
@@ -1288,6 +1294,49 @@ describe("pp_codex.generate_image: private staging and exclusive hand-off", () =
     assert.equal(statSync(join(outReal, "stolen.png")).size, 0, "the relocated object was neutralised through the staging fd");
   });
 
+  test("staging-boundary substitution: a staged path swapped before the hand-off publishes a foreign object — refused, and its state reported as UNKNOWN, never as truncated or safe", async () => {
+    const { writeImageSafely, prepareOutputDir } = await importDist("mcp/image-harvest.js");
+    const { outReal, outId } = prepareOutputDir(tmp("pp-img-out-"));
+    let substituted = false;
+    assert.throws(
+      () =>
+        writeImageSafely(outReal, outId, newStaging(), "x.png", makeSolidPng(2, 2), 0, {
+          beforeHandOff: (_dest, stagedPath) => {
+            renameSync(stagedPath, `${stagedPath}.orig`);
+            writeFileSync(stagedPath, "UNVALIDATED"); // a different object at the staged path
+            substituted = true;
+          },
+        }),
+      (err) => {
+        assert.match(err.message, /is not the staged file after the hand-off/);
+        assert.match(err.message, /the staged object was truncated through its fd \(this applies to the staged object only\)/);
+        assert.match(err.message, /object published at .*x\.png is UNKNOWN — it is not claimed to be truncated, removed or safe/);
+        return true;
+      },
+    );
+    assert.equal(substituted, true, "precondition: the substitution happened");
+    assert.equal(readFileSync(join(outReal, "x.png"), "utf8"), "UNVALIDATED", "the published object really is the foreign one (so 'UNKNOWN' is the only honest claim)");
+  });
+
+  test("end to end: a staging-boundary substitution is a per-file failure with UNKNOWN reporting and no success claim", async () => {
+    const outputDir = tmp("pp-img-out-");
+    const { result } = await runHarvest({
+      args: { output_dir: outputDir },
+      write: writePngs({ "exec-call-1.png": makeSolidPng(4, 4) }),
+      opts: {
+        _writeHooks: {
+          beforeHandOff: (_dest, stagedPath) => {
+            renameSync(stagedPath, `${stagedPath}.orig`);
+            writeFileSync(stagedPath, "UNVALIDATED");
+          },
+        },
+      },
+    });
+    assert.equal(result.status, "failed");
+    assert.deepEqual(result.images, [], "no image is reported as delivered");
+    assert.match(result.failures[0].reason, /object published at .* is UNKNOWN/);
+  });
+
   test("end to end: relocation during staging leaves no content in output_dir and no image is reported", async () => {
     const outputDir = tmp("pp-img-out-");
     const { result } = await runHarvest({
@@ -1434,7 +1483,7 @@ describe("pp_codex.generate_image: private staging and exclusive hand-off", () =
     const fresh = sweepStagingDirs(stagingParent);
     assert.deepEqual(fresh.removed, [], "a fresh staging directory is not swept");
     const old = new Date(Date.now() - STAGING_SWEEP_AGE_MS - 60_000);
-    utimesSync(oldDir, old, old);
+    ageTree(oldDir, old);
     const second = await runHarvest({ write: writePngs({ "exec-call-1.png": makeSolidPng(4, 4) }), opts: { _stagingParent: stagingParent } });
     assert.equal(lstatSync(oldDir, { throwIfNoEntry: false }), undefined, "the stale directory was swept at the start of the later call");
     assert.deepEqual(readdirSync(stagingParent), [basename(second.result.staging_dir)], "only the later call's own directory remains");
@@ -1446,7 +1495,7 @@ describe("pp_codex.generate_image: private staging and exclusive hand-off", () =
     const { staging } = createStagingDir(parent);
     writeFileSync(join(staging.dirReal, "staged.png"), "ours");
     const old = new Date(Date.now() - 48 * 3600_000);
-    utimesSync(staging.dirReal, old, old);
+    ageTree(staging.dirReal, old);
     const report = sweepStagingDirs(parent, undefined, {
       afterObserve: (p) => {
         if (!p.endsWith("staged.png")) return;
@@ -1465,7 +1514,7 @@ describe("pp_codex.generate_image: private staging and exclusive hand-off", () =
     const parent = join(tmp("pp-img-stagebase-"), "image-staging");
     const { staging } = createStagingDir(parent);
     const old = new Date(Date.now() - 48 * 3600_000);
-    utimesSync(staging.dirReal, old, old);
+    ageTree(staging.dirReal, old);
     const report = sweepStagingDirs(parent, undefined, {
       afterObserve: (p) => {
         if (p !== staging.dirReal) return;
@@ -1490,7 +1539,7 @@ describe("pp_codex.generate_image: private staging and exclusive hand-off", () =
       for (const n of ["gi-a", "gi-b"]) {
         mkdirSync(join(root, n), { recursive: true });
         writeFileSync(join(root, n, "f.txt"), root === escape ? "victim" : "ours");
-        utimesSync(join(root, n), old, old);
+        ageTree(join(root, n), old);
       }
     }
     let swapped = false;
@@ -1515,7 +1564,7 @@ describe("pp_codex.generate_image: private staging and exclusive hand-off", () =
     mkdirSync(join(parent, "gi-a"), { recursive: true });
     writeFileSync(join(parent, "gi-a", "f.png"), "ours");
     const old = new Date(Date.now() - 48 * 3600_000);
-    utimesSync(join(parent, "gi-a"), old, old);
+    ageTree(join(parent, "gi-a"), old);
     const escape = tmp("pp-img-escape-");
     let staged = false;
     const report = sweepStagingDirs(parent, undefined, {
@@ -1545,11 +1594,51 @@ describe("pp_codex.generate_image: private staging and exclusive hand-off", () =
     for (const [n, count] of [["gi-full", MAX_SWEEP_ENTRIES], ["gi-small", MAX_SWEEP_ENTRIES - 1]]) {
       mkdirSync(join(parent, n), { recursive: true });
       for (let i = 0; i < count; i++) writeFileSync(join(parent, n, `f${i}`), "");
-      utimesSync(join(parent, n), old, old);
+      ageTree(join(parent, n), old);
     }
     const report = sweepStagingDirs(parent);
     assert.deepEqual(report.removed.map((p) => basename(p)), ["gi-small"], "199 entries: swept");
     assert.ok(report.skipped.some((s) => /listing reached 200 entries/.test(s.reason)), "200 entries: skipped, left in place");
+  });
+
+  test("sweep: a directory REFRESHED with fresh content after observation no longer qualifies — skipped, nothing deleted", async () => {
+    const { sweepStagingDirs } = await importDist("mcp/image-harvest.js");
+    const parent = join(tmp("pp-img-stagebase-"), "image-staging");
+    mkdirSync(join(parent, "gi-a"), { recursive: true });
+    writeFileSync(join(parent, "gi-a", "old.png"), "old");
+    ageTree(join(parent, "gi-a"));
+    const report = sweepStagingDirs(parent, undefined, {
+      afterObserve: (p) => {
+        if (!p.endsWith("gi-a")) return;
+        const now = new Date();
+        utimesSync(p, now, now);
+        writeFileSync(join(p, "fresh.png"), "new work");
+      },
+    });
+    assert.deepEqual(report.removed, []);
+    assert.match(report.skipped[0]?.reason ?? "", /no longer stale after it was observed/);
+    const moved = report.skipped[0].path;
+    assert.deepEqual(readdirSync(moved).sort(), ["fresh.png", "old.png"], "nothing was deleted");
+  });
+
+  test("sweep: a fresh ENTRY inside a still-stale-looking directory makes the sweep skip it — nothing deleted", async () => {
+    const { sweepStagingDirs } = await importDist("mcp/image-harvest.js");
+    const parent = join(tmp("pp-img-stagebase-"), "image-staging");
+    const dir = join(parent, "gi-a");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "old.png"), "old");
+    const old = new Date(Date.now() - 48 * 3600_000);
+    ageTree(dir, old);
+    const report = sweepStagingDirs(parent, undefined, {
+      afterObserve: (p) => {
+        if (p !== dir) return;
+        writeFileSync(join(p, "fresh.png"), "new work");
+        utimesSync(p, old, old); // restore the directory's observed mtime: only the entry check can catch this
+      },
+    });
+    assert.deepEqual(report.removed, []);
+    assert.match(report.skipped[0]?.reason ?? "", /contains an entry newer than the staleness threshold \(fresh\.png\)/);
+    assert.deepEqual(readdirSync(report.skipped[0].path).sort(), ["fresh.png", "old.png"], "nothing was deleted");
   });
 
   test("sweep: links and unexpected entries are skipped and logged, never followed or deleted", async () => {
@@ -1561,7 +1650,7 @@ describe("pp_codex.generate_image: private staging and exclusive hand-off", () =
     symlinkSync(escape, join(parent, "gi-linked"), "junction");
     mkdirSync(join(staging.dirReal, "subdir"));
     const old = new Date(Date.now() - 48 * 3600_000);
-    utimesSync(staging.dirReal, old, old);
+    ageTree(staging.dirReal, old);
     lutimesSync(join(parent, "gi-linked"), old, old); // the LINK itself looks stale, so only the link check can stop the sweep
     const report = sweepStagingDirs(parent);
     assert.deepEqual(report.removed, []);
@@ -1672,9 +1761,10 @@ describe("pp_codex.generate_image: settle observation and per-call budgets", () 
             truncate: fn,
           }),
         (err) => {
-          assert.match(err.message, /truncating our bytes through the fd FAILED \(EIO\)/);
-          assert.match(err.message, /content .* is UNKNOWN/);
-          assert.doesNotMatch(err.message, /were truncated through its fd/, "never claims a truncation that did not happen");
+          assert.match(err.message, /truncating the staged object through its fd FAILED \(EIO\)/);
+          assert.match(err.message, /the staged object's content is UNKNOWN/);
+          assert.match(err.message, /object published at .* is UNKNOWN/);
+          assert.doesNotMatch(err.message, /was truncated through its fd/, "never claims a truncation that did not happen");
           return true;
         },
       );
@@ -2010,6 +2100,13 @@ describe("pp_agy.generate_image", () => {
  *   rename/unlink/rmdir re-checks the same bound directories, so removing the early stop alone stays green.
  *   The individual bound() calls before unlink and rmdir are covered only collectively (Z2): there is no seam
  *   between a rename and the following unlink to stage a swap at exactly that point.
+ *
+ * Operator decision "Accept staging boundary":
+ *   published object no longer reported UNKNOWN -> staging substitution (direct + e2e); failed-truncation test
+ *   truncation reported as covering the published object -> staging substitution
+ *   hand-off failures not passing the published name     -> the same three tests
+ *   sweep skips the post-move directory mtime re-check   -> directory refreshed with fresh content after observation
+ *   sweep skips the post-move entry freshness re-check   -> fresh entry inside a stale-looking directory
  *   NOT FALSIFIABLE (disclosed): re-validating the RE-ENCODED output with acceptPng — pngjs always emits a valid PNG, so
  *   no fixture can make that defence-in-depth check fire without replacing the encoder.
  *   NOTE: removing only the link/type clause of the output_dir check stays GREEN — it is subsumed, not missing:

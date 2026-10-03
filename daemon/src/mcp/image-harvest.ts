@@ -962,7 +962,7 @@ export type WriteHooks = {
   /** Fired after every realpath resolution, before the final identity checks. */
   afterResolve?: (path: string) => void;
   /** Fired immediately before the exclusive hand-off into output_dir. */
-  beforeHandOff?: (dest: string) => void;
+  beforeHandOff?: (dest: string, stagedPath: string) => void;
   /** Fired immediately after the exclusive hand-off, before its verification. */
   afterHandOff?: (dest: string) => void;
   /** Fired after a failed verification, before the fd-bound neutralisation. */
@@ -1031,16 +1031,25 @@ export function safeOutputName(name: string): string {
  * deleted by pathname (a path-based unlink cannot be bound to the object we
  * created and could remove a file someone else put there).
  */
-function neutraliseAndThrow(fd: number, path: string, err: unknown, hooks: WriteHooks): never {
+function neutraliseAndThrow(fd: number, path: string, err: unknown, hooks: WriteHooks, publishedAt?: string): never {
   hooks.beforeNeutralise?.(path);
+  const code = (e: unknown): string => (e as NodeJS.ErrnoException).code ?? (e as Error).message;
   let cleanup: string;
   try {
     (hooks.truncate ?? ftruncateSync)(fd, 0);
-    cleanup = "the bytes of the file this call created were truncated through its fd; an empty file may remain";
+    cleanup = publishedAt
+      ? "the staged object was truncated through its fd (this applies to the staged object only)"
+      : "the bytes of the file this call created were truncated through its fd; an empty file may remain";
   } catch (truncErr) {
-    cleanup =
-      `truncating our bytes through the fd FAILED (${(truncErr as NodeJS.ErrnoException).code ?? (truncErr as Error).message}); ` +
-      "the content of the file this call created is UNKNOWN and may remain wherever it now lives";
+    cleanup = publishedAt
+      ? `truncating the staged object through its fd FAILED (${code(truncErr)}); the staged object's content is UNKNOWN`
+      : `truncating our bytes through the fd FAILED (${code(truncErr)}); the content of the file this call created is UNKNOWN and may remain wherever it now lives`;
+  }
+  // After a hand-off, the object at the published name cannot be proven to be
+  // the staged object (Node cannot link by fd; the staging pathname is the
+  // accepted trust boundary), so its state is never claimed.
+  if (publishedAt) {
+    cleanup += `; the state of the object published at ${publishedAt} is UNKNOWN — it is not claimed to be truncated, removed or safe`;
   }
   throw new Error(`${(err as Error).message} (${cleanup}.)`);
 }
@@ -1249,6 +1258,7 @@ function sweepOne(
   if (!st) return;
   if (st.isSymbolicLink() || !st.isDirectory()) return skip(dir, "not a plain directory (link or other type); left in place.");
   if (now - Number(st.mtimeMs) < maxAgeMs) return; // not stale yet
+  const observedMtime = Number(st.mtimeMs);
   const dirId = { dev: st.dev, ino: st.ino };
   hooks.afterObserve?.(dir);
   const moved = join(parentReal, `sweep-${randomUUID()}`);
@@ -1263,8 +1273,23 @@ function sweepOne(
     assertBoundDir(moved, dirId, "staging directory being swept");
   };
   bound();
+  // Staleness is re-checked AFTER the move and BEFORE anything is deleted: the
+  // directory's mtime must be unchanged since it was observed (stale then) or
+  // still older than maxAgeMs, and every entry in it (within the listing cap)
+  // must be older than maxAgeMs. A directory refreshed or given new content
+  // after observation no longer qualifies and is skipped, nothing deleted.
+  const dirMtime = Number(mst.mtimeMs);
+  if (dirMtime !== observedMtime && now - dirMtime < maxAgeMs) {
+    return skip(moved, `no longer stale after it was observed (directory modified); moved aside to ${moved} and left in place.`);
+  }
   const entries = boundedNames(moved, MAX_SWEEP_ENTRIES);
   if (entries.length >= MAX_SWEEP_ENTRIES) return skip(moved, `listing reached ${MAX_SWEEP_ENTRIES} entries; left in place.`);
+  for (const e of entries) {
+    const est = lstatSync(join(moved, e), { bigint: true, throwIfNoEntry: false });
+    if (est && now - Number(est.mtimeMs) < maxAgeMs) {
+      return skip(moved, `contains an entry newer than the staleness threshold (${e}); moved aside to ${moved}, nothing deleted.`);
+    }
+  }
   for (const e of entries) {
     const p = join(moved, e);
     const fst = lstatSync(p, { bigint: true, throwIfNoEntry: false });
@@ -1380,9 +1405,12 @@ export function verifyHandedOff(
  *
  * Node has no openat, so an output_dir parent swapped for a link in the
  * instant before the link syscall can receive the finished file: that is
- * detected in step 3 and refused, and because the handed-off object IS the
- * staged inode it is truncated through our fd. Nothing is ever deleted by
- * pathname.
+ * detected in step 3 and refused. On any hand-off failure the STAGED object is
+ * truncated through our fd and reported as applying to the staged object
+ * only; because `link` re-resolves the staging pathname (the operator-accepted
+ * staging trust boundary), the object at the published name is not provably
+ * the staged one, so its state is always reported as UNKNOWN — never as
+ * truncated, removed or safe. Nothing is ever deleted by pathname.
  */
 export function writeImageSafely(
   outReal: string,
@@ -1403,7 +1431,7 @@ export function writeImageSafely(
       assertStagingIntact(staging);
       assertOutputDirIntact(outReal, outId);
       const dest = join(outReal, candidate);
-      hooks.beforeHandOff?.(dest);
+      hooks.beforeHandOff?.(dest, staged.path);
       try {
         if (hooks.linkError) throw Object.assign(new Error(`forced ${hooks.linkError}`), { code: hooks.linkError });
         linkSync(staged.path, dest);
@@ -1420,7 +1448,7 @@ export function writeImageSafely(
       try {
         return verifyHandedOff(outReal, outId, dest, buffer, staged.id, hooks);
       } catch (err) {
-        neutraliseAndThrow(staged.fd, dest, err, hooks);
+        neutraliseAndThrow(staged.fd, dest, err, hooks, dest);
       }
     }
     throw new Error(`output name collision cap reached: ${safe} and ${maxCollisions} alternatives already exist.`);
