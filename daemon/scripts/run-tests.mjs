@@ -23,6 +23,25 @@
 // it is defense-in-depth against the far larger set of unit tests that only
 // set process.env.PP_HOME on their own process and rely on PP_DB_PATH being
 // absent.
+//
+// Also sets PP_ECOSYSTEM_DISABLED=1 for the batched `*.unit.mjs` run below
+// (cross-vendor judge regression finding, 2026-09-25): unit tests exercise
+// runs.ts code paths (archiveArtifact/recordVerdict/finalizeRun) that fire
+// eights-writes.ts's fire-and-forget calls into eights-client.ts's probe().
+// Once probe() started tolerating TheEights' malformed listTools() schema
+// (1385c2c), those fire-and-forget calls could actually CONNECT to a real
+// TheEights daemon found via resolveDaemonEntry()'s sibling-install
+// fallback -- and since a fire-and-forget caller never calls shutdown(),
+// the spawned child stayed alive, holding the unit test file's own process
+// open until its test-runner timeout killed it (`[eights-daemon] booting
+// pid=...` reproduced directly in a hung unit test's log). Unit tests must
+// never depend on -- or accidentally reach -- a live TheEights; only
+// eights-integration.smoke.mjs (gated on PP_LIVE_EIGHTS=1, run separately
+// below) and the unit tests that explicitly clear this flag before
+// importing dist/ against ONLY a fixture -- never a real daemon --
+// (eights-client-listtools.unit.mjs; eights-lifecycle.unit.mjs, L1B, which
+// additionally redirects HOME/USERPROFILE to an isolated temp dir first; see
+// PP_ECOSYSTEM_DISABLED in src/ecosystem/eights-client.ts) may probe.
 
 import { readdirSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -49,7 +68,14 @@ const unitFiles = readdirSync(join(daemonRoot, "test"))
   .map((f) => join("test", f));
 
 run("npm", ["run", "build"]);
+
+// PP_ECOSYSTEM_DISABLED=1 ONLY around the unit-file batch -- see header
+// comment. Restored immediately after so the smoke tests below (which
+// legitimately probe TheEights, gated on PP_LIVE_EIGHTS=1) are unaffected.
+process.env.PP_ECOSYSTEM_DISABLED = "1";
 run(process.execPath, ["--test", "--test-timeout=180000", ...unitFiles]);
+delete process.env.PP_ECOSYSTEM_DISABLED;
+
 run(process.execPath, [join("test", "smoke.mjs")]);
 run(process.execPath, [join("test", "artifact-validators.smoke.mjs")]);
 run(process.execPath, [join("test", "eights-integration.smoke.mjs")]);

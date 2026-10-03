@@ -1,0 +1,180 @@
+// Minimal fake TheEights MCP stdio server, used ONLY by
+// eights-client-listtools.unit.mjs. No live TheEights daemon required.
+//
+// Reproduces two real conditions observed against the actual TheEights
+// daemon (see eights-integration.smoke.mjs header + eights-client.ts
+// comments for the full write-up):
+//
+//   1. One tool (`eights.evolution.register`) is registered with an
+//      `inputSchema` that has NO `type` field at all — this is exactly what
+//      TheEights' hand-rolled `zodToJsonSchema` (daemon/src/mcp/zod-to-json.ts
+//      in the TheEights repo) emits for a top-level `z.object({...}).refine(...)`
+//      schema (a `ZodEffects` node its `walk()` switch has no case for, so it
+//      falls through to `default: return {}`). The MCP SDK's
+//      `ListToolsResultSchema` requires `inputSchema.type` to be the zod
+//      literal `"object"` for EVERY listed tool, so `client.listTools()`
+//      throws on this tools/list response — even though the tool the caller
+//      actually cares about (`eights.memory.*`) is perfectly well-formed.
+//
+//   2. The `eights.memory.add` handler echoes back three env vars so the test
+//      can prove `eights-client.ts`'s `scopedEightsEnv()` allowlist forwards
+//      exactly what's on the frozen exact-name list and nothing more:
+//        - `process.env.EIGHTS_HOME` (on the frozen `EIGHTS_FORWARDED_ENV_VARS`
+//          list, not on the MCP SDK's default Windows/POSIX inherited-env
+//          safelist) MUST reach the spawned child, with the parent's value.
+//        - `process.env.EIGHTS_API_KEY` (an `EIGHTS_*`-prefixed var that is
+//          NOT on the frozen list) must NOT reach the spawned child — proves
+//          the allowlist is an exact-name list, not a prefix match, and
+//          doesn't degrade back into a full parent-env copy.
+//        - `process.env.HYDRA_OPERATOR_KEY` (a real secret TheEights itself
+//          reads, auth/capability.ts:150 — explicitly excluded from the
+//          allowlist, see eights-client.ts's doc comment) must NOT reach the
+//          spawned child either.
+//
+// L1B idle-close race regression (eights-lifecycle-idle-race.unit.mjs) needs
+// two more controllable knobs, both opt-in (default: no delay, identical
+// behavior to every other test using this fixture):
+//   - `closeDelayMs`: when the client ends stdin (the first step of
+//     `StdioClientTransport.close()`), this fixture waits that many ms
+//     before actually exiting, instead of exiting immediately on EOF. That
+//     widens the window `eights-client.ts`'s `shutdown()` spends awaiting
+//     `client.close()` — which is exactly the window the idle-close race
+//     needs a concurrent `safeCall` to land in.
+//   - `callDelayMs`: when set, `eights.memory.add` waits that many ms before
+//     responding — used to keep a call "in flight" long enough to span an
+//     idle-close timer's deadline.
+// `eights-client.ts`'s `scopedEightsEnv()` forwards only its frozen
+// exact-name `EIGHTS_*`/`AIAPP_BASE` allowlist to this spawned child — a
+// bare `PP_TEST_FIXTURE_*` env var set in the parent test process would
+// silently NOT reach here. So, same as the pid-file carrier below, these two
+// knobs are read from a JSON control file the test writes to
+// `<EIGHTS_HOME>/fixture-control.json` BEFORE the parent triggers the first
+// connect, rather than from the environment.
+
+import { Server } from "@modelcontextprotocol/sdk/server/index.js";
+import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import {
+  CallToolRequestSchema,
+  ListToolsRequestSchema,
+} from "@modelcontextprotocol/sdk/types.js";
+import { existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
+import { join } from "node:path";
+
+// L1B: eights-lifecycle.unit.mjs needs to assert this fixture process is
+// actually DEAD (not just orphaned-but-unref'd) after a caller finishes with
+// it -- including a caller that spawns it as a GRANDCHILD (a bare Node
+// script that imports eights-client, which itself spawns this fixture), so
+// there is no in-process way for the top-level test to learn this fixture's
+// pid directly.
+//
+// Deliberately reuses `EIGHTS_HOME` -- already on eights-client.ts's frozen
+// `EIGHTS_FORWARDED_ENV_VARS` allowlist and already forwarded to every
+// spawned peer (see eights-client-listtools.unit.mjs, which sets it for an
+// unrelated echo-back assertion) -- as the carrier for the pid-file
+// directory, instead of adding a new test-only variable to that
+// production-audited, exact-name allowlist. When `EIGHTS_HOME` is set, this
+// fixture writes its own pid to `<EIGHTS_HOME>/fixture.pid` on startup, and
+// reads `<EIGHTS_HOME>/fixture-control.json` (if present) for the two
+// idle-close-race knobs described above.
+const eightsHome = process.env.EIGHTS_HOME;
+let closeDelayMs = 0;
+let callDelayMs = 0;
+if (eightsHome) {
+  try {
+    mkdirSync(eightsHome, { recursive: true });
+    writeFileSync(join(eightsHome, "fixture.pid"), String(process.pid), "utf8");
+    // Record the home-ish env this fixture actually booted with, so a test can
+    // POSITIVELY prove the spawned child was isolated (every path it could
+    // write through resolves under the test's temp home) instead of diffing
+    // the operator's real ~/.eights, which a live TheEights daemon mutates
+    // concurrently (eights-lifecycle.unit.mjs (iii)).
+    writeFileSync(
+      join(eightsHome, "fixture-env.json"),
+      JSON.stringify({
+        EIGHTS_HOME: process.env.EIGHTS_HOME ?? null,
+        HOME: process.env.HOME ?? null,
+        USERPROFILE: process.env.USERPROFILE ?? null,
+      }),
+      "utf8",
+    );
+  } catch {
+    // best-effort; a failure here must not stop the fixture from serving.
+  }
+  try {
+    const controlPath = join(eightsHome, "fixture-control.json");
+    if (existsSync(controlPath)) {
+      const cfg = JSON.parse(readFileSync(controlPath, "utf8"));
+      if (Number.isFinite(cfg.closeDelayMs)) closeDelayMs = cfg.closeDelayMs;
+      if (Number.isFinite(cfg.callDelayMs)) callDelayMs = cfg.callDelayMs;
+    }
+  } catch {
+    // best-effort; a malformed/missing control file just means no delay.
+  }
+}
+
+const server = new Server(
+  { name: "fake-eights-daemon", version: "0.0.1" },
+  { capabilities: { tools: {} } }
+);
+
+server.setRequestHandler(ListToolsRequestSchema, async () => ({
+  tools: [
+    {
+      name: "eights.memory.add",
+      description: "fixture memory.add",
+      inputSchema: {
+        type: "object",
+        properties: { content: { type: "string" } },
+        required: ["content"],
+      },
+    },
+    {
+      // Deliberately malformed — mirrors TheEights' real
+      // zod-to-json.ts fallthrough for a top-level `.refine()`'d schema.
+      name: "eights.evolution.register",
+      description: "fixture evolution.register (malformed inputSchema, on purpose)",
+      inputSchema: {},
+    },
+  ],
+}));
+
+server.setRequestHandler(CallToolRequestSchema, async (req) => {
+  const { name, arguments: args } = req.params;
+  if (name === "eights.memory.add") {
+    if (callDelayMs > 0) {
+      await new Promise((resolve) => setTimeout(resolve, callDelayMs));
+    }
+    return {
+      content: [
+        {
+          type: "text",
+          text: JSON.stringify({
+            id: "mem_fixture_1",
+            eights_home_marker: process.env.EIGHTS_HOME ?? null,
+            eights_api_key_marker: process.env.EIGHTS_API_KEY ?? null,
+            hydra_operator_key_marker: process.env.HYDRA_OPERATOR_KEY ?? null,
+          }),
+        },
+      ],
+    };
+  }
+  return {
+    isError: true,
+    content: [{ type: "text", text: `fixture: unknown tool ${name}` }],
+  };
+});
+
+// L1B idle-close race regression: when `closeDelayMs` (read from the control
+// file above) is set, delay this fixture's own exit after the client ends
+// stdin (StdioClientTransport.close()'s first step), instead of letting
+// Node's default "exit when stdin ends and nothing else is ref'd" behavior
+// close it near-instantly. Widens the window the client's awaited `close()`
+// spends unresolved.
+if (closeDelayMs > 0) {
+  process.stdin.on("end", () => {
+    setTimeout(() => process.exit(0), closeDelayMs);
+  });
+}
+
+const transport = new StdioServerTransport();
+await server.connect(transport);

@@ -1,8 +1,8 @@
 import { nanoid } from "nanoid";
 import { createHash } from "node:crypto";
-import { mkdirSync, writeFileSync, statSync, existsSync, readFileSync } from "node:fs";
-import { join, relative, dirname, extname } from "node:path";
-import { trackedExeca } from "../mcp/cli-runner.js";
+import { mkdirSync, writeFileSync, statSync, existsSync, readFileSync, realpathSync } from "node:fs";
+import { join, relative, dirname, extname, resolve } from "node:path";
+import { trackedExeca, SpawnRefusedError, isShuttingDown } from "../mcp/cli-runner.js";
 import YAML from "yaml";
 import { db, txImmediate, txImmediateWithRetry } from "../db/database.js";
 import { projectArtifactDir } from "../util/paths.js";
@@ -14,7 +14,7 @@ import {
 import { log } from "../util/logger.js";
 import { scanForSecrets, SecretsFoundError } from "../security/secret-scan.js";
 import { loadProjectProfile } from "./profiles.js";
-import { applyMasterPlanPatch, ensureMasterPlan, masterPlanStatus } from "./master-plan.js";
+import { applyMasterPlanPatch, ensureMasterPlan, masterPlanStatus, masterPlanPath } from "./master-plan.js";
 import { TAXONOMY_BY_ID, MASTER_PLAN_SECTIONS } from "./taxonomy.js";
 import { ProjectLock, ProjectLockBusyError } from "../util/lock.js";
 import { tmpdir } from "node:os";
@@ -2333,6 +2333,19 @@ export type FinalizeRunInput = {
   run_id: string;
   status: Extract<RunStatus, "complete" | "surfaced" | "aborted">;
   summary_md?: string;
+  /**
+   * When true AND the effective status is "complete", skip the default
+   * autoPatchMasterPlan call that would otherwise re-derive PROJECT_MASTER.md
+   * content from this run's artifacts against `run.project_path`. Set this
+   * when the caller already applied the run's master-plan block elsewhere
+   * (typically via `apply_run_master_plan` against a worktree that was then
+   * merged into `run.project_path`) — the intended call order is: apply in
+   * the worktree, commit, merge into project_path, THEN finalize_run with
+   * master_plan_applied=true. A skip is recorded as an audit row in
+   * master_plan_patches so the intentional no-op is visible in history.
+   * Default false preserves prior default-path behaviour unchanged.
+   */
+  master_plan_applied?: boolean;
 };
 
 /**
@@ -2970,10 +2983,32 @@ export function finalizeRun(input: FinalizeRunInput): FinalizeRunOutput {
   // patch PROJECT_MASTER.md with the run's contributions as a safety net.
   // Idempotent: re-applying the same content does not duplicate sections.
   if (effectiveStatus === "complete") {
-    try {
-      autoPatchMasterPlan(input.run_id, run.project_path);
-    } catch (err) {
-      log.warn({ run_id: input.run_id, err }, "autoPatchMasterPlan failed (non-fatal)");
+    if (input.master_plan_applied) {
+      // The caller already applied this run's master-plan block elsewhere
+      // (apply_run_master_plan against a worktree, then merged into
+      // project_path) — skip the default re-derivation and record an audit
+      // row so the intentional skip is visible in master_plan_patches
+      // history alongside real patches and the surfaced-skip rows below.
+      try {
+        txImmediate(() => {
+          db()
+            .prepare(
+              `INSERT INTO master_plan_patches(id, run_id, section, kind, prev_sha, new_sha, applied_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?)`
+            )
+            .run(`mpp_skip_${nanoid(8)}`, input.run_id, "(skipped)", "master_plan_applied_skip", null, "", now());
+        });
+      } catch { /* ignore */ }
+      log.info(
+        { run_id: input.run_id },
+        "finalize_run: master_plan_applied=true — skipping default autoPatchMasterPlan",
+      );
+    } else {
+      try {
+        autoPatchMasterPlan(input.run_id, run.project_path);
+      } catch (err) {
+        log.warn({ run_id: input.run_id, err }, "autoPatchMasterPlan failed (non-fatal)");
+      }
     }
   } else {
     // Record an audit row so the user can see the run was intentionally not patched.
@@ -3122,14 +3157,39 @@ export function finalizeRun(input: FinalizeRunInput): FinalizeRunOutput {
   };
 }
 
+export type ApplyRunMasterPlanSectionResult =
+  | { section: string; status: "applied" | "noop_already_applied"; patch_id: string | null }
+  | { section: string; status: "error"; error: string };
+
+export type ApplyRunMasterPlanResult = {
+  run_id: string;
+  /** Absolute path to the PROJECT_MASTER.md written/read under targetDir. */
+  path: string;
+  /** Whether ensureMasterPlan scaffolded a new PROJECT_MASTER.md under targetDir. */
+  created: boolean;
+  sections: ApplyRunMasterPlanSectionResult[];
+};
+
 /**
  * Walk a run's artifacts grouped by taxonomy_section, fold each group into
- * the corresponding PROJECT_MASTER.md section via applyMasterPlanPatch.
- * Idempotent — if the run-id block already appears in the section, the
- * patch is appended again only if its content changed.
+ * the corresponding PROJECT_MASTER.md section under `targetDir` via
+ * applyMasterPlanPatch. Idempotent per section — applyMasterPlanPatch's
+ * run-id-block detection means calling this again for the same run against
+ * the same PROJECT_MASTER.md file does not duplicate content, regardless of
+ * how the rendered block's non-header fields (e.g. the run's live `status`)
+ * may have changed between calls.
+ *
+ * This is the shared core behind both `autoPatchMasterPlan` (default path,
+ * targetDir === run.project_path, called from finalize_run) and the
+ * `apply_run_master_plan` MCP tool (operator-directed, targetDir is a
+ * validated worktree/checkout). Callers other than the validated tool
+ * entrypoint below are responsible for ensuring targetDir is safe to write
+ * to — this function performs no path validation itself.
  */
-function autoPatchMasterPlan(runId: string, projectPath: string): void {
-  ensureMasterPlan(projectPath);
+function writeRunMasterPlanBlocks(runId: string, targetDir: string): ApplyRunMasterPlanResult {
+  const { created } = ensureMasterPlan(targetDir);
+  const path = masterPlanPath(targetDir);
+  const sections: ApplyRunMasterPlanSectionResult[] = [];
 
   const artifacts = db()
     .prepare(
@@ -3139,7 +3199,7 @@ function autoPatchMasterPlan(runId: string, projectPath: string): void {
     )
     .all(runId) as Array<{ id: string; taxonomy_section: string; kind: string | null; path: string }>;
 
-  if (artifacts.length === 0) return;
+  if (artifacts.length === 0) return { run_id: runId, path, created, sections };
 
   const grouped = new Map<string, Array<{ kind: string | null; path: string }>>();
   for (const a of artifacts) {
@@ -3153,7 +3213,7 @@ function autoPatchMasterPlan(runId: string, projectPath: string): void {
     .get(runId) as
     | { request_text: string; started_at: string; status: string; mode: string; team: string | null; forum: string | null }
     | undefined;
-  if (!runRow) return;
+  if (!runRow) return { run_id: runId, path, created, sections };
 
   const summary = runRow.request_text.slice(0, 80).replaceAll("\n", " ");
   const dateStr = runRow.started_at.slice(0, 10);
@@ -3183,17 +3243,201 @@ function autoPatchMasterPlan(runId: string, projectPath: string): void {
       files.map(f => `  - \`${f.path}\`${f.kind ? ` (${f.kind})` : ""}`).join("\n") +
       "\n";
     try {
-      applyMasterPlanPatch({
+      const res = applyMasterPlanPatch({
         run_id: runId,
-        project_path: projectPath,
+        project_path: targetDir,
         section: masterSection,
         kind: "append",
         content_md: block,
       });
+      if (res.status === "rejected_unknown_section") {
+        sections.push({ section: masterSection, status: "error", error: res.reason });
+      } else {
+        sections.push({ section: masterSection, status: res.status, patch_id: res.patch_id });
+      }
     } catch (err) {
       log.warn({ run_id: runId, section: masterSection, err }, "applyMasterPlanPatch failed");
+      sections.push({ section: masterSection, status: "error", error: (err as Error).message });
     }
   }
+
+  return { run_id: runId, path, created, sections };
+}
+
+/**
+ * Default-path wrapper: patches PROJECT_MASTER.md at the run's own
+ * project_path. Called from finalize_run's success path — behaviour is
+ * unchanged from before the apply_run_master_plan extraction.
+ */
+function autoPatchMasterPlan(runId: string, projectPath: string): void {
+  writeRunMasterPlanBlocks(runId, projectPath);
+}
+
+export class MasterPlanTargetDirError extends Error {
+  constructor(
+    message: string,
+    public readonly run_id: string,
+    public readonly target_dir: string,
+  ) {
+    super(message);
+    this.name = "MasterPlanTargetDirError";
+  }
+}
+
+/**
+ * Normalize a path for comparison. win32 paths are case-insensitive; POSIX
+ * paths are compared as-is.
+ */
+function normalizePathForCompare(p: string): string {
+  return process.platform === "win32" ? p.toLowerCase() : p;
+}
+
+/**
+ * Resolve `dir`'s git common directory (the main repo's .git, reached even
+ * from a linked worktree) as a canonical absolute path, or null when `dir`
+ * is not inside a git repository, the git binary is unavailable, or the
+ * probe fails for any other reason. 5s timeout, fail-soft.
+ *
+ * Spawned through trackedExeca (git-plumbing rule) so the probe is refused
+ * once shutdown begins and killed by the shutdown drain if in flight. A
+ * refusal or shutdown kill is re-thrown rather than mapped to null: it is a
+ * shutdown signal, not evidence about the repository.
+ */
+async function resolveGitCommonDir(dir: string): Promise<string | null> {
+  let out: string;
+  try {
+    const { stdout } = await trackedExeca("git", ["-C", dir, "rev-parse", "--git-common-dir"], {
+      timeout: 5000,
+      windowsHide: true,
+    });
+    out = (stdout ?? "").toString().trim();
+  } catch (err) {
+    if (err instanceof SpawnRefusedError || isShuttingDown()) throw err;
+    return null;
+  }
+  if (!out) return null;
+  try {
+    return realpathSync(resolve(dir, out));
+  } catch {
+    return null;
+  }
+}
+
+export type MasterPlanTargetValidation =
+  | { ok: true; resolved_target: string }
+  | { ok: false; reason: string };
+
+/**
+ * Validate that `targetDir` is safe to write a run's PROJECT_MASTER.md into
+ * on the operator's behalf (apply_run_master_plan). Passes when either:
+ *   (a) realpath(targetDir) === realpath(projectPath), or
+ *   (b) `git -C targetDir rev-parse --git-common-dir` resolves to the same
+ *       canonical path as `git -C projectPath rev-parse --git-common-dir`
+ *       (i.e. targetDir is a linked worktree, or another checkout, of the
+ *       SAME repository as projectPath).
+ * Comparison is case-insensitive on win32. Any other directory is rejected.
+ *
+ * Symlinks / Windows junctions: both `targetDir` and `projectPath` are
+ * resolved with `realpathSync` BEFORE any comparison, so a junction or
+ * symlink is followed to its physical target before this function ever
+ * looks at it — there is no separate "is this a link" branch. Consequences,
+ * by design:
+ *   - A junction/symlink whose target resolves OUTSIDE the project (and
+ *     outside a git worktree/checkout that shares the project's common git
+ *     dir) is REJECTED — the realpath comparison and the git-common-dir
+ *     fallback both operate on the resolved (real) target, so the link
+ *     itself grants no bypass.
+ *   - A junction/symlink that points AT a real linked worktree of the
+ *     SAME repository (or at project_path itself) IS ACCEPTED — realpath
+ *     resolves it to the worktree's/project's own physical path, which
+ *     then passes check (a) or (b) exactly as if the caller had passed
+ *     that physical path directly. This is intentional: the link is
+ *     transparent, and what is actually validated is always the resolved
+ *     destination on disk, never the link path string.
+ *
+ * Fail-closed on git unavailability: if `git` cannot be spawned or
+ * `rev-parse --git-common-dir` errors for either side, resolveGitCommonDir
+ * returns null (never a placeholder/sentinel value treated as a match) —
+ * a null on either side means the git-common-dir check can never pass, so
+ * an unavailable/broken git falls through to rejection rather than being
+ * silently treated as "same repository". The one exception is shutdown: a
+ * SpawnRefusedError (or a probe killed mid-flight by the shutdown drain)
+ * propagates to the caller, which still writes nothing.
+ */
+export async function validateMasterPlanTargetDir(
+  projectPath: string,
+  targetDir: string,
+): Promise<MasterPlanTargetValidation> {
+  let realProject: string;
+  try {
+    realProject = realpathSync(projectPath);
+  } catch (e) {
+    return {
+      ok: false,
+      reason: `run's project_path '${projectPath}' does not resolve on disk: ${(e as Error).message}`,
+    };
+  }
+
+  let realTarget: string;
+  try {
+    realTarget = realpathSync(targetDir);
+  } catch (e) {
+    return {
+      ok: false,
+      reason: `target_dir '${targetDir}' does not resolve on disk: ${(e as Error).message}`,
+    };
+  }
+
+  if (normalizePathForCompare(realProject) === normalizePathForCompare(realTarget)) {
+    return { ok: true, resolved_target: realTarget };
+  }
+
+  const projectCommonDir = await resolveGitCommonDir(realProject);
+  const targetCommonDir = await resolveGitCommonDir(realTarget);
+  if (
+    projectCommonDir &&
+    targetCommonDir &&
+    normalizePathForCompare(projectCommonDir) === normalizePathForCompare(targetCommonDir)
+  ) {
+    return { ok: true, resolved_target: realTarget };
+  }
+
+  return {
+    ok: false,
+    reason:
+      `target_dir '${targetDir}' is neither the run's project_path '${projectPath}' nor a git ` +
+      `worktree/checkout sharing project_path's common git directory. Refusing to write ` +
+      `PROJECT_MASTER.md outside the run's own repository.`,
+  };
+}
+
+/**
+ * Validated entrypoint for the `apply_run_master_plan` MCP tool. Resolves
+ * the run's project_path, validates `targetDir` via validateMasterPlanTargetDir,
+ * then writes the run's master-plan block(s) under targetDir.
+ *
+ * Call order for the intended cross-worktree workflow: apply here against a
+ * worktree, commit the resulting PROJECT_MASTER.md change, merge it into
+ * project_path, THEN call finalize_run with master_plan_applied=true so the
+ * default auto-patch (which would otherwise re-derive the same content
+ * against project_path) is skipped.
+ */
+export async function applyRunMasterPlan(runId: string, targetDir: string): Promise<ApplyRunMasterPlanResult> {
+  const run = db().prepare(`SELECT project_path FROM runs WHERE id = ?`).get(runId) as
+    | { project_path: string }
+    | undefined;
+  if (!run) throw new Error(`run ${runId} not found`);
+
+  const validation = await validateMasterPlanTargetDir(run.project_path, targetDir);
+  if (!validation.ok) {
+    throw new MasterPlanTargetDirError(
+      `apply_run_master_plan refused for run ${runId}: ${validation.reason}`,
+      runId,
+      targetDir,
+    );
+  }
+
+  return writeRunMasterPlanBlocks(runId, validation.resolved_target);
 }
 
 export type ArchiveArtifactInput = {

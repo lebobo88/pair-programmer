@@ -57,8 +57,8 @@ async function main() {
     if (health.judge_capabilities?.codex?.same_vendor_mode !== "conditional_cross_vendor") {
       throw new Error(`expected codex judge capability summary, got: ${pretty(health.judge_capabilities)}`);
     }
-    if (health.judge_capabilities?.codex?.critique_model !== "gpt-5.6-terra") {
-      throw new Error(`expected codex critique model gpt-5.6-terra, got: ${pretty(health.judge_capabilities?.codex)}`);
+    if (health.judge_capabilities?.codex?.critique_model !== "gpt-6.1-sol") {
+      throw new Error(`expected codex critique model gpt-6.1-sol, got: ${pretty(health.judge_capabilities?.codex)}`);
     }
     console.log(`✓ doctor judge_capabilities: codex=${health.judge_capabilities.codex.same_vendor_mode}, agy=${health.judge_capabilities.agy.same_vendor_mode}`);
 
@@ -117,14 +117,14 @@ async function main() {
     });
     console.log(`✓ archive_artifact -> ${artifact.artifact_id} (${artifact.sha256.slice(0, 12)}…)`);
 
-    // 6. Record a verdict — judge uses gpt-5.6-terra (codex), attempt producer
+    // 6. Record a verdict — judge uses gpt-6.1-sol (codex), attempt producer
     //    is claude (see step 4), so this is now a cross-vendor verdict.
     //    critique_md must be ≥80 non-whitespace chars to satisfy the
     //    anti-vacuous-pass refine on RecordVerdictSchema.
     const verdict = await callTool(client, "record_verdict", {
       attempt_id: att.attempt_id,
       judge_producer: "codex",
-      judge_model_id: "gpt-5.6-terra",
+      judge_model_id: "gpt-6.1-sol",
       outcome: "pass",
       critique_md: "Smoke verdict: synthetic attempt accepted. Diff is single-line, no logic risk, and rubric dimensions correctness/minimality both satisfied for this no-op artifact.",
       score_json: { correctness: 0.9, minimality: 0.95 },
@@ -246,7 +246,7 @@ async function main() {
     if (same1 && same1.preferred_models.includes("gpt-5.6-luna")) {
       throw new Error(`same-vendor lane must not offer the generator's own model, got: ${pretty(same1)}`);
     }
-    if (gate1.judge_capabilities?.codex?.allowed_critique_models?.indexOf("gpt-5.6-terra") < 0) {
+    if (gate1.judge_capabilities?.codex?.allowed_critique_models?.indexOf("gpt-6.1-sol") < 0) {
       throw new Error(`expected judge_capabilities allow-list in the response, got: ${pretty(gate1.judge_capabilities)}`);
     }
     console.log(`✓ gate_eligible_judges (code_style/plain codex default gpt-5.6-luna) -> cross-vendor closing lane + supplementary same-vendor`);
@@ -255,32 +255,32 @@ async function main() {
     const gateOverride = await callTool(client, "gate_eligible_judges", {
       gate_type: "code_style",
       generator_producer: "claude",
-      requested_judge_model: "gpt-5.6-sol",
+      requested_judge_model: "gpt-6-astra",
       requested_judge_effort: "high",
     });
     const closingOverride = gateOverride.allowed_judges.find((j) => j.closing);
-    if (closingOverride.preferred_models[0] !== "gpt-5.6-sol") {
+    if (closingOverride.preferred_models[0] !== "gpt-6-astra") {
       throw new Error(`expected the requested model promoted to the front, got: ${pretty(closingOverride)}`);
     }
     if (closingOverride.preferred_producers.includes("agy")) {
       throw new Error(`agy cannot serve a codex model id, got: ${pretty(closingOverride)}`);
     }
-    console.log(`✓ gate_eligible_judges (requested_judge_model=gpt-5.6-sol) -> narrowed to codex`);
+    console.log(`✓ gate_eligible_judges (requested_judge_model=gpt-6-astra) -> narrowed to codex`);
 
     // 11a. A Codex generator that already ran on the pinned critique model
-    // (gpt-5.6-terra) CANNOT be judged same-vendor — the different-model half
+    // (gpt-6.1-sol) CANNOT be judged same-vendor — the different-model half
     // of the invariant is unsatisfiable — so the gate upgrades to cross-vendor.
     const gate1b = await callTool(client, "gate_eligible_judges", {
       gate_type: "code_style",
       generator_producer: "codex",
-      generator_model: "gpt-5.6-terra",
+      generator_model: "gpt-6.1-sol",
       prompt_keywords: "rename a variable from foo to bar",
     });
     if (!gate1b.required_cross_vendor) throw new Error(`expected cross-vendor when codex generator_model IS the critique pin, got: ${pretty(gate1b)}`);
     if (!gate1b.upgraded) throw new Error(`expected upgraded=true when codex generator_model IS the critique pin, got: ${pretty(gate1b)}`);
     if (gate1b.allowed_judges[0].agent !== "judge-cross-vendor") throw new Error(`expected judge-cross-vendor first`);
     if (!/hard-pinned/.test(gate1b.reason)) throw new Error(`expected codex pin reason, got: ${gate1b.reason}`);
-    console.log(`✓ gate_eligible_judges (code_style/codex gpt-5.6-terra) -> upgraded cross-vendor, reason="${gate1b.reason}"`);
+    console.log(`✓ gate_eligible_judges (code_style/codex gpt-6.1-sol) -> upgraded cross-vendor, reason="${gate1b.reason}"`);
 
     // 12. Phase 2: cross-vendor required when prompt mentions security keywords.
     const gate2 = await callTool(client, "gate_eligible_judges", {
@@ -474,7 +474,7 @@ async function main() {
     console.log(`✓ gate_eligible_judges artifact/rubric overrides: test_plan→null, browser_validation_report→${gate6.rubric_id}, rubric_hint→${gate7.rubric_id}`);
 
     // 15a. record_verdict refuses an arbitrary (non-pinned) codex judge_model_id.
-    // gpt-5.6-terra and gpt-5.6-sol are both accepted (default and escalated pins);
+    // gpt-6.1-sol and gpt-6-astra are both accepted (default and escalated pins);
     // since J4 (#28) the rejection comes from the JUDGE_MODEL_POLICY allow-list and
     // names the allowed ids. Any other id (e.g. gpt-5-bogus) must still be rejected.
     let sameModelRejected = false;
@@ -484,7 +484,7 @@ async function main() {
         judge_producer: "codex",
         judge_model_id: "gpt-5-bogus",
         outcome: "pass",
-        critique_md: "This should fail because Codex critique is pinned to gpt-5.6-terra/gpt-5.6-sol and an arbitrary model id must never be recorded by the daemon.",
+        critique_md: "This should fail because Codex critique is pinned to gpt-6.1-sol/gpt-6-astra and an arbitrary model id must never be recorded by the daemon.",
         score_json: { correctness: 0.9, minimality: 0.95 },
       });
     } catch (err) {
@@ -535,7 +535,7 @@ async function main() {
     await callTool(client, "record_verdict", {
       attempt_id: missAtt.attempt_id,
       judge_producer: "codex",
-      judge_model_id: "gpt-5.6-terra",
+      judge_model_id: "gpt-6.1-sol",
       outcome: "pass",
       critique_md: "Missability smoke verdict: diff artifact contains decision log and doc ownership evidence; rubric dimensions decision-logging and doc-ownership both satisfied for this synthetic lifecycle.",
       score_json: { correctness: 0.9, minimality: 0.9 },
@@ -631,7 +631,7 @@ async function main() {
     });
     const serialVerdict = await callTool(client, "record_verdict", {
       attempt_id: serialAtt.attempt_id,
-      judge_producer: "codex", judge_model_id: "gpt-5.6-terra",
+      judge_producer: "codex", judge_model_id: "gpt-6.1-sol",
       outcome: "pass",
       critique_md: "Serialization regression: score_json arrived as a JSON-encoded string from a non-typed MCP client and the per-field defensive parse converted it back to an object before the refine ran. " +
                    "This locks down the precedent the dispatch-layer defensive parse mirrors.",
