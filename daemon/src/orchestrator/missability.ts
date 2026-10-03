@@ -690,21 +690,24 @@ type ArtifactBundle = {
 };
 
 /**
- * Keep only the most recent artifact per stage_id. An artifact with a null or
- * missing stage_id has no stage to be superseded within, so each one is kept as
- * its own scope. Recency is created_at (ISO-8601, so lexical order is
- * chronological); on a created_at tie the LATER element in `items` wins, which
- * is insertion (rowid) order for bundles built by runMissabilityChecks.
+ * Keep only the most recent artifact per stage scope. Artifacts with a null or
+ * missing stage_id share ONE run-level scope (cross-vendor review, 2026-10-03:
+ * keeping every null-stage report let a stale run-level `severity: errors`
+ * from an earlier attempt fail the run, which is exactly the BUG-2 defect this
+ * selection exists to fix). Recency is created_at (ISO-8601, so lexical order
+ * is chronological); on a created_at tie the LATER element in `items` wins,
+ * which is insertion (rowid) order for bundles built by runMissabilityChecks.
  * Output preserves the input order of the survivors.
  */
+const RUN_LEVEL_SCOPE = "\u0000run-level";
 function latestReportPerStage(items: ArtifactBundle[]): ArtifactBundle[] {
+  const scopeOf = (a: ArtifactBundle) => a.stage_id ?? RUN_LEVEL_SCOPE;
   const latest = new Map<string, ArtifactBundle>();
   for (const a of items) {
-    if (a.stage_id == null) continue;
-    const prev = latest.get(a.stage_id);
-    if (!prev || (a.created_at ?? "") >= (prev.created_at ?? "")) latest.set(a.stage_id, a);
+    const prev = latest.get(scopeOf(a));
+    if (!prev || (a.created_at ?? "") >= (prev.created_at ?? "")) latest.set(scopeOf(a), a);
   }
-  return items.filter(a => a.stage_id == null || latest.get(a.stage_id) === a);
+  return items.filter(a => latest.get(scopeOf(a)) === a);
 }
 
 /**

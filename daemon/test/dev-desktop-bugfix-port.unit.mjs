@@ -122,6 +122,35 @@ describe("BUG-1 normalizeArtifactRelPath", () => {
     assert.equal(out.status, "ok");
     assert.equal(out.absolute_path, expected);
   });
+
+  // Containment (cross-vendor review, 2026-10-03): after prefix normalization,
+  // ".harness/<runId>/../../x" became "../../x" and escaped the artifact dir.
+  // A bare "../../x" escaped on main before the port too. Both must be refused
+  // with nothing written.
+  for (const shape of ["prefixed", "bare"]) {
+    test(`AC1-8 archiveArtifact refuses a ${shape} traversal out of .harness/<runId>/ and writes nothing`, async () => {
+      const project = makeProject();
+      const run = await runs.ensureRun({ request_text: `bug1 traversal ${shape}`, project_path: project, mode: "single" });
+      const stage = await runs.startStage({ run_id: run.run_id, kind: "spec", gate_type: "spec" });
+      const rel = shape === "prefixed" ? `.harness/${run.run_id}/../../escaped.md` : "../../escaped.md";
+      const escapedTarget = join(project, "escaped.md");
+      // archiveArtifact validates synchronously, so the refusal is a sync throw.
+      assert.throws(
+        () => runs.archiveArtifact({ run_id: run.run_id, stage_id: stage.stage_id, kind: "spec", relative_path: rel, bytes: "# escaped\n" }),
+        (err) => err?.name === "ArchiveArtifactPathError" && /outside the run's artifact directory/.test(err.message),
+      );
+      assert.ok(!existsSync(escapedTarget), `nothing may be written outside the artifact dir: ${escapedTarget}`);
+    });
+  }
+
+  test("AC1-9 a '..' that stays inside .harness/<runId>/ is still accepted (the guard is containment, not a '..' ban)", async () => {
+    const project = makeProject();
+    const run = await runs.ensureRun({ request_text: "bug1 inner dotdot", project_path: project, mode: "single" });
+    const stage = await runs.startStage({ run_id: run.run_id, kind: "spec", gate_type: "spec" });
+    const out = await runs.archiveArtifact({ run_id: run.run_id, stage_id: stage.stage_id, kind: "spec", relative_path: "code/../notes/y.md", bytes: "# y\n" });
+    assert.equal(out.status, "ok");
+    assert.ok(existsSync(join(project, ".harness", run.run_id, "notes", "y.md")));
+  });
 });
 
 // ─── BUG-2: browser-validation-evidence evaluates the latest report per stage ─
@@ -187,10 +216,20 @@ describe("BUG-2 browser-validation-evidence recency scoping", () => {
     assert.equal(r.status, "fail");
   });
 
-  test("null stage_id reports are each their own scope (a newer null-stage clean does not hide an older null-stage errors)", () => {
+  test("null stage_id reports share one run-level scope: a newer run-level clean supersedes an older run-level errors", () => {
     const r = bvCheck.evaluate([rep("a.md", "severity: errors\n", null, T1), rep("b.md", "severity: clean\n", null, T2)], CTX);
+    assert.equal(r.status, "pass", `${r.status}: ${r.evidence}`);
+  });
+
+  test("null stage_id scope, reversed order: an older run-level clean does NOT hide a newer run-level errors", () => {
+    const r = bvCheck.evaluate([rep("a.md", "severity: clean\n", null, T1), rep("b.md", "severity: errors\n", null, T2)], CTX);
     assert.equal(r.status, "fail", `${r.status}: ${r.evidence}`);
-    assert.match(r.evidence, /^a\.md: severity=errors/);
+    assert.match(r.evidence, /^b\.md: severity=errors/);
+  });
+
+  test("the run-level scope is separate from staged scopes: a newer run-level clean does not supersede a stage's errors", () => {
+    const r = bvCheck.evaluate([rep("s1.md", "severity: errors\n", "s1", T1), rep("run.md", "severity: clean\n", null, T2)], CTX);
+    assert.equal(r.status, "fail", `${r.status}: ${r.evidence}`);
   });
 
   test("unavailable superseded by a newer clean in the same stage -> pass", () => {

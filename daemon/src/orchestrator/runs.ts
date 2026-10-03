@@ -3617,6 +3617,20 @@ export function archiveArtifact(input: ArchiveArtifactInput): ArchiveArtifactOut
   const normalizedRelPath = normalizeArtifactRelPath(input.run_id, input.relative_path);
   const dir = projectArtifactDir(run.project_path, input.run_id);
   const absolute = join(dir, normalizedRelPath);
+
+  // Containment guard (cross-vendor review, 2026-10-03): the final absolute
+  // path MUST stay under this run's artifact dir. relative_path is only
+  // `z.string().min(1)` at the MCP boundary, so "../../x" (or, after prefix
+  // normalization, ".harness/<runId>/../../x") would otherwise write outside
+  // .harness/<run_id>/. Checked before any filesystem access.
+  if (!isInside(resolve(absolute), resolve(dir))) {
+    throw new ArchiveArtifactPathError(
+      `archive_artifact rejected: relative_path "${input.relative_path}" resolves to ${resolve(absolute)}, ` +
+      `which is outside the run's artifact directory ${resolve(dir)}. Archive paths must stay under .harness/<run_id>/.`,
+      resolve(absolute),
+      resolve(dir),
+    );
+  }
   const relPath = relative(run.project_path, absolute).replaceAll("\\", "/");
 
   // Path guard: refuse archives that resolve INSIDE an active candidate
