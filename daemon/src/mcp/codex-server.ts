@@ -1022,14 +1022,17 @@ const TOOLS = [
       "no reported id is status no_session_id. The turn is never resumed and never retried; a non-zero codex exit is status cli_failure. " +
       "CONTAINMENT: containment is physical (realpath), not lexical. A session directory that is a symlink/junction or resolves outside the images root is " +
       "status invalid_session_dir; the session directory's dev/ino seen by lstat must match its realpath's, and is re-checked on every file open. Each source file is opened, then the open fd is fstat-checked (regular file, size cap) and its dev/ino re-checked against an " +
-      "lstat of the path and its realpath confined to the session directory; bytes are read from that fd only. An output_dir that is a symlink/junction (or a " +
+      "lstat of the path and its realpath confined to the session directory, with the session-dir identity and the path-vs-fd identity re-checked LAST, after " +
+      "all resolution; bytes are read from that fd only. An output_dir that is a symlink/junction (or a " +
       "component created for it that is one, or whose realpath is not the pinned existing ancestor plus the created names) is status invalid_output_dir, checked " +
-      "before the codex turn; each created component's parent is identity-checked before its mkdir. Writes use exclusive create (never follow or overwrite), " +
-      "re-check output_dir's identity (dev/ino pinned at preparation, so a same-path replacement directory is refused) before and after each write, and verify the " +
-      "returned path is still the non-link regular file created through the write fd (same dev/ino and size) with realpath parent output_dir, re-checked after the realpath resolution. On a failed check nothing is deleted by pathname; our own bytes are truncated through the still-open fd. " +
+      "before the codex turn; each created component's parent is identity-checked before its mkdir. Writes use exclusive create (never follow or overwrite) " +
+      "and the created file is proven to be ours and directly inside output_dir BEFORE any byte is written (Node has no openat, so a parent swapped for a link " +
+      "in the instant before the create can at most receive an empty file, never content). output_dir's identity (dev/ino pinned at preparation, so a " +
+      "same-path replacement directory is refused) is checked before and after each write, and the returned path must still be the non-link regular file " +
+      "created through the write fd (same dev/ino and size) with realpath parent output_dir — all path resolution first, the identity checks last. On a failed check nothing is deleted by pathname; our own bytes are truncated through the still-open fd. " +
       "VALIDATION: every PNG — including one copied verbatim — must pass a full structure check (signature, IHDR length 13 with legal fields, every chunk CRC, " +
-      "consecutive IDATs, PLTE rules incl. palette size, no unknown critical chunks, terminating IEND, no trailing bytes), and its image data must inflate — with the inflater capped at the exact size IHDR " +
-      "implies, after the 4096x4096 pixel cap — to exactly that size with valid scanline filter bytes, so a decompression bomb is refused and the later " +
+      "consecutive IDATs, PLTE rules incl. palette size, no unknown critical chunks, terminating IEND, no bytes after IEND), and its image data must inflate — with the inflater capped at the exact size IHDR " +
+      "implies, after the 4096x4096 pixel cap — to exactly that size with valid scanline filter bytes (unused padding after the zlib stream is ignored, per PNG §11.2.3), so a decompression bomb is refused and the later " +
       "decode is bounded by the same size; it must then fully decode (e.g. every palette index within PLTE) before it is copied or downscaled. A file is harvested only once settled: size and mtime unchanged across two polls and ending in IEND. " +
       "Files whose mtime pre-dates the call are stale and refused. Malformed, unsettled, stale, linked or capped files are per-file `failures`, not a whole-call failure. " +
       "LIMITS: max_dimension must be in [256, 4096] (default 768; outside that range is REJECTED, not clamped). byte_budget_bytes default 300KB, max 32MiB. " +

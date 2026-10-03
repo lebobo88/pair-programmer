@@ -221,6 +221,8 @@ export function listSessionEntries(dirReal: string, maxEntries: number): Session
 export type FileOpenHooks = {
   beforeOpen?: (path: string) => void;
   afterOpen?: (path: string) => void;
+  /** Fired after the first fd/path identity check, before realpath. */
+  afterFirstCheck?: (path: string) => void;
   afterVerify?: (path: string) => void;
 };
 
@@ -243,9 +245,11 @@ const OPEN_READ_FLAGS = FS.O_RDONLY | (FS.O_NOFOLLOW ?? 0) | (FS.O_NONBLOCK ?? 0
  *      checked before a single byte is read;
  *   3. `lstat` the PATH: must not be a symlink, and must have the fd's dev+ino
  *      (a path swapped after the open, or a symlink followed by the open, fails here);
- *   4. realpath of the path must be a direct child of `dirReal`, and `dirReal`
- *      must still be the plain directory resolved earlier (`dirId`), so a
- *      session dir swapped for a junction after resolution is refused too.
+ *   4. realpath of the path must be a direct child of `dirReal`;
+ *   5. LAST, after all resolution: `dirReal` must still be the plain directory
+ *      resolved earlier (`dirId`), and an lstat of the path must again match
+ *      the fd — so a directory swapped in for the open and restored before
+ *      realpath is refused.
  * The caller reads from the returned fd only, so a later swap of the path
  * cannot redirect the read. The caller owns closing the fd.
  */
@@ -282,14 +286,22 @@ export function openVerifiedFile(
     if (lst.ino !== st.ino || lst.dev !== st.dev) {
       return fail("path was replaced between open and verification; refusing the read.", true);
     }
+    hooks.afterFirstCheck?.(p);
     const real = realpathSync.native(p);
     if (!isDirectChildReal(dirReal, real)) {
       return fail(`file resolves to ${real}, outside the session directory.`, true);
     }
+    // Last, and after all resolution: the session dir is still the one
+    // resolved earlier, and the PATH still denotes the fd's file. A directory
+    // swapped in for the open and restored before realpath fails here.
     try {
       assertDirIdentity(dirReal, dirId, "session directory");
     } catch (err) {
       return fail((err as Error).message, true);
+    }
+    const again = lstatSync(p, { bigint: true, throwIfNoEntry: false });
+    if (!again || again.isSymbolicLink() || again.ino !== st.ino || again.dev !== st.dev) {
+      return fail("path no longer denotes the opened file after verification (swapped and restored?); refusing the read.", true);
     }
     hooks.afterVerify?.(p);
     return { ok: true, fd, size: Number(st.size), mtimeMs: Number(st.mtimeMs) };
@@ -393,7 +405,8 @@ export function pngScanlineLayout(
  *   - a final zero-length IEND with no trailing bytes;
  *   - the concatenated IDAT stream inflates — with `maxOutputLength` set to
  *     the exact size IHDR implies, so a decompression bomb stops at that bound —
- *     to EXACTLY that size with no trailing zlib input, and every scanline's
+ *     to EXACTLY that size (unused padding after the zlib stream is ignored,
+ *     per PNG §11.2.3), and every scanline's
  *     filter byte is 0..4.
  * Because the image data is proven to inflate to exactly the declared layout,
  * a later pngjs decode of the same bytes is bounded by the same size.
@@ -479,16 +492,10 @@ export function validatePngStructure(buf: Buffer, maxPixels: number = MAX_DECODE
   const stream = Buffer.concat(idat);
   let raw: Buffer;
   try {
-    // `info: true` exposes how much input the inflater consumed, so trailing
-    // bytes after the zlib stream are caught too.
-    const res = zlib.inflateSync(stream, { maxOutputLength: rawBytes, info: true }) as unknown as {
-      buffer: Buffer;
-      engine: { bytesWritten: number };
-    };
-    raw = res.buffer;
-    if (res.engine.bytesWritten !== stream.length) {
-      return { ok: false, reason: "IDAT stream has trailing bytes after the zlib stream." };
-    }
+    // Unused bytes after the end of the zlib stream (padding in the final
+    // IDAT) are legal — PNG §11.2.3 says decoders ignore them — so they are
+    // not refused; a TRUNCATED zlib stream still throws here.
+    raw = zlib.inflateSync(stream, { maxOutputLength: rawBytes });
   } catch (err) {
     const code = (err as NodeJS.ErrnoException).code;
     return code === "ERR_BUFFER_TOO_LARGE"
@@ -760,12 +767,27 @@ export function prepareOutputDir(outputDir: string, hooks: OutputDirHooks = {}):
 }
 
 /**
- * Throws unless `outReal` is still the directory `prepareOutputDir` resolved:
- * a plain (non-link) directory whose realpath is itself and whose dev+ino is
- * `outId`. A different plain directory put at the same path — directly or by
- * replacing an ancestor — has a different identity and is refused.
+ * Throws unless `outReal` is still the directory `prepareOutputDir` resolved.
+ * Resolution FIRST (its realpath must be itself), identity LAST (a plain,
+ * non-link directory whose dev+ino is `outId`), so a directory swapped in
+ * during the realpath call is still caught. A different plain directory put
+ * at the same path — directly or by replacing an ancestor — has a different
+ * identity and is refused.
  */
 export function assertOutputDirIntact(outReal: string, outId: FsIdentity): void {
+  let resolved: string;
+  try {
+    resolved = realpathSync.native(outReal);
+  } catch (err) {
+    throw new Error(`output_dir ${outReal} no longer resolves (${(err as Error).message}); refusing to write.`);
+  }
+  if (!samePath(resolved, outReal)) {
+    throw new Error(`output_dir ${outReal} no longer resolves to itself; refusing to write.`);
+  }
+  assertOutputDirIdentity(outReal, outId);
+}
+
+function assertOutputDirIdentity(outReal: string, outId: FsIdentity): void {
   const st = lstatSync(outReal, { bigint: true, throwIfNoEntry: false });
   if (!st || st.isSymbolicLink() || !st.isDirectory()) {
     throw new Error(`output_dir ${outReal} is no longer a plain directory (symlink/junction swap?); refusing to write.`);
@@ -773,16 +795,17 @@ export function assertOutputDirIntact(outReal: string, outId: FsIdentity): void 
   if (!sameIdentity(st, outId)) {
     throw new Error(`output_dir ${outReal} was replaced by a different directory; refusing to write.`);
   }
-  if (!samePath(realpathSync.native(outReal), outReal)) {
-    throw new Error(`output_dir ${outReal} no longer resolves to itself; refusing to write.`);
-  }
 }
 
 /** Test-only seams around the write and its verification. Production never sets them. */
 export type WriteHooks = {
+  /** Fired immediately before the exclusive create. */
+  beforeCreate?: (dest: string) => void;
   afterWrite?: (dest: string) => void;
   /** Fired between the first identity check and the realpath resolution. */
   duringVerify?: (dest: string) => void;
+  /** Fired after every realpath resolution, before the final identity checks. */
+  afterResolve?: (dest: string) => void;
   /** Fired after a failed verification, before the fd-bound neutralisation. */
   beforeNeutralise?: (dest: string) => void;
 };
@@ -798,12 +821,13 @@ function assertIsWrittenFile(dest: string, fileId: FsIdentity, size: number): vo
 }
 
 /**
- * After a write, before the path is reported: the pathname must denote the
- * file created and written through the fd (non-link regular file, the fd's
- * dev+ino, the written size), its realpath parent must be `outReal`, and the
- * file identity is checked AGAIN after the realpath resolution, followed by
- * output_dir's identity — so a swap during resolution is caught too. The
- * identity checks are the last operations before returning.
+ * Prove `dest` denotes the file created through the fd, inside `outReal`:
+ *   1. lstat: non-link regular file with the fd's dev+ino and `size` bytes;
+ *   2. ALL resolution: realpath(dest) must be a direct child of `outReal`, and
+ *      realpath(outReal) must be `outReal` itself;
+ *   3. LAST, no further resolution: the file identity/size check again, then
+ *      output_dir's identity.
+ * Returns the file's realpath; throws otherwise.
  */
 export function verifyWrittenPath(
   outReal: string,
@@ -819,8 +843,12 @@ export function verifyWrittenPath(
   if (!isDirectChildReal(outReal, real)) {
     throw new Error(`written file resolves to ${real}, outside output_dir ${outReal}.`);
   }
+  if (!samePath(realpathSync.native(outReal), outReal)) {
+    throw new Error(`output_dir ${outReal} no longer resolves to itself; refusing to report the write.`);
+  }
+  hooks.afterResolve?.(dest);
   assertIsWrittenFile(dest, fileId, size);
-  assertOutputDirIntact(outReal, outId);
+  assertOutputDirIdentity(outReal, outId);
   return real;
 }
 
@@ -833,18 +861,25 @@ export function safeOutputName(name: string): string {
 }
 
 /**
- * Write `buffer` into `outReal` under a sanitized `name`, never following or
- * overwriting an existing entry (`wx` = O_CREAT|O_EXCL). On collision tries
- * `<stem>-1.png` … `<stem>-<maxCollisions>.png`, then throws. output_dir's
- * identity is re-checked immediately before each create; the created fd's
- * identity is captured and `verifyWrittenPath` must prove the pathname still
- * denotes that file before it is reported.
+ * Write `buffer` into `outReal` under a sanitized `name`.
  *
- * On a failed verification NOTHING is deleted by pathname — a path-based
- * unlink cannot be bound to the object we created, so it could remove a file
- * someone else put there. Instead our own bytes are neutralised through the
- * still-open fd (truncated to zero length), which can only ever affect the
- * file this call created; an empty file may remain wherever it now lives.
+ *   1. output_dir's identity is checked, then the file is created EMPTY with
+ *      exclusive create (`wx`: never follows or overwrites an existing entry);
+ *   2. before a single byte is written, `verifyWrittenPath` must prove the
+ *      empty file is ours (fd dev+ino) and directly inside output_dir;
+ *   3. only then are the bytes written through the fd, and `verifyWrittenPath`
+ *      runs again before the path is reported.
+ *
+ * Node has no handle-relative (openat) create, so a parent directory swapped
+ * for a link in the instant between step 1's check and the create syscall
+ * cannot be PREVENTED from receiving the empty file — but it is detected in
+ * step 2 and never receives any content. On collision `<stem>-1.png` …
+ * `<stem>-<maxCollisions>.png` are tried, then the call throws.
+ *
+ * On any failed verification NOTHING is deleted by pathname — a path-based
+ * unlink cannot be bound to the object we created and could remove a file
+ * someone else put there. Our own bytes (if any were written) are truncated
+ * through the still-open fd instead; an empty file may remain.
  */
 export function writeImageSafely(
   outReal: string,
@@ -861,6 +896,7 @@ export function writeImageSafely(
     const candidate = attempt === 0 ? safe : `${stem}-${attempt}${ext}`;
     assertOutputDirIntact(outReal, outId);
     const dest = join(outReal, candidate);
+    hooks.beforeCreate?.(dest);
     let fd: number;
     try {
       fd = openSync(dest, "wx");
@@ -871,6 +907,7 @@ export function writeImageSafely(
     try {
       const fst = fstatSync(fd, { bigint: true });
       const fileId = { dev: fst.dev, ino: fst.ino };
+      verifyWrittenPath(outReal, outId, dest, fileId, 0);
       let off = 0;
       while (off < buffer.length) off += writeSync(fd, buffer, off, buffer.length - off);
       hooks.afterWrite?.(dest);
@@ -878,7 +915,7 @@ export function writeImageSafely(
     } catch (err) {
       hooks.beforeNeutralise?.(dest);
       try { ftruncateSync(fd, 0); } catch { /* the failure is reported regardless */ }
-      throw new Error(`${(err as Error).message} (our written bytes were truncated through the fd; an empty file may remain.)`);
+      throw new Error(`${(err as Error).message} (any bytes we wrote were truncated through the fd; an empty file may remain.)`);
     } finally {
       closeSync(fd);
     }

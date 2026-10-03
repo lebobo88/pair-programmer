@@ -742,8 +742,8 @@ describe("pp_codex.generate_image: output containment", () => {
     assert.doesNotThrow(() => assertOutputDirIntact(prepared.outReal, prepared.outId));
     rmSync(prepared.outReal, { recursive: true });
     symlinkSync(escape, prepared.outReal, "junction");
-    assert.throws(() => assertOutputDirIntact(prepared.outReal, prepared.outId), /no longer a plain directory/);
-    assert.throws(() => writeImageSafely(prepared.outReal, prepared.outId, "x.png", makeSolidPng(2, 2)), /no longer a plain directory/);
+    assert.throws(() => assertOutputDirIntact(prepared.outReal, prepared.outId), /no longer resolves to itself|no longer a plain directory/);
+    assert.throws(() => writeImageSafely(prepared.outReal, prepared.outId, "x.png", makeSolidPng(2, 2)), /no longer resolves to itself|no longer a plain directory/);
     assert.deepEqual(readdirSync(escape), [], "nothing landed in the junction target");
   });
 
@@ -923,7 +923,7 @@ describe("pp_codex.generate_image: round-2 findings", () => {
     }
   });
 
-  test("validatePngStructure validates image data: undecodable IDAT, bombs, wrong length, bad filters, trailing zlib bytes, chunk rules and the pixel cap", async () => {
+  test("validatePngStructure validates image data: undecodable IDAT, bombs, wrong length, bad filters, chunk rules and the pixel cap", async () => {
     const { validatePngStructure } = await importDist("mcp/image-harvest.js");
     for (const interlace of [0, 1]) {
       const good = assemblePng({ width: 13, height: 11, interlace, raw: greyScanlines(13, 11, interlace) });
@@ -931,13 +931,15 @@ describe("pp_codex.generate_image: round-2 findings", () => {
       assert.equal(r.ok, true, `valid interlace=${interlace}: ${r.reason}`);
       assert.equal(r.interlaced, interlace === 1);
     }
+    const truncatedStream = zlib.deflateSync(greyScanlines(4, 4));
+    const cut = assemblePng({ width: 4, height: 4, idat: truncatedStream.subarray(0, truncatedStream.length - 3) });
+    assert.equal(validatePngStructure(cut).ok, false, "a TRUNCATED zlib stream is still refused");
     const cases = {
       "CRC-correct garbage IDAT": [assemblePng({ width: 4, height: 4, idat: Buffer.from([1, 2, 3, 4]) }), /does not inflate/],
       "interlaced decompression bomb": [assemblePng({ width: 4, height: 4, interlace: 1, raw: Buffer.alloc(8 * 1024 * 1024) }), /inflates past/],
       "plain decompression bomb": [assemblePng({ width: 4, height: 4, raw: Buffer.alloc(8 * 1024 * 1024) }), /inflates past/],
       "short image data": [assemblePng({ width: 4, height: 4, raw: Buffer.alloc(10) }), /inflates to 10 bytes; IHDR implies exactly 20/],
       "bad filter byte": [assemblePng({ width: 4, height: 4, raw: greyScanlines(4, 4, 0, 5) }), /invalid scanline filter type 5/],
-      "trailing zlib bytes": [assemblePng({ width: 4, height: 4, idat: Buffer.concat([zlib.deflateSync(greyScanlines(4, 4)), Buffer.from([7, 7])]) }), /trailing bytes after the zlib stream/],
       "PLTE in greyscale": [assemblePng({ width: 4, height: 4, raw: greyScanlines(4, 4), plte: Buffer.alloc(3) }), /PLTE in a greyscale/],
       "non-consecutive IDAT": [assemblePng({ width: 4, height: 4, raw: greyScanlines(4, 4), splitIdatWith: "tEXt" }), /not consecutive/],
       "pixel cap before inflation": [assemblePng({ width: 5000, height: 5000, idat: Buffer.from([1]) }), /pixel budget/],
@@ -1158,6 +1160,96 @@ describe("pp_codex.generate_image: round-3 findings", () => {
   });
 });
 
+// ─── round-5 findings ────────────────────────────────────────────────────────
+
+describe("pp_codex.generate_image: round-5 findings", () => {
+  test("final-IDAT padding after the zlib stream is legal: accepted and copied byte-for-byte", async () => {
+    const { validatePngStructure, acceptPng } = await importDist("mcp/image-harvest.js");
+    const padded = assemblePng({ width: 4, height: 4, idat: Buffer.concat([zlib.deflateSync(greyScanlines(4, 4)), Buffer.from([0, 0])]) });
+    assert.doesNotThrow(() => PNG.sync.read(padded), "oracle: pngjs decodes the padded fixture");
+    assert.equal(validatePngStructure(padded).ok, true, validatePngStructure(padded).reason);
+    assert.equal(acceptPng(padded).ok, true);
+    const { result } = await runHarvest({ write: writePngs({ "exec-call-padded.png": padded }) });
+    assert.equal(result.status, "ok", JSON.stringify(result.failures));
+    assert.deepEqual(readFileSync(result.images[0].path), padded);
+  });
+
+  test("source: a replacement present for the open and restored before realpath is refused (path re-checked against the fd last)", async () => {
+    // Staged at file level: Windows refuses to rename a DIRECTORY that holds
+    // our open fd (EPERM), so the directory-level variant cannot even be set
+    // up there. Both variants are caught by the same final lstat-vs-fd check.
+    const foreign = makeSolidPng(4, 4, [0, 255, 0, 255]);
+    const { result, outputDir } = await runHarvest({
+      write: writePngs({ "exec-call-1.png": makeSolidPng(4, 4) }),
+      opts: {
+        _fileHooks: {
+          beforeOpen: (p) => {
+            renameSync(p, `${p}.orig`);
+            writeFileSync(p, foreign); // the replacement the open will see
+          },
+          afterFirstCheck: (p) => {
+            renameSync(p, `${p}.foreign`);
+            renameSync(`${p}.orig`, p); // restore the original before realpath
+          },
+        },
+      },
+    });
+    assert.equal(result.status, "failed");
+    assert.match(result.failures[0].reason, /no longer denotes the opened file/);
+    assert.deepEqual(readdirSync(outputDir), [], "the foreign bytes were never written out");
+  });
+
+  test("output: output_dir swapped after all resolution (our file moved into a new dir) is refused by the final identity check", async () => {
+    const { writeImageSafely, prepareOutputDir } = await importDist("mcp/image-harvest.js");
+    const base = tmp("pp-img-outbase-");
+    const { outReal, outId } = prepareOutputDir(join(base, "out"));
+    let staged = false;
+    assert.throws(
+      () =>
+        writeImageSafely(outReal, outId, "x.png", makeSolidPng(2, 2), 0, {
+          afterResolve: (dest) => {
+            if (statSync(dest).size === 0) return; // only on the post-write verification
+            // Move our (open) file out first — Windows forbids renaming a
+            // directory that holds an open file — then swap the directory and
+            // move the file back: file identity is unchanged, so only the
+            // final DIRECTORY identity check can catch this.
+            renameSync(dest, join(base, "x.parked"));
+            renameSync(outReal, `${outReal}-moved`);
+            mkdirSync(outReal);
+            renameSync(join(base, "x.parked"), dest);
+            staged = true;
+          },
+        }),
+      /replaced by a different directory/,
+    );
+    assert.equal(staged, true, "the swap really happened after resolution");
+  });
+
+  test("output: a parent swapped for a junction right before the create receives no content (verified before any byte is written)", async () => {
+    const { writeImageSafely, prepareOutputDir } = await importDist("mcp/image-harvest.js");
+    const escape = tmp("pp-img-escape-");
+    const { outReal, outId } = prepareOutputDir(join(tmp("pp-img-outbase-"), "out"));
+    // Sizes are captured BEFORE the fd-bound truncation, which would otherwise
+    // hide a premature write.
+    const sizesAtFailure = [];
+    assert.throws(
+      () =>
+        writeImageSafely(outReal, outId, "x.png", makeSolidPng(2, 2), 0, {
+          beforeCreate: () => {
+            rmSync(outReal, { recursive: true });
+            symlinkSync(escape, outReal, "junction");
+          },
+          beforeNeutralise: () => {
+            for (const f of readdirSync(escape)) sizesAtFailure.push([f, statSync(join(escape, f)).size]);
+          },
+        }),
+      /outside output_dir|no longer resolves to itself|no longer a plain directory/,
+    );
+    assert.ok(sizesAtFailure.length > 0, "precondition: the redirected create really landed in the junction target");
+    for (const [f, size] of sizesAtFailure) assert.equal(size, 0, `${f} received ${size} bytes before verification`);
+  });
+});
+
 describe("pp_agy.generate_image", () => {
   test("returns a structured unsupported result naming the reason, per the real headless probe", async () => {
     const { agyGenerateImage } = await importDist("mcp/antigravity-server.js");
@@ -1245,4 +1337,16 @@ describe("pp_agy.generate_image", () => {
  *   path-based unlink reintroduced on failure   -> replaced after the write; swapped during verification; swapped before cleanup
  *   fd truncation of our own bytes removed      -> replaced after the write; swapped before cleanup
  *   (re-run: output_dir identity, written-path fd binding, assertOutputDirIntact lstat, verifyWrittenPath realpath)
+ *
+ * After round 5 (resolution first, identity last; verify before first byte):
+ *   source path re-checked against the fd last  -> replacement present for the open and restored before realpath
+ *   output_dir identity as the last write check -> output_dir swapped after all resolution
+ *   created file verified before any byte       -> parent swapped for a junction right before the create
+ *   old strict "no trailing zlib bytes" restored -> final-IDAT padding accepted and copied byte-for-byte
+ *   file identity re-check after realpath        -> destination swapped DURING verification
+ *   (re-run red on the new code: fd dev/ino, post-open lstat symlink, fd-only read, session dir identity at open,
+ *    output_dir identity, written-path fd binding, verifyWrittenPath realpath, no pathname deletion, fd truncation)
+ *   NOTE: removing only the link/type clause of the output_dir check stays GREEN — it is subsumed, not missing:
+ *   realpath equality runs first and catches a link, and a link can never carry the directory's pinned dev+ino
+ *   (that identity check, when removed, turns three tests red).
  */
