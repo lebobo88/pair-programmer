@@ -69,13 +69,13 @@ test("valid judge overrides load and round-trip onto the TeamSpec", async () => 
   const { getTeam } = await importDist("orchestrator/teams.js");
   const project = projectWith(
     "tj-valid",
-    stageYaml("tj-valid", "{ tier: cross_vendor, model_pref: codex, model: gpt-5.6-sol, reasoning_effort: high }"),
+    stageYaml("tj-valid", "{ tier: cross_vendor, model_pref: codex, model: gpt-6-astra, reasoning_effort: high }"),
   );
   try {
     const res = getTeam({ name: "tj-valid", project_path: project });
     assert.ok(res, "valid override yaml must load");
     assert.equal(res.origin, "project");
-    assert.equal(res.team.stages[0].judge.model, "gpt-5.6-sol");
+    assert.equal(res.team.stages[0].judge.model, "gpt-6-astra");
     assert.equal(res.team.stages[0].judge.reasoning_effort, "high");
   } finally {
     rmSync(project, { recursive: true, force: true });
@@ -179,7 +179,7 @@ test("judge.model together with escalate:true is rejected as ambiguous", async (
   const { getTeam } = await importDist("orchestrator/teams.js");
   const project = projectWith(
     "tj-both",
-    stageYaml("tj-both", "{ tier: cross_vendor, model_pref: codex, model: gpt-5.6-luna, escalate: true }"),
+    stageYaml("tj-both", "{ tier: cross_vendor, model_pref: codex, model: gpt-6-astra, escalate: true }"),
   );
   try {
     assert.throws(

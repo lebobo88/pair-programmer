@@ -3,7 +3,7 @@
 //
 // Covers:
 //   - evaluateGate() returns required_cross_vendor:true for EVERY GateType
-//     (JUDGE-1, CONSTITUTION.md Article V as amended 2026-09-03 SHA 5df284cb),
+//     (JUDGE-1, CONSTITUTION.md Article V as amended 2026-10-03 SHA 27ae414d),
 //     with base_tier still reported and a reason string that cites JUDGE-1.
 //   - selectJudgeModels() over every pairing: default generator, escalated
 //     generator, explicit generator, cross-vendor generator, a requested model
@@ -112,10 +112,15 @@ test("selectJudgeModels: cross-vendor pairing keeps the full allow-list, default
 });
 
 test("selectJudgeModels: same-vendor with the DEFAULT generator model drops that id", () => {
-  // codex default generator is gpt-5.6-luna (an allow-listed judge id too).
+  // The codex default generator (DEFAULT_MODELS.codex_generate, gpt-5.6-luna) is
+  // no longer a codex judge id since the 2026-10-03 amendment, so there is
+  // nothing to drop: the full allow-list survives. The drop itself is proven by
+  // the EXPLICIT-generator case below, whose generator id IS allow-listed.
   const sel = selectJudgeModels({ judge_producer: "codex", generator_producer: "codex" });
   assert.equal(sel.available, true);
-  assert.ok(!sel.models.includes(DEFAULT_MODELS.codex_generate), "generator's own model is dropped");
+  assert.ok(!CODEX.allowed_models.includes(DEFAULT_MODELS.codex_generate));
+  assert.ok(!sel.models.includes(DEFAULT_MODELS.codex_generate), "generator's own model is never a judge");
+  assert.deepEqual([...sel.models].sort(), [...CODEX.allowed_models].sort());
   assert.equal(sel.models[0], CODEX.default.model);
 });
 
@@ -141,7 +146,7 @@ test("selectJudgeModels: an ESCALATED generator model is dropped too", () => {
   assert.equal(sel.models[0], CODEX.default.model);
 });
 
-test("selectJudgeModels: agy same-vendor keeps seven of eight ids", () => {
+test("selectJudgeModels: agy same-vendor keeps every allow-listed id but the generator's", () => {
   const sel = selectJudgeModels({
     judge_producer: "agy",
     generator_producer: "agy",
@@ -150,11 +155,15 @@ test("selectJudgeModels: agy same-vendor keeps seven of eight ids", () => {
   assert.equal(sel.available, true);
   assert.ok(!sel.models.includes(AGY.default.model));
   assert.equal(sel.models.length, AGY.allowed_models.length - 1);
-  assert.equal(sel.models[0], AGY.escalated.model);
+  // Article V as amended 2026-10-03: agy's escalated pin IS the default pin, so
+  // dropping the generator's id drops both; the best survivor is the first
+  // remaining allow-listed id.
+  assert.equal(AGY.escalated.model, AGY.default.model);
+  assert.equal(sel.models[0], AGY.allowed_models.find((m) => m !== AGY.default.model));
 });
 
 test("selectJudgeModels: generator model is NOT dropped across vendors", () => {
-  // A codex generator on gpt-5.6-terra judged by agy: nothing to drop.
+  // A codex generator judged by agy: nothing to drop.
   const sel = selectJudgeModels({
     judge_producer: "agy",
     generator_producer: "codex",

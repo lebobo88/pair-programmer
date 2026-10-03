@@ -2,6 +2,8 @@
   "_comment": "Per-1M-token USD prices. User-editable. Used to compute cost_usd per attempt. Update as vendor pricing changes.",
   "_updated": "2026-08-22",
   "openai": {
+    "gpt-6.1-sol":      { "input": 6.00,  "output": 18.00 },
+    "gpt-6-astra":      { "input": 6.00,  "output": 18.00 },
     "gpt-5.6-sol":      { "input": 6.00,  "output": 18.00 },
     "gpt-5.6-terra":    { "input": 5.00,  "output": 15.00 },
     "gpt-5.6-luna":     { "input": 5.00,  "output": 15.00 },
@@ -36,12 +38,14 @@
     "claude-fable-5": "CONSERVATIVE PLACEHOLDER — 2x opus-4-7 rates. Requires authoritative pricing confirmation from Anthropic before production use.",
     "claude-opus-5": "CONSERVATIVE PLACEHOLDER — carried over from claude-opus-4-7 rates. Requires authoritative pricing confirmation from Anthropic before production use.",
     "claude-sonnet-5": "CONSERVATIVE PLACEHOLDER — carried over from claude-sonnet-4-6 rates. Requires authoritative pricing confirmation from Anthropic before production use.",
+    "gpt-6.1-sol": "CONSERVATIVE PLACEHOLDER — added 2026-10-03 with the Article V judge repin (gpt-5.6-sol rates, the highest OpenAI rate on file). Requires authoritative pricing confirmation from OpenAI before production use.",
+    "gpt-6-astra": "CONSERVATIVE PLACEHOLDER — added 2026-10-03 with the Article V judge repin (gpt-5.6-sol rates, the highest OpenAI rate on file). Requires authoritative pricing confirmation from OpenAI before production use.",
     "gpt-5.6-terra": "CONSERVATIVE PLACEHOLDER — gpt-5.5 rates. Requires authoritative pricing confirmation from OpenAI before production use.",
     "gpt-5.6-luna": "CONSERVATIVE PLACEHOLDER — gpt-5.5 rates. Requires authoritative pricing confirmation from OpenAI before production use.",
     "gpt-5.6-sol": "CONSERVATIVE PLACEHOLDER — gpt-5.1-codex-max rates, the highest OpenAI rate on file. Requires authoritative pricing confirmation from OpenAI before production use.",
     "gemini-3.8-flash-*": "CONSERVATIVE PLACEHOLDER — added 2026-09-03 with the judge-parity repin (3.7 rates). Requires authoritative pricing confirmation from Google.",
     "gemini-3.7-flash-*": "CONSERVATIVE PLACEHOLDER — added 2026-09-01 with the E2-1 re-pin. Requires authoritative pricing confirmation from Google before production cost reporting is trusted.",
     "gemini-3.1-pro-preview": "RETIRED as a pin 2026-09-01 (E2-1) — the installed Antigravity CLI no longer serves this id. The rate is RETAINED so archived attempt rows still price correctly on /pp:replay.",
-    "_legacy_retained": "gpt-5.4, gpt-5.5, gpt-5.3-codex, gpt-5.1-codex-max, claude-opus-4-7, claude-opus-4-6, claude-sonnet-4-6, gemini-3.1-pro-preview are intentionally RETAINED after the gpt-5.6 / Claude-5 repin and the E2-1 agy repin so archived attempt rows still price correctly on /pp:replay. computeCost() looks up by literal model id and silently returns 0 on a miss — never delete a key that appears in a historical attempt row."
+    "_legacy_retained": "gpt-5.6-terra, gpt-5.6-sol (judge pins until the 2026-10-03 amendment), gpt-5.4, gpt-5.5, gpt-5.3-codex, gpt-5.1-codex-max, claude-opus-4-7, claude-opus-4-6, claude-sonnet-4-6, gemini-3.1-pro-preview are intentionally RETAINED after the gpt-5.6 / Claude-5 repin and the E2-1 agy repin so archived attempt rows still price correctly on /pp:replay. computeCost() looks up by literal model id and silently returns 0 on a miss — never delete a key that appears in a historical attempt row."
   }
 }

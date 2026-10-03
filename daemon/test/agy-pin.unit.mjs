@@ -53,7 +53,8 @@ const AGY_MODELS_STDOUT = [
 test("E2-1: agy pins point at a served model id, not gemini-3.1-pro-preview", () => {
   assert.equal(DEFAULT_MODELS.agy_critique, "gemini-3.8-flash-medium");
   assert.equal(DEFAULT_MODELS.agy_generate, "gemini-3.8-flash-medium");
-  assert.equal(DEFAULT_MODELS.agy_critique_escalated, "gemini-3.1-pro-high");
+  // Article V as amended 2026-10-03: agy escalate collapses onto the default pin.
+  assert.equal(DEFAULT_MODELS.agy_critique_escalated, "gemini-3.8-flash-medium");
   const served = parseAgyModels(AGY_MODELS_STDOUT);
   assert.ok(
     served.includes(DEFAULT_MODELS.agy_critique),
@@ -147,9 +148,21 @@ test("evaluateAgyPins: every shipped pin served -> aggregate true, per_pin all t
   assert.equal(res.pinned_models.critique_escalated, DEFAULT_MODELS.agy_critique_escalated);
 });
 
-test("evaluateAgyPins: escalated pin absent -> aggregate false, per_pin isolates the lane", () => {
-  const served = SERVED_ALL.filter((id) => id !== "gemini-3.1-pro-high");
+test("evaluateAgyPins: shipped flash-medium absent -> all three lanes degrade together", () => {
+  // Since the 2026-10-03 amendment every shipped agy lane is the same id, so one
+  // retired id takes default, escalated, and generate down at once.
+  const served = SERVED_ALL.filter((id) => id !== DEFAULT_MODELS.agy_critique);
   const res = evaluateAgyPins(defaultAgyPins(), served);
+  assert.equal(res.agy_pin_served, false);
+  assert.deepEqual(res.per_pin, { critique_default: false, critique_escalated: false, generate: false });
+});
+
+test("evaluateAgyPins: a distinct escalated pin absent -> aggregate false, per_pin isolates the lane", () => {
+  // Per-lane isolation is a property of evaluateAgyPins, not of the shipped
+  // pins; prove it with an explicit pin map whose escalated lane differs.
+  const pins = { ...defaultAgyPins(), critique_escalated: "gemini-3.1-pro-high" };
+  const served = SERVED_ALL.filter((id) => id !== "gemini-3.1-pro-high");
+  const res = evaluateAgyPins(pins, served);
   assert.equal(res.agy_pin_served, false, "one unserved pin degrades the aggregate");
   assert.equal(res.per_pin.critique_default, true);
   assert.equal(res.per_pin.generate, true);

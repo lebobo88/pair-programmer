@@ -13,7 +13,7 @@ The driver MUST call `mcp__pp_harness__gate_eligible_judges` before invoking any
 ## Base tier (per `gate_type`)
 
 Cross-vendor judging is required at **every** gate. Per `CONSTITUTION.md` Article V
-**JUDGE-1** (amended 2026-09-03, SHA `5df284cb`), there is no gate type that may close
+**JUDGE-1** (amended 2026-10-03, SHA `27ae414d`), there is no gate type that may close
 on a same-vendor verdict.
 
 | `gate_type` | Cross-vendor required? |
@@ -80,8 +80,8 @@ For best-of-2, the driver should ask the judge for a structured rubric score per
 
 **Self-judging on an identical model id is rejected for every producer.** `record_verdict` throws when the judge's producer equals the attempt's producer AND `judge_model_id` equals the generator's `model_id`. Producers are normalized on both sides first, so the legacy `gemini` alias cannot evade the guard by spelling itself differently. The agy exemption that used to sit on this guard was removed in J4 — it existed only while agy had a single pinned critique id.
 
-- **Codex:** `pp_codex.critique` defaults to `gpt-5.6-terra` (JUDGE-1) and accepts any id on `JUDGE_MODEL_POLICY.codex.allowed_models` (`gpt-5.6-terra`, `gpt-5.6-sol`, `gpt-5.6-luna`) via an allow-listed operator override or `escalate: true`. Same-vendor Codex judging is legal whenever the resolved judge id differs from the generator's — which the default generator pin (`gpt-5.6-luna`) satisfies, so the ordinary Codex→Codex route stands. If the generator already ran `gpt-5.6-terra`, judge on a different allow-listed id or route the verdict to the other vendor.
-- **agy:** `pp_agy.critique` defaults to `gemini-3.8-flash-medium` and escalates to `gemini-3.1-pro-high`; the full allow-list is `gemini-3.8-flash-{high,medium,low}`, `gemini-3.7-flash-{high,medium,low}`, `gemini-3.1-pro-{high,low}`. Because agy now serves a default AND an escalated critique id, same-vendor agy judging must pick a *different* allow-listed id (normally the escalated pro lane, recorded with `judge_model_source: "escalated"`) — there is no same-model exemption. agy expresses reasoning effort through the id suffix: the daemon canonicalizes a bare family + effort onto the suffixed id and never passes `--effort`. `doctor()` verifies each pin against `agy models` and reports `agy_pin_served` with a `per_pin` breakdown (`critique_default`, `critique_escalated`, `generate`); a false value marks google `vendor_degraded`.
+- **Codex:** `pp_codex.critique` defaults to `gpt-6.1-sol` (JUDGE-1, medium) and accepts any id on `JUDGE_MODEL_POLICY.codex.allowed_models` (`gpt-6.1-sol`, `gpt-6-astra`) via an allow-listed operator override or `escalate: true`. Same-vendor Codex judging is legal whenever the resolved judge id differs from the generator's — which the default generator pin (`gpt-5.6-luna`) satisfies, so the ordinary Codex→Codex route stands. If the generator already ran `gpt-6.1-sol`, judge on a different allow-listed id (`gpt-6-astra` via `escalate: true`) or route the verdict to the other vendor.
+- **agy:** `pp_agy.critique` defaults to `gemini-3.8-flash-medium`, and `escalate: true` resolves to that same id (Article V as amended 2026-10-03: agy has no separate escalated model); the full allow-list is `gemini-3.8-flash-{high,medium,low}`, `gemini-3.7-flash-{high,medium,low}`, `gemini-3.1-pro-{high,low}`. Same-vendor agy judging must pick a *different* allow-listed id through a recorded JUDGE-1a override (an explicit `model` with `judge_model_source` `cli` / `team_yaml` / `hydra` and a reason) — `escalate` no longer reaches a distinct id, and there is no same-model exemption. agy expresses reasoning effort through the id suffix: the daemon canonicalizes a bare family + effort onto the suffixed id and never passes `--effort`. `doctor()` verifies each pin against `agy models` and reports `agy_pin_served` with a `per_pin` breakdown (`critique_default`, `critique_escalated`, `generate`); a false value marks google `vendor_degraded`.
 - **Claude:** same-vendor Claude judging still requires a different model id from the generator.
 
 ## Fable-5 tier (capability-gated)
@@ -119,8 +119,8 @@ The lanes (source of truth: `JUDGE_MODEL_POLICY` in `daemon/src/config.ts`; `DEF
 
 | Vendor | Default lane (JUDGE-1) | Escalated lane (`escalate: true`) | Allowed critique ids | Allowed efforts |
 |---|---|---|---|---|
-| `codex` | `gpt-5.6-terra` @ `medium` | `gpt-5.6-sol` @ `medium` | `gpt-5.6-terra`, `gpt-5.6-sol`, `gpt-5.6-luna` | `low`, `medium`, `high`, `xhigh` |
-| `agy` | `gemini-3.8-flash-medium` | `gemini-3.1-pro-high` | `gemini-3.8-flash-{high,medium,low}`, `gemini-3.7-flash-{high,medium,low}`, `gemini-3.1-pro-{high,low}` | `low`, `medium`, `high` |
+| `codex` | `gpt-6.1-sol` @ `medium` | `gpt-6-astra` @ `medium` | `gpt-6.1-sol`, `gpt-6-astra` | `low`, `medium`, `high`, `xhigh` |
+| `agy` | `gemini-3.8-flash-medium` @ `medium` | `gemini-3.8-flash-medium` @ `medium` (same as default) | `gemini-3.8-flash-{high,medium,low}`, `gemini-3.7-flash-{high,medium,low}`, `gemini-3.1-pro-{high,low}` | `low`, `medium`, `high` |
 
 The defaults **remain the JUDGE-1 pins** for all ordinary gates. `escalate` is a boolean selecting the vendor's pinned escalated lane — it is **mutually exclusive with `model`**, and the bridge rejects the pair.
 
@@ -128,7 +128,7 @@ A caller-passed `model` string is no longer ignored: it is validated against the
 
 ## Operator overrides (JUDGE-1a)
 
-`CONSTITUTION.md` Article V **JUDGE-1a** (amended 2026-09-03, SHA `5df284cb`) permits an explicit operator override of judge vendor, model, or reasoning effort — and nothing else.
+`CONSTITUTION.md` Article V **JUDGE-1a** (amended 2026-10-03, SHA `27ae414d`) permits an explicit operator override of judge vendor, model, or reasoning effort — and nothing else.
 
 **Flags** (accepted by `/pp:run`, `/pp:team`, `/pp:best-of`, `/pp:gate`, `/pp:retry`, `/pp:review`):
 

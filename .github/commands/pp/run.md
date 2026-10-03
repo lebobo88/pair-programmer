@@ -29,7 +29,7 @@ Before treating `$ARGUMENTS` as request text, strip recognised flags. Same conve
 - `--judge-vendor=codex|agy` — which non-Claude vendor issues the closing verdict. `--judge-vendor=claude` is INVALID (Claude is the generator vendor in this harness; a Claude judge could not be cross-vendor).
 - `--judge-model=<id>` — an allow-listed critique model id for that vendor (`JUDGE_MODEL_POLICY` in `daemon/src/config.ts`, surfaced by `doctor().judge_capabilities[<vendor>].allowed_critique_models`).
 - `--judge-effort=low|medium|high|xhigh` — reasoning effort. `xhigh` is Codex-only; agy has no `xhigh`.
-- `--judge-escalate` — select the vendor's pinned escalated lane (Codex `gpt-5.6-sol`, agy `gemini-3.1-pro-high`) instead of naming a model.
+- `--judge-escalate` — select the vendor's pinned escalated lane (Codex `gpt-6-astra` @ medium; agy has no separate escalated model, so it stays on `gemini-3.8-flash-medium`) instead of naming a model.
 - `--judge-reason="<text>"` — the operator's reason, recorded on every verdict. Required (≥ 8 characters) whenever `--judge-model` or `--judge-effort` is given.
 
 ### Parsing and STOP conditions
@@ -76,7 +76,7 @@ Resolved **per field** (`vendor`, `model`, `reasoning_effort`, `escalate`), lowe
 
 | # | Layer | `override_source` | `override_reason` |
 |---|---|---|---|
-| 1 | Daemon default (Codex `gpt-5.6-terra` / medium; agy `gemini-3.8-flash-medium` / medium) | `"default"` | — |
+| 1 | Daemon default (Codex `gpt-6.1-sol` / medium; agy `gemini-3.8-flash-medium` / medium) | `"default"` | — |
 | 2 | Team yaml `judge` block (`model` / `reasoning_effort` / `escalate`) | `"team_yaml"` | `"team yaml <team>/<stage> judge block"` |
 | 3 | CLI flags (`--judge-vendor` / `--judge-model` / `--judge-effort` / `--judge-escalate`) | `"cli"` | the `--judge-reason` text verbatim |
 
@@ -263,7 +263,7 @@ The `trace` array records which layer set the final tier ("frontmatter", "team_y
 
 10. **Report to the user.** Print:
     - The run id and status.
-    - A per-stage table: `stage | gate_type | rubric | producer/judge | model_tier | judge | verdict | tokens_in/out | cost_usd`. The `model_tier` column shows `<tier>` for Claude generators (e.g. `sonnet`, or `sonnet→opus` if Reflexion escalated) and `—` for Codex/agy producers. The `judge` column shows `vendor/model@effort` from `judge_decisions.json`'s `resolved` block — e.g. `codex/gpt-5.6-terra@medium`, `agy/gemini-3.8-flash-medium@medium`, `codex/gpt-5.6-sol@medium` when escalated. Append ` ⚠pin_mismatch` when the critique envelope reported one.
+    - A per-stage table: `stage | gate_type | rubric | producer/judge | model_tier | judge | verdict | tokens_in/out | cost_usd`. The `model_tier` column shows `<tier>` for Claude generators (e.g. `sonnet`, or `sonnet→opus` if Reflexion escalated) and `—` for Codex/agy producers. The `judge` column shows `vendor/model@effort` from `judge_decisions.json`'s `resolved` block — e.g. `codex/gpt-6.1-sol@medium`, `agy/gemini-3.8-flash-medium@medium`, `codex/gpt-6-astra@medium` when escalated. Append ` ⚠pin_mismatch` when the critique envelope reported one.
     - An **"Operator judge overrides"** block listing every stage whose `source != "default"`: `stage | source | resolved vendor/model@effort | reason`. Omit the block entirely when every stage ran at the default. If the run aborted on a rejected override, print the rejection reason here instead.
     - The artifact paths under `<project>/.harness/<run_id>/` (including `tier_decisions.json` and `judge_decisions.json`).
     - The master-plan delta (`patches_applied` count + which sections were patched).
