@@ -744,12 +744,12 @@ export async function codexGenerateImage(
       if (raw.length <= args.byte_budget_bytes && Math.max(png.width, png.height) <= args.max_dimension) {
         // Already within both bounds: copy the accepted bytes VERBATIM — no
         // re-encode, so palette/grayscale/16-bit/interlaced survive.
-        const path = writeImageSafely(out.outReal, name, raw);
+        const path = writeImageSafely(out.outReal, out.outId, name, raw);
         images.push({ path, bytes: raw.length, width: png.width, height: png.height, ...provenance });
         continue;
       }
       const { buffer, width, height } = downscaleImageToFit(accepted.decoded, args.max_dimension, args.byte_budget_bytes);
-      const path = writeImageSafely(out.outReal, name, buffer);
+      const path = writeImageSafely(out.outReal, out.outId, name, buffer);
       if (buffer.length > args.byte_budget_bytes) {
         // Floor reached and still over budget: NEVER reported as ok.
         overBudget.push({ file: name, path, bytes: buffer.length, width, height });
@@ -1025,7 +1025,8 @@ const TOOLS = [
       "lstat of the path and its realpath confined to the session directory; bytes are read from that fd only. An output_dir that is a symlink/junction (or a " +
       "component created for it that is one, or whose realpath is not the pinned existing ancestor plus the created names) is status invalid_output_dir, checked " +
       "before the codex turn; each created component's parent is identity-checked before its mkdir. Writes use exclusive create (never follow or overwrite), " +
-      "re-check output_dir before and after each write, and verify the written file's realpath parent is output_dir. " +
+      "re-check output_dir's identity (dev/ino pinned at preparation, so a same-path replacement directory is refused) before and after each write, and verify the " +
+      "returned path is still the non-link regular file created through the write fd (same dev/ino and size) with realpath parent output_dir. " +
       "VALIDATION: every PNG — including one copied verbatim — must pass a full structure check (signature, IHDR length 13 with legal fields, every chunk CRC, " +
       "consecutive IDATs, PLTE rules incl. palette size, no unknown critical chunks, terminating IEND, no trailing bytes), and its image data must inflate — with the inflater capped at the exact size IHDR " +
       "implies, after the 4096x4096 pixel cap — to exactly that size with valid scanline filter bytes, so a decompression bomb is refused and the later " +

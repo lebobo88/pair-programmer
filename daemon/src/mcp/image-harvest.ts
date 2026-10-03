@@ -655,7 +655,9 @@ export async function pollForSettledPngs(
 
 // ─── output ──────────────────────────────────────────────────────────────────
 
-export type OutputDirResolution = { ok: true; outReal: string } | { ok: false; reason: string };
+export type OutputDirResolution =
+  | { ok: true; outReal: string; /** Identity of output_dir; every write re-checks it. */ outId: FsIdentity }
+  | { ok: false; reason: string };
 
 /** Test-only seams for staging a swap at an exact point. Production never sets them. */
 export type OutputDirHooks = {
@@ -738,12 +740,15 @@ export function prepareOutputDir(outputDir: string, hooks: OutputDirHooks = {}):
   }
 
   let outReal: string;
+  let outId: FsIdentity;
   try {
     const st = lstatSync(abs, { throwIfNoEntry: false });
     if (!st || st.isSymbolicLink() || !st.isDirectory()) {
       return { ok: false, reason: `output_dir ${abs} is not a plain directory (symlink/junction?).` };
     }
     outReal = realpathSync.native(abs);
+    const realSt = lstatSync(outReal, { bigint: true });
+    outId = { dev: realSt.dev, ino: realSt.ino };
   } catch (err) {
     return { ok: false, reason: `could not resolve output_dir ${abs}: ${(err as Error).message}` };
   }
@@ -751,14 +756,22 @@ export function prepareOutputDir(outputDir: string, hooks: OutputDirHooks = {}):
   if (!samePath(outReal, expected)) {
     return { ok: false, reason: `output_dir resolves to ${outReal}, not ${expected} (a component was swapped for a link).` };
   }
-  return { ok: true, outReal };
+  return { ok: true, outReal, outId };
 }
 
-/** Throws unless `outReal` is still a plain directory whose realpath is itself. */
-export function assertOutputDirIntact(outReal: string): void {
-  const st = lstatSync(outReal, { throwIfNoEntry: false });
+/**
+ * Throws unless `outReal` is still the directory `prepareOutputDir` resolved:
+ * a plain (non-link) directory whose realpath is itself and whose dev+ino is
+ * `outId`. A different plain directory put at the same path — directly or by
+ * replacing an ancestor — has a different identity and is refused.
+ */
+export function assertOutputDirIntact(outReal: string, outId: FsIdentity): void {
+  const st = lstatSync(outReal, { bigint: true, throwIfNoEntry: false });
   if (!st || st.isSymbolicLink() || !st.isDirectory()) {
     throw new Error(`output_dir ${outReal} is no longer a plain directory (symlink/junction swap?); refusing to write.`);
+  }
+  if (!sameIdentity(st, outId)) {
+    throw new Error(`output_dir ${outReal} was replaced by a different directory; refusing to write.`);
   }
   if (!samePath(realpathSync.native(outReal), outReal)) {
     throw new Error(`output_dir ${outReal} no longer resolves to itself; refusing to write.`);
@@ -766,10 +779,19 @@ export function assertOutputDirIntact(outReal: string): void {
 }
 
 /**
- * After a write: the written file's realpath parent must equal `outReal`.
+ * After a write: the pathname must still denote the file that was created
+ * and written through the fd — a non-link regular file with the fd's dev+ino
+ * and the written size — and its realpath parent must equal `outReal`.
  * Returns the file's realpath; throws otherwise.
  */
-export function verifyWrittenPath(outReal: string, dest: string): string {
+export function verifyWrittenPath(outReal: string, dest: string, fileId: FsIdentity, size: number): string {
+  const st = lstatSync(dest, { bigint: true, throwIfNoEntry: false });
+  if (!st || st.isSymbolicLink() || !st.isFile() || !sameIdentity(st, fileId)) {
+    throw new Error(`${dest} is no longer the file that was written (replaced or linked); refusing to report it.`);
+  }
+  if (st.size !== BigInt(size)) {
+    throw new Error(`${dest} has ${st.size} bytes; ${size} were written.`);
+  }
   const real = realpathSync.native(dest);
   if (!isDirectChildReal(outReal, real)) {
     throw new Error(`written file resolves to ${real}, outside output_dir ${outReal}.`);
@@ -785,26 +807,32 @@ export function safeOutputName(name: string): string {
   return `${stem && !reserved ? stem : `image_${stem}`}.png`;
 }
 
+/** Test-only seam fired after the bytes are written, before verification. Production never sets it. */
+export type WriteHooks = { afterWrite?: (dest: string) => void };
+
 /**
  * Write `buffer` into `outReal` under a sanitized `name`, never following or
  * overwriting an existing entry (`wx` = O_CREAT|O_EXCL). On collision tries
- * `<stem>-1.png` … `<stem>-<maxCollisions>.png`, then throws. The parent is
- * re-checked immediately before each create and the result's realpath parent
- * is verified after it; a file that landed elsewhere is removed and the write
- * fails.
+ * `<stem>-1.png` … `<stem>-<maxCollisions>.png`, then throws. output_dir's
+ * identity is re-checked immediately before each create and again after the
+ * write; the created fd's identity is captured and the returned pathname must
+ * still denote that same file. On a failed verification our own file is
+ * removed (only if the path still denotes it) and the write fails.
  */
 export function writeImageSafely(
   outReal: string,
+  outId: FsIdentity,
   name: string,
   buffer: Buffer,
   maxCollisions: number = MAX_OUTPUT_NAME_COLLISIONS,
+  hooks: WriteHooks = {},
 ): string {
   const safe = safeOutputName(name);
   const ext = extname(safe);
   const stem = basename(safe, ext);
   for (let attempt = 0; attempt <= maxCollisions; attempt++) {
     const candidate = attempt === 0 ? safe : `${stem}-${attempt}${ext}`;
-    assertOutputDirIntact(outReal);
+    assertOutputDirIntact(outReal, outId);
     const dest = join(outReal, candidate);
     let fd: number;
     try {
@@ -813,18 +841,25 @@ export function writeImageSafely(
       if ((err as NodeJS.ErrnoException).code === "EEXIST") continue;
       throw err;
     }
+    let fileId: FsIdentity | undefined;
     try {
+      const fst = fstatSync(fd, { bigint: true });
+      fileId = { dev: fst.dev, ino: fst.ino };
       let off = 0;
       while (off < buffer.length) off += writeSync(fd, buffer, off, buffer.length - off);
+      hooks.afterWrite?.(dest);
+      assertOutputDirIntact(outReal, outId);
+      return verifyWrittenPath(outReal, dest, fileId, buffer.length);
+    } catch (err) {
+      if (fileId) {
+        const st = lstatSync(dest, { bigint: true, throwIfNoEntry: false });
+        if (st && !st.isSymbolicLink() && sameIdentity(st, fileId)) {
+          try { unlinkSync(dest); } catch { /* best effort: the failure is reported regardless */ }
+        }
+      }
+      throw err;
     } finally {
       closeSync(fd);
-    }
-    try {
-      assertOutputDirIntact(outReal);
-      return verifyWrittenPath(outReal, dest);
-    } catch (err) {
-      try { unlinkSync(dest); } catch { /* best effort: report the escape regardless */ }
-      throw err;
     }
   }
   throw new Error(`output name collision cap reached: ${safe} and ${maxCollisions} alternatives already exist.`);

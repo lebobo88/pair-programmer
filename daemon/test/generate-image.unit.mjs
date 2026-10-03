@@ -493,14 +493,14 @@ describe("pp_codex.generate_image: limits", () => {
   });
 
   test("writeImageSafely: picks the next free name, and throws once maxCollisions is exhausted", async () => {
-    const { writeImageSafely } = await importDist("mcp/image-harvest.js");
-    const outReal = real(tmp("pp-img-out-"));
+    const { writeImageSafely, prepareOutputDir } = await importDist("mcp/image-harvest.js");
+    const { outReal, outId } = prepareOutputDir(tmp("pp-img-out-"));
     const png = makeSolidPng(2, 2);
     writeFileSync(join(outReal, "a.png"), "taken");
-    assert.equal(writeImageSafely(outReal, "a.png", png, 3), join(outReal, "a-1.png"));
+    assert.equal(writeImageSafely(outReal, outId, "a.png", png, 3), join(outReal, "a-1.png"));
     writeFileSync(join(outReal, "a-2.png"), "taken");
     writeFileSync(join(outReal, "a-3.png"), "taken");
-    assert.throws(() => writeImageSafely(outReal, "a.png", png, 3), /collision cap reached/);
+    assert.throws(() => writeImageSafely(outReal, outId, "a.png", png, 3), /collision cap reached/);
   });
 });
 
@@ -739,11 +739,11 @@ describe("pp_codex.generate_image: output containment", () => {
     const escape = tmp("pp-img-escape-");
     const prepared = prepareOutputDir(join(base, "out"));
     assert.equal(prepared.ok, true);
-    assert.doesNotThrow(() => assertOutputDirIntact(prepared.outReal));
+    assert.doesNotThrow(() => assertOutputDirIntact(prepared.outReal, prepared.outId));
     rmSync(prepared.outReal, { recursive: true });
     symlinkSync(escape, prepared.outReal, "junction");
-    assert.throws(() => assertOutputDirIntact(prepared.outReal), /no longer a plain directory/);
-    assert.throws(() => writeImageSafely(prepared.outReal, "x.png", makeSolidPng(2, 2)), /no longer a plain directory/);
+    assert.throws(() => assertOutputDirIntact(prepared.outReal, prepared.outId), /no longer a plain directory/);
+    assert.throws(() => writeImageSafely(prepared.outReal, prepared.outId, "x.png", makeSolidPng(2, 2)), /no longer a plain directory/);
     assert.deepEqual(readdirSync(escape), [], "nothing landed in the junction target");
   });
 
@@ -751,12 +751,69 @@ describe("pp_codex.generate_image: output containment", () => {
     const { verifyWrittenPath } = await importDist("mcp/image-harvest.js");
     const outReal = real(tmp("pp-img-out-"));
     const escape = real(tmp("pp-img-escape-"));
+    const idOf = (p) => { const s = statSync(p, { bigint: true }); return { dev: s.dev, ino: s.ino }; };
     writeFileSync(join(outReal, "fine.png"), "x");
-    assert.equal(verifyWrittenPath(outReal, join(outReal, "fine.png")), join(outReal, "fine.png"));
+    assert.equal(verifyWrittenPath(outReal, join(outReal, "fine.png"), idOf(join(outReal, "fine.png")), 1), join(outReal, "fine.png"));
     mkdirSync(join(escape, "d"));
     writeFileSync(join(escape, "d", "x.png"), "x");
     symlinkSync(join(escape, "d"), join(outReal, "via"), "junction");
-    assert.throws(() => verifyWrittenPath(outReal, join(outReal, "via", "x.png")), /outside output_dir/);
+    const viaFile = join(outReal, "via", "x.png");
+    assert.throws(() => verifyWrittenPath(outReal, viaFile, idOf(viaFile), 1), /outside output_dir/);
+  });
+
+  test("output_dir replaced by a different PLAIN directory after preparation is refused (direct and via an ancestor)", async () => {
+    const { assertOutputDirIntact, writeImageSafely, prepareOutputDir } = await importDist("mcp/image-harvest.js");
+    const base = tmp("pp-img-outbase-");
+    const direct = prepareOutputDir(join(base, "out"));
+    renameSync(direct.outReal, `${direct.outReal}-moved`);
+    mkdirSync(direct.outReal);
+    assert.throws(() => assertOutputDirIntact(direct.outReal, direct.outId), /replaced by a different directory/);
+    assert.throws(() => writeImageSafely(direct.outReal, direct.outId, "x.png", makeSolidPng(2, 2)), /replaced by a different directory/);
+    assert.deepEqual(readdirSync(direct.outReal), []);
+
+    const viaAncestor = prepareOutputDir(join(base, "p", "out"));
+    const parent = dirname(viaAncestor.outReal);
+    renameSync(parent, `${parent}-moved`);
+    mkdirSync(viaAncestor.outReal, { recursive: true });
+    assert.throws(() => assertOutputDirIntact(viaAncestor.outReal, viaAncestor.outId), /replaced by a different directory/);
+  });
+
+  test("end to end: an output_dir replaced during the codex turn receives nothing", async () => {
+    const outputDir = tmp("pp-img-out-");
+    const { result } = await runHarvest({
+      args: { output_dir: outputDir },
+      write: (dir) => {
+        writePngs({ "exec-call-1.png": makeSolidPng(4, 4) })(dir);
+        renameSync(outputDir, `${outputDir}-moved`);
+        tmpDirs.push(`${outputDir}-moved`);
+        mkdirSync(outputDir);
+      },
+    });
+    assert.equal(result.status, "failed");
+    assert.match(result.failures[0].reason, /replaced by a different directory/);
+    assert.deepEqual(readdirSync(outputDir), []);
+  });
+
+  test("writeImageSafely: a destination replaced after the write (by another file or a link to a sibling) is refused, and only our own file is removed", async () => {
+    const { writeImageSafely, prepareOutputDir } = await importDist("mcp/image-harvest.js");
+    for (const kind of ["file", "link"]) {
+      const { outReal, outId } = prepareOutputDir(tmp("pp-img-out-"));
+      const sibling = join(outReal, "sibling.png");
+      writeFileSync(sibling, makeSolidPng(3, 3));
+      assert.throws(
+        () =>
+          writeImageSafely(outReal, outId, "x.png", makeSolidPng(2, 2), 0, {
+            afterWrite: (dest) => {
+              renameSync(dest, `${dest}.ours`);
+              if (kind === "file") writeFileSync(dest, makeSolidPng(3, 3));
+              else symlinkSync(sibling, dest, "file");
+            },
+          }),
+        /no longer the file that was written/,
+        kind,
+      );
+      assert.ok(readdirSync(outReal).includes("x.png"), `${kind}: the replacement is not deleted by us`);
+    }
   });
 
   test("a pre-existing symlink at the destination name is never followed or overwritten", async () => {
@@ -1133,4 +1190,10 @@ describe("pp_agy.generate_image", () => {
  *   acceptPng decode gate skipped               -> acceptPng palette; end-to-end out-of-range palette
  *   unknown critical chunks allowed             -> unknown critical chunks / oversized palettes
  *   palette size vs bit depth (always 2**8)     -> unknown critical chunks / oversized palettes
+ *
+ * After round 3 (output binding):
+ *   output_dir identity re-checked at write     -> output_dir replaced by a different PLAIN directory; end-to-end replaced during turn
+ *   written path bound to the created fd        -> destination replaced after the write
+ *   only our own file removed on failure        -> destination replaced after the write (replacement survives)
+ *   (re-run on the new code: collision cap, output_dir link refusal, assertOutputDirIntact lstat, verifyWrittenPath realpath)
  */
