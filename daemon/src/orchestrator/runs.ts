@@ -1095,9 +1095,12 @@ export function recordVerdict(input: RecordVerdictInput): RecordVerdictOutput {
 
   // The agy exemption that used to sit on this guard is GONE (J4). It existed
   // only because agy had a single pinned judge id, making generator==judge
-  // unavoidable for agy-on-agy stages; a distinct escalated agy id now exists,
-  // so identical generator and judge model ids are an unprovable self-judge
-  // for agy exactly as for every other producer. Producers are compared after
+  // unavoidable for agy-on-agy stages. It stays gone after the 2026-10-03
+  // Article V amendment collapsed agy's escalated lane onto the default
+  // (gemini-3.8-flash-medium): agy generation is deprecated (Path A only), and
+  // an agy-on-agy stage can still be judged by another allow-listed agy id via
+  // a recorded JUDGE-1a override. Identical generator and judge model ids are
+  // an unprovable self-judge for agy exactly as for every other producer. Producers are compared after
   // normalizeProducer on BOTH sides so the "gemini" alias cannot evade it by
   // spelling itself differently from the attempt's recorded producer.
   const attProducerNorm = normalizeProducer(att.producer) ?? att.producer;

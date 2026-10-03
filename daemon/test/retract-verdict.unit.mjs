@@ -52,7 +52,7 @@ await record("retract_verdict happy path", async () => {
     const verdict = runs.recordVerdict({
       attempt_id: att.attempt_id,
       judge_producer: "codex",
-      judge_model_id: "gpt-5.6-terra",
+      judge_model_id: "gpt-6.1-sol",
       rubric_id: "code-quality@1",
       outcome: "fail",
       critique_md: "flagged optional Idempotency-Key as wrong — actually HTTP industry standard",
@@ -78,7 +78,7 @@ await record("retract_verdict refuses short reason", async () => {
     const verdict = runs.recordVerdict({
       attempt_id: att.attempt_id,
       judge_producer: "codex",
-      judge_model_id: "gpt-5.6-terra",
+      judge_model_id: "gpt-6.1-sol",
       rubric_id: "code-quality@1",
       outcome: "fail",
       critique_md: "spurious flag",
@@ -100,7 +100,7 @@ await record("retract_verdict is idempotent on same reason", async () => {
     const verdict = runs.recordVerdict({
       attempt_id: att.attempt_id,
       judge_producer: "codex",
-      judge_model_id: "gpt-5.6-terra",
+      judge_model_id: "gpt-6.1-sol",
       rubric_id: "code-quality@1",
       outcome: "fail",
       critique_md: "the same reason both times will be 8 chars",
@@ -124,7 +124,7 @@ await record("retract_verdict rejects different-reason overwrite", async () => {
     const verdict = runs.recordVerdict({
       attempt_id: att.attempt_id,
       judge_producer: "codex",
-      judge_model_id: "gpt-5.6-terra",
+      judge_model_id: "gpt-6.1-sol",
       rubric_id: "code-quality@1",
       outcome: "fail",
       critique_md: "filler",
@@ -150,7 +150,7 @@ await record("retracted fail verdict no longer blocks finalize", async () => {
     const verdict = runs.recordVerdict({
       attempt_id: att.attempt_id,
       judge_producer: "codex",
-      judge_model_id: "gpt-5.6-terra",
+      judge_model_id: "gpt-6.1-sol",
       rubric_id: "code-quality@1",
       outcome: "fail",
       critique_md: "fail verdict that will be retracted in this test",

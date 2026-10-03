@@ -368,7 +368,7 @@ For best-of-2, the driver asks the judge for a structured rubric score per candi
 
 ### Self-bias guard
 
-When a supplementary same-vendor judge is in play, the generator and judge MUST use **different model ids** — there is no longer any exemption, the agy degenerate lane having been removed once agy gained a distinct escalated critique id. `pp_codex.critique` defaults to `gpt-5.6-terra` and `pp_agy.critique` to `gemini-3.8-flash-medium`; a same-vendor read on a generator that already used the default id must run another allow-listed id (normally the escalated lane, `gpt-5.6-sol` / `gemini-3.1-pro-high`), otherwise `gate_eligible_judges` routes the verdict cross-vendor. The daemon's `record_verdict` path rejects a judge model outside the producer's allow-list, a `default`/`escalated` source whose id does not match the pin, and an override source of `cli`/`team_yaml`/`hydra` without a reason of ≥ 8 characters — so a stale prompt cannot claim a model the wrapper did not actually use.
+When a supplementary same-vendor judge is in play, the generator and judge MUST use **different model ids** — there is no longer any exemption, the agy degenerate lane was removed in J4. `pp_codex.critique` defaults to `gpt-6.1-sol` and `pp_agy.critique` to `gemini-3.8-flash-medium`; a same-vendor read on a generator that already used the default id must run another allow-listed id (for Codex normally the escalated lane, `gpt-6-astra`; for agy, whose escalated pin equals its default since the 2026-10-03 amendment, a recorded JUDGE-1a override onto another allow-listed id), otherwise `gate_eligible_judges` routes the verdict cross-vendor. The daemon's `record_verdict` path rejects a judge model outside the producer's allow-list, a `default`/`escalated` source whose id does not match the pin, and an override source of `cli`/`team_yaml`/`hydra` without a reason of ≥ 8 characters — so a stale prompt cannot claim a model the wrapper did not actually use.
 
 > Deep-dive: [`docs/validator-policy.md`](validator-policy.md), [`.claude/skills/judge-policy/SKILL.md`](../.claude/skills/judge-policy/SKILL.md), source: [`daemon/src/orchestrator/gates.ts`](../daemon/src/orchestrator/gates.ts).
 
@@ -532,10 +532,10 @@ Six commands accept per-run judge overrides: `/pp:run`, `/pp:team`, `/pp:best-of
 | `--judge-vendor=` | `codex` \| `agy` | `claude` is invalid — every gate is cross-vendor (JUDGE-1) and Claude is the generator. |
 | `--judge-model=` | an allow-listed critique id | Per-vendor allow-list from `JUDGE_MODEL_POLICY` (`daemon/src/config.ts`), surfaced by `doctor().judge_capabilities[<vendor>].allowed_critique_models`. |
 | `--judge-effort=` | `low` \| `medium` \| `high` \| `xhigh` | `xhigh` is Codex-only; agy has no `xhigh`. |
-| `--judge-escalate` | (boolean) | Selects the vendor's pinned escalated lane: Codex `gpt-5.6-sol`, agy `gemini-3.1-pro-high`. |
+| `--judge-escalate` | (boolean) | Selects the vendor's pinned escalated lane: Codex `gpt-6-astra` @ `medium`; agy has no separate escalated model, so it stays on `gemini-3.8-flash-medium`. |
 | `--judge-reason="…"` | ≥ 8 characters | Required whenever `--judge-model` or `--judge-effort` is given. Recorded on every verdict. |
 
-**Defaults** (no flags): Codex `gpt-5.6-terra` at `medium`; agy `gemini-3.8-flash-medium` at `medium`.
+**Defaults** (no flags): Codex `gpt-6.1-sol` at `medium`; agy `gemini-3.8-flash-medium` at `medium`.
 
 #### STOP conditions
 
@@ -572,14 +572,14 @@ A layer that does not set a field leaves the lower layer's value intact. `"escal
 # Raise reasoning effort on an ordinary run
 /pp:run --judge-effort=high --judge-reason="auth refactor, want a harder read" "…"
 
-# Escalate to the pinned hard-gate lane (Codex gpt-5.6-sol)
+# Escalate to the pinned hard-gate lane (Codex gpt-6-astra)
 /pp:run --judge-escalate "…"
 
 # Route the judge to agy at its default pin (gemini-3.8-flash-medium)
 /pp:team --judge-vendor=agy security-review-team "…"
 
 # Name an explicit allow-listed model (vendor + reason both required)
-/pp:review --judge-vendor=codex --judge-model=gpt-5.6-sol \
+/pp:review --judge-vendor=codex --judge-model=gpt-6-astra \
            --judge-reason="PHI in scope, want the strongest reader" threat
 
 # Re-judge an existing stage with the escalated agy lane
@@ -1401,14 +1401,14 @@ Schema-level defaults are pinned in [`daemon/src/config.ts`](../daemon/src/confi
 | Tool | Purpose |
 |---|---|
 | `generate` | Run `codex exec` headless. Inputs: `prompt`, `cwd`, `model?` (default `gpt-5.6-luna`), `sandbox?`, `output_schema?`, `untrusted_inputs?`. Returns text + tokens + cost. The daemon automatically adds `--skip-git-repo-check` for bridge calls. |
-| `critique` | Use Codex as a judge. Inputs: the shared critique params above; `model?` defaults to `gpt-5.6-terra`, `escalate: true` selects `gpt-5.6-sol`, `reasoning_effort?` defaults to `medium`. Returns `{ outcome, critique_md, score, model, reasoning_effort, override_source, override_reason, pin_mismatch? }`. The daemon automatically adds `--skip-git-repo-check` for bridge calls. |
+| `critique` | Use Codex as a judge. Inputs: the shared critique params above; `model?` defaults to `gpt-6.1-sol`, `escalate: true` selects `gpt-6-astra`, `reasoning_effort?` defaults to `medium`. Returns `{ outcome, critique_md, score, model, reasoning_effort, override_source, override_reason, pin_mismatch? }`. The daemon automatically adds `--skip-git-repo-check` for bridge calls. |
 
 ### `pp_agy` (2 tools)
 
 | Tool | Purpose |
 |---|---|
 | `generate` | Run the Antigravity CLI (agy) in headless (`-p`) mode. Inputs: `prompt`, `cwd`, `model?` (default `gemini-3.8-flash-medium`), `output_schema?` (asks for structured JSON via the prompt; agy's raw headless output is plain text, not a JSON envelope), `untrusted_inputs?`. |
-| `critique` | Use agy as a cross-vendor judge. Inputs: the shared critique params above; `model?` defaults to `gemini-3.8-flash-medium`, `escalate: true` selects `gemini-3.1-pro-high`, `reasoning_effort?` defaults to `medium` (no `xhigh`). Same result envelope as Codex. |
+| `critique` | Use agy as a cross-vendor judge. Inputs: the shared critique params above; `model?` defaults to `gemini-3.8-flash-medium`, `escalate: true` resolves to the same `gemini-3.8-flash-medium` pin (agy has no separate escalated model), `reasoning_effort?` defaults to `medium` (no `xhigh`). Same result envelope as Codex. |
 
 > Source: [`daemon/src/mcp/harness-server.ts`](../daemon/src/mcp/harness-server.ts), [`daemon/src/mcp/codex-server.ts`](../daemon/src/mcp/codex-server.ts), [`daemon/src/mcp/antigravity-server.ts`](../daemon/src/mcp/antigravity-server.ts).
 
