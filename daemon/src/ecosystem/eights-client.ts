@@ -392,7 +392,18 @@ function unrefChild(): void {
 /** (b): ref the connected child + its stdio pipes (a call is in flight). */
 function refChild(): void {
   if (state.kind !== "available") return;
-  const child = underlyingChild(state.transport);
+  refTransportChild(state.transport);
+}
+
+/**
+ * Ref the child behind a SPECIFIC transport, independent of the global
+ * `state`. closeAvailableClient() needs this: shutdown() installs the
+ * 'closing' state before the close starts, so refChild()'s
+ * `state.kind === "available"` guard would make it a no-op there and leave the
+ * awaited close with no ref'd handle keeping the event loop alive.
+ */
+function refTransportChild(transport: Extract<ClientState, { kind: "available" }>["transport"]): void {
+  const child = underlyingChild(transport);
   if (!child) return;
   try { child.ref?.(); } catch { /* ignore */ }
   try { child.stdin?.ref?.(); } catch { /* ignore */ }
@@ -832,14 +843,27 @@ async function closeAvailableClient(s: Extract<ClientState, { kind: "available" 
   // "nothing left ref'd, may as well finish the tick" exit heuristic and can
   // lose — the caller's `await shutdown()` would then never observe the
   // graceful close complete even though the underlying 'close' event does
-  // eventually fire.
-  refChild();
+  // eventually fire. Ref by transport, not via refChild(): `state` already
+  // reads 'closing' here (see shutdown()), which refChild() would ignore.
+  refTransportChild(s.transport);
   // client.close() -> transport.close() already performs the graceful
   // stdin-end -> 2s SIGTERM grace -> 2s SIGKILL fallback sequence with its
   // own .unref()'d timers (MCP SDK stdio.js) — no separate kill needed here
   // on the happy path; mechanism (d) is strictly the backstop for when this
   // await never runs at all (the hook `process.exit()` path).
+  beforeClientCloseHookForTesting?.(currentState().kind);
   try { await s.client.close(); } catch { /* ignore */ }
+}
+
+/**
+ * TEST-ONLY seam: invoked with `state.kind` at the instant client.close() is
+ * about to be called, so a test can prove the 'closing' state is installed
+ * BEFORE the close starts (not merely before shutdown() first yields). Null
+ * in production; never set outside daemon/test.
+ */
+let beforeClientCloseHookForTesting: ((stateKind: ClientState["kind"]) => void) | null = null;
+export function setBeforeClientCloseHookForTesting(fn: ((stateKind: ClientState["kind"]) => void) | null): void {
+  beforeClientCloseHookForTesting = fn;
 }
 
 /** Force-close the underlying MCP connection (used at daemon shutdown / tests). */
@@ -882,19 +906,40 @@ export async function shutdown(): Promise<void> {
   if (s.kind === "closing") {
     // Someone else (the idle timer, a concurrent explicit shutdown() call)
     // already initiated the close this call would otherwise duplicate.
-    // Await the same promise instead of racing a second `client.close()`.
+    // Await the same promise instead of racing a second `client.close()`;
+    // the initiator owns the transition back to 'uninit'.
     await s.promise;
   } else if (s.kind === "available") {
-    const closePromise = closeAvailableClient(s);
-    state = { kind: "closing", promise: closePromise };
-    await closePromise;
-  }
-  // Only flip to 'uninit' if nothing else has already moved state further
-  // (e.g. a fresh probe that started once we let go of the CPU inside the
-  // awaits above — leave that in place rather than clobbering it back to
-  // 'uninit').
-  if (state.kind === "closing" || state.kind === "available") {
-    state = { kind: "uninit" };
+    // Install the 'closing' state BEFORE client.close() is even invoked
+    // (cross-vendor review, 2026-10-03): calling closeAvailableClient(s)
+    // directly would run it synchronously up to its first await, i.e. start
+    // client.close() — and any synchronous transport/close callback — while
+    // `state` still read 'available'. So the 'closing' promise is created up
+    // front with a deferred resolver, `state` is assigned, and only THEN is the
+    // close started — still synchronously, so closeAvailableClient()'s
+    // refChild() keeps the event loop alive for the awaited close. (Deferring
+    // the close to a microtask instead was tried and left awaiters with no
+    // ref'd handle: node:test reported 'Promise resolution is still pending
+    // but the event loop has already resolved'.) `finally` settles the
+    // promise even if the close path throws, so `state` can never be stranded
+    // in 'closing'.
+    let settleClosing!: () => void;
+    const closePromise = new Promise<void>((resolve) => { settleClosing = resolve; });
+    const closing: Extract<ClientState, { kind: "closing" }> = { kind: "closing", promise: closePromise };
+    state = closing;
+    try {
+      await closeAvailableClient(s);
+    } catch {
+      /* close errors are already swallowed inside; never strand state */
+    } finally {
+      settleClosing();
+    }
+    // Flip to 'uninit' ONLY if `state` is still the closing state this call
+    // installed. The previous check (`kind === "closing" || kind === "available"`)
+    // would clobber a fresh connection that a concurrent ensureReady() probe
+    // established after the close settled — dropping that new client without
+    // closing it and leaking its TheEights child.
+    if (state === closing) state = { kind: "uninit" };
   }
   for (const ns of Object.keys(breakers) as NamespaceKey[]) {
     breakers[ns].consecutive_failures = 0;

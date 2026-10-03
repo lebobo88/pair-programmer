@@ -217,6 +217,42 @@ describe("eights-client idle-close / in-flight-call race (L1B final-judge findin
     );
   });
 
+  it("(C) shutdown() installs the 'closing' state BEFORE client.close() is invoked, not merely before it first yields", async () => {
+    // Cross-vendor review (2026-10-03): shutdown() used to call the async close
+    // helper first and assign { kind: "closing" } afterwards. The helper runs
+    // synchronously up to its `await client.close()`, so close() — and any
+    // synchronous transport callback it fires — started while state still read
+    // 'available'. The test-only hook records state.kind at the instant close()
+    // is about to be called; pre-fix it records "available".
+    await mod.shutdown();
+    writeFileSync(
+      join(eightsHomeDir, "fixture-control.json"),
+      JSON.stringify({ closeDelayMs: 0, callDelayMs: 0 }),
+      "utf8",
+    );
+    mod.resetBreakersForTesting();
+    const primer = await mod.memory.add({
+      envelope: testEnvelope(mod),
+      content: "scenario C primer call",
+      type: "working",
+      provenance: { actor: "idle-race-test" },
+    });
+    assert.notEqual(primer, null, "the priming call must connect so shutdown() has a live client to close");
+
+    const observed = [];
+    mod.setBeforeClientCloseHookForTesting((kind) => observed.push(kind));
+    try {
+      await mod.shutdown();
+    } finally {
+      mod.setBeforeClientCloseHookForTesting(null);
+    }
+    assert.deepEqual(
+      observed,
+      ["closing"],
+      "client.close() must be invoked exactly once, with state already 'closing'",
+    );
+  });
+
   it("this file never references the real TheEights entrypoint path (grep-verifiable, not just runtime-verifiable)", async () => {
     const { readFileSync } = await import("node:fs");
     const self = readFileSync(fileURLToPath(import.meta.url), "utf8");
