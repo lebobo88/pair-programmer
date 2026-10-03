@@ -13,10 +13,15 @@
 //   (ii)  triggering the daemon shutdown path (shutdownAndExit) closes the
 //         eights-client connection (isAvailableSync() -> false) and the
 //         fixture child exits.
-//   (iii) neither this test, nor anything it spawns, ever touches the REAL
-//         ~/.eights or ~/.pair-programmer — snapshotted BEFORE any
-//         HOME/USERPROFILE redirection (os.homedir() follows those env vars
-//         once set) and compared unchanged after.
+//   (iii) neither this test, nor anything it spawns, writes through the REAL
+//         home: the real ~/.eights and ~/.pair-programmer are not CREATED by
+//         the run (existence captured BEFORE any HOME/USERPROFILE redirection,
+//         since os.homedir() follows those env vars once set), and the fixture
+//         child POSITIVELY reports (fixture-env.json) that every home path it
+//         booted with resolves under this test's temp home. The real dirs'
+//         mtimes are deliberately NOT compared: a live TheEights daemon on the
+//         operator's machine mutates ~/.eights concurrently, which made the old
+//         mtime check fail whenever anything else was running (2026-10-03).
 //
 // Self-contained: spawns only the fake fixture (fixtures/fake-eights-daemon.mjs)
 // and a fixture caller script (fixtures/eights-lifecycle-short-lived-caller.mjs).
@@ -35,7 +40,7 @@ import {
   rmSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, dirname } from "node:path";
+import { join, dirname, relative, resolve, isAbsolute } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { spawn } from "node:child_process";
 
@@ -55,10 +60,23 @@ const REAL_HOME = os.homedir();
 const REAL_EIGHTS_DIR = join(REAL_HOME, ".eights");
 const REAL_PP_DIR = join(REAL_HOME, ".pair-programmer");
 
+// Existence only (see the header comment on why mtimes are not compared): the
+// run must never CREATE the operator's real state dirs.
 function snapshotDir(p) {
   if (!existsSync(p)) return { exists: false };
-  const st = statSync(p);
-  return { exists: true, mtimeMs: st.mtimeMs, isDirectory: st.isDirectory() };
+  return { exists: true, isDirectory: statSync(p).isDirectory() };
+}
+
+/**
+ * True iff `child` resolves to `parent` or a path inside it. Named so the
+ * real (iii) assertion and its falsification fixture exercise the same check.
+ * Case-insensitive on win32, where path casing is not significant.
+ */
+export function isPathInside(child, parent) {
+  if (typeof child !== "string" || child.length === 0) return false;
+  const norm = (p) => (process.platform === "win32" ? resolve(p).toLowerCase() : resolve(p));
+  const rel = relative(norm(parent), norm(child));
+  return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
 }
 
 const beforeEightsSnapshot = snapshotDir(REAL_EIGHTS_DIR);
@@ -129,11 +147,18 @@ describe("eights-client process lifecycle (L1B)", () => {
     let stdout = "";
     child.stdout.on("data", (chunk) => { stdout += chunk.toString(); });
 
+    // 25s, not 10s (2026-10-03): under full-suite parallel load (~20 node
+    // processes) a cold node boot + dist import + fixture spawn alone
+    // exceeded 10s. 25s still discriminates: without the unref fix the
+    // caller is held open until the idle-close fires at its 30s default
+    // (PP_ECOSYSTEM_IDLE_CLOSE_MS is not set here), so a regression still
+    // misses this bound.
+    const CALLER_EXIT_BOUND_MS = 25_000;
     const exitInfo = await new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         child.kill("SIGKILL");
-        reject(new Error("short-lived caller did not exit within 10s — the unref fix regressed"));
-      }, 10_000);
+        reject(new Error(`short-lived caller did not exit within ${CALLER_EXIT_BOUND_MS}ms — the unref fix regressed`));
+      }, CALLER_EXIT_BOUND_MS);
       child.on("exit", (code, signal) => {
         clearTimeout(timer);
         resolve({ code, signal });
@@ -175,19 +200,47 @@ describe("eights-client process lifecycle (L1B)", () => {
     await assertProcessTerminated(fixturePid, 10_000);
   });
 
-  it("(iii) the real ~/.eights and ~/.pair-programmer are untouched by this run", () => {
-    const afterEightsSnapshot = snapshotDir(REAL_EIGHTS_DIR);
-    const afterPpSnapshot = snapshotDir(REAL_PP_DIR);
+  it("(iii) the run never creates the real ~/.eights or ~/.pair-programmer", () => {
     assert.deepStrictEqual(
-      afterEightsSnapshot,
+      snapshotDir(REAL_EIGHTS_DIR),
       beforeEightsSnapshot,
-      "real ~/.eights changed during this test run — a lifecycle mechanism leaked outside the isolated HOME",
+      "real ~/.eights was created (or replaced) during this test run — a lifecycle mechanism leaked outside the isolated HOME",
     );
     assert.deepStrictEqual(
-      afterPpSnapshot,
+      snapshotDir(REAL_PP_DIR),
       beforePpSnapshot,
-      "real ~/.pair-programmer changed during this test run — a lifecycle mechanism leaked outside the isolated HOME",
+      "real ~/.pair-programmer was created (or replaced) during this test run — a lifecycle mechanism leaked outside the isolated HOME",
     );
+  });
+
+  it("(iii) the spawned fixture booted with every home path inside the isolated temp home", () => {
+    // Written by fake-eights-daemon.mjs at startup; tests (i) and (ii) above
+    // have each spawned at least one fixture under this EIGHTS_HOME.
+    const envFile = join(eightsHomeDir, "fixture-env.json");
+    assert.ok(existsSync(envFile), `fixture never reported its env at ${envFile} — did (i)/(ii) spawn it under the isolated EIGHTS_HOME?`);
+    const seen = JSON.parse(readFileSync(envFile, "utf8"));
+    assert.ok(
+      isPathInside(seen.EIGHTS_HOME, isolatedHome),
+      `fixture EIGHTS_HOME ${JSON.stringify(seen.EIGHTS_HOME)} is not under the isolated home ${isolatedHome}`,
+    );
+    // HOME/USERPROFILE may legitimately be absent (not on eights-client's
+    // forwarded-env allowlist); when present they must be the isolated ones.
+    for (const key of ["HOME", "USERPROFILE"]) {
+      if (seen[key] === null) continue;
+      assert.ok(
+        isPathInside(seen[key], isolatedHome),
+        `fixture ${key} ${JSON.stringify(seen[key])} is not under the isolated home ${isolatedHome}`,
+      );
+    }
+  });
+
+  it("(iii) falsification: isPathInside rejects the real home and lookalike siblings", () => {
+    assert.equal(isPathInside(REAL_EIGHTS_DIR, isolatedHome), false, "the real ~/.eights must not count as isolated");
+    assert.equal(isPathInside(REAL_HOME, isolatedHome), false, "the real home must not count as isolated");
+    assert.equal(isPathInside(`${isolatedHome}-sibling`, isolatedHome), false, "a prefix-sharing sibling is not inside");
+    assert.equal(isPathInside(join(isolatedHome, "..", "elsewhere"), isolatedHome), false, "a .. escape is not inside");
+    assert.equal(isPathInside(null, isolatedHome), false, "a missing path is not inside");
+    assert.equal(isPathInside(join(isolatedHome, "a", "b"), isolatedHome), true, "a nested path is inside");
   });
 
   it("(iii) this file never references the real TheEights entrypoint path (grep-verifiable, not just runtime-verifiable)", () => {
