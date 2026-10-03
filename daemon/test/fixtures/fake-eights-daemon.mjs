@@ -83,6 +83,20 @@ if (eightsHome) {
   try {
     mkdirSync(eightsHome, { recursive: true });
     writeFileSync(join(eightsHome, "fixture.pid"), String(process.pid), "utf8");
+    // Record the home-ish env this fixture actually booted with, so a test can
+    // POSITIVELY prove the spawned child was isolated (every path it could
+    // write through resolves under the test's temp home) instead of diffing
+    // the operator's real ~/.eights, which a live TheEights daemon mutates
+    // concurrently (eights-lifecycle.unit.mjs (iii)).
+    writeFileSync(
+      join(eightsHome, "fixture-env.json"),
+      JSON.stringify({
+        EIGHTS_HOME: process.env.EIGHTS_HOME ?? null,
+        HOME: process.env.HOME ?? null,
+        USERPROFILE: process.env.USERPROFILE ?? null,
+      }),
+      "utf8",
+    );
   } catch {
     // best-effort; a failure here must not stop the fixture from serving.
   }
