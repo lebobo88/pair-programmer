@@ -1379,6 +1379,36 @@ describe("pp_codex.generate_image: private staging and exclusive hand-off", () =
     assert.deepEqual(readdirSync(outputDir), []);
   });
 
+  test("createStagingDir: a failure after allocation removes the allocated (empty) directory and says so", async () => {
+    const { createStagingDir } = await importDist("mcp/image-harvest.js");
+    const parent = join(tmp("pp-img-stagebase-"), "image-staging");
+    let allocated;
+    const r = createStagingDir(parent, {
+      afterMkdtemp: (dir) => {
+        allocated = dir;
+        throw Object.assign(new Error("forced EIO"), { code: "EIO" });
+      },
+    });
+    assert.equal(r.ok, false);
+    assert.ok(allocated, "precondition: a directory really was allocated before the failure");
+    assert.match(r.reason, /forced EIO.*was removed/);
+    assert.deepEqual(readdirSync(parent), [], "no orphaned staging directory");
+  });
+
+  test("createStagingDir: when the allocated directory cannot be removed, the reason says it remains", async () => {
+    const { createStagingDir } = await importDist("mcp/image-harvest.js");
+    const parent = join(tmp("pp-img-stagebase-"), "image-staging");
+    const r = createStagingDir(parent, {
+      afterMkdtemp: (dir) => {
+        writeFileSync(join(dir, "blocker"), "x"); // rmdir refuses a non-empty directory
+        throw Object.assign(new Error("forced EIO"), { code: "EIO" });
+      },
+    });
+    assert.equal(r.ok, false);
+    assert.match(r.reason, /could NOT be removed \(ENOTEMPTY\); it remains/);
+    assert.equal(readdirSync(parent).length, 1, "the directory that could not be removed is the one reported");
+  });
+
   test("end to end: a staging cleanup failure is reported and an otherwise-ok call becomes partial", async () => {
     const { result } = await runHarvest({
       write: writePngs({ "exec-call-1.png": makeSolidPng(4, 4) }),
@@ -1468,7 +1498,11 @@ describe("pp_codex.generate_image: ancillary chunk rules", () => {
       "gAMA after PLTE": [assemblePng({ ...PAL_2x1, extra: [{ at: "plte", type: "gAMA", data: u32(1) }] }), /gAMA .*must precede PLTE/],
       "31-byte cHRM": [assemblePng({ ...GREY_4x4, extra: [{ at: "ihdr", type: "cHRM", data: Buffer.alloc(31) }] }), /cHRM .*length 31/],
       "sRGB intent 4": [assemblePng({ ...RGB_2x1, extra: [{ at: "ihdr", type: "sRGB", data: Buffer.from([4]) }] }), /sRGB .*intent 4/],
-      "sRGB with iCCP": [assemblePng({ ...RGB_2x1, extra: [{ at: "ihdr", type: "iCCP", data: Buffer.from("p\0\0xx") }, { at: "ihdr", type: "sRGB", data: Buffer.from([0]) }] }), /must not both appear/],
+      "iCCP with non-zlib bytes": [assemblePng({ ...RGB_2x1, extra: [{ at: "ihdr", type: "iCCP", data: Buffer.from("p\0\0xx") }] }), /iCCP .*compressed payload this harvester does not validate/],
+      "iCCP with an RGB profile on a greyscale image": [assemblePng({ ...GREY_4x4, extra: [{ at: "ihdr", type: "iCCP", data: Buffer.concat([Buffer.from("p\0\0"), zlib.deflateSync(Buffer.concat([Buffer.alloc(16), Buffer.from("mntrRGB "), Buffer.alloc(104)]))]) }] }), /iCCP .*compressed payload this harvester does not validate/],
+      "zTXt with no compressed stream": [assemblePng({ ...GREY_4x4, extra: [{ at: "idat", type: "zTXt", data: Buffer.from("Comment\0\0") }] }), /zTXt .*compressed payload this harvester does not validate/],
+      "compressed iTXt": [assemblePng({ ...GREY_4x4, extra: [{ at: "idat", type: "iTXt", data: Buffer.concat([Buffer.from("Title\0\x01\0en\0\0"), zlib.deflateSync(Buffer.from("hi"))]) }] }), /compressed iTXt .*does not validate/],
+      "eXIf without a TIFF header": [assemblePng({ ...GREY_4x4, extra: [{ at: "ihdr", type: "eXIf", data: Buffer.from("XXXX") }] }), /TIFF byte-order header/],
       "sBIT wrong length": [assemblePng({ ...RGB_2x1, extra: [{ at: "ihdr", type: "sBIT", data: Buffer.from([8]) }] }), /sBIT .*expected 3/],
       "sBIT zero": [assemblePng({ ...GREY_4x4, extra: [{ at: "ihdr", type: "sBIT", data: Buffer.from([0]) }] }), /significant bits 0/],
       "bKGD wrong length for RGB": [assemblePng({ ...RGB_2x1, extra: [{ at: "ihdr", type: "bKGD", data: Buffer.alloc(2) }] }), /bKGD .*wrong for colour type 2/],
@@ -1491,6 +1525,15 @@ describe("pp_codex.generate_image: ancillary chunk rules", () => {
       assert.equal(r.ok, false, `${label} must be refused`);
       assert.match(r.reason, reason, label);
     }
+  });
+
+  test("end to end: a PNG carrying an unvalidated compressed payload (iCCP) that fits as-is is never copied", async () => {
+    const { result, outputDir } = await runHarvest({
+      write: writePngs({ "exec-call-iccp.png": assemblePng({ ...RGB_2x1, extra: [{ at: "ihdr", type: "iCCP", data: Buffer.from("p\0\0xx") }] }) }),
+    });
+    assert.equal(result.status, "failed");
+    assert.match(result.failures[0].reason, /iCCP .*compressed payload/);
+    assert.deepEqual(readdirSync(outputDir), []);
   });
 
   test("end to end: an eXIf-after-IDAT PNG that fits as-is is never copied", async () => {
@@ -1767,6 +1810,14 @@ describe("pp_agy.generate_image", () => {
  *   copy fallback reintroduced on EXDEV         -> fail closed (no copy fallback, nothing reaches output_dir)
  *   cleanup failure left status ok              -> staging cleanup failure turns ok into partial
  *   (re-run red on the link-only code: direct write instead of link -> 30 tests; staged-inode identity; fd neutralisation)
+ *
+ * Authorized round B findings:
+ *   iCCP/zTXt accepted (unvalidated payload)    -> ancillary rule fixtures; iCCP e2e never copied
+ *   compressed iTXt accepted                    -> ancillary rule fixtures
+ *   eXIf TIFF header unchecked                  -> ancillary rule fixtures
+ *   allocated staging dir not removed on failure -> failure after allocation (removed / remains)
+ *   un-removable dir reported as removed        -> "could NOT be removed ... it remains"
+ *   (re-run red: tRNS colour-type rule, unvalidated ancillary types)
  *   NOT FALSIFIABLE (disclosed): re-validating the RE-ENCODED output with acceptPng — pngjs always emits a valid PNG, so
  *   no fixture can make that defence-in-depth check fire without replacing the encoder.
  *   NOTE: removing only the link/type clause of the output_dir check stays GREEN — it is subsumed, not missing:

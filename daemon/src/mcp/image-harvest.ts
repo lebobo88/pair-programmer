@@ -29,6 +29,7 @@ import {
   mkdtempSync,
   chmodSync,
   rmSync,
+  rmdirSync,
   linkSync,
   ftruncateSync,
   constants as FS,
@@ -386,9 +387,9 @@ export type AncillaryContext = {
 };
 
 /** Ancillary chunks that may appear more than once. */
-const REPEATABLE_ANCILLARY = new Set(["tEXt", "zTXt", "iTXt"]);
+const REPEATABLE_ANCILLARY = new Set(["tEXt", "iTXt"]);
 /** Must precede PLTE (and IDAT). */
-const BEFORE_PLTE = new Set(["gAMA", "cHRM", "sRGB", "iCCP", "sBIT"]);
+const BEFORE_PLTE = new Set(["gAMA", "cHRM", "sRGB", "sBIT"]);
 /** Must follow PLTE (when present) and precede IDAT. */
 const AFTER_PLTE_BEFORE_IDAT = new Set(["bKGD", "hIST", "tRNS"]);
 
@@ -418,14 +419,13 @@ export function checkAncillaryChunk(type: string, data: Buffer, ctx: AncillaryCo
       return len === 32 ? null : `length ${len}, expected 32.`;
     case "sRGB":
       if (len !== 1) return `length ${len}, expected 1.`;
-      if ((data[0] as number) > 3) return `rendering intent ${data[0]} is invalid.`;
-      return ctx.seen.has("iCCP") ? "sRGB and iCCP must not both appear." : null;
-    case "iCCP": {
-      const k = keywordEnd(data);
-      if (k < 0) return "profile name is not a 1-79 byte keyword.";
-      if (len < k + 3 || data[k + 1] !== 0) return "compression method must be 0 with a non-empty profile.";
-      return ctx.seen.has("sRGB") ? "sRGB and iCCP must not both appear." : null;
-    }
+      return (data[0] as number) <= 3 ? null : `rendering intent ${data[0]} is invalid.`;
+    case "iCCP":
+    case "zTXt":
+      // Their payload is a compressed datastream (an ICC profile whose colour
+      // space must match the image, or text) that pngjs ignores and this
+      // harvester does not decompress and validate — so they are refused.
+      return "carries a compressed payload this harvester does not validate; refused.";
     case "sBIT": {
       const expected = { 0: 1, 2: 3, 3: 3, 4: 2, 6: 4 }[ct as 0 | 2 | 3 | 4 | 6];
       if (len !== expected) return `length ${len}, expected ${expected} for colour type ${ct}.`;
@@ -462,24 +462,23 @@ export function checkAncillaryChunk(type: string, data: Buffer, ctx: AncillaryCo
     }
     case "tEXt":
       return keywordEnd(data) >= 0 ? null : "keyword is not 1-79 bytes followed by NUL.";
-    case "zTXt": {
-      const k = keywordEnd(data);
-      if (k < 0) return "keyword is not 1-79 bytes followed by NUL.";
-      return len >= k + 2 && data[k + 1] === 0 ? null : "compression method must be 0.";
-    }
     case "iTXt": {
       const k = keywordEnd(data);
       if (k < 0) return "keyword is not 1-79 bytes followed by NUL.";
       if (len < k + 3) return "truncated header.";
       const flag = data[k + 1] as number;
-      if (flag > 1 || data[k + 2] !== 0) return "compression flag/method invalid.";
+      if (flag === 1) return "compressed iTXt carries a payload this harvester does not validate; refused.";
+      if (flag !== 0 || data[k + 2] !== 0) return "compression flag/method invalid.";
       const lang = data.indexOf(0, k + 3);
       if (lang < 0) return "language tag is not NUL-terminated.";
       return data.indexOf(0, lang + 1) >= 0 ? null : "translated keyword is not NUL-terminated.";
     }
     case "eXIf":
       if (ctx.idatStarted) return "must precede IDAT.";
-      return len >= 4 ? null : `length ${len} is too short for an Exif header.`;
+      if (len < 4) return `length ${len} is too short for an Exif header.`;
+      return data.subarray(0, 4).equals(Buffer.from("MM\0*", "latin1")) || data.subarray(0, 4).equals(Buffer.from("II*\0", "latin1"))
+        ? null
+        : "does not start with a TIFF byte-order header (MM\\0* or II*\\0).";
     default:
       return "ancillary chunk type is not one this harvester validates; refused.";
   }
@@ -1117,30 +1116,53 @@ function neutraliseAndThrow(fd: number, path: string, err: unknown, hooks: Write
 /** A per-call, daemon-owned directory where content is written and verified before any hand-off. */
 export type StagingDir = { dirReal: string; id: FsIdentity };
 
+/** Test-only seam fired right after the staging directory is allocated. Production never sets it. */
+export type StagingHooks = { afterMkdtemp?: (dir: string) => void };
+
 /**
  * Create the per-call staging directory under the daemon-owned `parent`
  * (PP_HOME/.pair-programmer/image-staging): `mkdtemp`, mode 0700 on POSIX.
  * Refused if `parent` or the new directory is a link, if the new directory's
  * realpath is not a direct child of the parent's, or if its identity changes
  * between lstat and realpath.
+ *
+ * If anything fails AFTER the directory was allocated, that directory — and
+ * only it, and only while empty (`rmdir` refuses anything else) — is removed,
+ * and the returned reason says whether that removal succeeded or the
+ * directory remains.
  */
-export function createStagingDir(parent: string): { ok: true; staging: StagingDir } | { ok: false; reason: string } {
+export function createStagingDir(
+  parent: string,
+  hooks: StagingHooks = {},
+): { ok: true; staging: StagingDir } | { ok: false; reason: string } {
+  let allocated: string | undefined;
+  const fail = (reason: string): { ok: false; reason: string } => {
+    if (allocated === undefined) return { ok: false, reason };
+    try {
+      rmdirSync(allocated);
+      return { ok: false, reason: `${reason} The staging directory it had allocated (${allocated}) was removed.` };
+    } catch (rmErr) {
+      const code = (rmErr as NodeJS.ErrnoException).code ?? (rmErr as Error).message;
+      return { ok: false, reason: `${reason} The staging directory it had allocated (${allocated}) could NOT be removed (${code}); it remains.` };
+    }
+  };
   try {
     mkdirSync(parent, { recursive: true, mode: 0o700 });
     const pst = lstatSync(parent);
-    if (pst.isSymbolicLink() || !pst.isDirectory()) return { ok: false, reason: `staging parent ${parent} is not a plain directory.` };
+    if (pst.isSymbolicLink() || !pst.isDirectory()) return fail(`staging parent ${parent} is not a plain directory.`);
     const parentReal = realpathSync.native(parent);
-    const dir = mkdtempSync(join(parentReal, "gi-"));
-    if (process.platform !== "win32") chmodSync(dir, 0o700);
-    const st = lstatSync(dir, { bigint: true });
-    if (st.isSymbolicLink() || !st.isDirectory()) return { ok: false, reason: `staging directory ${dir} is not a plain directory.` };
-    const dirReal = realpathSync.native(dir);
-    if (!isDirectChildReal(parentReal, dirReal)) return { ok: false, reason: `staging directory resolves to ${dirReal}, outside ${parentReal}.` };
+    allocated = mkdtempSync(join(parentReal, "gi-"));
+    hooks.afterMkdtemp?.(allocated);
+    if (process.platform !== "win32") chmodSync(allocated, 0o700);
+    const st = lstatSync(allocated, { bigint: true });
+    if (st.isSymbolicLink() || !st.isDirectory()) return fail(`staging directory ${allocated} is not a plain directory.`);
+    const dirReal = realpathSync.native(allocated);
+    if (!isDirectChildReal(parentReal, dirReal)) return fail(`staging directory resolves to ${dirReal}, outside ${parentReal}.`);
     const id = { dev: st.dev, ino: st.ino };
     assertDirIdentity(dirReal, id, "staging directory");
     return { ok: true, staging: { dirReal, id } };
   } catch (err) {
-    return { ok: false, reason: `could not create the staging directory: ${(err as Error).message}` };
+    return fail(`could not create the staging directory: ${(err as Error).message}.`);
   }
 }
 

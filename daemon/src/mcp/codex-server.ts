@@ -1104,16 +1104,19 @@ const TOOLS = [
       "successful hand-off, any process with write access to output_dir can of course move, replace or modify the finished file. " +
       "VALIDATION: every PNG — including one copied verbatim — must pass a full structure check (signature, IHDR length 13 with legal fields, every chunk CRC, " +
       "consecutive IDATs, PLTE rules incl. palette size, no unknown critical chunks, terminating IEND, no bytes after IEND; ancillary chunks are limited to " +
-      "gAMA, cHRM, sRGB, iCCP, sBIT, bKGD, hIST, tRNS, pHYs, tIME, tEXt, zTXt, iTXt and eXIf, each checked for length, multiplicity, ordering and " +
-      "colour-type rules — any OTHER ancillary chunk is refused because it is not validated), and its image data must inflate — with the inflater capped at the exact size IHDR " +
+      "gAMA, cHRM, sRGB, sBIT, bKGD, hIST, tRNS, pHYs, tIME, tEXt, uncompressed iTXt and eXIf (TIFF byte-order header), each checked for length, " +
+      "multiplicity, ordering and colour-type rules; chunks with a compressed payload this harvester does not decompress and validate (iCCP, zTXt, " +
+      "compressed iTXt) and any OTHER ancillary chunk are refused), and its image data must inflate — with the inflater capped at the exact size IHDR " +
       "implies, after the 4096x4096 pixel cap — to exactly that size with valid scanline filter bytes (unused padding after the zlib stream is ignored, per PNG §11.2.3), so a decompression bomb is refused and the later " +
       "decode is bounded by the same size; it must then fully decode (e.g. every palette index within PLTE) before it is copied or downscaled. A file is harvested only once settled: the same dev/ino, size and mtime on two consecutive polls and ending in IEND; that observation must match the " +
       "fd at the final open and still match after the read, so a settled file swapped for another is refused. " +
       "Files whose mtime pre-dates the call are stale and refused. Malformed, unsettled, stale, linked or capped files are per-file `failures`, not a whole-call failure. " +
       "LIMITS: max_dimension must be in [256, 4096] (default 768; outside that range is REJECTED, not clamped). byte_budget_bytes default 300KB, max 32MiB. " +
       "Budgets are CUMULATIVE per call across all settle polls (at most 30 polls: 3s at 100ms): at most 200 session-directory entries per enumeration " +
-      "and 1000 across the call (more sets enumeration_truncated / a budget failure); at most 20 DISTINCT PNGs are ever opened; at most 180 file opens while " +
-      "polling plus at most 20 final reads (200 opens per call); exhausting a budget stops polling and reports what had not settled. Each PNG is at most 32MiB " +
+      "and 1000 across the call (more sets enumeration_truncated / a budget failure); at most 20 distinct PNG NAMES are ever opened; each name is bound to " +
+      "the first file identity seen under it and refused once that changes, so at most 40 distinct file OBJECTS are opened while polling and at most 20 " +
+      "more at the final reads (a final-read object that is not the settled one is refused, never read into output) — at most 60 objects per call; at " +
+      "most 180 open ATTEMPTS while polling plus at most 20 final reads (200 per call); exhausting a budget stops polling and reports what had not settled. Each PNG is at most 32MiB " +
       "(checked by fstat before reading) and 4096x4096 pixels (checked from IHDR before decoding); at most 100 alternative names are tried on an output name " +
       "collision. Downscaling starts directly at min(max_dimension, longest side) and halves toward the 256px floor: at most 5 encodes per image. " +
       "An image already within both bounds is copied byte-for-byte. One still over budget at the floor is written but listed in `over_budget` and the status is " +
