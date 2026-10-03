@@ -251,21 +251,50 @@ for (const [producer, bogus] of [["codex", "gpt-5-bogus"], ["agy", "gemini-9.9-i
 }
 
 {
-  // A DIFFERENT agy id on both sides is fine — this is what makes removing the
-  // exemption tenable at all (agy now has a distinct escalated lane).
+  // A DIFFERENT agy id on both sides is fine — this is what keeps removing the
+  // exemption tenable. Since the 2026-10-03 amendment agy's escalated pin IS
+  // its default, so the distinct id is reached only via a recorded JUDGE-1a
+  // override (source cli + reason).
   const attemptId = await newAttempt("agy", JUDGE_MODEL_POLICY.agy.default.model);
-  it("agy generator + agy judge on DIFFERENT allow-listed ids is accepted", () => {
+  const otherAgyId = JUDGE_MODEL_POLICY.agy.allowed_models.find(
+    (m) => m !== JUDGE_MODEL_POLICY.agy.default.model,
+  );
+  it("agy generator + agy judge on DIFFERENT allow-listed ids (override) is accepted", () => {
+    assert.ok(otherAgyId, "agy allow-list must carry a non-default id for this case");
     const v = runs.recordVerdict({
       attempt_id: attemptId,
       judge_producer: "agy",
-      judge_model_id: JUDGE_MODEL_POLICY.agy.escalated.model,
+      judge_model_id: otherAgyId,
       outcome: "pass",
       critique_md: CRITIQUE,
       score_json: { correctness: 0.9 },
-      judge_model_source: "escalated",
+      judge_model_source: "cli",
+      judge_override_reason: "agy-on-agy stage needs a distinct judge id",
     });
     assert.ok(v.verdict_id);
     assert.equal(v.cross_vendor, false, "agy judging agy is same-vendor");
+  });
+}
+
+{
+  // The collapsed escalated lane must NOT become a self-judge loophole: an agy
+  // generator on gemini-3.8-flash-medium judged by agy via `escalate` lands on
+  // the same id and the same-model guard refuses it.
+  const attemptId = await newAttempt("agy", JUDGE_MODEL_POLICY.agy.default.model);
+  it("agy escalated judge on the generator's own id is refused (same-model guard)", () => {
+    assert.equal(JUDGE_MODEL_POLICY.agy.escalated.model, JUDGE_MODEL_POLICY.agy.default.model);
+    assert.throws(
+      () => runs.recordVerdict({
+        attempt_id: attemptId,
+        judge_producer: "agy",
+        judge_model_id: JUDGE_MODEL_POLICY.agy.escalated.model,
+        outcome: "pass",
+        critique_md: CRITIQUE,
+        score_json: { correctness: 0.9 },
+        judge_model_source: "escalated",
+      }),
+      (err) => /same-vendor verdict requires different model ids/.test(err.message),
+    );
   });
 }
 
@@ -298,7 +327,7 @@ for (const source of ["cli", "team_yaml", "hydra"]) {
       () => runs.recordVerdict({
         attempt_id: attemptId,
         judge_producer: "codex",
-        judge_model_id: "gpt-5.6-luna",
+        judge_model_id: "gpt-6-astra",
         outcome: "pass",
         critique_md: CRITIQUE,
         score_json: { correctness: 0.9 },
@@ -316,7 +345,7 @@ for (const source of ["cli", "team_yaml", "hydra"]) {
       () => runs.recordVerdict({
         attempt_id: attemptId,
         judge_producer: "codex",
-        judge_model_id: "gpt-5.6-luna",
+        judge_model_id: "gpt-6-astra",
         outcome: "pass",
         critique_md: CRITIQUE,
         score_json: { correctness: 0.9 },
@@ -396,7 +425,7 @@ for (const source of ["cli", "team_yaml", "hydra"]) {
     const v = runs.recordVerdict({
       attempt_id: attemptId,
       judge_producer: "codex",
-      judge_model_id: "gpt-5.6-luna",
+      judge_model_id: "gpt-6-astra",
       outcome: "pass",
       critique_md: CRITIQUE,
       score_json: { correctness: 0.9 },

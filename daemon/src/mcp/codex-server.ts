@@ -461,7 +461,7 @@ async function codexGenerate(
 
 /**
  * Select the pinned critique model based on the escalate flag.
- * escalate selects a PINNED allow-listed model (gpt-5.6-sol); caller-passed args.model remains ignored (invented-id guard).
+ * escalate selects a PINNED allow-listed model (JUDGE_MODEL_POLICY.codex.escalated — gpt-6-astra as of the 2026-10-03 amendment); caller-passed args.model remains ignored (invented-id guard).
  *
  * This is a pure exported helper so it can be unit-tested offline without
  * spawning the Codex CLI. codexCritique delegates to it internally.
@@ -521,7 +521,7 @@ ${wrappedArtifact}
     model: effectiveModel,
     sandbox: "read-only",
     skip_recap: true,
-    // CONSTITUTION.md Article V as amended 2026-09-03 (SHA 5df284cb, previously 13b4fa18) pins JUDGE-1 at
+    // CONSTITUTION.md Article V as amended 2026-10-03 (SHA 27ae414d) pins every judge lane at
     // medium reasoning effort. The default path still resolves to medium; a
     // different effort only arrives through the escalated pin or a justified
     // override. Do not raise the DEFAULT without a constitution amendment.

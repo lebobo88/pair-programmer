@@ -17,8 +17,8 @@ tools:
      Intentionally NO `model:` field. Cross-vendor judges always dispatch to a
      Codex or Antigravity (agy) critique CLI (never Claude) — the Claude session model is
      irrelevant. Model ids for the non-Claude vendors are pinned in the agent
-     body's Procedure section (gpt-5.6-terra for Codex; gemini-3.8-flash-medium for
-     agy; escalated lanes gpt-5.6-sol and gemini-3.1-pro-high). An operator may
+     body's Procedure section (gpt-6.1-sol for Codex; gemini-3.8-flash-medium for
+     agy; Codex escalated lane gpt-6-astra — agy has none). An operator may
      override these per JUDGE-1a — see "Operator override" below. A frontmatter
      `model:` would mislead anyone reading the file.
      `effort: high` here sets the Claude WRAPPER's reasoning effort for this
@@ -26,7 +26,7 @@ tools:
      the VENDOR CLI's (Codex/agy) effort, validated separately in
      daemon/src/orchestrator/runs.ts:1006-1012 and recorded on the verdict row.
      Setting effort: high here does NOT escalate the verdict and does NOT
-     change the judge model's pin (gpt-5.6-terra / gemini-3.8-flash-medium
+     change the judge model's pin (gpt-6.1-sol / gemini-3.8-flash-medium
      stay pinned unless an explicit JUDGE-1a override is made in the
      Procedure's tool call). Do not mistake this field for a verdict escalation.
 -->
@@ -89,10 +89,10 @@ Pass them to the critique tool **exactly as routed**, mapping route field → to
 
 1. Pick the judge tool per the mapping above — or per `judge_vendor` when a validated override set it.
 2. Invoke it with `artifact_text`, `rubric_md`, `cwd`, and an EXPLICIT `model` arg (unless `escalate: true` is set — see below). You MUST pin the lane explicitly; never let the bridge's schema default fire. Use:
-   - Codex default: `gpt-5.6-terra` (per JUDGE-1).
-   - Codex escalated: pass `escalate: true` (NOT a `model` arg) for sanctioned hard gates (major-scope security/architecture or final last-resort Reflexion retry) — this selects the pinned `gpt-5.6-sol` server-side. Do NOT escalate for ordinary gates.
+   - Codex default: `gpt-6.1-sol` at medium (per JUDGE-1).
+   - Codex escalated: pass `escalate: true` (NOT a `model` arg) for sanctioned hard gates (major-scope security/architecture or final last-resort Reflexion retry) — this selects the pinned `gpt-6-astra` (medium) server-side. Do NOT escalate for ordinary gates.
    - agy default: `gemini-3.8-flash-medium` for all gates (per JUDGE-1 as amended). The retired `gemini-3.7-flash-medium`, `gemini-3.1-pro-preview`, and bare `gemini-3.1-pro` pins are superseded. agy validates `--model` and exits non-zero on an unrecognized id — run `agy models` after any model-id change; `doctor()` reports `agy_pin_served`. See finding E2-1.
-   - agy escalated: pass `escalate: true` (NOT a `model` arg) — this selects the pinned `gemini-3.1-pro-high` server-side.
+   - agy escalated: none. `escalate: true` resolves to the same `gemini-3.8-flash-medium` pin (CONSTITUTION.md Article V as amended 2026-10-03), so escalating an agy judge changes nothing — do not rely on it.
 
    **`escalate` and `model` are mutually exclusive.** Pass one or the other, never both — the bridge rejects the pair. And a non-allow-listed model id now **THROWS at the bridge** (it is no longer silently ignored or replaced by the pin), so passing a guessed id fails the stage rather than quietly judging with the default. Legal ids per vendor come from `doctor().judge_capabilities[<vendor>].allowed_critique_models`.
 

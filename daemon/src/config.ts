@@ -75,17 +75,22 @@ export type VendorJudgePolicy = {
 export const JUDGE_MODEL_POLICY = {
   codex: {
     // Constitutional default (JUDGE-1), pinned by CONSTITUTION.md Article V as
-    // amended 2026-09-03 (SHA 5df284cb, previously 13b4fa18): Codex `gpt-5.6-terra` at medium reasoning effort.
+    // amended 2026-10-03 (SHA 27ae414d, previously 5df284cb / 13b4fa18): Codex `gpt-6.1-sol` at medium
+    // reasoning effort; escalated `gpt-6-astra` at medium. Both ids verified served by codex-cli 0.160.0
+    // on 2026-10-03. The gpt-5.6-* ids were removed from the judge allow-list by that amendment.
     // Do NOT change outside the HITL `/pp:constitution amend` path.
-    default:   { model: "gpt-5.6-terra", reasoning_effort: "medium" },
+    default:   { model: "gpt-6.1-sol", reasoning_effort: "medium" },
     // Opt-in escalation for major-scope / last-resort gates.
-    escalated: { model: "gpt-5.6-sol", reasoning_effort: "medium" },
-    allowed_models:  ["gpt-5.6-terra", "gpt-5.6-sol", "gpt-5.6-luna"],
+    escalated: { model: "gpt-6-astra", reasoning_effort: "medium" },
+    allowed_models:  ["gpt-6.1-sol", "gpt-6-astra"],
     allowed_efforts: ["low", "medium", "high", "xhigh"],
   },
   agy: {
+    // Article V as amended 2026-10-03: agy has NO separate escalated model. An
+    // `escalate` request resolves to the same pin as the default. Every pinned
+    // lane runs at medium; other efforts / ids remain JUDGE-1a overrides.
     default:   { model: "gemini-3.8-flash-medium", reasoning_effort: "medium" },
-    escalated: { model: "gemini-3.1-pro-high", reasoning_effort: "high" },
+    escalated: { model: "gemini-3.8-flash-medium", reasoning_effort: "medium" },
     allowed_models: [
       "gemini-3.8-flash-high", "gemini-3.8-flash-medium", "gemini-3.8-flash-low",
       "gemini-3.7-flash-high", "gemini-3.7-flash-medium", "gemini-3.7-flash-low",
