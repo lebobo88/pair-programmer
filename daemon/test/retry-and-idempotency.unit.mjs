@@ -55,7 +55,7 @@ await record("recordVerdict with a repeated idempotency_token returns the origin
     const first = runs.recordVerdict({
       attempt_id: att.attempt_id,
       judge_producer: "codex",
-      judge_model_id: "gpt-5.6-terra",
+      judge_model_id: "gpt-6.1-sol",
       outcome: "pass",
       critique_md: "ok",
       score_json: { correctness: 1.0 },
@@ -64,7 +64,7 @@ await record("recordVerdict with a repeated idempotency_token returns the origin
     const second = runs.recordVerdict({
       attempt_id: att.attempt_id,
       judge_producer: "codex",
-      judge_model_id: "gpt-5.6-terra",
+      judge_model_id: "gpt-6.1-sol",
       outcome: "pass",
       critique_md: "ok",
       score_json: { correctness: 1.0 },
@@ -89,11 +89,11 @@ await record("recordVerdict with distinct idempotency_tokens inserts separate ro
     const att = runs.recordAttempt({ stage_id: stage.stage_id, producer: "claude", model_id: "claude-sonnet-5", status: "ok" });
 
     const a = runs.recordVerdict({
-      attempt_id: att.attempt_id, judge_producer: "codex", judge_model_id: "gpt-5.6-terra",
+      attempt_id: att.attempt_id, judge_producer: "codex", judge_model_id: "gpt-6.1-sol",
       outcome: "pass", critique_md: "ok", score_json: {}, idempotency_token: "idem-tok-a",
     });
     const b = runs.recordVerdict({
-      attempt_id: att.attempt_id, judge_producer: "codex", judge_model_id: "gpt-5.6-terra",
+      attempt_id: att.attempt_id, judge_producer: "codex", judge_model_id: "gpt-6.1-sol",
       outcome: "pass", critique_md: "ok", score_json: {}, idempotency_token: "idem-tok-b",
     });
     assert.notEqual(a.verdict_id, b.verdict_id);
@@ -121,7 +121,7 @@ await record("recordVerdict rejects a token already owned by a DIFFERENT attempt
     const stageA = await runs.startStage({ run_id: run.run_id, kind: "code", gate_type: "code" });
     const attA = runs.recordAttempt({ stage_id: stageA.stage_id, producer: "claude", model_id: "claude-sonnet-5", status: "ok" });
     const verdictA = runs.recordVerdict({
-      attempt_id: attA.attempt_id, judge_producer: "codex", judge_model_id: "gpt-5.6-terra",
+      attempt_id: attA.attempt_id, judge_producer: "codex", judge_model_id: "gpt-6.1-sol",
       outcome: "pass", critique_md: "ok", score_json: {}, idempotency_token: "shared-collided-token",
     });
 
@@ -130,7 +130,7 @@ await record("recordVerdict rejects a token already owned by a DIFFERENT attempt
 
     assert.throws(
       () => runs.recordVerdict({
-        attempt_id: attB.attempt_id, judge_producer: "codex", judge_model_id: "gpt-5.6-terra",
+        attempt_id: attB.attempt_id, judge_producer: "codex", judge_model_id: "gpt-6.1-sol",
         outcome: "pass", critique_md: "ok", score_json: {}, idempotency_token: "shared-collided-token",
       }),
       /idempotency_token .* already recorded against attempt/,
@@ -160,8 +160,8 @@ await record("recordVerdict with no idempotency_token still inserts separately e
     const stage = await runs.startStage({ run_id: run.run_id, kind: "code", gate_type: "code" });
     const att = runs.recordAttempt({ stage_id: stage.stage_id, producer: "claude", model_id: "claude-sonnet-5", status: "ok" });
 
-    runs.recordVerdict({ attempt_id: att.attempt_id, judge_producer: "codex", judge_model_id: "gpt-5.6-terra", outcome: "pass", critique_md: "ok", score_json: {} });
-    runs.recordVerdict({ attempt_id: att.attempt_id, judge_producer: "codex", judge_model_id: "gpt-5.6-terra", outcome: "pass", critique_md: "ok", score_json: {} });
+    runs.recordVerdict({ attempt_id: att.attempt_id, judge_producer: "codex", judge_model_id: "gpt-6.1-sol", outcome: "pass", critique_md: "ok", score_json: {} });
+    runs.recordVerdict({ attempt_id: att.attempt_id, judge_producer: "codex", judge_model_id: "gpt-6.1-sol", outcome: "pass", critique_md: "ok", score_json: {} });
     const count = db().prepare(`SELECT COUNT(*) AS n FROM verdicts WHERE attempt_id = ?`).get(att.attempt_id);
     assert.equal(count.n, 2, "absent token is legacy behavior: every call inserts");
   } finally {

@@ -56,7 +56,7 @@ await record("provenance with quoted_text on disk does NOT flag hallucination", 
     const verdict = runs.recordVerdict({
       attempt_id: att.attempt_id,
       judge_producer: "codex",
-      judge_model_id: "gpt-5.6-terra",
+      judge_model_id: "gpt-6.1-sol",
       rubric_id: "rls-correctness@1",
       outcome: "pass",
       critique_md: "policy 007 looks good — soft-delete filter present",
@@ -100,7 +100,7 @@ await record("provenance with NON-matching quoted_text flags hallucination", asy
     const verdict = runs.recordVerdict({
       attempt_id: att.attempt_id,
       judge_producer: "codex",
-      judge_model_id: "gpt-5.6-terra",
+      judge_model_id: "gpt-6.1-sol",
       rubric_id: "code-quality@1",
       outcome: "fail",
       critique_md: "judge claims a bug that isn't there",
@@ -138,7 +138,7 @@ await record("provenance with path-traversal in file is flagged", async () => {
     const verdict = runs.recordVerdict({
       attempt_id: att.attempt_id,
       judge_producer: "codex",
-      judge_model_id: "gpt-5.6-terra",
+      judge_model_id: "gpt-6.1-sol",
       outcome: "fail",
       critique_md: "bad provenance",
       score_json: {
@@ -170,7 +170,7 @@ await record("verdict without findings_provenance is not flagged", async () => {
     const verdict = runs.recordVerdict({
       attempt_id: att.attempt_id,
       judge_producer: "codex",
-      judge_model_id: "gpt-5.6-terra",
+      judge_model_id: "gpt-6.1-sol",
       outcome: "pass",
       critique_md: "ok",
       score_json: { correctness: 1.0 },
@@ -198,7 +198,7 @@ await record("provenance citing a missing-but-plausible path (real parent dir, s
     const verdict = runs.recordVerdict({
       attempt_id: att.attempt_id,
       judge_producer: "codex",
-      judge_model_id: "gpt-5.6-terra",
+      judge_model_id: "gpt-6.1-sol",
       outcome: "revise",
       critique_md: "needs a null check",
       score_json: {
@@ -234,7 +234,7 @@ await record("provenance citing a fabricated path (parent dir doesn't exist anyw
     const verdict = runs.recordVerdict({
       attempt_id: att.attempt_id,
       judge_producer: "codex",
-      judge_model_id: "gpt-5.6-terra",
+      judge_model_id: "gpt-6.1-sol",
       outcome: "fail",
       critique_md: "cites a file that was never part of this project",
       score_json: {
@@ -274,7 +274,7 @@ await record("provenance citing a missing file with no plausible extension (real
     const verdict = runs.recordVerdict({
       attempt_id: att.attempt_id,
       judge_producer: "codex",
-      judge_model_id: "gpt-5.6-terra",
+      judge_model_id: "gpt-6.1-sol",
       outcome: "fail",
       critique_md: "cites a made-up extensionless path",
       score_json: {
@@ -504,7 +504,7 @@ await record("CRLF file + LF multi-line quote matches via eol_normalized, does N
     const verdict = runs.recordVerdict({
       attempt_id: att.attempt_id,
       judge_producer: "codex",
-      judge_model_id: "gpt-5.6-terra",
+      judge_model_id: "gpt-6.1-sol",
       rubric_id: "rfc-2119-normative@1",
       outcome: "pass",
       critique_md: "normative language is clear",
@@ -550,7 +550,7 @@ await record("exact match against a CRLF file is still tagged exact, details_jso
     const verdict = runs.recordVerdict({
       attempt_id: att.attempt_id,
       judge_producer: "codex",
-      judge_model_id: "gpt-5.6-terra",
+      judge_model_id: "gpt-6.1-sol",
       outcome: "pass",
       critique_md: "ok",
       score_json: {
@@ -592,7 +592,7 @@ await record("GATE NOT WEAKENED: absent quote against a CRLF file still flags fa
     const verdict = runs.recordVerdict({
       attempt_id: att.attempt_id,
       judge_producer: "codex",
-      judge_model_id: "gpt-5.6-terra",
+      judge_model_id: "gpt-6.1-sol",
       outcome: "fail",
       critique_md: "judge invented a requirement",
       score_json: {
@@ -634,7 +634,7 @@ await record("whitespace drift is NOT excused — the fallback is EOL-only", asy
     const verdict = runs.recordVerdict({
       attempt_id: att.attempt_id,
       judge_producer: "codex",
-      judge_model_id: "gpt-5.6-terra",
+      judge_model_id: "gpt-6.1-sol",
       outcome: "revise",
       critique_md: "re-wrapped quote",
       score_json: {
@@ -681,7 +681,7 @@ await record("a .harness archived artifact cited by its project-relative path re
     const verdict = runs.recordVerdict({
       attempt_id: att.attempt_id,
       judge_producer: "codex",
-      judge_model_id: "gpt-5.6-terra",
+      judge_model_id: "gpt-6.1-sol",
       rubric_id: "rfc-2119-normative@1",
       outcome: "pass",
       critique_md: "acceptance criteria are testable",

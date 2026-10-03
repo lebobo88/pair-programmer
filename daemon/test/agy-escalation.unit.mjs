@@ -56,8 +56,11 @@ const { agyCritique } = await import(
 // Tripwire literals — intentionally NOT derived, exactly as in
 // codex-escalation.unit.mjs:44-50. A repin of the agy judge lane must break
 // this file loudly; a self-referential assertion could never do that.
+// CONSTITUTION.md Article V as amended 2026-10-03 (SHA 27ae414d): agy has NO
+// separate escalated model — `escalate` resolves to the default pin, at medium.
 const EXPECTED_AGY_PIN = "gemini-3.8-flash-medium";
-const EXPECTED_AGY_ESCALATED_PIN = "gemini-3.1-pro-high";
+const EXPECTED_AGY_ESCALATED_PIN = "gemini-3.8-flash-medium";
+const EXPECTED_AGY_ESCALATED_EFFORT = "medium";
 
 let passed = 0;
 let failed = 0;
@@ -185,7 +188,9 @@ await itAsync("agyCritique e2e: no model, no escalate → the default pin at its
 await itAsync("agyCritique e2e: escalate:true → the escalated pin", async () => {
   const genArgs = await captureGenArgs({ escalate: true });
   assert.equal(genArgs.model, DEFAULT_MODELS.agy_critique_escalated);
+  assert.equal(genArgs.model, EXPECTED_AGY_ESCALATED_PIN, "agy escalate must resolve to flash-medium");
   assert.equal(genArgs.reasoning_effort, JUDGE_MODEL_POLICY.agy.escalated.reasoning_effort);
+  assert.equal(genArgs.reasoning_effort, EXPECTED_AGY_ESCALATED_EFFORT, "agy escalate must run at medium");
 });
 
 // ─── 5. Justified allow-listed override is HONORED ───────────────────────

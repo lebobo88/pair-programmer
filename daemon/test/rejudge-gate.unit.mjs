@@ -139,7 +139,7 @@ await record("blocker clears once a cross-vendor verdict exists on the attempt",
       runs.recordVerdict({
         attempt_id: att.attempt_id,
         judge_producer: "codex",
-        judge_model_id: "gpt-5.6-terra",
+        judge_model_id: "gpt-6.1-sol",
         rubric_id: "code-quality@1",
         outcome: "pass",
         critique_md: "independent cross-vendor read of the diff confirms the claim",

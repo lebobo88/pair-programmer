@@ -329,12 +329,12 @@ repo (this file included) is a mirror. Repin there, never here.
 
 | Vendor | Default lane (JUDGE-1) | Escalated lane (`escalate: true`) | Allowed critique ids | Allowed efforts |
 |---|---|---|---|---|
-| `codex` | `gpt-5.6-terra` @ `medium` | `gpt-5.6-sol` @ `medium` | `gpt-5.6-terra`, `gpt-5.6-sol`, `gpt-5.6-luna` | `low`, `medium`, `high`, `xhigh` |
-| `agy` | `gemini-3.8-flash-medium` | `gemini-3.1-pro-high` | `gemini-3.8-flash-{high,medium,low}`, `gemini-3.7-flash-{high,medium,low}`, `gemini-3.1-pro-{high,low}` | `low`, `medium`, `high` |
+| `codex` | `gpt-6.1-sol` @ `medium` | `gpt-6-astra` @ `medium` | `gpt-6.1-sol`, `gpt-6-astra` | `low`, `medium`, `high`, `xhigh` |
+| `agy` | `gemini-3.8-flash-medium` @ `medium` | `gemini-3.8-flash-medium` @ `medium` (same as default) | `gemini-3.8-flash-{high,medium,low}`, `gemini-3.7-flash-{high,medium,low}`, `gemini-3.1-pro-{high,low}` | `low`, `medium`, `high` |
 
 The defaults are constitutional (JUDGE-1, `CONSTITUTION.md` Article V as amended
-2026-09-03, SHA `5df284cb`, previously `13b4fa18` — do not change outside the
-HITL `/pp:constitution amend` path). The escalated lanes are reached only by
+2026-10-03, SHA `27ae414d`, previously `5df284cb` / `13b4fa18` — do not change outside the
+HITL `/pp:constitution amend` path). The Codex escalated lane is reached only by
 **opt-in escalation** for major-scope / last-resort gates. agy expresses
 reasoning effort through the model-id suffix: the daemon canonicalizes a bare
 family + effort onto the suffixed id and never passes `--effort`.
@@ -378,17 +378,17 @@ flowchart LR
     GATE["Critique gate"] --> OV{"operator override?<br/>(cli / team_yaml / hydra)"}
     OV -- "yes (allow-listed<br/>+ reason ≥ 8)" --> PIN["requested model + effort<br/>override_source recorded"]
     OV -- "no" --> DEF{"major-scope /<br/>last-resort?"}
-    DEF -- "no (default)" --> D["codex: gpt-5.6-terra @ medium<br/>agy: gemini-3.8-flash-medium"]
-    DEF -- "yes (escalate: true)" --> E["codex: gpt-5.6-sol<br/>agy: gemini-3.1-pro-high"]
+    DEF -- "no (default)" --> D["codex: gpt-6.1-sol @ medium<br/>agy: gemini-3.8-flash-medium @ medium"]
+    DEF -- "yes (escalate: true)" --> E["codex: gpt-6-astra @ medium<br/>agy: gemini-3.8-flash-medium (no separate lane)"]
     PIN --> REC["record_verdict<br/>+ judge_decisions.json"]
     D --> REC
     E --> REC
 ```
 
 ```
-   critique gate ─▶ default ──────────────▶ codex gpt-5.6-terra @ medium   (JUDGE-1)
+   critique gate ─▶ default ──────────────▶ codex gpt-6.1-sol @ medium     (JUDGE-1)
                  │                        └▶ agy   gemini-3.8-flash-medium (JUDGE-1)
-                 ├▶ escalate: true ───────▶ codex gpt-5.6-sol / agy gemini-3.1-pro-high
+                 ├▶ escalate: true ───────▶ codex gpt-6-astra @ medium / agy unchanged (flash-medium)
                  └▶ operator override ────▶ allow-listed model + effort  (JUDGE-1a)
                     (cli | team_yaml | hydra; reason ≥ 8 chars; never downgrades the gate)
                                     ⇓

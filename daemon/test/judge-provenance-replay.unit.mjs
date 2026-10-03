@@ -39,7 +39,7 @@ const { buildReplayBundle } = await import(
 const { db } = await import(pathToFileURL(join(DIST, "db", "database.js")).href);
 
 const GENERATOR_MODEL = CLAUDE_TIER_MODELS.sonnet;
-const REASON = "team yaml pinned the luna judge for this contract gate";
+const REASON = "team yaml pinned the astra judge for this contract gate";
 const CRITIQUE =
   "Reviewed the artifact against the rubric. Every dimension scored, no " +
   "fabricated citations, provenance fixture for the J4 replay assertions.";
@@ -104,7 +104,7 @@ function onlyVerdict(bundle) {
   runs.recordVerdict({
     attempt_id,
     judge_producer: "codex",
-    judge_model_id: "gpt-5.6-luna",
+    judge_model_id: "gpt-6-astra",
     rubric_id: "openapi-3.1-stability@1",
     outcome: "pass",
     critique_md: CRITIQUE,
@@ -123,14 +123,14 @@ function onlyVerdict(bundle) {
     assert.equal(v.judge_override_reason, REASON);
     // The pre-existing fields must survive the SELECT widening.
     assert.equal(v.judge_producer, "codex");
-    assert.equal(v.judge_model_id, "gpt-5.6-luna");
+    assert.equal(v.judge_model_id, "gpt-6-astra");
     assert.equal(v.cross_vendor, true);
   });
 
   it("reproduction_notes flags the non-default judge selection", () => {
     assert.match(bundle.reproduction_notes, /non-default judge selection/);
     assert.match(bundle.reproduction_notes, /team_yaml/);
-    assert.match(bundle.reproduction_notes, /gpt-5\.6-luna/);
+    assert.match(bundle.reproduction_notes, /gpt-6-astra/);
     assert.match(bundle.reproduction_notes, /@high/);
     assert.ok(
       bundle.reproduction_notes.includes(REASON),
@@ -225,7 +225,7 @@ function onlyVerdict(bundle) {
     const v = runs.recordVerdict({
       attempt_id,
       judge_producer: "codex",
-      judge_model_id: "gpt-5.6-luna",
+      judge_model_id: "gpt-6-astra",
       outcome: "pass",
       critique_md: CRITIQUE,
       score_json: { correctness: 0.9 },
@@ -242,7 +242,7 @@ function onlyVerdict(bundle) {
       stage_kind: "code",
       project_path: SUITE_DIR,
       judge_producer: "codex",
-      judge_model_id: "gpt-5.6-luna",
+      judge_model_id: "gpt-6-astra",
       rubric_id: null,
       outcome: "pass",
       critique_md: CRITIQUE,
