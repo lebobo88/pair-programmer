@@ -41,8 +41,12 @@ export const DOWNSCALE_FLOOR_PX = 256;
 export const MAX_DIMENSION_PX = 4096;
 /** At most this many PNGs are processed per call; the rest are reported, not read. */
 export const MAX_IMAGES_PER_CALL = 20;
-/** Directory entries visited in the session dir before enumeration stops (truncation is reported). */
+/** Directory entries visited by ONE enumeration of the session dir (truncation is reported). */
 export const MAX_DIR_ENTRIES_SCANNED = 200;
+/** Directory entries visited across ALL settle polls of one call. */
+export const MAX_DIR_ENTRIES_PER_CALL = 1000;
+/** File opens across ALL settle polls of one call; the final reads add at most MAX_IMAGES_PER_CALL more. */
+export const MAX_POLL_OPENS_PER_CALL = 180;
 /** Compressed size cap per source PNG, checked via `fstat` BEFORE any byte is read. */
 export const MAX_SOURCE_BYTES = 32 * 1024 * 1024;
 /** Decoded pixel cap per source PNG, checked from the validated IHDR before decode. */
@@ -224,10 +228,12 @@ export type FileOpenHooks = {
   /** Fired after the first fd/path identity check, before realpath. */
   afterFirstCheck?: (path: string) => void;
   afterVerify?: (path: string) => void;
+  /** Fired by the caller after reading from the fd, before its post-read check. */
+  afterRead?: (path: string) => void;
 };
 
 export type VerifiedFile =
-  | { ok: true; fd: number; size: number; mtimeMs: number }
+  | { ok: true; fd: number; id: FsIdentity; size: number; mtimeMs: number }
   | {
       ok: false;
       reason: string;
@@ -304,7 +310,7 @@ export function openVerifiedFile(
       return fail("path no longer denotes the opened file after verification (swapped and restored?); refusing the read.", true);
     }
     hooks.afterVerify?.(p);
-    return { ok: true, fd, size: Number(st.size), mtimeMs: Number(st.mtimeMs) };
+    return { ok: true, fd, id: { dev: st.dev, ino: st.ino }, size: Number(st.size), mtimeMs: Number(st.mtimeMs) };
   } catch (err) {
     return fail(`verification failed: ${(err as Error).message}`, false);
   }
@@ -364,6 +370,114 @@ export type PngStructure =
 
 const CHANNELS: Record<number, number> = { 0: 1, 2: 3, 3: 1, 4: 2, 6: 4 };
 const CRITICAL_CHUNKS = new Set(["IHDR", "PLTE", "IDAT", "IEND"]);
+
+export type AncillaryContext = {
+  ihdr: { bitDepth: number; colorType: number } | undefined;
+  /** Palette entry count once PLTE has been seen; undefined before it. */
+  plteEntries: number | undefined;
+  idatStarted: boolean;
+  /** Ancillary types already seen in this file. */
+  seen: Set<string>;
+};
+
+/** Ancillary chunks that may appear more than once. */
+const REPEATABLE_ANCILLARY = new Set(["tEXt", "zTXt", "iTXt"]);
+/** Must precede PLTE (and IDAT). */
+const BEFORE_PLTE = new Set(["gAMA", "cHRM", "sRGB", "iCCP", "sBIT"]);
+/** Must follow PLTE (when present) and precede IDAT. */
+const AFTER_PLTE_BEFORE_IDAT = new Set(["bKGD", "hIST", "tRNS"]);
+
+/** A Latin-1 keyword of 1..79 bytes terminated by NUL at the start of `data`; returns the NUL's offset or -1. */
+function keywordEnd(data: Buffer): number {
+  const nul = data.indexOf(0);
+  return nul >= 1 && nul <= 79 ? nul : -1;
+}
+
+/**
+ * The PNG rules for each ANCILLARY chunk this harvester accepts: length,
+ * multiplicity, ordering, and colour-type constraints (PNG 3rd ed. §11.3).
+ * Any ancillary chunk type NOT listed here is refused — the harvester only
+ * passes on what it can vouch for. Returns a reason, or null when legal.
+ */
+export function checkAncillaryChunk(type: string, data: Buffer, ctx: AncillaryContext): string | null {
+  const len = data.length;
+  const ct = ctx.ihdr?.colorType;
+  if (!ctx.ihdr) return "appears before IHDR.";
+  if (!REPEATABLE_ANCILLARY.has(type) && ctx.seen.has(type)) return "appears more than once.";
+  if (BEFORE_PLTE.has(type) && (ctx.plteEntries !== undefined || ctx.idatStarted)) return "must precede PLTE and IDAT.";
+  if (AFTER_PLTE_BEFORE_IDAT.has(type) && ctx.idatStarted) return "must precede IDAT.";
+  switch (type) {
+    case "gAMA":
+      return len === 4 ? null : `length ${len}, expected 4.`;
+    case "cHRM":
+      return len === 32 ? null : `length ${len}, expected 32.`;
+    case "sRGB":
+      if (len !== 1) return `length ${len}, expected 1.`;
+      if ((data[0] as number) > 3) return `rendering intent ${data[0]} is invalid.`;
+      return ctx.seen.has("iCCP") ? "sRGB and iCCP must not both appear." : null;
+    case "iCCP": {
+      const k = keywordEnd(data);
+      if (k < 0) return "profile name is not a 1-79 byte keyword.";
+      if (len < k + 3 || data[k + 1] !== 0) return "compression method must be 0 with a non-empty profile.";
+      return ctx.seen.has("sRGB") ? "sRGB and iCCP must not both appear." : null;
+    }
+    case "sBIT": {
+      const expected = { 0: 1, 2: 3, 3: 3, 4: 2, 6: 4 }[ct as 0 | 2 | 3 | 4 | 6];
+      if (len !== expected) return `length ${len}, expected ${expected} for colour type ${ct}.`;
+      const depth = ct === 3 ? 8 : (ctx.ihdr.bitDepth as number);
+      for (const v of data) if (v === 0 || v > depth) return `significant bits ${v} outside 1..${depth}.`;
+      return null;
+    }
+    case "bKGD":
+      if (ct === 3) {
+        if (ctx.plteEntries === undefined) return "palette image has bKGD before PLTE.";
+        if (len !== 1) return `length ${len}, expected 1.`;
+        return (data[0] as number) < ctx.plteEntries ? null : `palette index ${data[0]} out of range.`;
+      }
+      return len === (ct === 0 || ct === 4 ? 2 : 6) ? null : `length ${len} wrong for colour type ${ct}.`;
+    case "hIST":
+      if (ctx.plteEntries === undefined) return "requires a preceding PLTE.";
+      return len === 2 * ctx.plteEntries ? null : `length ${len}, expected ${2 * ctx.plteEntries}.`;
+    case "tRNS":
+      if (ct === 4 || ct === 6) return `forbidden for colour type ${ct} (it already has alpha).`;
+      if (ct === 3) {
+        if (ctx.plteEntries === undefined) return "palette image has tRNS before PLTE.";
+        return len >= 1 && len <= ctx.plteEntries ? null : `length ${len}, expected 1..${ctx.plteEntries}.`;
+      }
+      return len === (ct === 0 ? 2 : 6) ? null : `length ${len} wrong for colour type ${ct}.`;
+    case "pHYs":
+      if (ctx.idatStarted) return "must precede IDAT.";
+      if (len !== 9) return `length ${len}, expected 9.`;
+      return (data[8] as number) <= 1 ? null : `unit specifier ${data[8]} is invalid.`;
+    case "tIME": {
+      if (len !== 7) return `length ${len}, expected 7.`;
+      const [mo, d, h, mi, s] = [data[2], data[3], data[4], data[5], data[6]] as number[];
+      const legal = mo! >= 1 && mo! <= 12 && d! >= 1 && d! <= 31 && h! <= 23 && mi! <= 59 && s! <= 60;
+      return legal ? null : "date/time fields out of range.";
+    }
+    case "tEXt":
+      return keywordEnd(data) >= 0 ? null : "keyword is not 1-79 bytes followed by NUL.";
+    case "zTXt": {
+      const k = keywordEnd(data);
+      if (k < 0) return "keyword is not 1-79 bytes followed by NUL.";
+      return len >= k + 2 && data[k + 1] === 0 ? null : "compression method must be 0.";
+    }
+    case "iTXt": {
+      const k = keywordEnd(data);
+      if (k < 0) return "keyword is not 1-79 bytes followed by NUL.";
+      if (len < k + 3) return "truncated header.";
+      const flag = data[k + 1] as number;
+      if (flag > 1 || data[k + 2] !== 0) return "compression flag/method invalid.";
+      const lang = data.indexOf(0, k + 3);
+      if (lang < 0) return "language tag is not NUL-terminated.";
+      return data.indexOf(0, lang + 1) >= 0 ? null : "translated keyword is not NUL-terminated.";
+    }
+    case "eXIf":
+      return len >= 4 ? null : `length ${len} is too short for an Exif header.`;
+    default:
+      return "ancillary chunk type is not one this harvester validates; refused.";
+  }
+}
 /** Adam7 pass origins and steps: [x0, y0, dx, dy]. */
 const ADAM7: [number, number, number, number][] = [
   [0, 0, 8, 8], [4, 0, 8, 8], [0, 4, 4, 8], [2, 0, 4, 4], [0, 2, 2, 4], [1, 0, 2, 2], [0, 1, 1, 2],
@@ -421,7 +535,9 @@ export function validatePngStructure(buf: Buffer, maxPixels: number = MAX_DECODE
   const idat: Buffer[] = [];
   let idatClosed = false;
   let sawPlte = false;
+  let plteEntries = 0;
   let sawIend = false;
+  const seenAncillary = new Set<string>();
   while (off < buf.length) {
     if (sawIend) return { ok: false, reason: "bytes after IEND." };
     if (off + 12 > buf.length) return { ok: false, reason: `truncated chunk header at byte ${off}.` };
@@ -442,6 +558,19 @@ export function validatePngStructure(buf: Buffer, maxPixels: number = MAX_DECODE
       return { ok: false, reason: `unknown critical chunk ${type} at byte ${off}.` };
     }
     if (idat.length > 0 && type !== "IDAT") idatClosed = true;
+    if (/^[a-z]/.test(type)) {
+      const why = checkAncillaryChunk(type, buf.subarray(off + 8, off + 8 + len), {
+        ihdr,
+        plteEntries: sawPlte ? plteEntries : undefined,
+        idatStarted: idat.length > 0,
+        seen: seenAncillary,
+      });
+      if (why) return { ok: false, reason: `${type} chunk at byte ${off}: ${why}` };
+      seenAncillary.add(type);
+      off = end;
+      index += 1;
+      continue;
+    }
     if (type === "IHDR") {
       if (index !== 0) return { ok: false, reason: "IHDR is not the first chunk." };
       if (len !== 13) return { ok: false, reason: `IHDR length ${len}, expected 13.` };
@@ -472,6 +601,7 @@ export function validatePngStructure(buf: Buffer, maxPixels: number = MAX_DECODE
         return { ok: false, reason: `PLTE has ${len / 3} entries; bit depth ${ihdr.bitDepth} allows at most ${2 ** ihdr.bitDepth}.` };
       }
       sawPlte = true;
+      plteEntries = len / 3;
     } else if (type === "IDAT") {
       if (idatClosed) return { ok: false, reason: "IDAT chunks are not consecutive." };
       if (ihdr?.colorType === 3 && !sawPlte) return { ok: false, reason: "palette image has IDAT before PLTE." };
@@ -552,11 +682,40 @@ export function hasPngTrailer(fd: number, size: number): boolean {
 
 // ─── settle polling ──────────────────────────────────────────────────────────
 
+/** What a poll saw of one file: its identity, size and mtime (from the verified fd). */
+export type FileObservation = { dev: bigint; ino: bigint; size: number; mtimeMs: number };
+
+function sameObservation(a: FileObservation, b: FileObservation): boolean {
+  return a.dev === b.dev && a.ino === b.ino && a.size === b.size && a.mtimeMs === b.mtimeMs;
+}
+
+/**
+ * Throws unless the freshly verified fd `v` is the very file a settle poll
+ * observed (same dev+ino, size and mtime). Called at the final open, so a
+ * settled file swapped for another — even a complete PNG with a fresh mtime —
+ * is refused instead of being accepted without two settle observations.
+ */
+export function assertMatchesObservation(v: { id: FsIdentity; size: number; mtimeMs: number }, obs: FileObservation): void {
+  if (!sameObservation({ ...v.id, size: v.size, mtimeMs: v.mtimeMs }, obs)) {
+    throw new Error("file changed since it settled (different identity, size or mtime); refusing it.");
+  }
+}
+
+/** Throws unless the fd still shows the observed size and mtime after the read. */
+export function assertFdUnchanged(fd: number, obs: FileObservation): void {
+  const st = fstatSync(fd, { bigint: true });
+  if (st.dev !== obs.dev || st.ino !== obs.ino || Number(st.size) !== obs.size || Number(st.mtimeMs) !== obs.mtimeMs) {
+    throw new Error("file changed while it was being read; refusing it.");
+  }
+}
+
 export type SettleOptions = {
   timeoutMs?: number;
   intervalMs?: number;
   maxImages?: number;
-  maxEntries?: number;
+  maxEntriesPerPoll?: number;
+  maxEntriesPerCall?: number;
+  maxOpensPerCall?: number;
   maxBytes?: number;
 };
 
@@ -568,16 +727,24 @@ export type SettledHarvest =
       dirReal: string;
       /** Identity of the session dir as resolved; every later open re-checks it. */
       dirId: FsIdentity;
-      /** Size+mtime unchanged across two consecutive polls AND ending in IEND. */
-      settled: { name: string; mtimeMs: number }[];
-      /** Still changing or incomplete when the poll window closed. */
+      /** Identical observation on two consecutive polls AND ending in IEND; `obs` is bound to the final read. */
+      settled: { name: string; obs: FileObservation }[];
+      /** Still changing or incomplete when polling stopped (deadline or budget). */
       unsettled: { name: string; reason: string }[];
       /** Refused by the verified open (symlink, size cap, replaced, escape) or not a regular file. */
       rejected: { name: string; reason: string }[];
-      /** Regular PNGs beyond MAX_IMAGES_PER_CALL; never opened. */
+      /** Regular PNGs beyond the per-call distinct-image cap; never opened. */
       overCap: string[];
+      /** Entries visited by the last poll (never more than the per-poll cap). */
       scanned: number;
+      /** True when the last poll stopped with entries remaining. */
       truncated: boolean;
+      /** Directory entries visited across ALL polls of this call. */
+      entriesExamined: number;
+      /** File opens across ALL polls of this call. */
+      opens: number;
+      /** Set when a cumulative per-call budget stopped polling early. */
+      budgetExhausted?: "entries" | "opens";
     };
 
 function sleep(ms: number): Promise<void> {
@@ -586,10 +753,19 @@ function sleep(ms: number): Promise<void> {
 
 /**
  * Wait (bounded) for the session directory's PNGs to settle. A file is settled
- * when its size and mtime are identical across two consecutive polls AND it
- * ends with an IEND chunk — a partially-flushed PNG is neither. Rejections that
- * waiting cannot fix are reported immediately and never retried. Only the first
- * `maxImages` regular PNG names are ever opened.
+ * when the verified fd shows the same dev+ino, size and mtime on two
+ * consecutive polls AND it ends with an IEND chunk. That observation is
+ * returned and must match again at the final read (`assertMatchesObservation`).
+ *
+ * Budgets are CUMULATIVE for the whole call, not per poll:
+ *   - at most `maxEntriesPerPoll` (200) entries per enumeration and
+ *     `maxEntriesPerCall` (1000) across all polls;
+ *   - at most `maxImages` (20) DISTINCT PNG names are ever opened — the first
+ *     ones seen, in sorted order — and the rest are reported, never opened;
+ *   - at most `maxOpensPerCall` (180) file opens across all polls, leaving at
+ *     most 20 more for the final reads (≤ 200 opens per call in total).
+ * Exhausting a budget stops polling; files not yet settled are reported.
+ * Rejections that waiting cannot fix are reported immediately and never retried.
  */
 export async function pollForSettledPngs(
   imagesRoot: string,
@@ -599,24 +775,42 @@ export async function pollForSettledPngs(
   const timeoutMs = opts.timeoutMs ?? HARVEST_POLL_TIMEOUT_MS;
   const intervalMs = opts.intervalMs ?? HARVEST_POLL_INTERVAL_MS;
   const maxImages = opts.maxImages ?? MAX_IMAGES_PER_CALL;
-  const maxEntries = opts.maxEntries ?? MAX_DIR_ENTRIES_SCANNED;
+  const maxEntriesPerPoll = opts.maxEntriesPerPoll ?? MAX_DIR_ENTRIES_SCANNED;
+  const maxEntriesPerCall = opts.maxEntriesPerCall ?? MAX_DIR_ENTRIES_PER_CALL;
+  const maxOpensPerCall = opts.maxOpensPerCall ?? MAX_POLL_OPENS_PER_CALL;
   const maxBytes = opts.maxBytes ?? MAX_SOURCE_BYTES;
   const deadline = Date.now() + timeoutMs;
-  let prev = new Map<string, string>();
+  let prev = new Map<string, FileObservation>();
   const rejected = new Map<string, string>();
+  const chosen = new Set<string>();
+  let entriesExamined = 0;
+  let opens = 0;
 
   for (;;) {
     const res = resolveSessionDir(imagesRoot, sessionId);
     if (res.kind === "rejected") return res;
     if (res.kind === "ok") {
-      const listing = listSessionEntries(res.dirReal, maxEntries);
+      const listing = listSessionEntries(res.dirReal, Math.min(maxEntriesPerPoll, maxEntriesPerCall - entriesExamined));
+      entriesExamined += listing.scanned;
       for (const n of listing.nonRegularPngs) rejected.set(n, "not a regular file (symlink, junction or directory).");
-      const tracked = listing.pngNames.slice(0, maxImages);
-      const sig = new Map<string, string>();
-      const mtimes = new Map<string, number>();
+      const overCap: string[] = [];
+      for (const n of listing.pngNames) {
+        if (chosen.has(n)) continue;
+        if (chosen.size < maxImages) chosen.add(n);
+        else overCap.push(n);
+      }
+      const tracked = listing.pngNames.filter(n => chosen.has(n));
+      const seen = new Map<string, FileObservation>();
       const pending = new Map<string, string>();
+      let budgetExhausted: "entries" | "opens" | undefined;
       for (const name of tracked) {
         if (rejected.has(name)) continue;
+        if (opens >= maxOpensPerCall) {
+          budgetExhausted = "opens";
+          pending.set(name, `per-call open budget (${maxOpensPerCall}) exhausted before it settled.`);
+          continue;
+        }
+        opens += 1;
         const v = openVerifiedFile(res.dirReal, res.dirId, name, maxBytes);
         if (!v.ok) {
           if (v.terminal) rejected.set(name, v.reason);
@@ -624,41 +818,49 @@ export async function pollForSettledPngs(
           continue;
         }
         try {
-          sig.set(name, `${v.size}:${v.mtimeMs}`);
-          mtimes.set(name, v.mtimeMs);
+          seen.set(name, { ...v.id, size: v.size, mtimeMs: v.mtimeMs });
           if (!hasPngTrailer(v.fd, v.size)) pending.set(name, "no IEND trailer yet (incomplete or malformed PNG).");
         } finally {
           closeSync(v.fd);
         }
       }
+      if (!budgetExhausted && entriesExamined >= maxEntriesPerCall) budgetExhausted = "entries";
       const live = tracked.filter(n => !rejected.has(n));
-      const settled = live.filter(n => !pending.has(n) && sig.has(n) && prev.get(n) === sig.get(n));
+      const settled = live.filter(n => {
+        const a = seen.get(n);
+        const b = prev.get(n);
+        return !pending.has(n) && a !== undefined && b !== undefined && sameObservation(a, b);
+      });
       const done = tracked.length > 0 && settled.length === live.length;
-      if (done || Date.now() >= deadline) {
+      if (done || budgetExhausted || Date.now() >= deadline) {
+        const why = budgetExhausted
+          ? `polling stopped: per-call ${budgetExhausted === "entries" ? `directory-entry budget (${maxEntriesPerCall})` : `open budget (${maxOpensPerCall})`} exhausted`
+          : `did not settle within ${timeoutMs}ms`;
         return {
           kind: "ok",
           dirReal: res.dirReal,
           dirId: res.dirId,
-          settled: settled.map(name => ({ name, mtimeMs: mtimes.get(name) as number })),
+          settled: settled.map(name => ({ name, obs: seen.get(name) as FileObservation })),
           unsettled: live
             .filter(n => !settled.includes(n))
-            .map(name => ({
-              name,
-              reason: `did not settle within ${timeoutMs}ms: ${pending.get(name) ?? "size/mtime still changing."}`,
-            })),
+            .map(name => ({ name, reason: `${why}: ${pending.get(name) ?? "identity/size/mtime still changing."}` })),
           rejected: [...rejected].map(([name, reason]) => ({ name, reason })),
-          overCap: listing.pngNames.slice(maxImages),
+          overCap,
           scanned: listing.scanned,
           truncated: listing.truncated,
+          entriesExamined,
+          opens,
+          ...(budgetExhausted ? { budgetExhausted } : {}),
         };
       }
-      prev = sig;
+      prev = seen;
     } else if (Date.now() >= deadline) {
       return res;
     }
     await sleep(intervalMs);
   }
 }
+
 
 // ─── output ──────────────────────────────────────────────────────────────────
 
@@ -808,6 +1010,8 @@ export type WriteHooks = {
   afterResolve?: (dest: string) => void;
   /** Fired after a failed verification, before the fd-bound neutralisation. */
   beforeNeutralise?: (dest: string) => void;
+  /** Replaces ftruncateSync so a test can force the neutralisation to fail. */
+  truncate?: (fd: number, len: number) => void;
 };
 
 function assertIsWrittenFile(dest: string, fileId: FsIdentity, size: number): void {
@@ -914,8 +1118,16 @@ export function writeImageSafely(
       return verifyWrittenPath(outReal, outId, dest, fileId, buffer.length, hooks);
     } catch (err) {
       hooks.beforeNeutralise?.(dest);
-      try { ftruncateSync(fd, 0); } catch { /* the failure is reported regardless */ }
-      throw new Error(`${(err as Error).message} (any bytes we wrote were truncated through the fd; an empty file may remain.)`);
+      let cleanup: string;
+      try {
+        (hooks.truncate ?? ftruncateSync)(fd, 0);
+        cleanup = "any bytes we wrote were truncated through the fd; an empty file may remain";
+      } catch (truncErr) {
+        cleanup =
+          `truncating our bytes through the fd FAILED (${(truncErr as NodeJS.ErrnoException).code ?? (truncErr as Error).message}); ` +
+          "the content of the file this call created is UNKNOWN and may remain wherever it now lives";
+      }
+      throw new Error(`${(err as Error).message} (${cleanup}.)`);
     } finally {
       closeSync(fd);
     }

@@ -875,7 +875,7 @@ describe("pp_codex.generate_image: output containment", () => {
 // ─── round-2 findings: swap races and image-data validation ──────────────────
 
 /** Assemble a PNG from parts: IHDR fields, an optional PLTE, and IDAT data (raw scanlines or an explicit zlib stream). */
-function assemblePng({ width, height, bitDepth = 8, colorType = 0, interlace = 0, raw, idat, plte, splitIdatWith }) {
+function assemblePng({ width, height, bitDepth = 8, colorType = 0, interlace = 0, raw, idat, plte, splitIdatWith, extra = [] }) {
   const ihdrData = Buffer.alloc(13);
   ihdrData.writeUInt32BE(width, 0);
   ihdrData.writeUInt32BE(height, 4);
@@ -883,15 +883,17 @@ function assemblePng({ width, height, bitDepth = 8, colorType = 0, interlace = 0
   ihdrData[9] = colorType;
   ihdrData[12] = interlace;
   const stream = idat ?? zlib.deflateSync(raw);
-  const chunks = [SIGNATURE, pngChunk("IHDR", ihdrData)];
-  if (plte) chunks.push(pngChunk("PLTE", plte));
+  // `extra`: [{ at: "ihdr" | "plte" | "idat", type, data }] — ancillary chunks placed after that chunk.
+  const extras = (at) => extra.filter((e) => e.at === at).map((e) => pngChunk(e.type, e.data));
+  const chunks = [SIGNATURE, pngChunk("IHDR", ihdrData), ...extras("ihdr")];
+  if (plte) chunks.push(pngChunk("PLTE", plte), ...extras("plte"));
   if (splitIdatWith) {
     const half = Math.floor(stream.length / 2);
-    chunks.push(pngChunk("IDAT", stream.subarray(0, half)), pngChunk(splitIdatWith, Buffer.from("x")), pngChunk("IDAT", stream.subarray(half)));
+    chunks.push(pngChunk("IDAT", stream.subarray(0, half)), pngChunk(splitIdatWith, Buffer.from("Comment\0x")), pngChunk("IDAT", stream.subarray(half)));
   } else {
     chunks.push(pngChunk("IDAT", stream));
   }
-  chunks.push(IEND);
+  chunks.push(...extras("idat"), IEND);
   return Buffer.concat(chunks);
 }
 
@@ -1130,11 +1132,15 @@ describe("pp_codex.generate_image: round-3 findings", () => {
     }
   });
 
-  test("validatePngStructure: unknown critical chunks and oversized palettes are refused; unknown ancillary chunks are not", async () => {
+  test("validatePngStructure: unknown critical chunks, unvalidated ancillary chunks and oversized palettes are refused", async () => {
     const { validatePngStructure } = await importDist("mcp/image-harvest.js");
     const withAncillary = assemblePng({ width: 4, height: 4, raw: greyScanlines(4, 4), splitIdatWith: undefined });
+    const text = Buffer.concat([withAncillary.subarray(0, 33), pngChunk("tEXt", Buffer.from("Title\0hello")), withAncillary.subarray(33)]);
+    assert.equal(validatePngStructure(text).ok, true, "a well-formed known ancillary chunk (tEXt) is accepted");
     const ancillary = Buffer.concat([withAncillary.subarray(0, 33), pngChunk("abCD", Buffer.from("x")), withAncillary.subarray(33)]);
-    assert.equal(validatePngStructure(ancillary).ok, true, "an unknown ANCILLARY chunk is legal");
+    const ra = validatePngStructure(ancillary);
+    assert.equal(ra.ok, false, "an ancillary chunk the harvester does not validate is refused");
+    assert.match(ra.reason, /not one this harvester validates/);
     const critical = Buffer.concat([withAncillary.subarray(0, 33), pngChunk("ABCD", Buffer.from("x")), withAncillary.subarray(33)]);
     const rc = validatePngStructure(critical);
     assert.equal(rc.ok, false);
@@ -1250,6 +1256,199 @@ describe("pp_codex.generate_image: round-5 findings", () => {
   });
 });
 
+// ─── lead review findings: ancillary chunks ───────────────────────────────────
+
+const u32 = (...vals) => { const b = Buffer.alloc(4 * vals.length); vals.forEach((v, i) => b.writeUInt32BE(v, i * 4)); return b; };
+const RGBA_1x1 = { width: 1, height: 1, colorType: 6, raw: Buffer.from([0, 10, 20, 30, 255]) };
+const GREY_4x4 = { width: 4, height: 4, colorType: 0, raw: greyScanlines(4, 4) };
+const RGB_2x1 = { width: 2, height: 1, colorType: 2, raw: Buffer.from([0, 1, 2, 3, 4, 5, 6]) };
+const PAL_2x1 = { width: 2, height: 1, colorType: 3, raw: Buffer.from([0, 0, 1]), plte: Buffer.from([255, 0, 0, 0, 255, 0]) };
+
+describe("pp_codex.generate_image: ancillary chunk rules", () => {
+  test("acceptPng accepts a PNG carrying well-formed known ancillary chunks (and pngjs decodes it)", async () => {
+    const { acceptPng } = await importDist("mcp/image-harvest.js");
+    const good = [
+      assemblePng({ ...GREY_4x4, extra: [
+        { at: "ihdr", type: "gAMA", data: u32(45455) },
+        { at: "ihdr", type: "cHRM", data: u32(31270, 32900, 64000, 33000, 30000, 60000, 15000, 6000) },
+        { at: "ihdr", type: "sBIT", data: Buffer.from([8]) },
+        { at: "ihdr", type: "bKGD", data: Buffer.from([0, 9]) },
+        { at: "ihdr", type: "tRNS", data: Buffer.from([0, 7]) },
+        { at: "ihdr", type: "pHYs", data: Buffer.concat([u32(2835, 2835), Buffer.from([1])]) },
+        { at: "ihdr", type: "tIME", data: Buffer.from([0x07, 0xea, 10, 3, 12, 30, 0]) },
+        { at: "idat", type: "tEXt", data: Buffer.from("Comment\0ok") },
+        { at: "idat", type: "tEXt", data: Buffer.from("Author\0me") },
+        { at: "idat", type: "iTXt", data: Buffer.from("Title\0\0\0en\0\0hi") },
+      ] }),
+      assemblePng({ ...RGB_2x1, extra: [{ at: "ihdr", type: "sRGB", data: Buffer.from([0]) }] }),
+      assemblePng({ ...PAL_2x1, extra: [
+        { at: "plte", type: "bKGD", data: Buffer.from([1]) },
+        { at: "plte", type: "hIST", data: Buffer.from([0, 1, 0, 1]) },
+        { at: "plte", type: "tRNS", data: Buffer.from([128]) },
+      ] }),
+    ];
+    for (const [i, buf] of good.entries()) {
+      assert.doesNotThrow(() => PNG.sync.read(buf), `oracle: pngjs decodes good fixture ${i}`);
+      const r = acceptPng(buf);
+      assert.equal(r.ok, true, `good fixture ${i}: ${r.reason}`);
+    }
+  });
+
+  test("acceptPng refuses CRC-correct PNGs that break ancillary chunk rules (incl. tRNS on RGBA, 5-byte gAMA, duplicate gAMA)", async () => {
+    const { acceptPng } = await importDist("mcp/image-harvest.js");
+    const bad = {
+      "tRNS on 1x1 RGBA": [assemblePng({ ...RGBA_1x1, extra: [{ at: "ihdr", type: "tRNS", data: Buffer.from([0, 0]) }] }), /tRNS .*forbidden for colour type 6/],
+      "5-byte gAMA": [assemblePng({ ...GREY_4x4, extra: [{ at: "ihdr", type: "gAMA", data: Buffer.alloc(5) }] }), /gAMA .*length 5, expected 4/],
+      "duplicate gAMA": [assemblePng({ ...GREY_4x4, extra: [{ at: "ihdr", type: "gAMA", data: u32(1) }, { at: "ihdr", type: "gAMA", data: u32(1) }] }), /gAMA .*more than once/],
+      "gAMA after PLTE": [assemblePng({ ...PAL_2x1, extra: [{ at: "plte", type: "gAMA", data: u32(1) }] }), /gAMA .*must precede PLTE/],
+      "31-byte cHRM": [assemblePng({ ...GREY_4x4, extra: [{ at: "ihdr", type: "cHRM", data: Buffer.alloc(31) }] }), /cHRM .*length 31/],
+      "sRGB intent 4": [assemblePng({ ...RGB_2x1, extra: [{ at: "ihdr", type: "sRGB", data: Buffer.from([4]) }] }), /sRGB .*intent 4/],
+      "sRGB with iCCP": [assemblePng({ ...RGB_2x1, extra: [{ at: "ihdr", type: "iCCP", data: Buffer.from("p\0\0xx") }, { at: "ihdr", type: "sRGB", data: Buffer.from([0]) }] }), /must not both appear/],
+      "sBIT wrong length": [assemblePng({ ...RGB_2x1, extra: [{ at: "ihdr", type: "sBIT", data: Buffer.from([8]) }] }), /sBIT .*expected 3/],
+      "sBIT zero": [assemblePng({ ...GREY_4x4, extra: [{ at: "ihdr", type: "sBIT", data: Buffer.from([0]) }] }), /significant bits 0/],
+      "bKGD wrong length for RGB": [assemblePng({ ...RGB_2x1, extra: [{ at: "ihdr", type: "bKGD", data: Buffer.alloc(2) }] }), /bKGD .*wrong for colour type 2/],
+      "bKGD palette index out of range": [assemblePng({ ...PAL_2x1, extra: [{ at: "plte", type: "bKGD", data: Buffer.from([5]) }] }), /palette index 5 out of range/],
+      "hIST without PLTE": [assemblePng({ ...GREY_4x4, extra: [{ at: "ihdr", type: "hIST", data: Buffer.alloc(2) }] }), /hIST .*requires a preceding PLTE/],
+      "hIST wrong length": [assemblePng({ ...PAL_2x1, extra: [{ at: "plte", type: "hIST", data: Buffer.alloc(2) }] }), /hIST .*expected 4/],
+      "tRNS longer than palette": [assemblePng({ ...PAL_2x1, extra: [{ at: "plte", type: "tRNS", data: Buffer.alloc(3) }] }), /tRNS .*expected 1..2/],
+      "tRNS after IDAT": [assemblePng({ ...GREY_4x4, extra: [{ at: "idat", type: "tRNS", data: Buffer.alloc(2) }] }), /tRNS .*must precede IDAT/],
+      "pHYs unit 2": [assemblePng({ ...GREY_4x4, extra: [{ at: "ihdr", type: "pHYs", data: Buffer.concat([u32(1, 1), Buffer.from([2])]) }] }), /unit specifier 2/],
+      "tIME month 13": [assemblePng({ ...GREY_4x4, extra: [{ at: "ihdr", type: "tIME", data: Buffer.from([0x07, 0xea, 13, 1, 0, 0, 0]) }] }), /tIME .*out of range/],
+      "tEXt empty keyword": [assemblePng({ ...GREY_4x4, extra: [{ at: "idat", type: "tEXt", data: Buffer.from("\0x") }] }), /tEXt .*keyword/],
+      "iTXt compression flag 2": [assemblePng({ ...GREY_4x4, extra: [{ at: "idat", type: "iTXt", data: Buffer.from("K\0\x02\0\0\0t") }] }), /iTXt .*compression flag/],
+      "unvalidated ancillary type": [assemblePng({ ...GREY_4x4, extra: [{ at: "ihdr", type: "vpAg", data: Buffer.alloc(9) }] }), /not one this harvester validates/],
+    };
+    for (const [label, [buf, reason]] of Object.entries(bad)) {
+      const r = acceptPng(buf);
+      assert.equal(r.ok, false, `${label} must be refused`);
+      assert.match(r.reason, reason, label);
+    }
+  });
+
+  test("end to end: a tRNS-on-RGBA PNG that fits as-is is never copied", async () => {
+    const { result, outputDir } = await runHarvest({
+      write: writePngs({ "exec-call-trns.png": assemblePng({ ...RGBA_1x1, extra: [{ at: "ihdr", type: "tRNS", data: Buffer.from([0, 0]) }] }) }),
+    });
+    assert.equal(result.status, "failed");
+    assert.match(result.failures[0].reason, /forbidden for colour type 6/);
+    assert.deepEqual(readdirSync(outputDir), []);
+  });
+});
+
+// ─── lead review findings: settle binding and cumulative budgets ──────────────
+
+describe("pp_codex.generate_image: settle observation and per-call budgets", () => {
+  test("a settled red PNG replaced by a complete green PNG (fresh mtime) before the final open is refused", async () => {
+    const green = makeSolidPng(4, 4, [0, 255, 0, 255]);
+    const { result, outputDir } = await runHarvest({
+      write: writePngs({ "exec-call-1.png": makeSolidPng(4, 4, [255, 0, 0, 255]) }),
+      opts: {
+        _fileHooks: {
+          beforeOpen: (p) => {
+            rmSync(p);
+            writeFileSync(p, green); // complete, valid, fresh mtime — never observed by a settle poll
+          },
+        },
+      },
+    });
+    assert.equal(result.status, "failed");
+    assert.match(result.failures[0].reason, /changed since it settled/);
+    assert.deepEqual(readdirSync(outputDir), [], "the unobserved replacement was never accepted");
+  });
+
+  test("writeImageSafely: a failed truncation is reported as such, with the remaining content described as unknown", async () => {
+    const { writeImageSafely, prepareOutputDir } = await importDist("mcp/image-harvest.js");
+    const { outReal, outId } = prepareOutputDir(tmp("pp-img-out-"));
+    const forced = (fn) =>
+      assert.throws(
+        () =>
+          writeImageSafely(outReal, outId, "x.png", makeSolidPng(2, 2), 0, {
+            afterWrite: (dest) => { renameSync(dest, `${dest}.ours`); writeFileSync(dest, "theirs"); },
+            truncate: fn,
+          }),
+        (err) => {
+          assert.match(err.message, /truncating our bytes through the fd FAILED \(EIO\)/);
+          assert.match(err.message, /content .* is UNKNOWN/);
+          assert.doesNotMatch(err.message, /were truncated through the fd/, "never claims a truncation that did not happen");
+          return true;
+        },
+      );
+    forced(() => { const e = new Error("io"); e.code = "EIO"; throw e; });
+    assert.ok(statSync(join(outReal, "x.png.ours")).size > 0, "precondition: the forced failure really left our bytes in place");
+  });
+
+  test("end to end: a source file modified while it is being read is refused", async () => {
+    const { result, outputDir } = await runHarvest({
+      write: writePngs({ "exec-call-1.png": makeSolidPng(4, 4) }),
+      opts: { _fileHooks: { afterRead: (p) => appendFileSync(p, Buffer.from([0])) } },
+    });
+    assert.equal(result.status, "failed");
+    assert.match(result.failures[0].reason, /changed while it was being read/);
+    assert.deepEqual(readdirSync(outputDir), []);
+  });
+
+  test("assertFdUnchanged: a file that changes after the observation is refused", async () => {
+    const { assertFdUnchanged } = await importDist("mcp/image-harvest.js");
+    const dir = tmp("pp-img-fd-");
+    const p = join(dir, "a.png");
+    writeFileSync(p, makeSolidPng(2, 2));
+    const fd = openSync(p, "r");
+    try {
+      const s = statSync(p, { bigint: true });
+      const obs = { dev: s.dev, ino: s.ino, size: Number(s.size), mtimeMs: Number(s.mtimeMs) };
+      assert.doesNotThrow(() => assertFdUnchanged(fd, obs));
+      appendFileSync(p, Buffer.from([1, 2, 3]));
+      assert.throws(() => assertFdUnchanged(fd, obs), /changed while it was being read/);
+    } finally {
+      closeSync(fd);
+    }
+  });
+
+  test("cumulative entry budget: polling stops once 1000 directory entries have been examined across polls", async () => {
+    const { pollForSettledPngs, MAX_DIR_ENTRIES_PER_CALL } = await importDist("mcp/image-harvest.js");
+    const root = tmp("pp-img-root-");
+    const sessionId = newSessionId();
+    const dir = join(root, sessionId);
+    mkdirSync(dir);
+    for (let i = 0; i < 150; i++) writeFileSync(join(dir, `pad-${i}.txt`), "");
+    writeFileSync(join(dir, "never-settles.png"), make24ByteHeaderPng()); // keeps polling alive
+    const r = await pollForSettledPngs(root, sessionId);
+    assert.equal(r.kind, "ok");
+    assert.equal(r.budgetExhausted, "entries");
+    assert.equal(r.entriesExamined, MAX_DIR_ENTRIES_PER_CALL, "151 entries per poll would have reached ~4500 over 30 polls");
+    assert.match(r.unsettled[0]?.reason ?? "", /directory-entry budget \(1000\) exhausted/);
+  });
+
+  test("cumulative open budget: at most 180 opens across polls, then polling stops", async () => {
+    const { pollForSettledPngs, MAX_POLL_OPENS_PER_CALL } = await importDist("mcp/image-harvest.js");
+    const root = tmp("pp-img-root-");
+    const sessionId = newSessionId();
+    const files = {};
+    for (let i = 0; i < 20; i++) files[`p${String(i).padStart(2, "0")}.png`] = make24ByteHeaderPng();
+    writePngs(files)(join(root, sessionId));
+    const r = await pollForSettledPngs(root, sessionId);
+    assert.equal(r.kind, "ok");
+    assert.equal(r.budgetExhausted, "opens");
+    assert.equal(r.opens, MAX_POLL_OPENS_PER_CALL, "20 files x 30 polls would have been 600 opens");
+    assert.ok(r.unsettled.some((u) => /open budget \(180\) exhausted/.test(u.reason)));
+  });
+
+  test("distinct-image cap holds across polls: a PNG appearing later (sorting first) is never opened beyond the first 20", async () => {
+    const { pollForSettledPngs } = await importDist("mcp/image-harvest.js");
+    const root = tmp("pp-img-root-");
+    const sessionId = newSessionId();
+    const dir = join(root, sessionId);
+    const files = {};
+    for (let i = 0; i < 20; i++) files[`p${String(i).padStart(2, "0")}.png`] = make24ByteHeaderPng();
+    writePngs(files)(dir);
+    setTimeout(() => writeFileSync(join(dir, "a-late.png"), makeSolidPng(2, 2)), 250);
+    const r = await pollForSettledPngs(root, sessionId, { timeoutMs: 1000 });
+    assert.equal(r.kind, "ok");
+    assert.ok(r.overCap.includes("a-late.png"), `late PNG must be over the distinct cap: ${JSON.stringify(r.overCap)}`);
+    assert.ok(!r.settled.some((s) => s.name === "a-late.png") && !r.unsettled.some((u) => u.name === "a-late.png"), "never tracked or opened");
+  });
+});
+
 describe("pp_agy.generate_image", () => {
   test("returns a structured unsupported result naming the reason, per the real headless probe", async () => {
     const { agyGenerateImage } = await importDist("mcp/antigravity-server.js");
@@ -1346,6 +1545,19 @@ describe("pp_agy.generate_image", () => {
  *   file identity re-check after realpath        -> destination swapped DURING verification
  *   (re-run red on the new code: fd dev/ino, post-open lstat symlink, fd-only read, session dir identity at open,
  *    output_dir identity, written-path fd binding, verifyWrittenPath realpath, no pathname deletion, fd truncation)
+ *
+ * Lead review (ancillary chunks, settle binding, cumulative budgets) + round-6 Medium:
+ *   ancillary checks not applied                -> unvalidated-ancillary refusal; ancillary rule fixtures; tRNS-on-RGBA e2e
+ *   tRNS allowed for colour types 4/6           -> ancillary rule fixtures; tRNS-on-RGBA e2e
+ *   ancillary multiplicity unchecked            -> ancillary rule fixtures (duplicate gAMA)
+ *   unvalidated ancillary types accepted        -> unvalidated-ancillary refusal; ancillary rule fixtures
+ *   final open not bound to settle observation  -> settled red PNG replaced by a complete green PNG
+ *   post-read fd check not called               -> source file modified while it is being read
+ *   per-poll (not cumulative) entry budget      -> cumulative entry budget
+ *   open budget removed                         -> cumulative open budget
+ *   distinct-image cap reset per poll           -> image cap; distinct-image cap across polls
+ *   truncation failure swallowed                -> failed truncation reported as such
+ *   (re-run red: stale refusal, decode gate, unknown critical chunks)
  *   NOTE: removing only the link/type clause of the output_dir check stays GREEN — it is subsumed, not missing:
  *   realpath equality runs first and catches a link, and a link can never carry the directory's pinned dev+ino
  *   (that identity check, when removed, turns three tests red).

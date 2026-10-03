@@ -34,12 +34,16 @@ import {
   MAX_DECODED_PIXELS_PER_IMAGE,
   MAX_IMAGES_PER_CALL,
   MAX_DIR_ENTRIES_SCANNED,
+  MAX_DIR_ENTRIES_PER_CALL,
+  MAX_POLL_OPENS_PER_CALL,
   MAX_OUTPUT_NAME_COLLISIONS,
   HARVEST_POLL_TIMEOUT_MS,
   STALE_MTIME_SLACK_MS,
   isValidSessionId,
   pollForSettledPngs,
   openVerifiedFile,
+  assertMatchesObservation,
+  assertFdUnchanged,
   readFdFully,
   acceptPng,
   prepareOutputDir,
@@ -694,12 +698,18 @@ export async function codexGenerateImage(
   if (harvest.truncated) {
     failures.push({
       file: "*",
-      reason: `enumeration stopped after ${MAX_DIR_ENTRIES_SCANNED} directory entries; the rest were not examined.`,
+      reason: `enumeration stopped after ${harvest.scanned} directory entries (per-poll cap ${MAX_DIR_ENTRIES_SCANNED}, per-call cap ${MAX_DIR_ENTRIES_PER_CALL}); the rest were not examined.`,
+    });
+  }
+  if (harvest.budgetExhausted) {
+    failures.push({
+      file: "*",
+      reason: `settle polling stopped early: per-call ${harvest.budgetExhausted} budget exhausted (${harvest.entriesExamined} entries examined, ${harvest.opens} opens).`,
     });
   }
   const staleBefore = callStartMs - STALE_MTIME_SLACK_MS;
-  const fresh = harvest.settled.filter(s => s.mtimeMs >= staleBefore);
-  const stale = harvest.settled.filter(s => s.mtimeMs < staleBefore);
+  const fresh = harvest.settled.filter(s => s.obs.mtimeMs >= staleBefore);
+  const stale = harvest.settled.filter(s => s.obs.mtimeMs < staleBefore);
   if (fresh.length === 0 && failures.length === 0) {
     return {
       status: "empty_session_dir",
@@ -714,7 +724,7 @@ export async function codexGenerateImage(
 
   const images: GeneratedImage[] = [];
   const overBudget: OverBudgetImage[] = [];
-  for (const { name } of fresh) {
+  for (const { name, obs } of fresh) {
     try {
       const v = openVerifiedFile(harvest.dirReal, harvest.dirId, name, MAX_SOURCE_BYTES, opts._fileHooks);
       if (!v.ok) {
@@ -723,11 +733,12 @@ export async function codexGenerateImage(
       }
       let raw: Buffer;
       try {
-        if (v.mtimeMs < staleBefore) {
-          failures.push({ file: name, reason: "pre-dates this call (stale carry-over); not harvested." });
-          continue;
-        }
+        // The file read must be the very file that settled (dev+ino, size,
+        // mtime), and must not change while it is read.
+        assertMatchesObservation(v, obs);
         raw = readFdFully(v.fd, v.size);
+        opts._fileHooks?.afterRead?.(join(harvest.dirReal, name));
+        assertFdUnchanged(v.fd, obs);
       } finally {
         closeSync(v.fd);
       }
@@ -1031,12 +1042,17 @@ const TOOLS = [
       "same-path replacement directory is refused) is checked before and after each write, and the returned path must still be the non-link regular file " +
       "created through the write fd (same dev/ino and size) with realpath parent output_dir — all path resolution first, the identity checks last. On a failed check nothing is deleted by pathname; our own bytes are truncated through the still-open fd. " +
       "VALIDATION: every PNG — including one copied verbatim — must pass a full structure check (signature, IHDR length 13 with legal fields, every chunk CRC, " +
-      "consecutive IDATs, PLTE rules incl. palette size, no unknown critical chunks, terminating IEND, no bytes after IEND), and its image data must inflate — with the inflater capped at the exact size IHDR " +
+      "consecutive IDATs, PLTE rules incl. palette size, no unknown critical chunks, terminating IEND, no bytes after IEND; ancillary chunks are limited to " +
+      "gAMA, cHRM, sRGB, iCCP, sBIT, bKGD, hIST, tRNS, pHYs, tIME, tEXt, zTXt, iTXt and eXIf, each checked for length, multiplicity, ordering and " +
+      "colour-type rules — any OTHER ancillary chunk is refused because it is not validated), and its image data must inflate — with the inflater capped at the exact size IHDR " +
       "implies, after the 4096x4096 pixel cap — to exactly that size with valid scanline filter bytes (unused padding after the zlib stream is ignored, per PNG §11.2.3), so a decompression bomb is refused and the later " +
-      "decode is bounded by the same size; it must then fully decode (e.g. every palette index within PLTE) before it is copied or downscaled. A file is harvested only once settled: size and mtime unchanged across two polls and ending in IEND. " +
+      "decode is bounded by the same size; it must then fully decode (e.g. every palette index within PLTE) before it is copied or downscaled. A file is harvested only once settled: the same dev/ino, size and mtime on two consecutive polls and ending in IEND; that observation must match the " +
+      "fd at the final open and still match after the read, so a settled file swapped for another is refused. " +
       "Files whose mtime pre-dates the call are stale and refused. Malformed, unsettled, stale, linked or capped files are per-file `failures`, not a whole-call failure. " +
       "LIMITS: max_dimension must be in [256, 4096] (default 768; outside that range is REJECTED, not clamped). byte_budget_bytes default 300KB, max 32MiB. " +
-      "Per call: at most 200 session-directory entries are examined (more sets enumeration_truncated), at most 20 PNGs are opened, each at most 32MiB " +
+      "Budgets are CUMULATIVE per call across all settle polls (at most 30 polls: 3s at 100ms): at most 200 session-directory entries per enumeration " +
+      "and 1000 across the call (more sets enumeration_truncated / a budget failure); at most 20 DISTINCT PNGs are ever opened; at most 180 file opens while " +
+      "polling plus at most 20 final reads (200 opens per call); exhausting a budget stops polling and reports what had not settled. Each PNG is at most 32MiB " +
       "(checked by fstat before reading) and 4096x4096 pixels (checked from IHDR before decoding); at most 100 alternative names are tried on an output name " +
       "collision. Downscaling starts directly at min(max_dimension, longest side) and halves toward the 256px floor: at most 5 encodes per image. " +
       "An image already within both bounds is copied byte-for-byte. One still over budget at the floor is written but listed in `over_budget` and the status is " +
