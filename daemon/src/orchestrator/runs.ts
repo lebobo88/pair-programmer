@@ -3310,6 +3310,24 @@ function isInside(child: string, parent: string): boolean {
   return c === p || c.startsWith(p + "/");
 }
 
+/**
+ * Strip a SINGLE leading redundant ".harness/<runId>/" prefix from a
+ * caller-supplied relative_path. Callers sometimes pass a relative_path that
+ * already carries the ".harness/<run_id>/" segment projectArtifactDir() will
+ * prepend, which produced a doubled ".harness/<id>/.harness/<id>/" path on disk.
+ *
+ * - Strips AT MOST ONE leading prefix (a doubly-redundant input keeps one).
+ * - The match is exact and run-id-scoped: ".harness/<other_run_id>/" and
+ *   ".harness-notes/<runId>/" are returned unchanged.
+ * - Either "/" or "\" is accepted as the separator in the prefix.
+ * - A non-redundant path (e.g. "code/winner.diff") is returned unchanged.
+ */
+export function normalizeArtifactRelPath(runId: string, relPath: string): string {
+  const escaped = runId.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const m = new RegExp(`^\\.harness[/\\\\]${escaped}[/\\\\]`).exec(relPath);
+  return m ? relPath.slice(m[0].length) : relPath;
+}
+
 export function archiveArtifact(input: ArchiveArtifactInput): ArchiveArtifactOutput {
   // Encoding handling. Default is utf8 — write `input.bytes` verbatim. When
   // encoding='base64' is set, decode first. When encoding is omitted, run a
@@ -3349,8 +3367,12 @@ export function archiveArtifact(input: ArchiveArtifactInput): ArchiveArtifactOut
     .get(input.run_id) as { project_path: string } | undefined;
   if (!run) throw new Error(`run ${input.run_id} not found`);
 
+  // Strip a redundant ".harness/<run_id>/" prefix BEFORE joining so it is not
+  // doubled on disk. The candidate-worktree containment guard below still runs
+  // on the normalized absolute path.
+  const normalizedRelPath = normalizeArtifactRelPath(input.run_id, input.relative_path);
   const dir = projectArtifactDir(run.project_path, input.run_id);
-  const absolute = join(dir, input.relative_path);
+  const absolute = join(dir, normalizedRelPath);
   const relPath = relative(run.project_path, absolute).replaceAll("\\", "/");
 
   // Path guard: refuse archives that resolve INSIDE an active candidate
@@ -3363,7 +3385,7 @@ export function archiveArtifact(input: ArchiveArtifactInput): ArchiveArtifactOut
   for (const wt of worktrees) {
     if (isInside(absolute, wt)) {
       throw new ArchiveArtifactPathError(
-        `archive_artifact rejected: relative_path "${input.relative_path}" resolves to ${absolute}, which is inside candidate worktree ${wt}. ` +
+        `archive_artifact rejected: relative_path "${normalizedRelPath}" resolves to ${absolute}, which is inside candidate worktree ${wt}. ` +
         `Archive paths must live under .harness/<run_id>/ but OUTSIDE any candidate worktree. ` +
         `The candidate's source belongs in the worktree itself (delivered via git merge); archive only run-level metadata (run.summary.md, INDEX.md, code/winner.diff, code/losers/*).`,
         absolute,

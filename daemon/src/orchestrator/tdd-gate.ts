@@ -455,7 +455,17 @@ function classify(exitCode: number, passed: number | null, failed: number | null
   const p = passed ?? 0;
   const f = failed ?? 0;
   if (p === 0 && f === 0) return { actual: "error", passed: 0, failed: 0, reason: "runner reported zero tests executed" };
-  if (f === 0 && p > 0)  return { actual: "all_pass", passed: p, failed: 0, reason: null };
+  if (f === 0 && p > 0) {
+    // Parsed counts read all-pass, but a nonzero exit means the process failed
+    // anyway (a post-test hook, a crash after the summary, an unhandled
+    // rejection). That is not a clean green -- report "mixed" with a reason
+    // that names the exit so the persisted tdd_checks.reason is diagnosable.
+    if (exitCode === 0) return { actual: "all_pass", passed: p, failed: 0, reason: null };
+    return {
+      actual: "mixed", passed: p, failed: 0,
+      reason: `nonzero exit (${exitCode}) despite reported zero failures -- process likely failed after tests completed`,
+    };
+  }
   if (p === 0 && f > 0)  return { actual: "all_fail", passed: 0, failed: f, reason: null };
   return { actual: "mixed", passed: p, failed: f, reason: `mixed outcome: ${p} passed, ${f} failed` };
 }
