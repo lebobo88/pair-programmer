@@ -28,7 +28,7 @@ import {
   mkdirSync,
   mkdtempSync,
   chmodSync,
-  rmSync,
+  unlinkSync,
   rmdirSync,
   linkSync,
   ftruncateSync,
@@ -64,6 +64,8 @@ export const MAX_CREATED_OUTPUT_COMPONENTS = 32;
 /** Total settle-poll window after the CLI returns. */
 export const HARVEST_POLL_TIMEOUT_MS = 3000;
 export const HARVEST_POLL_INTERVAL_MS = 100;
+/** Hard cap on settle polls per call (3s / 100ms); no poll starts after the deadline either. */
+export const MAX_SETTLE_POLLS = 30;
 /**
  * A file whose mtime is older than the call start minus this slack pre-dates
  * the call (stale carry-over) and is never harvested.
@@ -187,16 +189,23 @@ export type SessionListing = {
   pngNames: string[];
   /** *.png entries that are NOT regular files (symlinks, junctions, directories). */
   nonRegularPngs: string[];
-  /** Directory entries visited. Never exceeds `maxEntries`. */
+  /** Directory entries examined. Never exceeds `maxEntries`. */
   scanned: number;
-  /** True when entries remained after `maxEntries` were visited. */
+  /** True when entries remained after `maxEntries` were examined. */
   truncated: boolean;
+  /**
+   * Directory entries actually READ: `scanned`, plus the one-entry probe used
+   * to detect truncation when it found an entry. Never exceeds `maxEntries + 1`;
+   * cumulative budgets are charged with this number, not `scanned`.
+   */
+  read: number;
 };
 
 /**
  * Enumerate at most `maxEntries` entries of `dirReal` WITHOUT following
  * links (`Dirent` types come from the directory itself). Stops early instead
- * of materialising an unbounded listing.
+ * of materialising an unbounded listing; one extra entry may be read to learn
+ * whether the listing was truncated, and that read is counted in `read`.
  */
 export function listSessionEntries(dirReal: string, maxEntries: number): SessionListing {
   const pngNames: string[] = [];
@@ -222,7 +231,7 @@ export function listSessionEntries(dirReal: string, maxEntries: number): Session
   }
   pngNames.sort();
   nonRegularPngs.sort();
-  return { pngNames, nonRegularPngs, scanned, truncated };
+  return { pngNames, nonRegularPngs, scanned, truncated, read: scanned + (truncated ? 1 : 0) };
 }
 
 // ─── verified open / read ────────────────────────────────────────────────────
@@ -393,10 +402,30 @@ const BEFORE_PLTE = new Set(["gAMA", "cHRM", "sRGB", "sBIT"]);
 /** Must follow PLTE (when present) and precede IDAT. */
 const AFTER_PLTE_BEFORE_IDAT = new Set(["bKGD", "hIST", "tRNS"]);
 
-/** A Latin-1 keyword of 1..79 bytes terminated by NUL at the start of `data`; returns the NUL's offset or -1. */
-function keywordEnd(data: Buffer): number {
+/**
+ * A PNG keyword at the start of `data` (§11.3.3.2): 1..79 bytes of printable
+ * Latin-1 (32..126, 161..255), no leading, trailing or consecutive spaces,
+ * terminated by NUL. Returns the NUL's offset, or -1 when it is not one.
+ */
+export function keywordEnd(data: Buffer): number {
   const nul = data.indexOf(0);
-  return nul >= 1 && nul <= 79 ? nul : -1;
+  if (nul < 1 || nul > 79) return -1;
+  for (let i = 0; i < nul; i++) {
+    const b = data[i] as number;
+    if (!((b >= 32 && b <= 126) || b >= 161)) return -1;
+    if (b === 32 && (i === 0 || i === nul - 1 || data[i - 1] === 32)) return -1;
+  }
+  return nul;
+}
+
+const UTF8 = new TextDecoder("utf-8", { fatal: true });
+function isUtf8(buf: Buffer): boolean {
+  try {
+    UTF8.decode(buf);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -456,29 +485,39 @@ export function checkAncillaryChunk(type: string, data: Buffer, ctx: AncillaryCo
       return (data[8] as number) <= 1 ? null : `unit specifier ${data[8]} is invalid.`;
     case "tIME": {
       if (len !== 7) return `length ${len}, expected 7.`;
+      const year = data.readUInt16BE(0);
       const [mo, d, h, mi, s] = [data[2], data[3], data[4], data[5], data[6]] as number[];
-      const legal = mo! >= 1 && mo! <= 12 && d! >= 1 && d! <= 31 && h! <= 23 && mi! <= 59 && s! <= 60;
+      const leap = (year % 4 === 0 && year % 100 !== 0) || year % 400 === 0;
+      const days = [31, leap ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31][(mo as number) - 1];
+      const legal = days !== undefined && d! >= 1 && d! <= days && h! <= 23 && mi! <= 59 && s! <= 60;
       return legal ? null : "date/time fields out of range.";
     }
-    case "tEXt":
-      return keywordEnd(data) >= 0 ? null : "keyword is not 1-79 bytes followed by NUL.";
+    case "tEXt": {
+      // Latin-1 keyword, NUL separator, Latin-1 text with no further NUL.
+      const k = keywordEnd(data);
+      if (k < 0) return "keyword is not 1-79 printable Latin-1 bytes (no leading/trailing/double spaces) followed by NUL.";
+      return data.indexOf(0, k + 1) < 0 ? null : "text contains a NUL byte.";
+    }
     case "iTXt": {
       const k = keywordEnd(data);
-      if (k < 0) return "keyword is not 1-79 bytes followed by NUL.";
+      if (k < 0) return "keyword is not 1-79 printable Latin-1 bytes (no leading/trailing/double spaces) followed by NUL.";
       if (len < k + 3) return "truncated header.";
       const flag = data[k + 1] as number;
       if (flag === 1) return "compressed iTXt carries a payload this harvester does not validate; refused.";
       if (flag !== 0 || data[k + 2] !== 0) return "compression flag/method invalid.";
       const lang = data.indexOf(0, k + 3);
       if (lang < 0) return "language tag is not NUL-terminated.";
-      return data.indexOf(0, lang + 1) >= 0 ? null : "translated keyword is not NUL-terminated.";
+      if (!/^[A-Za-z0-9-]*$/.test(data.toString("latin1", k + 3, lang))) return "language tag is not ASCII letters, digits and hyphens.";
+      const tk = data.indexOf(0, lang + 1);
+      if (tk < 0) return "translated keyword is not NUL-terminated.";
+      if (!isUtf8(data.subarray(lang + 1, tk))) return "translated keyword is not valid UTF-8.";
+      const text = data.subarray(tk + 1);
+      if (text.indexOf(0) >= 0) return "text contains a NUL byte.";
+      return isUtf8(text) ? null : "text is not valid UTF-8.";
     }
     case "eXIf":
-      if (ctx.idatStarted) return "must precede IDAT.";
-      if (len < 4) return `length ${len} is too short for an Exif header.`;
-      return data.subarray(0, 4).equals(Buffer.from("MM\0*", "latin1")) || data.subarray(0, 4).equals(Buffer.from("II*\0", "latin1"))
-        ? null
-        : "does not start with a TIFF byte-order header (MM\\0* or II*\\0).";
+      // An Exif profile cannot be validated here beyond its prefix, so it is refused.
+      return "carries an Exif profile this harvester does not validate; refused.";
     default:
       return "ancillary chunk type is not one this harvester validates; refused.";
   }
@@ -725,6 +764,7 @@ export type SettleOptions = {
   maxEntriesPerCall?: number;
   maxOpensPerCall?: number;
   maxBytes?: number;
+  maxPolls?: number;
 };
 
 export type SettledHarvest =
@@ -747,10 +787,15 @@ export type SettledHarvest =
       scanned: number;
       /** True when the last poll stopped with entries remaining. */
       truncated: boolean;
-      /** Directory entries visited across ALL polls of this call. */
+      /** Directory entries READ across ALL polls of this call, truncation probes included. */
       entriesExamined: number;
       /** File opens across ALL polls of this call. */
       opens: number;
+      /** Polls performed (never more than the poll cap). */
+      polls: number;
+      /** When the last poll started; never after `deadlineMs`. */
+      lastPollStartMs: number;
+      deadlineMs: number;
       /** Set when a cumulative per-call budget stopped polling early. */
       budgetExhausted?: "entries" | "opens";
     };
@@ -789,6 +834,7 @@ export async function pollForSettledPngs(
   const maxEntriesPerCall = opts.maxEntriesPerCall ?? MAX_DIR_ENTRIES_PER_CALL;
   const maxOpensPerCall = opts.maxOpensPerCall ?? MAX_POLL_OPENS_PER_CALL;
   const maxBytes = opts.maxBytes ?? MAX_SOURCE_BYTES;
+  const maxPolls = opts.maxPolls ?? MAX_SETTLE_POLLS;
   const deadline = Date.now() + timeoutMs;
   let prev = new Map<string, FileObservation>();
   const rejected = new Map<string, string>();
@@ -796,13 +842,22 @@ export async function pollForSettledPngs(
   const firstIds = new Map<string, FsIdentity>();
   let entriesExamined = 0;
   let opens = 0;
+  let polls = 0;
+  let lastPollStartMs = 0;
+  // Stop after this poll if the poll cap is reached, or if the NEXT poll
+  // would start after the deadline: no poll ever starts after `deadline`.
+  const noFurtherPoll = (): boolean => polls >= maxPolls || Date.now() + intervalMs > deadline;
 
   for (;;) {
+    polls += 1;
+    lastPollStartMs = Date.now();
     const res = resolveSessionDir(imagesRoot, sessionId);
     if (res.kind === "rejected") return res;
     if (res.kind === "ok") {
-      const listing = listSessionEntries(res.dirReal, Math.min(maxEntriesPerPoll, maxEntriesPerCall - entriesExamined));
-      entriesExamined += listing.scanned;
+      // Leave room for the one-entry truncation probe so that every entry
+      // READ — probe included — fits the cumulative per-call budget.
+      const listing = listSessionEntries(res.dirReal, Math.min(maxEntriesPerPoll, maxEntriesPerCall - entriesExamined - 1));
+      entriesExamined += listing.read;
       for (const n of listing.nonRegularPngs) rejected.set(n, "not a regular file (symlink, junction or directory).");
       const overCap: string[] = [];
       for (const n of listing.pngNames) {
@@ -844,7 +899,8 @@ export async function pollForSettledPngs(
           closeSync(v.fd);
         }
       }
-      if (!budgetExhausted && entriesExamined >= maxEntriesPerCall) budgetExhausted = "entries";
+      // Another poll needs room for at least one entry plus the probe.
+      if (!budgetExhausted && maxEntriesPerCall - entriesExamined < 2) budgetExhausted = "entries";
       const live = tracked.filter(n => !rejected.has(n));
       const settled = live.filter(n => {
         const a = seen.get(n);
@@ -852,10 +908,10 @@ export async function pollForSettledPngs(
         return !pending.has(n) && a !== undefined && b !== undefined && sameObservation(a, b);
       });
       const done = tracked.length > 0 && settled.length === live.length;
-      if (done || budgetExhausted || Date.now() >= deadline) {
+      if (done || budgetExhausted || noFurtherPoll()) {
         const why = budgetExhausted
           ? `polling stopped: per-call ${budgetExhausted === "entries" ? `directory-entry budget (${maxEntriesPerCall})` : `open budget (${maxOpensPerCall})`} exhausted`
-          : `did not settle within ${timeoutMs}ms`;
+          : `did not settle within ${timeoutMs}ms / ${maxPolls} polls`;
         return {
           kind: "ok",
           dirReal: res.dirReal,
@@ -870,11 +926,14 @@ export async function pollForSettledPngs(
           truncated: listing.truncated,
           entriesExamined,
           opens,
+          polls,
+          lastPollStartMs,
+          deadlineMs: deadline,
           ...(budgetExhausted ? { budgetExhausted } : {}),
         };
       }
       prev = seen;
-    } else if (Date.now() >= deadline) {
+    } else if (noFurtherPoll()) {
       return res;
     }
     await sleep(intervalMs);
@@ -1114,7 +1173,12 @@ function neutraliseAndThrow(fd: number, path: string, err: unknown, hooks: Write
 // ─── private staging ─────────────────────────────────────────────────────────
 
 /** A per-call, daemon-owned directory where content is written and verified before any hand-off. */
-export type StagingDir = { dirReal: string; id: FsIdentity };
+export type StagingDir = {
+  dirReal: string;
+  id: FsIdentity;
+  /** Every file this call staged, with the identity it had at creation (cleanup removes only these). */
+  files: { path: string; id: FsIdentity }[];
+};
 
 /** Test-only seam fired right after the staging directory is allocated. Production never sets it. */
 export type StagingHooks = { afterMkdtemp?: (dir: string) => void };
@@ -1160,7 +1224,7 @@ export function createStagingDir(
     if (!isDirectChildReal(parentReal, dirReal)) return fail(`staging directory resolves to ${dirReal}, outside ${parentReal}.`);
     const id = { dev: st.dev, ino: st.ino };
     assertDirIdentity(dirReal, id, "staging directory");
-    return { ok: true, staging: { dirReal, id } };
+    return { ok: true, staging: { dirReal, id, files: [] } };
   } catch (err) {
     return fail(`could not create the staging directory: ${(err as Error).message}.`);
   }
@@ -1174,15 +1238,45 @@ export function assertStagingIntact(s: StagingDir): void {
   assertDirIdentity(s.dirReal, s.id, "staging directory");
 }
 
-/** Remove the staging directory after the call. Returns a reason when it could not be removed (reported, never thrown). */
-export function removeStagingDir(s: StagingDir): string | undefined {
+/** Test-only seam fired before each staged file is unlinked during cleanup. Production never sets it. */
+export type StagingCleanupHooks = { beforeUnlink?: (path: string) => void };
+
+/**
+ * Clean up the staging directory after the call — WITHOUT any recursive or
+ * blind deletion. Only the files this call staged (recorded in `s.files`) are
+ * unlinked, each only if its path is still a non-link regular file with the
+ * identity recorded when it was created; then the directory itself is removed
+ * with `rmdir`, which refuses anything that is not an empty directory. Any
+ * file or directory that does not match is LEFT IN PLACE and named in the
+ * returned reason. Returns undefined only when everything was removed.
+ */
+export function removeStagingDir(s: StagingDir, hooks: StagingCleanupHooks = {}): string | undefined {
+  const retained: string[] = [];
   try {
     assertStagingIntact(s);
-    rmSync(s.dirReal, { recursive: true, force: false });
-    return undefined;
   } catch (err) {
     return `staging directory ${s.dirReal} was not removed: ${(err as Error).message}`;
   }
+  for (const f of s.files) {
+    hooks.beforeUnlink?.(f.path);
+    const st = lstatSync(f.path, { bigint: true, throwIfNoEntry: false });
+    if (!st) continue; // already gone
+    if (st.isSymbolicLink() || !st.isFile() || !sameIdentity(st, f.id)) {
+      retained.push(`${f.path} (no longer the staged file; left in place)`);
+      continue;
+    }
+    try {
+      unlinkSync(f.path);
+    } catch (err) {
+      retained.push(`${f.path} (${(err as NodeJS.ErrnoException).code ?? (err as Error).message})`);
+    }
+  }
+  try {
+    rmdirSync(s.dirReal);
+  } catch (err) {
+    retained.push(`${s.dirReal} (${(err as NodeJS.ErrnoException).code ?? (err as Error).message})`);
+  }
+  return retained.length === 0 ? undefined : `staging directory ${s.dirReal} was not fully removed; retained: ${retained.join("; ")}`;
 }
 
 export type StagedFile = { path: string; fd: number; id: FsIdentity };
@@ -1202,6 +1296,7 @@ export function stageImage(staging: StagingDir, name: string, buffer: Buffer, ho
   try {
     const fst = fstatSync(fd, { bigint: true });
     const id = { dev: fst.dev, ino: fst.ino };
+    staging.files.push({ path, id }); // recorded before any write, so cleanup can find it whatever happens next
     let off = 0;
     while (off < buffer.length) off += writeSync(fd, buffer, off, buffer.length - off);
     hooks.afterWrite?.(path);

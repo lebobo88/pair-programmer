@@ -34,6 +34,7 @@ import {
   symlinkSync,
   utimesSync,
   statSync,
+  lstatSync,
   realpathSync,
   openSync,
   closeSync,
@@ -1409,6 +1410,36 @@ describe("pp_codex.generate_image: private staging and exclusive hand-off", () =
     assert.equal(readdirSync(parent).length, 1, "the directory that could not be removed is the one reported");
   });
 
+  test("removeStagingDir removes only the files this call staged (after a failed hand-off too), then the empty directory", async () => {
+    const { writeImageSafely, prepareOutputDir, removeStagingDir } = await importDist("mcp/image-harvest.js");
+    const { outReal, outId } = prepareOutputDir(tmp("pp-img-out-"));
+    const staging = newStaging();
+    assert.throws(() => writeImageSafely(outReal, outId, staging, "x.png", makeSolidPng(2, 2), 0, { linkError: "EXDEV" }), /no copy fallback/);
+    assert.equal(staging.files.length, 1, "precondition: the failed call staged one file");
+    assert.equal(readdirSync(staging.dirReal).length, 1, "precondition: it is still in staging");
+    assert.equal(removeStagingDir(staging), undefined);
+    assert.equal(lstatSync(staging.dirReal, { throwIfNoEntry: false }), undefined, "the staging directory is gone");
+  });
+
+  test("removeStagingDir leaves a staged path that was replaced at cleanup time, and anything it did not stage, and reports them", async () => {
+    const { writeImageSafely, prepareOutputDir, removeStagingDir } = await importDist("mcp/image-harvest.js");
+    const { outReal, outId } = prepareOutputDir(tmp("pp-img-out-"));
+    const staging = newStaging();
+    writeImageSafely(outReal, outId, staging, "x.png", makeSolidPng(2, 2), 0);
+    const foreign = join(staging.dirReal, "not-ours.bin");
+    writeFileSync(foreign, "keep me");
+    const why = removeStagingDir(staging, {
+      beforeUnlink: (p) => {
+        rmSync(p);
+        writeFileSync(p, "replacement"); // a different file at the staged path
+      },
+    });
+    assert.match(why ?? "", /not fully removed; retained: .*no longer the staged file; left in place/);
+    assert.match(why ?? "", /ENOTEMPTY/, "the directory is reported as retained, not recursively deleted");
+    assert.equal(readFileSync(foreign, "utf8"), "keep me", "a file this call did not stage is never deleted");
+    assert.equal(readFileSync(staging.files[0].path, "utf8"), "replacement", "the replacement is never deleted");
+  });
+
   test("end to end: a staging cleanup failure is reported and an otherwise-ok call becomes partial", async () => {
     const { result } = await runHarvest({
       write: writePngs({ "exec-call-1.png": makeSolidPng(4, 4) }),
@@ -1468,11 +1499,10 @@ describe("pp_codex.generate_image: ancillary chunk rules", () => {
         { at: "ihdr", type: "bKGD", data: Buffer.from([0, 9]) },
         { at: "ihdr", type: "tRNS", data: Buffer.from([0, 7]) },
         { at: "ihdr", type: "pHYs", data: Buffer.concat([u32(2835, 2835), Buffer.from([1])]) },
-        { at: "ihdr", type: "tIME", data: Buffer.from([0x07, 0xea, 10, 3, 12, 30, 0]) },
-        { at: "idat", type: "tEXt", data: Buffer.from("Comment\0ok") },
+        { at: "ihdr", type: "tIME", data: Buffer.from([0x07, 0xe8, 2, 29, 12, 30, 0]) }, // 2024-02-29: a real leap day
+        { at: "idat", type: "tEXt", data: Buffer.from("Comment\0ok, caf\xe9", "latin1") }, // Latin-1 text
         { at: "idat", type: "tEXt", data: Buffer.from("Author\0me") },
-        { at: "idat", type: "iTXt", data: Buffer.from("Title\0\0\0en\0\0hi") },
-        { at: "ihdr", type: "eXIf", data: Buffer.from("MM\0*") },
+        { at: "idat", type: "iTXt", data: Buffer.concat([Buffer.from("Title\0\0\0en-GB\0"), Buffer.from("Titre\0héllo ✓", "utf8")]) },
       ] }),
       assemblePng({ ...RGB_2x1, plte: Buffer.from([1, 2, 3]), extra: [{ at: "plte", type: "tRNS", data: Buffer.alloc(6) }, { at: "plte", type: "bKGD", data: Buffer.alloc(6) }] }),
       assemblePng({ ...RGB_2x1, extra: [{ at: "ihdr", type: "sRGB", data: Buffer.from([0]) }] }),
@@ -1502,7 +1532,14 @@ describe("pp_codex.generate_image: ancillary chunk rules", () => {
       "iCCP with an RGB profile on a greyscale image": [assemblePng({ ...GREY_4x4, extra: [{ at: "ihdr", type: "iCCP", data: Buffer.concat([Buffer.from("p\0\0"), zlib.deflateSync(Buffer.concat([Buffer.alloc(16), Buffer.from("mntrRGB "), Buffer.alloc(104)]))]) }] }), /iCCP .*compressed payload this harvester does not validate/],
       "zTXt with no compressed stream": [assemblePng({ ...GREY_4x4, extra: [{ at: "idat", type: "zTXt", data: Buffer.from("Comment\0\0") }] }), /zTXt .*compressed payload this harvester does not validate/],
       "compressed iTXt": [assemblePng({ ...GREY_4x4, extra: [{ at: "idat", type: "iTXt", data: Buffer.concat([Buffer.from("Title\0\x01\0en\0\0"), zlib.deflateSync(Buffer.from("hi"))]) }] }), /compressed iTXt .*does not validate/],
-      "eXIf without a TIFF header": [assemblePng({ ...GREY_4x4, extra: [{ at: "ihdr", type: "eXIf", data: Buffer.from("XXXX") }] }), /TIFF byte-order header/],
+      "eXIf (Exif profile not validated)": [assemblePng({ ...GREY_4x4, extra: [{ at: "ihdr", type: "eXIf", data: Buffer.from("MM\0*") }] }), /eXIf .*Exif profile this harvester does not validate/],
+      "tEXt keyword with a control byte": [assemblePng({ ...GREY_4x4, extra: [{ at: "idat", type: "tEXt", data: Buffer.from("Com\x01ment\0x", "latin1") }] }), /tEXt .*keyword is not 1-79 printable/],
+      "tEXt keyword with a leading space": [assemblePng({ ...GREY_4x4, extra: [{ at: "idat", type: "tEXt", data: Buffer.from(" Comment\0x") }] }), /tEXt .*keyword is not 1-79 printable/],
+      "tEXt text with an embedded NUL": [assemblePng({ ...GREY_4x4, extra: [{ at: "idat", type: "tEXt", data: Buffer.from("Comment\0a\0b") }] }), /tEXt .*text contains a NUL/],
+      "iTXt text that is not UTF-8": [assemblePng({ ...GREY_4x4, extra: [{ at: "idat", type: "iTXt", data: Buffer.concat([Buffer.from("Title\0\0\0en\0\0"), Buffer.from([0xff])]) }] }), /iTXt .*text is not valid UTF-8/],
+      "iTXt translated keyword that is not UTF-8": [assemblePng({ ...GREY_4x4, extra: [{ at: "idat", type: "iTXt", data: Buffer.concat([Buffer.from("Title\0\0\0en\0"), Buffer.from([0xc3, 0x28, 0]), Buffer.from("x")]) }] }), /iTXt .*translated keyword is not valid UTF-8/],
+      "iTXt language tag with a space": [assemblePng({ ...GREY_4x4, extra: [{ at: "idat", type: "iTXt", data: Buffer.from("Title\0\0\0e n\0\0x") }] }), /iTXt .*language tag/],
+      "tIME 2026-02-29 (not a leap year)": [assemblePng({ ...GREY_4x4, extra: [{ at: "ihdr", type: "tIME", data: Buffer.from([0x07, 0xea, 2, 29, 0, 0, 0]) }] }), /tIME .*out of range/],
       "sBIT wrong length": [assemblePng({ ...RGB_2x1, extra: [{ at: "ihdr", type: "sBIT", data: Buffer.from([8]) }] }), /sBIT .*expected 3/],
       "sBIT zero": [assemblePng({ ...GREY_4x4, extra: [{ at: "ihdr", type: "sBIT", data: Buffer.from([0]) }] }), /significant bits 0/],
       "bKGD wrong length for RGB": [assemblePng({ ...RGB_2x1, extra: [{ at: "ihdr", type: "bKGD", data: Buffer.alloc(2) }] }), /bKGD .*wrong for colour type 2/],
@@ -1518,7 +1555,6 @@ describe("pp_codex.generate_image: ancillary chunk rules", () => {
       "unvalidated ancillary type": [assemblePng({ ...GREY_4x4, extra: [{ at: "ihdr", type: "vpAg", data: Buffer.alloc(9) }] }), /not one this harvester validates/],
       "tRNS before a later (suggested) PLTE": [assemblePng({ ...RGB_2x1, plte: Buffer.from([1, 2, 3]), extra: [{ at: "ihdr", type: "tRNS", data: Buffer.alloc(6) }] }), /PLTE after tRNS/],
       "bKGD before a later (suggested) PLTE": [assemblePng({ ...RGB_2x1, plte: Buffer.from([1, 2, 3]), extra: [{ at: "ihdr", type: "bKGD", data: Buffer.alloc(6) }] }), /PLTE after bKGD/],
-      "eXIf after IDAT": [assemblePng({ ...GREY_4x4, extra: [{ at: "idat", type: "eXIf", data: Buffer.from("MM\0*") }] }), /eXIf .*must precede IDAT/],
     };
     for (const [label, [buf, reason]] of Object.entries(bad)) {
       const r = acceptPng(buf);
@@ -1536,12 +1572,12 @@ describe("pp_codex.generate_image: ancillary chunk rules", () => {
     assert.deepEqual(readdirSync(outputDir), []);
   });
 
-  test("end to end: an eXIf-after-IDAT PNG that fits as-is is never copied", async () => {
+  test("end to end: an eXIf-carrying PNG that fits as-is is never copied (Exif profiles are refused)", async () => {
     const { result, outputDir } = await runHarvest({
       write: writePngs({ "exec-call-exif.png": assemblePng({ ...GREY_4x4, extra: [{ at: "idat", type: "eXIf", data: Buffer.from("MM\0*") }] }) }),
     });
     assert.equal(result.status, "failed");
-    assert.match(result.failures[0].reason, /eXIf .*must precede IDAT/);
+    assert.match(result.failures[0].reason, /eXIf .*Exif profile this harvester does not validate/);
     assert.deepEqual(readdirSync(outputDir), []);
   });
 
@@ -1651,6 +1687,37 @@ describe("pp_codex.generate_image: settle observation and per-call budgets", () 
     assert.equal(r.budgetExhausted, "opens");
     assert.equal(r.opens, MAX_POLL_OPENS_PER_CALL, "20 files x 30 polls would have been 600 opens");
     assert.ok(r.unsettled.some((u) => /open budget \(180\) exhausted/.test(u.reason)));
+  });
+
+  test("poll cap: a file that never settles is polled at most 30 times, however generous the deadline", async () => {
+    const { pollForSettledPngs, MAX_SETTLE_POLLS } = await importDist("mcp/image-harvest.js");
+    const root = tmp("pp-img-root-");
+    const sessionId = newSessionId();
+    writePngs({ "a.png": make24ByteHeaderPng() })(join(root, sessionId));
+    const r = await pollForSettledPngs(root, sessionId, { timeoutMs: 60_000, intervalMs: 1 });
+    assert.equal(MAX_SETTLE_POLLS, 30);
+    assert.equal(r.polls, MAX_SETTLE_POLLS);
+    assert.equal(r.opens, MAX_SETTLE_POLLS, "one open per poll");
+  });
+
+  test("deadline: no poll starts after the deadline", async () => {
+    const { pollForSettledPngs } = await importDist("mcp/image-harvest.js");
+    const root = tmp("pp-img-root-");
+    const sessionId = newSessionId();
+    writePngs({ "a.png": make24ByteHeaderPng() })(join(root, sessionId));
+    const r = await pollForSettledPngs(root, sessionId, { timeoutMs: 250, intervalMs: 100 });
+    assert.ok(r.lastPollStartMs <= r.deadlineMs, `last poll started ${r.lastPollStartMs - r.deadlineMs}ms after the deadline`);
+    assert.ok(r.polls <= 3, `${r.polls} polls in a 250ms window at 100ms`);
+  });
+
+  test("listSessionEntries counts the truncation probe as a read entry", async () => {
+    const { listSessionEntries } = await importDist("mcp/image-harvest.js");
+    const dir = tmp("pp-img-list-");
+    for (let i = 0; i < 5; i++) writeFileSync(join(dir, `f${i}.txt`), "");
+    const over = listSessionEntries(dir, 3);
+    assert.deepEqual([over.scanned, over.read, over.truncated], [3, 4, true]);
+    const exact = listSessionEntries(dir, 5);
+    assert.deepEqual([exact.scanned, exact.read, exact.truncated], [5, 5, false]);
   });
 
   test("distinct-file cap counts identities: a chosen name replaced by a different file between polls is refused", async () => {
@@ -1818,6 +1885,18 @@ describe("pp_agy.generate_image", () => {
  *   allocated staging dir not removed on failure -> failure after allocation (removed / remains)
  *   un-removable dir reported as removed        -> "could NOT be removed ... it remains"
  *   (re-run red: tRNS colour-type rule, unvalidated ancillary types)
+ *
+ * Authorized round C findings:
+ *   cleanup unlinks a replaced staged path      -> replaced at cleanup time is left and reported
+ *   recursive deletion of staging reintroduced  -> a file this call did not stage is never deleted
+ *   staged files not recorded                   -> cleanup after a failed hand-off (+13 e2e tests turn partial)
+ *   keyword printable / space rules removed     -> tEXt keyword control byte / leading space
+ *   tEXt NUL, iTXt UTF-8 (text, translated kw), language-tag charset removed -> the matching counterexamples
+ *   eXIf accepted again                          -> eXIf refused (rule fixture + e2e)
+ *   tIME day <= 31 instead of the real calendar -> 2026-02-29 refused
+ *   hard poll cap removed                        -> 30-poll cap
+ *   poll allowed to start after the deadline     -> no poll starts after the deadline
+ *   truncation probe not counted / no room left  -> probe counted; cumulative entry budget exactly 1000
  *   NOT FALSIFIABLE (disclosed): re-validating the RE-ENCODED output with acceptPng — pngjs always emits a valid PNG, so
  *   no fixture can make that defence-in-depth check fire without replacing the encoder.
  *   NOTE: removing only the link/type clause of the output_dir check stays GREEN — it is subsumed, not missing:

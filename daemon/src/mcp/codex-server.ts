@@ -1096,24 +1096,28 @@ const TOOLS = [
       "a hard link is impossible (output_dir on a different filesystem from PP_HOME, or a filesystem without hard links) that image fails and nothing is " +
       "written into output_dir. The handed-off file is then verified through a fresh fd (regular file, the staged dev/ino, exact size, identical bytes) with all path " +
       "resolution first and the identity checks last (non-link, same dev/ino as the fd; output_dir's dev/ino pinned at preparation, so a same-path replacement " +
-      "directory is refused). Nothing is ever deleted by pathname. The staging directory is removed when the call ends; a removal failure is reported in " +
-      "staging_cleanup_error and in `failures`, and turns an otherwise \"ok\" status into \"partial\". RESIDUAL RISK (stated, operator-accepted): Node has no " +
+      "directory is refused). Nothing in output_dir is ever deleted. When the call ends, staging is cleaned up WITHOUT recursive deletion: only the files " +
+      "this call staged are unlinked, each only while its path is still the regular file it created (same dev/ino), then the directory is removed only " +
+      "if empty (rmdir); anything else is left in place and named in staging_cleanup_error and in `failures`, which turns an otherwise \"ok\" status " +
+      "into \"partial\". If creating the staging directory fails after it was allocated, that empty directory is removed (or reported as remaining). RESIDUAL RISK (stated, operator-accepted): Node has no " +
       "openat, so if output_dir or an ancestor is swapped for a link in the instant before the link syscall, the finished image can land in the link target; " +
       "that is detected and the image is refused, and because the handed-off object IS the staged inode it is also truncated through the staging fd (a " +
       "failed truncation is reported as such, with the content described as unknown). After a " +
       "successful hand-off, any process with write access to output_dir can of course move, replace or modify the finished file. " +
       "VALIDATION: every PNG — including one copied verbatim — must pass a full structure check (signature, IHDR length 13 with legal fields, every chunk CRC, " +
       "consecutive IDATs, PLTE rules incl. palette size, no unknown critical chunks, terminating IEND, no bytes after IEND; ancillary chunks are limited to " +
-      "gAMA, cHRM, sRGB, sBIT, bKGD, hIST, tRNS, pHYs, tIME, tEXt, uncompressed iTXt and eXIf (TIFF byte-order header), each checked for length, " +
-      "multiplicity, ordering and colour-type rules; chunks with a compressed payload this harvester does not decompress and validate (iCCP, zTXt, " +
-      "compressed iTXt) and any OTHER ancillary chunk are refused), and its image data must inflate — with the inflater capped at the exact size IHDR " +
+      "gAMA, cHRM, sRGB, sBIT, bKGD, hIST, tRNS, pHYs, tIME (a real calendar date), tEXt (printable Latin-1 keyword, Latin-1 text without NUL) and " +
+      "uncompressed iTXt (printable keyword, ASCII language tag, UTF-8 translated keyword and text without NUL), each checked for length, multiplicity, " +
+      "ordering and colour-type rules; chunks whose payload this harvester does not fully validate (iCCP, zTXt, compressed iTXt, eXIf) and any OTHER " +
+      "ancillary chunk are refused), and its image data must inflate — with the inflater capped at the exact size IHDR " +
       "implies, after the 4096x4096 pixel cap — to exactly that size with valid scanline filter bytes (unused padding after the zlib stream is ignored, per PNG §11.2.3), so a decompression bomb is refused and the later " +
       "decode is bounded by the same size; it must then fully decode (e.g. every palette index within PLTE) before it is copied or downscaled. A file is harvested only once settled: the same dev/ino, size and mtime on two consecutive polls and ending in IEND; that observation must match the " +
       "fd at the final open and still match after the read, so a settled file swapped for another is refused. " +
       "Files whose mtime pre-dates the call are stale and refused. Malformed, unsettled, stale, linked or capped files are per-file `failures`, not a whole-call failure. " +
       "LIMITS: max_dimension must be in [256, 4096] (default 768; outside that range is REJECTED, not clamped). byte_budget_bytes default 300KB, max 32MiB. " +
-      "Budgets are CUMULATIVE per call across all settle polls (at most 30 polls: 3s at 100ms): at most 200 session-directory entries per enumeration " +
-      "and 1000 across the call (more sets enumeration_truncated / a budget failure); at most 20 distinct PNG NAMES are ever opened; each name is bound to " +
+      "Settle polling: at most 30 polls per call (hard cap), 100ms apart, and no poll starts after the 3s deadline. Budgets are CUMULATIVE per call " +
+      "across all polls: each enumeration examines at most 200 session-directory entries and reads at most one more to detect truncation, and at most " +
+      "1000 entries are READ per call, probes included (more sets enumeration_truncated / a budget failure); at most 20 distinct PNG NAMES are ever opened; each name is bound to " +
       "the first file identity seen under it and refused once that changes, so at most 40 distinct file OBJECTS are opened while polling and at most 20 " +
       "more at the final reads (a final-read object that is not the settled one is refused, never read into output) — at most 60 objects per call; at " +
       "most 180 open ATTEMPTS while polling plus at most 20 final reads (200 per call); exhausting a budget stops polling and reports what had not settled. Each PNG is at most 32MiB " +
@@ -1122,7 +1126,8 @@ const TOOLS = [
       "An image already within both bounds is copied byte-for-byte. One still over budget at the floor is written but listed in `over_budget` and the status is " +
       "\"partial\", never \"ok\". status: ok (all images clean) | partial (something written, plus over_budget/failures) | failed (nothing written). " +
       "WORST-CASE WALL CLOCK: one codex attempt bounded by timeout_ms (default 5 minutes; larger values are CLAMPED to 15 minutes; the runner's transient " +
-      "retry is disabled for this tool), plus a git worktree probe capped at 5s, plus at most 3s of settle polling, plus the capped image processing above.",
+      "retry is disabled for this tool), plus a git worktree probe capped at 5s, plus settle polling (no poll starts after 3s; the last poll's own work " +
+      "may finish after it), plus the capped image processing above.",
     schema: GenerateImageSchema,
     handler: (args: unknown) => codexGenerateImage(GenerateImageSchema.parse(args)),
   },
