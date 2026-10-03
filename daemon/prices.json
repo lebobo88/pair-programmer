@@ -1,9 +1,9 @@
 {
   "_comment": "Per-1M-token USD prices. User-editable. Used to compute cost_usd per attempt. Update as vendor pricing changes.",
-  "_updated": "2026-08-22",
+  "_updated": "2026-10-03",
   "openai": {
-    "gpt-6.1-sol":      { "input": 6.00,  "output": 18.00 },
-    "gpt-6-astra":      { "input": 6.00,  "output": 18.00 },
+    "gpt-6.1-sol":      { "input": 2.00,  "output": 10.00 },
+    "gpt-6-astra":      { "input": 10.00, "output": 50.00 },
     "gpt-5.6-sol":      { "input": 6.00,  "output": 18.00 },
     "gpt-5.6-terra":    { "input": 5.00,  "output": 15.00 },
     "gpt-5.6-luna":     { "input": 5.00,  "output": 15.00 },
@@ -38,8 +38,8 @@
     "claude-fable-5": "CONSERVATIVE PLACEHOLDER — 2x opus-4-7 rates. Requires authoritative pricing confirmation from Anthropic before production use.",
     "claude-opus-5": "CONSERVATIVE PLACEHOLDER — carried over from claude-opus-4-7 rates. Requires authoritative pricing confirmation from Anthropic before production use.",
     "claude-sonnet-5": "CONSERVATIVE PLACEHOLDER — carried over from claude-sonnet-4-6 rates. Requires authoritative pricing confirmation from Anthropic before production use.",
-    "gpt-6.1-sol": "CONSERVATIVE PLACEHOLDER — added 2026-10-03 with the Article V judge repin (gpt-5.6-sol rates, the highest OpenAI rate on file). Requires authoritative pricing confirmation from OpenAI before production use.",
-    "gpt-6-astra": "CONSERVATIVE PLACEHOLDER — added 2026-10-03 with the Article V judge repin (gpt-5.6-sol rates, the highest OpenAI rate on file). Requires authoritative pricing confirmation from OpenAI before production use.",
+    "gpt-6.1-sol": "CONFIRMED 2026-10-03 against https://developers.openai.com/api/docs/pricing — Standard tier, short context (<=272K input): $2.00 input / $10.00 output per 1M (cached input $0.10, cache writes $2.50). Long context: $4.00 / $15.00. Batch & Flex are half. cost_usd uses the Standard short-context rate and does not model caching or long-context surcharges.",
+    "gpt-6-astra": "CONFIRMED 2026-10-03 against https://developers.openai.com/api/docs/pricing — Standard tier, short context: $10.00 input / $50.00 output per 1M (cached input $1.00, cache writes $12.50). Long context: $20.00 / $75.00. Batch & Flex are half; Fast is 2x. cost_usd uses the Standard short-context rate and does not model caching or long-context surcharges.",
     "gpt-5.6-terra": "CONSERVATIVE PLACEHOLDER — gpt-5.5 rates. Requires authoritative pricing confirmation from OpenAI before production use.",
     "gpt-5.6-luna": "CONSERVATIVE PLACEHOLDER — gpt-5.5 rates. Requires authoritative pricing confirmation from OpenAI before production use.",
     "gpt-5.6-sol": "CONSERVATIVE PLACEHOLDER — gpt-5.1-codex-max rates, the highest OpenAI rate on file. Requires authoritative pricing confirmation from OpenAI before production use.",
