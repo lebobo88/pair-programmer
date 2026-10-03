@@ -3,3 +3,6 @@ dist/
 *.tsbuildinfo
 .env
 .env.local
+# Scratch runtime dirs created (and self-cleaned) by test/artifact-validators.smoke.mjs
+# and test/smoke.mjs for each spawned daemon's temp project fixtures.
+test/.artifact-validators-runtime/

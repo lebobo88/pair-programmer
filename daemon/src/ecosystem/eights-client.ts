@@ -25,13 +25,18 @@
  */
 
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+import {
+  getDefaultEnvironment,
+  StdioClientTransport,
+} from "@modelcontextprotocol/sdk/client/stdio.js";
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { z } from "zod";
 import { log } from "../util/logger.js";
 import {
-  ECOSYSTEM_PROBE_TIMEOUT_MS,
+  ecosystemProbeTimeoutMs,
+  ecosystemIdleCloseMs,
   ECOSYSTEM_BREAKER_THRESHOLD,
   ECOSYSTEM_BREAKER_COOLDOWN_MS,
   ECOSYSTEM_CALL_TIMEOUT_MS,
@@ -262,10 +267,188 @@ function recordFailure(ns: NamespaceKey): void {
 type ClientState =
   | { kind: "uninit" }
   | { kind: "probing"; promise: Promise<boolean> }
-  | { kind: "available"; client: Client }
+  | { kind: "available"; client: Client; transport: StdioClientTransport }
+  // L1B idle-close race fix: an in-between state entered the instant shutdown()
+  // decides to close an 'available' connection, held until `client.close()`
+  // settles. Exists so `ensureReady()` never hands a `safeCall` the client
+  // instance that `shutdown()` is in the middle of closing (see shutdown()'s
+  // and ensureReady()'s comments below for the full race this closes).
+  | { kind: "closing"; promise: Promise<void> }
   | { kind: "unavailable"; reason: string };
 
 let state: ClientState = { kind: "uninit" };
+
+// ─── Process lifecycle (L1B) ─────────────────────────────────────────────
+//
+// The l1a process inventory (.harness/evidence/eights-process-inventory.md)
+// found exactly two runtime paths that reach `probe()`/spawn a TheEights
+// child, and each leaks it a different way:
+//
+//   1. `pp-daemon mcp` (long-lived): torn down via `transport.onclose` /
+//      stdin "end" -> `shutdownAndExit` (util/shutdown.ts). That helper
+//      aborts CLI children and releases locks but never called
+//      `eights-client.shutdown()`, so a connected TheEights child outlived
+//      the pp-daemon process that spawned it.
+//   2. `pp-daemon hook <event> <name>` (short-lived): every handler ends in
+//      `reply()` -> `process.exit()` directly (hooks/dispatcher.ts) — a
+//      synchronous, immediate exit that cannot await any async cleanup at
+//      all, so `shutdownAndExit` is never even reachable from this path.
+//
+// Four mechanisms close both gaps with the smallest correct combination:
+//
+//   (a) IDLE AUTO-CLOSE — `scheduleIdleClose()`/`cancelIdleClose()` below.
+//       Fixes path 1's steady-state case: a long-lived `pp-daemon mcp`
+//       process that connects once and then sits idle between hook/tool
+//       invocations no longer holds the TheEights child open indefinitely;
+//       it self-closes after `PP_ECOSYSTEM_IDLE_CLOSE_MS` (config.ts,
+//       default 30s) of no in-flight `safeCall`. The timer is `.unref()`'d
+//       so its mere existence never keeps the daemon process alive.
+//   (b) REF/UNREF THE CHILD WHILE IDLE VS BUSY — `refChild()`/`unrefChild()`
+//       below, toggled around every `safeCall`. Fixes path 2's "script just
+//       returns from main" shape (see eights-lifecycle.unit.mjs case (i)):
+//       the MCP SDK's `StdioClientTransport` refs the spawned child and its
+//       stdio pipes by default, which alone would keep a short caller's
+//       event loop non-empty (and thus the process alive) even after its
+//       one fire-and-forget call resolves and `main()` returns — forcing
+//       every such caller to remember an explicit `process.exit()`. We
+//       unref the child + its pipes as soon as no call is in flight (and
+//       ref them back for the duration of each call, so an in-flight
+//       request is never starved of an event-loop tick), so a caller that
+//       does one call and returns exits naturally.
+//   (c) `shutdownAndExit` AWAITS `eights-client.shutdown()` WITH A BOUNDED
+//       TIMEOUT — see util/shutdown.ts. Fixes path 1's teardown case: the
+//       graceful MCP `client.close()` path (stdin end -> 2s SIGTERM grace ->
+//       SIGKILL, all with the SDK's own `.unref()`'d timers) now actually
+//       runs before the daemon process exits, instead of never running at
+//       all. The bound is a *separate* cap from `ABORT_TOTAL_CAP_MS` (CLI
+//       child abort) — a hung TheEights child must not extend or block that
+//       existing, already-tuned budget.
+//   (d) BEST-EFFORT SYNCHRONOUS KILL ON `process.exit` — the
+//       `process.on("exit", ...)` handler below. Fixes path 2 directly:
+//       since `reply()` calls `process.exit()` synchronously with no
+//       opportunity for `await`, the *only* place left to reach the child
+//       from a hook invocation is Node's synchronous `'exit'` event. This is
+//       deliberately best-effort (fire a signal, don't wait for confirmation
+//       — `'exit'` handlers cannot run async code) and is also registered as
+//       a backstop for path 1 in case (a)/(c) above ever leave a connection
+//       open at the moment the process actually exits (e.g. a hung
+//       `client.close()` that the (c) timeout gave up on).
+//
+// Explicitly NOT used: `spawn(..., { detached: false })`-style process-group
+// tricks, or killing by PID from a totally separate watchdog process. Both
+// add real complexity (process groups behave differently for `cross-spawn`
+// on Windows vs POSIX) to solve exactly the two paths above, which (a)-(d)
+// already cover with mechanisms already idiomatic to this codebase (unref'd
+// timers, bounded awaits, `process.on("exit")`).
+
+let idleCloseTimer: NodeJS.Timeout | null = null;
+let inFlightCallCount = 0;
+
+/**
+ * The MCP SDK's public `StdioClientTransport` type exposes only `.pid` and
+ * `.stderr` (see node_modules/@modelcontextprotocol/sdk/dist/esm/client/
+ * stdio.js) — there is no public API to unref, ref, or synchronously signal
+ * the spawned child. `_process` is a plain (TypeScript-private-only, not
+ * JS-private `#`) field on the class instance; reaching into it is the only
+ * way to implement (b) and (d) above. Guarded with try/catch and optional
+ * chaining everywhere it's used below: if a future SDK version renames or
+ * removes the field this silently degrades to a no-op (the mechanisms above
+ * stop firing) rather than throwing — never a crash, and never worse than
+ * pp's pre-L1B behavior.
+ */
+type UnderlyingChild = {
+  pid?: number;
+  kill?: (signal?: string) => boolean;
+  unref?: () => void;
+  ref?: () => void;
+  stdin?: { unref?: () => void; ref?: () => void } | null;
+  stdout?: { unref?: () => void; ref?: () => void } | null;
+  stderr?: { unref?: () => void; ref?: () => void } | null;
+};
+
+function underlyingChild(transport: StdioClientTransport): UnderlyingChild | null {
+  try {
+    // ANTI-PATTERN-OK: no public SDK accessor exists for the spawned child
+    // (see comment above); this is a deliberate, guarded reach into a known
+    // private field, not a shortcut around a typed API that already exists.
+    const child = (transport as unknown as { _process?: UnderlyingChild })._process;
+    return child ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/** (b): unref the connected child + its stdio pipes (no call in flight). */
+function unrefChild(): void {
+  if (state.kind !== "available") return;
+  const child = underlyingChild(state.transport);
+  if (!child) return;
+  try { child.unref?.(); } catch { /* ignore */ }
+  try { child.stdin?.unref?.(); } catch { /* ignore */ }
+  try { child.stdout?.unref?.(); } catch { /* ignore */ }
+  try { child.stderr?.unref?.(); } catch { /* ignore */ }
+}
+
+/** (b): ref the connected child + its stdio pipes (a call is in flight). */
+function refChild(): void {
+  if (state.kind !== "available") return;
+  refTransportChild(state.transport);
+}
+
+/**
+ * Ref the child behind a SPECIFIC transport, independent of the global
+ * `state`. closeAvailableClient() needs this: shutdown() installs the
+ * 'closing' state before the close starts, so refChild()'s
+ * `state.kind === "available"` guard would make it a no-op there and leave the
+ * awaited close with no ref'd handle keeping the event loop alive.
+ */
+function refTransportChild(transport: Extract<ClientState, { kind: "available" }>["transport"]): void {
+  const child = underlyingChild(transport);
+  if (!child) return;
+  try { child.ref?.(); } catch { /* ignore */ }
+  try { child.stdin?.ref?.(); } catch { /* ignore */ }
+  try { child.stdout?.ref?.(); } catch { /* ignore */ }
+  try { child.stderr?.ref?.(); } catch { /* ignore */ }
+}
+
+/** (a): cancel any pending idle-close timer (a call is starting). */
+function cancelIdleClose(): void {
+  if (idleCloseTimer) {
+    clearTimeout(idleCloseTimer);
+    idleCloseTimer = null;
+  }
+}
+
+/** (a): (re)arm the idle-close timer (no call is in flight). */
+function scheduleIdleClose(): void {
+  cancelIdleClose();
+  if (state.kind !== "available") return;
+  const ms = ecosystemIdleCloseMs();
+  const timer = setTimeout(() => {
+    idleCloseTimer = null;
+    // Belt-and-suspenders: only close if still idle and still connected —
+    // a call that started between scheduling and firing already cancelled
+    // this timer via cancelIdleClose(), but guard anyway against any future
+    // call site that forgets to.
+    if (inFlightCallCount === 0 && state.kind === "available") {
+      void shutdown();
+    }
+  }, ms);
+  timer.unref();
+  idleCloseTimer = timer;
+}
+
+/** (d): best-effort, synchronous — 'exit' handlers cannot await anything. */
+process.on("exit", () => {
+  if (state.kind !== "available") return;
+  const child = underlyingChild(state.transport);
+  const pid = child?.pid;
+  if (!pid) return;
+  try {
+    if (child?.kill) child.kill("SIGTERM");
+    else process.kill(pid, "SIGTERM");
+  } catch { /* best-effort: process may already be gone (ESRCH) */ }
+});
 
 /**
  * Read the current state without carrying TypeScript's narrowing from the
@@ -314,7 +497,176 @@ function resolveDaemonEntry(): { command: string; args: string[] } | null {
   return { command: "eights-daemon", args: ["mcp"] };
 }
 
+/**
+ * Lenient replacement for the SDK's `ListToolsResultSchema`. The stock schema
+ * (`types.js` `ToolSchema.inputSchema`) requires every listed tool's
+ * `inputSchema.type` to be the zod literal `"object"`. TheEights' hand-rolled
+ * `zodToJsonSchema` (daemon/src/mcp/zod-to-json.ts, TheEights repo) has no
+ * case for a top-level `ZodEffects` node — the shape produced by
+ * `z.object({...}).refine(...)` — and falls through to `default: return {}`,
+ * emitting an `inputSchema` with NO `type` field at all for
+ * `eights.evolution.register` (`RegisterArgs`, evolution.ts:24-38). One
+ * malformed tool anywhere in TheEights' ~60-tool surface then fails
+ * `client.listTools()`'s per-tool zod parse and throws, which `probe()`
+ * catches and reports as `unavailable` — indistinguishable from "daemon not
+ * running". We only need tool *names* to confirm the `eights.memory.*`
+ * surface is present, so we bypass the SDK's strict per-tool validation with
+ * our own name-only schema for this one call.
+ */
+const LenientListToolsResultSchema = z
+  .object({
+    tools: z.array(z.object({ name: z.string() }).passthrough()),
+  })
+  .passthrough();
+
+/**
+ * The subprocess env is an explicit, exact-name ALLOWLIST layered on top of
+ * the MCP SDK's own `getDefaultEnvironment()` baseline (a short OS-inherit
+ * safelist — on Windows: APPDATA/HOMEDRIVE/HOMEPATH/LOCALAPPDATA/PATH/
+ * PROCESSOR_ARCHITECTURE/SYSTEMDRIVE/SYSTEMROOT/TEMP/USERNAME/USERPROFILE/
+ * PROGRAMFILES) — NOT a full parent-env copy and NOT a prefix match.
+ * Forwarding the whole parent environment (or an open-ended `EIGHTS_*`
+ * prefix) would let any future `EIGHTS_`-prefixed secret or credential name
+ * pp doesn't know about leak into a third-party subprocess by construction;
+ * an exact list means adding a name is a deliberate, reviewable diff.
+ *
+ * Every name below is verified against TheEights' own source
+ * (`C:\AiAppDeployments\TheEights\daemon\src`, `grep -rnoE
+ * 'process\.env(\.|\[["'"'"'])EIGHTS_[A-Z_]+' daemon/src | sort -u`, run
+ * 2026-09-25 — this pattern catches BOTH `process.env.X` dot-access AND
+ * `process.env["X"]` / `process.env['X']` bracket-access reads; a dot-only
+ * pattern previously missed four bracket-access names, corrected here.
+ * Full output saved at `.harness/evidence/eights-env-inventory.txt`):
+ *
+ *   EIGHTS_ALLOW_CLOUD_PROVIDERS       (config.ts:37)
+ *   EIGHTS_DB_BLOAT_BYTES              (cognitive/memory-steward.ts:97)
+ *   EIGHTS_DISABLE_WATCHERS            (index.ts:277)
+ *   EIGHTS_EMBEDDING_DIM               (config.ts:33, embeddings.ts:25)
+ *   EIGHTS_EMBEDDING_MODEL             (embeddings.ts:24)
+ *   EIGHTS_EMBED_PROVIDER              (config.ts:35)
+ *   EIGHTS_EXEC_OUTPUT_ROOT            (engines/execsuite-watcher.ts:36)
+ *   EIGHTS_GRAPH_DRIVER                (config.ts:32)
+ *   EIGHTS_HOME                        (config.ts:23, index.ts:570, paths.ts:34)
+ *   EIGHTS_LLM_COMPLETIONS             (engines/eval/completer.ts:35)
+ *   EIGHTS_LLM_FALLBACK                (engines/eval/completer.ts:29)
+ *   EIGHTS_LLM_MODEL                   (engines/eval/completer.ts:28)
+ *   EIGHTS_LLM_PROVIDER                (config.ts:36)
+ *   EIGHTS_LOG_LEVEL                   (logger.ts:10)
+ *   EIGHTS_MEMORY_BLOAT_RATE_PER_HOUR  (cognitive/memory-steward.ts:98)
+ *   EIGHTS_MEMORY_BLOAT_ROWS           (cognitive/memory-steward.ts:96)
+ *   EIGHTS_MEM_GAUGE_MS                (index.ts:430)
+ *   EIGHTS_OLLAMA_TIMEOUT_MS           (embeddings.ts:28, engines/eval/completer.ts:32)
+ *   EIGHTS_OLLAMA_URL                  (embeddings.ts:23, engines/eval/completer.ts:27)
+ *   EIGHTS_OPERATOR_ACTOR_ID           (index.ts:356)
+ *   EIGHTS_OTEL_ENABLED                (index.ts:252)
+ *   EIGHTS_OTEL_ENDPOINT               (index.ts:253)
+ *   EIGHTS_PROVIDER                    (config.ts:34)
+ *   EIGHTS_RLM_ROOT                    (engines/rlm-watcher.ts:34)
+ *   EIGHTS_SKIP_AUDIT_CHECK            (index.ts:383, cognitive/audit-verifier.ts:49)
+ *   EIGHTS_TOOL_DEADLINE_MS            (index.ts:483)
+ *   EIGHTS_TOOL_SLOW_WARN_MS           (index.ts:484)
+ *   EIGHTS_XENIA_ROOT                  (engines/registrars/xenia-registrar.ts:28,
+ *                                       engines/xenia-watcher.ts:40)
+ *
+ * Plus `AIAPP_BASE` — TheEights' `paths.ts:83` reads it for ecosystem-relative
+ * path resolution (the AIAPP_BASE portability convention shared across the
+ * AiAppDeployments repos; see MEMORY project_aiapp_base_portability).
+ *
+ * Explicitly EXCLUDED, even though TheEights reads it: `HYDRA_OPERATOR_KEY`
+ * and `HYDRA_OPERATOR_KEY_ID` (TheEights `auth/capability.ts:150,159` —
+ * `deriveSigningKey()`/`configuredKeyId()`, used to mint/verify capability
+ * tokens). `HYDRA_OPERATOR_KEY` is a signing secret, not ecosystem
+ * configuration; forwarding it would hand the spawned subprocess the
+ * operator's capability-minting key. Before this allowlist existed the SDK's
+ * own default env (`getDefaultEnvironment()`) never forwarded it either — this
+ * is a defended exclusion, not a functional regression. If TheEights ever
+ * requires this daemon to mint capability tokens, that needs an explicit,
+ * separately-reviewed decision, not an accidental sweep-in via a namespace or
+ * prefix match.
+ *
+ * Everything else — credentials, unrelated API keys, other tools'
+ * configuration, and any `EIGHTS_`-prefixed name not cited above — is
+ * intentionally NOT forwarded. Adding a name to this list requires a fresh
+ * grep citation against TheEights' source, not just a prefix match.
+ */
+const EIGHTS_FORWARDED_ENV_VARS = Object.freeze([
+  "EIGHTS_ALLOW_CLOUD_PROVIDERS",
+  "EIGHTS_DB_BLOAT_BYTES",
+  "EIGHTS_DISABLE_WATCHERS",
+  "EIGHTS_EMBEDDING_DIM",
+  "EIGHTS_EMBEDDING_MODEL",
+  "EIGHTS_EMBED_PROVIDER",
+  "EIGHTS_EXEC_OUTPUT_ROOT",
+  "EIGHTS_GRAPH_DRIVER",
+  "EIGHTS_HOME",
+  "EIGHTS_LLM_COMPLETIONS",
+  "EIGHTS_LLM_FALLBACK",
+  "EIGHTS_LLM_MODEL",
+  "EIGHTS_LLM_PROVIDER",
+  "EIGHTS_LOG_LEVEL",
+  "EIGHTS_MEMORY_BLOAT_RATE_PER_HOUR",
+  "EIGHTS_MEMORY_BLOAT_ROWS",
+  "EIGHTS_MEM_GAUGE_MS",
+  "EIGHTS_OLLAMA_TIMEOUT_MS",
+  "EIGHTS_OLLAMA_URL",
+  "EIGHTS_OPERATOR_ACTOR_ID",
+  "EIGHTS_OTEL_ENABLED",
+  "EIGHTS_OTEL_ENDPOINT",
+  "EIGHTS_PROVIDER",
+  "EIGHTS_RLM_ROOT",
+  "EIGHTS_SKIP_AUDIT_CHECK",
+  "EIGHTS_TOOL_DEADLINE_MS",
+  "EIGHTS_TOOL_SLOW_WARN_MS",
+  "EIGHTS_XENIA_ROOT",
+  "AIAPP_BASE",
+]);
+
+function scopedEightsEnv(): Record<string, string> {
+  const env: Record<string, string> = { ...getDefaultEnvironment() };
+  for (const name of EIGHTS_FORWARDED_ENV_VARS) {
+    const v = process.env[name];
+    if (v !== undefined) env[name] = v;
+  }
+  return env;
+}
+
+/**
+ * Regression guard (cross-vendor judge finding, 2026-09-25): before the
+ * listTools() lenient-schema fix (1385c2c), probe() failed FAST against a
+ * real TheEights install because the strict schema threw on TheEights'
+ * malformed `eights.evolution.register` tool -- so pp's unit tests that
+ * exercise runs.ts code paths calling the eights-writes.ts fire-and-forget
+ * helpers (archiveArtifact/recordVerdict/finalizeRun -> memory.add etc.,
+ * never awaited) got "unavailable" near-instantly and moved on. Once probe()
+ * started tolerating the malformed schema, those same fire-and-forget calls
+ * could reach and actually CONNECT to a real TheEights daemon (the
+ * `C:\AiAppDeployments\TheEights` sibling-fallback in resolveDaemonEntry()
+ * step 4 exists on dev boxes) -- and because a fire-and-forget caller never
+ * calls `shutdown()`, the spawned child was left running, holding its
+ * parent `node --test` file's process alive past every synchronous
+ * assertion until the file's own test-runner timeout killed it. Reproduced
+ * directly: `[eights-daemon] booting pid=...` in a unit test's own log, with
+ * that pid still alive when node forcibly cancelled the file.
+ *
+ * `PP_ECOSYSTEM_DISABLED=1` short-circuits probe() to "unavailable" before
+ * `resolveDaemonEntry()` is even called -- no transport is constructed, no
+ * subprocess is spawned, period. `scripts/run-tests.mjs` sets this for the
+ * batched `*.unit.mjs` run (alongside its existing PP_DB_PATH/PP_HOME
+ * scrub); a unit test that legitimately needs to exercise probe() against a
+ * fixture or a real daemon (eights-client-listtools.unit.mjs,
+ * eights-integration.smoke.mjs) explicitly clears it first, the same way
+ * those files already set PP_EIGHTS_DAEMON before importing dist/.
+ */
+const ECOSYSTEM_DISABLED_REASON = "ecosystem probe disabled (PP_ECOSYSTEM_DISABLED=1)";
+function ecosystemProbeDisabled(): boolean {
+  return process.env.PP_ECOSYSTEM_DISABLED === "1";
+}
+
 async function probe(): Promise<boolean> {
+  if (ecosystemProbeDisabled()) {
+    state = { kind: "unavailable", reason: ECOSYSTEM_DISABLED_REASON };
+    return false;
+  }
   const entry = resolveDaemonEntry();
   if (!entry) {
     state = { kind: "unavailable", reason: "no eights-daemon entry resolved" };
@@ -325,20 +677,36 @@ async function probe(): Promise<boolean> {
     transport = new StdioClientTransport({
       command: entry.command,
       args: entry.args,
+      env: scopedEightsEnv(),
     });
     const client = new Client(
       { name: "pp-daemon-eights-client", version: "0.1.0" },
       { capabilities: {} }
     );
-    const connectPromise = client.connect(transport);
-    const timeout = new Promise<never>((_resolve, reject) =>
-      setTimeout(() => reject(new Error("probe timeout")), ECOSYSTEM_PROBE_TIMEOUT_MS)
-    );
-    await Promise.race([connectPromise, timeout]);
+    const probeTimeoutMs = ecosystemProbeTimeoutMs();
+    // L1B: previously a raw `Promise.race([connectPromise, timeout])` whose
+    // `timeout` promise's `setTimeout` was NEVER cleared when `connectPromise`
+    // won the race — a real, non-`.unref()`'d timer left running for the
+    // full `probeTimeoutMs` (production default 3000ms, but test suites that
+    // widen it for concurrent-spawn tolerance push this well past 10s) after
+    // every successful connect. On its own this only delayed process exit by
+    // a few seconds, but combined with mechanism (b) below (which correctly
+    // unrefs the child) a short-lived caller would still hang until this
+    // stray timer fired — `withTimeout()` (defined below) already clears its
+    // internal timer via `clearTimeout` in both the resolve and reject
+    // branches, so reusing it here closes the leak the same way `probe()`'s
+    // own `tools/list` call two lines down already relies on it.
+    await withTimeout(client.connect(transport), probeTimeoutMs);
     // Sanity-check: listTools must include at least one eights.memory.* tool.
     // TheEights namespaces every tool under `eights.*` (canonical since v0.2.0),
-    // so the memory surface presents as `eights.memory.add` etc.
-    const tools = await withTimeout(client.listTools(), ECOSYSTEM_PROBE_TIMEOUT_MS);
+    // so the memory surface presents as `eights.memory.add` etc. Uses the raw
+    // request + lenient schema above (see comment) instead of
+    // `client.listTools()` so one malformed tool elsewhere in TheEights'
+    // surface can't fail the whole probe.
+    const tools = await withTimeout(
+      client.request({ method: "tools/list", params: {} }, LenientListToolsResultSchema),
+      probeTimeoutMs
+    );
     const names = (tools.tools ?? []).map(t => t.name);
     const hasMemory = names.some(n => n.startsWith(`${EIGHTS_TOOL_PREFIX}memory.`));
     if (!hasMemory) {
@@ -346,8 +714,14 @@ async function probe(): Promise<boolean> {
       try { await client.close(); } catch { /* ignore */ }
       return false;
     }
-    state = { kind: "available", client };
+    state = { kind: "available", client, transport };
     log.info({ tool_count: names.length }, "eights-client: connected");
+    // (b)/(a): freshly connected, no call in flight yet — unref immediately
+    // and arm the idle-close timer so a caller that never issues another
+    // call (or a script that does one and returns) doesn't keep this
+    // process alive on the strength of the eights child alone.
+    unrefChild();
+    scheduleIdleClose();
     return true;
   } catch (err) {
     const reason = (err as Error)?.message ?? "unknown error";
@@ -364,6 +738,17 @@ async function ensureReady(): Promise<Client | null> {
   const s0 = currentState();
   if (s0.kind === "available") return s0.client;
   if (s0.kind === "unavailable") return null;
+  if (s0.kind === "closing") {
+    // L1B idle-close race fix: a shutdown (idle-timer-triggered or explicit)
+    // is in flight against the connection we'd otherwise have reused. Never
+    // hand out that closing client — await the same close the closer is
+    // already awaiting, then re-probe fresh once the old connection is
+    // actually gone. Recursing (rather than inlining) means a second
+    // shutdown or probe racing in during the await is handled by the same
+    // state-machine rules a fresh ensureReady() call would apply anyway.
+    await s0.promise;
+    return ensureReady();
+  }
   if (s0.kind === "probing") {
     await s0.promise;
     const s1 = currentState();
@@ -392,6 +777,12 @@ async function safeCall<T = unknown>(
   if (isBreakerOpen(ns)) return null;
   const client = await ensureReady();
   if (!client) return null;
+  // (a)/(b): a call is starting — cancel the idle-close timer and ref the
+  // child back so this in-flight request is never starved of an event-loop
+  // tick or raced by a self-close. Always restored in `finally` below.
+  cancelIdleClose();
+  refChild();
+  inFlightCallCount += 1;
   try {
     const result = await withTimeout(
       client.callTool({ name: eightsTool(toolName), arguments: args }),
@@ -412,6 +803,14 @@ async function safeCall<T = unknown>(
     recordFailure(ns);
     log.debug({ tool: toolName, err: (err as Error)?.message }, "eights-client: tool call failed");
     return null;
+  } finally {
+    // (a)/(b): call settled — if nothing else is in flight, unref the child
+    // again and re-arm the idle-close timer.
+    inFlightCallCount = Math.max(0, inFlightCallCount - 1);
+    if (inFlightCallCount === 0) {
+      unrefChild();
+      scheduleIdleClose();
+    }
   }
 }
 
@@ -431,12 +830,117 @@ export async function isAvailable(): Promise<boolean> {
   return c !== null;
 }
 
+/**
+ * Close an 'available' connection. Split out of `shutdown()` so the caller
+ * can install the returned promise onto a `{ kind: "closing" }` state BEFORE
+ * awaiting it — see `shutdown()` below for why that ordering is load-bearing.
+ */
+async function closeAvailableClient(s: Extract<ClientState, { kind: "available" }>): Promise<void> {
+  // (b): re-ref the child for the duration of this awaited close. If the
+  // connection was idle (the common case — shutdown() is usually called with
+  // no call in flight), (a)/(b) already unref'd the child; without
+  // re-referencing it here, this awaited `close()` races against Node's own
+  // "nothing left ref'd, may as well finish the tick" exit heuristic and can
+  // lose — the caller's `await shutdown()` would then never observe the
+  // graceful close complete even though the underlying 'close' event does
+  // eventually fire. Ref by transport, not via refChild(): `state` already
+  // reads 'closing' here (see shutdown()), which refChild() would ignore.
+  refTransportChild(s.transport);
+  // client.close() -> transport.close() already performs the graceful
+  // stdin-end -> 2s SIGTERM grace -> 2s SIGKILL fallback sequence with its
+  // own .unref()'d timers (MCP SDK stdio.js) — no separate kill needed here
+  // on the happy path; mechanism (d) is strictly the backstop for when this
+  // await never runs at all (the hook `process.exit()` path).
+  beforeClientCloseHookForTesting?.(currentState().kind);
+  try { await s.client.close(); } catch { /* ignore */ }
+}
+
+/**
+ * TEST-ONLY seam: invoked with `state.kind` at the instant client.close() is
+ * about to be called, so a test can prove the 'closing' state is installed
+ * BEFORE the close starts (not merely before shutdown() first yields). Null
+ * in production; never set outside daemon/test.
+ */
+let beforeClientCloseHookForTesting: ((stateKind: ClientState["kind"]) => void) | null = null;
+export function setBeforeClientCloseHookForTesting(fn: ((stateKind: ClientState["kind"]) => void) | null): void {
+  beforeClientCloseHookForTesting = fn;
+}
+
 /** Force-close the underlying MCP connection (used at daemon shutdown / tests). */
 export async function shutdown(): Promise<void> {
-  if (state.kind === "available") {
-    try { await state.client.close(); } catch { /* ignore */ }
+  // (a): whether this call came from the idle timer firing or an explicit
+  // caller (shutdownAndExit, a test), cancel any pending timer so it can't
+  // fire again against the now-reset state.
+  cancelIdleClose();
+  // L1B idle-close race fix (final-judge finding): the previous version set
+  // `state = { kind: "uninit" }` only AFTER `await state.client.close()`
+  // resolved, so for the entire duration of that await `state.kind` was
+  // still `"available"` — any `safeCall` whose `ensureReady()` ran during
+  // that window read `s0.kind === "available"` and was hand-back the very
+  // client instance this function is in the middle of closing. That call
+  // then failed against the closing/closed transport, `safeCall`'s catch
+  // block recorded a namespace breaker failure, and its `finally` re-armed
+  // `scheduleIdleClose()` — a race entirely invisible to callers.
+  //
+  // Fix: move `state` OUT of `"available"` (to `"closing"`, carrying the
+  // close promise) in the same synchronous tick that reads it, BEFORE the
+  // first `await` on `client.close()`. JS's single-threaded execution means
+  // no other code can observe `"available"` for this connection once this
+  // assignment runs — `ensureReady()` (above) checks for `"closing"` and
+  // awaits the same promise instead of reading a stale client.
+  //
+  // Also: the previous version unconditionally did `inFlightCallCount = 0`
+  // here, even when a live `safeCall` had incremented it and was still
+  // in-flight (its own `finally` block reads/decrements the same counter).
+  // That's removed — a live call's own `finally` is the only writer that
+  // should ever decrement `inFlightCallCount` for that call. The idle timer
+  // itself already refuses to invoke `shutdown()` at all while
+  // `inFlightCallCount > 0` (see `scheduleIdleClose()`'s callback above), so
+  // an idle fire during an in-flight call never reaches this function in the
+  // first place; an *explicit* `shutdown()` (shutdownAndExit, a test) racing
+  // a live call is allowed to proceed and close the connection out from
+  // under it, same as before this fix — that call's own timeout/catch
+  // handles the resulting failure, which is a pre-existing, orthogonal
+  // behavior this fix does not change.
+  const s = currentState();
+  if (s.kind === "closing") {
+    // Someone else (the idle timer, a concurrent explicit shutdown() call)
+    // already initiated the close this call would otherwise duplicate.
+    // Await the same promise instead of racing a second `client.close()`;
+    // the initiator owns the transition back to 'uninit'.
+    await s.promise;
+  } else if (s.kind === "available") {
+    // Install the 'closing' state BEFORE client.close() is even invoked
+    // (cross-vendor review, 2026-10-03): calling closeAvailableClient(s)
+    // directly would run it synchronously up to its first await, i.e. start
+    // client.close() — and any synchronous transport/close callback — while
+    // `state` still read 'available'. So the 'closing' promise is created up
+    // front with a deferred resolver, `state` is assigned, and only THEN is the
+    // close started — still synchronously, so closeAvailableClient()'s
+    // refChild() keeps the event loop alive for the awaited close. (Deferring
+    // the close to a microtask instead was tried and left awaiters with no
+    // ref'd handle: node:test reported 'Promise resolution is still pending
+    // but the event loop has already resolved'.) `finally` settles the
+    // promise even if the close path throws, so `state` can never be stranded
+    // in 'closing'.
+    let settleClosing!: () => void;
+    const closePromise = new Promise<void>((resolve) => { settleClosing = resolve; });
+    const closing: Extract<ClientState, { kind: "closing" }> = { kind: "closing", promise: closePromise };
+    state = closing;
+    try {
+      await closeAvailableClient(s);
+    } catch {
+      /* close errors are already swallowed inside; never strand state */
+    } finally {
+      settleClosing();
+    }
+    // Flip to 'uninit' ONLY if `state` is still the closing state this call
+    // installed. The previous check (`kind === "closing" || kind === "available"`)
+    // would clobber a fresh connection that a concurrent ensureReady() probe
+    // established after the close settled — dropping that new client without
+    // closing it and leaking its TheEights child.
+    if (state === closing) state = { kind: "uninit" };
   }
-  state = { kind: "uninit" };
   for (const ns of Object.keys(breakers) as NamespaceKey[]) {
     breakers[ns].consecutive_failures = 0;
     breakers[ns].tripped_until_ms = null;
@@ -449,6 +953,35 @@ export function resetBreakersForTesting(): void {
     breakers[ns].consecutive_failures = 0;
     breakers[ns].tripped_until_ms = null;
   }
+}
+
+/**
+ * Diagnostics-only accessor for a namespace breaker's current counters (test
+ * hook, same pattern as `resetBreakersForTesting`/`getConnectedDaemonPidForTesting`
+ * below). Used by the idle-close race regression test to assert a `safeCall`
+ * that raced an expiring idle close recorded zero breaker failures.
+ */
+export function getBreakerStateForTesting(ns: NamespaceKey): { consecutive_failures: number; tripped_until_ms: number | null } {
+  return { ...breakers[ns] };
+}
+
+/**
+ * Diagnostics-only accessor for the current in-flight `safeCall` count (test
+ * hook). Used by the idle-close race regression test to assert an idle timer
+ * firing while a call is in flight does not proceed to close the client.
+ */
+export function getInFlightCallCountForTesting(): number {
+  return inFlightCallCount;
+}
+
+/**
+ * Diagnostics-only accessor for the currently-connected daemon subprocess's
+ * PID, or `null` if no connection is established. Used by
+ * eights-integration.smoke.mjs to prove the spawned child is actually
+ * terminated (not just orphaned) after a mid-test failure triggers cleanup.
+ */
+export function getConnectedDaemonPidForTesting(): number | null {
+  return state.kind === "available" ? (state.transport.pid ?? null) : null;
 }
 
 export const memory = {

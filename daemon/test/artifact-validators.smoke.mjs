@@ -135,8 +135,50 @@ async function main() {
   // src/util/paths.ts) can never leak the OPERATOR'S REAL
   // ~/.pair-programmer/state.db into this run (observed: 22 leaked
   // 'av-smoke' runs from the old PP_HOME-only override).
+  //
+  // isolatedChildEnv only scrubs the two PP ledger-location vars (PP_DB_PATH/
+  // PP_HOME) -- it does NOT touch HOME/USERPROFILE or EIGHTS_HOME, so this
+  // spawned `pp-daemon mcp` still inherits the OPERATOR'S REAL HOME (L1B
+  // final-judge finding, 2026-09-26). This test exercises the artifact
+  // validators (ADR lint, markdown/PlantUML render) only -- it never asserts
+  // anything about TheEights -- but every archiveArtifact/finalize call it
+  // drives fires eights-writes.ts's fire-and-forget cells.classify/memory.add
+  // calls (runs.ts:3462 `void writeArtifactMemory`, etc.) into
+  // eights-client.ts's ensureReady()/probe(). With no PP_EIGHTS_DAEMON/
+  // EIGHTS_HOME override, resolveDaemonEntry() (eights-client.ts:446-481)
+  // falls through past the (absent, on this box) `~/.eights` install to
+  // step 4's well-known sibling check, finds the real dev checkout at
+  // `C:\AiAppDeployments\TheEights\daemon\dist\index.js`, and spawns it --
+  // which itself resolves its OWN state home as
+  // `process.env.EIGHTS_HOME ?? join(homedir(), ".eights")`
+  // (TheEights `daemon/src/config.ts:23`) -- i.e. the operator's REAL
+  // `~/.eights`, since EIGHTS_HOME is unset here too. A real hermeticity
+  // breach: this smoke can read/write the operator's actual TheEights state.
+  //
+  // Separately, this connection to a REAL (heavier, full-featured) TheEights
+  // daemon combined with L1B's idle-close (`PP_ECOSYSTEM_IDLE_CLOSE_MS`,
+  // default 30s) means a smoke run this long (230-300s observed) repeatedly
+  // disconnects and reconnects — spawning a brand-new real TheEights child
+  // process every time the ~30s idle gap between fire-and-forget eights
+  // writes elapses — for the run's entire duration. That reconnect churn is
+  // the L1B-caused contributor to the observed `McpError -32001` (60s MCP
+  // client request timeout) after 'c4_render (markdown without PlantUML)':
+  // resource contention from repeated real-daemon spawns degraded this
+  // process's responsiveness enough to blow the unrelated tool call's
+  // client-side timeout (confirmed: PP_ECOSYSTEM_IDLE_CLOSE_MS=999999999 —
+  // no reconnect ever fires within the run — passed, as did the pre-L1B
+  // base, which never had a reconnecting idle-close path at all).
+  //
+  // Fix: this smoke doesn't test TheEights integration (eights-integration.
+  // smoke.mjs, gated on PP_LIVE_EIGHTS=1, is the one that does) --
+  // PP_ECOSYSTEM_DISABLED=1 short-circuits eights-client.ts's probe() before
+  // resolveDaemonEntry() is even called (see eights-client.ts's
+  // ECOSYSTEM_DISABLED_REASON / ecosystemProbeDisabled()), so no transport is
+  // constructed and no subprocess — real or otherwise — is spawned, for
+  // either concern (hermeticity AND the L1B reconnect-churn timeout risk) in
+  // one line.
   const { env: daemonEnv, ppHome } = isolatedChildEnv({
-    extra: { EIGHTS_SKIP_AUDIT_CHECK: "1" },
+    extra: { EIGHTS_SKIP_AUDIT_CHECK: "1", PP_ECOSYSTEM_DISABLED: "1" },
     prefix: "pp-av-smoke-home-",
   });
   const transport = new StdioClientTransport({

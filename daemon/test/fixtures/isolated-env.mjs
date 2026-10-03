@@ -57,19 +57,67 @@ export function makeTempLedger(prefix = "pp-isolated-") {
  * schema-migration fixture; that explicit intent always wins over this
  * helper's default temp ledger).
  *
+ * L1B TheEights-hermeticity finding (2026-09-26): this helper only ever
+ * scrubbed/relocated the two PP LEDGER-location vars. It never touched
+ * `HOME`/`USERPROFILE`/`EIGHTS_HOME`, so every spawned child built through it
+ * inherited the OPERATOR'S REAL `HOME`. `eights-client.ts`'s
+ * `resolveDaemonEntry()` then fell through to the well-known sibling
+ * TheEights checkout (when present, e.g. on this dev box) and that spawned
+ * REAL TheEights defaulted its OWN state home to the operator's REAL
+ * `~/.eights` too (TheEights `config.ts:23`,
+ * `process.env.EIGHTS_HOME ?? join(homedir(), ".eights")`). See
+ * `.harness/evidence/l1b-artifact-validators-smoke-eights-hermeticity.md`
+ * for the full file:line inventory of every call site this affected.
+ *
+ * Default (no `eights` option, the overwhelming majority of call sites,
+ * none of which assert anything about TheEights): sets
+ * `PP_ECOSYSTEM_DISABLED=1` in the built env. This short-circuits
+ * `eights-client.ts`'s `probe()` to `"unavailable"` BEFORE
+ * `resolveDaemonEntry()` is even called -- no transport is constructed, no
+ * subprocess (real TheEights or otherwise) is ever spawned by the child this
+ * env is handed to, full stop. This is a stronger guarantee than merely
+ * redirecting `EIGHTS_HOME`: a wrong/leftover `PP_EIGHTS_DAEMON` pointing at
+ * a bogus path, or a live daemon that's slow to fail, can't matter if the
+ * probe itself never runs.
+ *
+ * Explicit opt-in, `eights: { enabled: true }`, for the rare caller that
+ * legitimately DOES want a live eights-client connection (currently: none of
+ * the `isolatedChildEnv()` call sites -- `eights-integration.smoke.mjs`,
+ * gated on `PP_LIVE_EIGHTS=1`, and the fake-eights-daemon-fixture unit tests
+ * set `PP_EIGHTS_DAEMON`/manage `PP_ECOSYSTEM_DISABLED` directly on their OWN
+ * process instead of going through this helper, so they are unaffected by
+ * this default either way). Opting in never falls back to the real
+ * `~/.eights`: unless the caller's `extra` already pins its own
+ * `PP_EIGHTS_DAEMON`/`EIGHTS_HOME`, this sets `EIGHTS_HOME` to a fresh
+ * isolated temp directory (or `eights.eightsHome` if supplied).
+ *
  * Returns { env, ppHome, ppDbPath } -- callers that also need to open the
  * daemon's own SQLite file directly (bypassing the MCP tool layer) must use
  * the returned `ppDbPath`, never `process.env.PP_DB_PATH`.
  */
-export function isolatedChildEnv({ ppHome, ppDbPath, extra = {}, base = process.env, prefix } = {}) {
+export function isolatedChildEnv({ ppHome, ppDbPath, extra = {}, base = process.env, prefix, eights } = {}) {
   const temp = ppHome && ppDbPath ? { ppHome, ppDbPath } : makeTempLedger(prefix);
+  const eightsOpts = eights ?? {};
+  const env = {
+    ...scrubLedgerEnv(base),
+    PP_HOME: temp.ppHome,
+    PP_DB_PATH: temp.ppDbPath,
+  };
+  if (eightsOpts.enabled) {
+    // An ambient PP_ECOSYSTEM_DISABLED=1 may already be sitting in `base`
+    // (e.g. scripts/run-tests.mjs sets it process-wide around the batched
+    // *.unit.mjs run) -- explicit opt-in must actually re-enable the probe,
+    // not silently inherit a disable that predates this call.
+    delete env.PP_ECOSYSTEM_DISABLED;
+    if (!("PP_EIGHTS_DAEMON" in extra) && !("EIGHTS_HOME" in extra)) {
+      env.EIGHTS_HOME = eightsOpts.eightsHome ?? mkdtempSync(join(tmpdir(), "pp-isolated-eights-home-"));
+    }
+  } else {
+    env.PP_ECOSYSTEM_DISABLED = "1";
+  }
+  Object.assign(env, extra);
   return {
-    env: {
-      ...scrubLedgerEnv(base),
-      PP_HOME: temp.ppHome,
-      PP_DB_PATH: temp.ppDbPath,
-      ...extra,
-    },
+    env,
     ppHome: temp.ppHome,
     ppDbPath: temp.ppDbPath,
   };
