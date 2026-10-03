@@ -1,7 +1,7 @@
 import { nanoid } from "nanoid";
 import { createHash } from "node:crypto";
 import { mkdirSync, writeFileSync, statSync, existsSync, readFileSync, realpathSync } from "node:fs";
-import { join, relative, dirname, extname, resolve } from "node:path";
+import { join, relative, dirname, extname, resolve, isAbsolute } from "node:path";
 import { trackedExeca, SpawnRefusedError, isShuttingDown } from "../mcp/cli-runner.js";
 import YAML from "yaml";
 import { db, txImmediate, txImmediateWithRetry } from "../db/database.js";
@@ -3547,11 +3547,49 @@ function activeCandidateWorktrees(run_id: string): string[] {
   return out;
 }
 
+/**
+ * True iff `child` resolves to a path strictly INSIDE `parent` (not equal to
+ * it), with filesystem-appropriate case semantics: `path.relative` compares
+ * case-insensitively under win32 and case-sensitively under posix. Unlike
+ * isInside() below (which lowercases unconditionally, fine for its
+ * worktree-exclusion use), this is the SECURITY containment check for
+ * archiveArtifact: on a case-sensitive filesystem "../RUN_ABC/x" from
+ * ".harness/run_abc" is a different directory and must be refused
+ * (cross-vendor review, 2026-10-03). `pathMod` is injectable so tests can
+ * prove posix and win32 semantics deterministically on either OS.
+ */
+export function isPathContainedIn(
+  child: string,
+  parent: string,
+  pathMod: Pick<typeof import("node:path"), "resolve" | "relative" | "isAbsolute"> = { resolve, relative, isAbsolute },
+): boolean {
+  const rel = pathMod.relative(pathMod.resolve(parent), pathMod.resolve(child));
+  return rel !== "" && rel !== ".." && !rel.startsWith(".." + "/") && !rel.startsWith(".." + "\\") && !pathMod.isAbsolute(rel);
+}
+
 function isInside(child: string, parent: string): boolean {
   const norm = (s: string) => s.replaceAll("\\", "/").replace(/\/$/, "");
   const c = norm(child).toLowerCase();
   const p = norm(parent).toLowerCase();
   return c === p || c.startsWith(p + "/");
+}
+
+/**
+ * Strip a SINGLE leading redundant ".harness/<runId>/" prefix from a
+ * caller-supplied relative_path. Callers sometimes pass a relative_path that
+ * already carries the ".harness/<run_id>/" segment projectArtifactDir() will
+ * prepend, which produced a doubled ".harness/<id>/.harness/<id>/" path on disk.
+ *
+ * - Strips AT MOST ONE leading prefix (a doubly-redundant input keeps one).
+ * - The match is exact and run-id-scoped: ".harness/<other_run_id>/" and
+ *   ".harness-notes/<runId>/" are returned unchanged.
+ * - Either "/" or "\" is accepted as the separator in the prefix.
+ * - A non-redundant path (e.g. "code/winner.diff") is returned unchanged.
+ */
+export function normalizeArtifactRelPath(runId: string, relPath: string): string {
+  const escaped = runId.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const m = new RegExp(`^\\.harness[/\\\\]${escaped}[/\\\\]`).exec(relPath);
+  return m ? relPath.slice(m[0].length) : relPath;
 }
 
 export function archiveArtifact(input: ArchiveArtifactInput): ArchiveArtifactOutput {
@@ -3593,8 +3631,26 @@ export function archiveArtifact(input: ArchiveArtifactInput): ArchiveArtifactOut
     .get(input.run_id) as { project_path: string } | undefined;
   if (!run) throw new Error(`run ${input.run_id} not found`);
 
+  // Strip a redundant ".harness/<run_id>/" prefix BEFORE joining so it is not
+  // doubled on disk. The candidate-worktree containment guard below still runs
+  // on the normalized absolute path.
+  const normalizedRelPath = normalizeArtifactRelPath(input.run_id, input.relative_path);
   const dir = projectArtifactDir(run.project_path, input.run_id);
-  const absolute = join(dir, input.relative_path);
+  const absolute = join(dir, normalizedRelPath);
+
+  // Containment guard (cross-vendor review, 2026-10-03): the final absolute
+  // path MUST stay under this run's artifact dir. relative_path is only
+  // `z.string().min(1)` at the MCP boundary, so "../../x" (or, after prefix
+  // normalization, ".harness/<runId>/../../x") would otherwise write outside
+  // .harness/<run_id>/. Checked before any filesystem access.
+  if (!isPathContainedIn(absolute, dir)) {
+    throw new ArchiveArtifactPathError(
+      `archive_artifact rejected: relative_path "${input.relative_path}" resolves to ${resolve(absolute)}, ` +
+      `which is outside the run's artifact directory ${resolve(dir)}. Archive paths must stay under .harness/<run_id>/.`,
+      resolve(absolute),
+      resolve(dir),
+    );
+  }
   const relPath = relative(run.project_path, absolute).replaceAll("\\", "/");
 
   // Path guard: refuse archives that resolve INSIDE an active candidate
@@ -3607,7 +3663,7 @@ export function archiveArtifact(input: ArchiveArtifactInput): ArchiveArtifactOut
   for (const wt of worktrees) {
     if (isInside(absolute, wt)) {
       throw new ArchiveArtifactPathError(
-        `archive_artifact rejected: relative_path "${input.relative_path}" resolves to ${absolute}, which is inside candidate worktree ${wt}. ` +
+        `archive_artifact rejected: relative_path "${normalizedRelPath}" resolves to ${absolute}, which is inside candidate worktree ${wt}. ` +
         `Archive paths must live under .harness/<run_id>/ but OUTSIDE any candidate worktree. ` +
         `The candidate's source belongs in the worktree itself (delivered via git merge); archive only run-level metadata (run.summary.md, INDEX.md, code/winner.diff, code/losers/*).`,
         absolute,

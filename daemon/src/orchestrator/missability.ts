@@ -259,13 +259,19 @@ export const CHECK_DEFINITIONS: Array<{
     // it runs even when 4.10 isn't explicitly mapped.
     triggers: (k, s) => s.has("4.10") || k.has("browser_validation_report"),
     evaluate: ts => {
-      const reports = ts.filter(a =>
+      const allReports = ts.filter(a =>
         a.kind === "browser_validation_report"
         || /\/browser-validation\/report\.md$/.test(a.path)
       );
-      if (reports.length === 0) {
+      if (allReports.length === 0) {
         return { status: "fail", evidence: "no browser_validation_report artifact in run" };
       }
+      // A re-run of a browser_validation stage supersedes that stage's earlier
+      // report, so only the LATEST report per stage_id is evaluated -- a stale
+      // severity=errors report must not fail a run whose re-validation is clean.
+      // Every outcome below (errors, unavailable, ok, not_applicable, and the
+      // unparseable fallback) reads this superseded-filtered set.
+      const reports = latestReportPerStage(allReports);
       const blocking = reports.find(r => /^severity:\s*errors\b/im.test(r.text));
       if (blocking) {
         return { status: "fail", evidence: `${blocking.path}: severity=errors` };
@@ -675,7 +681,34 @@ type ArtifactBundle = {
   // (after the project_path → .harness/<run_id> → evidence_ref cascade).
   // null when no candidate yielded content.
   resolved_from?: string | null;
+  // Owning stage and archive time, used to scope recency-sensitive checks
+  // (browser-validation-evidence) to the latest artifact per stage. Optional so
+  // direct callers of evaluate() may omit them: a missing/null stage_id is its
+  // own scope, and a missing created_at sorts as oldest.
+  stage_id?: string | null;
+  created_at?: string;
 };
+
+/**
+ * Keep only the most recent artifact per stage scope. Artifacts with a null or
+ * missing stage_id share ONE run-level scope (cross-vendor review, 2026-10-03:
+ * keeping every null-stage report let a stale run-level `severity: errors`
+ * from an earlier attempt fail the run, which is exactly the BUG-2 defect this
+ * selection exists to fix). Recency is created_at (ISO-8601, so lexical order
+ * is chronological); on a created_at tie the LATER element in `items` wins,
+ * which is insertion (rowid) order for bundles built by runMissabilityChecks.
+ * Output preserves the input order of the survivors.
+ */
+const RUN_LEVEL_SCOPE = "\u0000run-level";
+function latestReportPerStage(items: ArtifactBundle[]): ArtifactBundle[] {
+  const scopeOf = (a: ArtifactBundle) => a.stage_id ?? RUN_LEVEL_SCOPE;
+  const latest = new Map<string, ArtifactBundle>();
+  for (const a of items) {
+    const prev = latest.get(scopeOf(a));
+    if (!prev || (a.created_at ?? "") >= (prev.created_at ?? "")) latest.set(scopeOf(a), a);
+  }
+  return items.filter(a => latest.get(scopeOf(a)) === a);
+}
 
 /**
  * Return the body text under the first markdown heading matching `headingRe`,
@@ -800,8 +833,14 @@ export function runMissabilityChecks(opts: {
   if (!run) throw new Error(`run ${opts.run_id} not found`);
 
   const artifactRows = db()
-    .prepare(`SELECT path, kind, evidence_ref FROM artifacts WHERE run_id = ?`)
-    .all(opts.run_id) as Array<{ path: string; kind: string | null; evidence_ref: string | null }>;
+    .prepare(
+      `SELECT path, kind, evidence_ref, stage_id, created_at FROM artifacts
+       WHERE run_id = ? ORDER BY created_at ASC, rowid ASC`,
+    )
+    .all(opts.run_id) as Array<{
+      path: string; kind: string | null; evidence_ref: string | null;
+      stage_id: string | null; created_at: string;
+    }>;
 
   // R3-tail Fix 1.2 (2026-05-21): resolve artifact text through a 3-step
   // cascade so checks don't silently fail when the artifact was archived
@@ -836,7 +875,7 @@ export function runMissabilityChecks(opts: {
         }
       } catch { /* ignore */ }
     }
-    return { path: r.path, kind: r.kind, text, resolved_from: resolvedFrom };
+    return { path: r.path, kind: r.kind, text, resolved_from: resolvedFrom, stage_id: r.stage_id, created_at: r.created_at };
   });
 
   const artifactKinds = new Set(artifactRows.map(r => r.kind ?? "").filter(Boolean));
