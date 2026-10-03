@@ -767,9 +767,9 @@ const TOOLS: ToolDef[] = [
       "the run's block is present, so calling this before a later default-path finalize_run (without master_plan_applied) " +
       "does not duplicate content. Returns {run_id, path, created, sections: [{section, status, patch_id | error}]}.",
     schema: ApplyRunMasterPlanSchema,
-    handler: (args) => {
+    handler: async (args) => {
       const p = ApplyRunMasterPlanSchema.parse(args);
-      return applyRunMasterPlan(p.run_id, p.target_dir);
+      return await applyRunMasterPlan(p.run_id, p.target_dir);
     },
   },
   {

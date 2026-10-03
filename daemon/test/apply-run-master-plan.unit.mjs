@@ -34,6 +34,8 @@
  *     of the project.
  *   - git spawnable but `rev-parse --git-common-dir` erroring: also fails
  *     closed for an otherwise-valid worktree.
+ *   - Shutdown: the git probe runs through trackedExeca, so once spawns are
+ *     refused the SpawnRefusedError propagates and nothing is written.
  *
  * Anti-stall contract:
  *   - Uses a temp sqlite DB (setIsolatedProcessEnv), direct dist function calls.
@@ -221,7 +223,7 @@ describe("apply_run_master_plan: writes into a linked git worktree", () => {
     // project_path has no PROJECT_MASTER.md yet.
     assert.equal(existsSync(masterPlanFile(repo)), false);
 
-    const result = runs.applyRunMasterPlan(run_id, wt);
+    const result = await runs.applyRunMasterPlan(run_id, wt);
     assert.equal(result.run_id, run_id);
     assert.ok(result.sections.some(s => s.status === "applied"));
 
@@ -249,7 +251,7 @@ describe("apply_run_master_plan: writes into a linked git worktree", () => {
 
     const run_id = await insertRun({ project_path: repo });
     await insertArtifact(run_id, "4.6");
-    runs.applyRunMasterPlan(run_id, wt);
+    await runs.applyRunMasterPlan(run_id, wt);
 
     const after = readFileSync(masterPlanFile(repo), "utf8");
     assert.equal(after, before, "project_path's PROJECT_MASTER.md must be byte-identical after a worktree apply");
@@ -267,8 +269,8 @@ describe("apply_run_master_plan: target_dir validation", () => {
     const run_id = await insertRun({ project_path: proj });
     await insertArtifact(run_id, "4.6");
 
-    assert.throws(
-      () => runs.applyRunMasterPlan(run_id, unrelated),
+    await assert.rejects(
+      runs.applyRunMasterPlan(run_id, unrelated),
       (err) => {
         assert.equal(err.name, "MasterPlanTargetDirError");
         assert.equal(err.run_id, run_id);
@@ -288,8 +290,8 @@ describe("apply_run_master_plan: target_dir validation", () => {
     const run_id = await insertRun({ project_path: proj });
     await insertArtifact(run_id, "4.6");
 
-    assert.throws(
-      () => runs.applyRunMasterPlan(run_id, plainDir),
+    await assert.rejects(
+      runs.applyRunMasterPlan(run_id, plainDir),
       (err) => {
         assert.equal(err.name, "MasterPlanTargetDirError");
         return true;
@@ -305,7 +307,7 @@ describe("apply_run_master_plan: target_dir validation", () => {
     const run_id = await insertRun({ project_path: proj });
     await insertArtifact(run_id, "4.6");
 
-    const result = runs.applyRunMasterPlan(run_id, proj);
+    const result = await runs.applyRunMasterPlan(run_id, proj);
     assert.ok(result.sections.some(s => s.status === "applied"));
   });
 });
@@ -324,7 +326,7 @@ describe("finalize_run: master_plan_applied skip-guard", () => {
     await insertArtifact(run_id, "4.6");
 
     // Apply in the worktree, commit, merge into project_path.
-    runs.applyRunMasterPlan(run_id, wt);
+    await runs.applyRunMasterPlan(run_id, wt);
     commitAll(wt, "apply master plan block");
     mergeBranch(repo, "arm-skip-feature");
 
@@ -391,7 +393,7 @@ describe("apply_run_master_plan + finalize_run: PP-VG-1 interaction", () => {
     const wtBase = mkdtempSync(join(tmpdir(), "pp-arm-vg1-wt-"));
     const wt = join(wtBase, "wt");
     addWorktree(repo, wt, "arm-vg1-feature");
-    runs.applyRunMasterPlan(run_id, wt);
+    await runs.applyRunMasterPlan(run_id, wt);
     commitAll(wt, "apply master plan block");
     mergeBranch(repo, "arm-vg1-feature");
 
@@ -415,7 +417,7 @@ describe("apply_run_master_plan + finalize_run: idempotency", () => {
     const run_id = await insertRun({ project_path: repo });
     await insertArtifact(run_id, "4.6");
 
-    runs.applyRunMasterPlan(run_id, wt);
+    await runs.applyRunMasterPlan(run_id, wt);
     commitAll(wt, "apply master plan block");
     mergeBranch(repo, "arm-idem-feature");
 
@@ -441,13 +443,13 @@ describe("apply_run_master_plan + finalize_run: idempotency", () => {
     await insertArtifact(run_id, "4.6");                            // -> 11. Architecture
     await insertArtifact(run_id, "4.9", "code", "src/security.ts"); // -> 14. Security
 
-    const first = runs.applyRunMasterPlan(run_id, wt);
+    const first = await runs.applyRunMasterPlan(run_id, wt);
     const appliedSections = first.sections.map(s => s.section);
     assert.equal(appliedSections.length, 2, "first apply must touch both mapped sections");
     assert.deepEqual(first.sections.map(s => s.status), ["applied", "applied"]);
     const afterFirst = readFileSync(masterPlanFile(wt), "utf8");
 
-    const second = runs.applyRunMasterPlan(run_id, wt);
+    const second = await runs.applyRunMasterPlan(run_id, wt);
     const afterSecond = readFileSync(masterPlanFile(wt), "utf8");
 
     assert.equal(afterSecond, afterFirst,
@@ -490,8 +492,8 @@ describe("apply_run_master_plan: target_dir validation — symlinks/junctions", 
     const run_id = await insertRun({ project_path: proj });
     await insertArtifact(run_id, "4.6");
 
-    assert.throws(
-      () => runs.applyRunMasterPlan(run_id, link),
+    await assert.rejects(
+      runs.applyRunMasterPlan(run_id, link),
       (err) => {
         assert.equal(err.name, "MasterPlanTargetDirError");
         return true;
@@ -519,7 +521,7 @@ describe("apply_run_master_plan: target_dir validation — symlinks/junctions", 
     // Documented behaviour: a junction resolving (via realpath) to a real
     // linked worktree of project_path's own repository is ACCEPTED — the
     // link is transparent and only the resolved destination is validated.
-    const result = runs.applyRunMasterPlan(run_id, link);
+    const result = await runs.applyRunMasterPlan(run_id, link);
     assert.ok(result.sections.some(s => s.status === "applied"));
 
     const wtContent = readMasterPlan(wt);
@@ -544,8 +546,8 @@ describe("apply_run_master_plan: target_dir validation — nonexistent path", ()
 
     assert.equal(existsSync(missing), false, "sanity: target must not pre-exist");
 
-    assert.throws(
-      () => runs.applyRunMasterPlan(run_id, missing),
+    await assert.rejects(
+      runs.applyRunMasterPlan(run_id, missing),
       (err) => {
         assert.equal(err.name, "MasterPlanTargetDirError");
         assert.match(err.message, /does not resolve on disk/);
@@ -577,8 +579,8 @@ describe("apply_run_master_plan: target_dir validation — git unavailable fails
     // sequentially, so no other test observes the scrubbed PATH.
     process.env.PATH = "";
     try {
-      assert.throws(
-        () => runs.applyRunMasterPlan(run_id, wt),
+      await assert.rejects(
+        runs.applyRunMasterPlan(run_id, wt),
         (err) => {
           assert.equal(err.name, "MasterPlanTargetDirError");
           return true;
@@ -616,8 +618,8 @@ describe("apply_run_master_plan: target_dir validation — git unavailable fails
     const savedGitDir = process.env.GIT_DIR;
     process.env.GIT_DIR = bogusGitDir;
     try {
-      assert.throws(
-        () => runs.applyRunMasterPlan(run_id, wt),
+      await assert.rejects(
+        runs.applyRunMasterPlan(run_id, wt),
         (err) => {
           assert.equal(err.name, "MasterPlanTargetDirError");
           return true;
@@ -630,5 +632,42 @@ describe("apply_run_master_plan: target_dir validation — git unavailable fails
 
     assert.equal(existsSync(masterPlanFile(wt)), false,
       "nothing must be written to the worktree when rev-parse fails for the common-dir check");
+  });
+});
+
+// ─── git-plumbing: shutdown refusal ────────────────────────────────────────
+
+describe("apply_run_master_plan: git probe honours shutdown spawn refusal", () => {
+  it("propagates SpawnRefusedError once spawns are refused, writing nothing, for an otherwise-valid worktree", async () => {
+    const runs = await getRuns();
+    const cliRunner = await importDist("mcp/cli-runner.js");
+    const repo = initRepo(mkdtempSync(join(tmpdir(), "pp-arm-refuse-repo-")));
+    const wtBase = mkdtempSync(join(tmpdir(), "pp-arm-refuse-wt-"));
+    const wt = join(wtBase, "wt");
+    addWorktree(repo, wt, "arm-refuse-feature");
+
+    const run_id = await insertRun({ project_path: repo });
+    await insertArtifact(run_id, "4.6");
+
+    // The probe must go through trackedExeca: once shutdown refuses new
+    // spawns, the refusal is a shutdown signal and must surface as such —
+    // not be swallowed into an ordinary "not the same repository" rejection.
+    cliRunner._refuseNewSpawns();
+    try {
+      await assert.rejects(
+        runs.applyRunMasterPlan(run_id, wt),
+        (err) => {
+          assert.ok(err instanceof cliRunner.SpawnRefusedError,
+            `expected SpawnRefusedError from the tracked git probe, got ${err?.name}: ${err?.message}`);
+          return true;
+        },
+      );
+    } finally {
+      cliRunner._resetSpawnRefusedForTest();
+    }
+    assert.equal(cliRunner._isSpawnRefused(), false, "refusal flag must be reset for later tests");
+
+    assert.equal(existsSync(masterPlanFile(wt)), false,
+      "nothing must be written to the worktree when the git probe is refused at shutdown");
   });
 });

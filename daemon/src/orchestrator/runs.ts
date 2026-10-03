@@ -2,8 +2,7 @@ import { nanoid } from "nanoid";
 import { createHash } from "node:crypto";
 import { mkdirSync, writeFileSync, statSync, existsSync, readFileSync, realpathSync } from "node:fs";
 import { join, relative, dirname, extname, resolve } from "node:path";
-import { execFileSync } from "node:child_process";
-import { trackedExeca } from "../mcp/cli-runner.js";
+import { trackedExeca, SpawnRefusedError, isShuttingDown } from "../mcp/cli-runner.js";
 import YAML from "yaml";
 import { db, txImmediate, txImmediateWithRetry } from "../db/database.js";
 import { projectArtifactDir } from "../util/paths.js";
@@ -3297,16 +3296,27 @@ function normalizePathForCompare(p: string): string {
  * Resolve `dir`'s git common directory (the main repo's .git, reached even
  * from a linked worktree) as a canonical absolute path, or null when `dir`
  * is not inside a git repository, the git binary is unavailable, or the
- * probe fails for any other reason. Synchronous, 5s timeout, fail-soft.
+ * probe fails for any other reason. 5s timeout, fail-soft.
+ *
+ * Spawned through trackedExeca (git-plumbing rule) so the probe is refused
+ * once shutdown begins and killed by the shutdown drain if in flight. A
+ * refusal or shutdown kill is re-thrown rather than mapped to null: it is a
+ * shutdown signal, not evidence about the repository.
  */
-function resolveGitCommonDir(dir: string): string | null {
+async function resolveGitCommonDir(dir: string): Promise<string | null> {
+  let out: string;
   try {
-    const out = execFileSync("git", ["-C", dir, "rev-parse", "--git-common-dir"], {
-      encoding: "utf8",
+    const { stdout } = await trackedExeca("git", ["-C", dir, "rev-parse", "--git-common-dir"], {
       timeout: 5000,
       windowsHide: true,
-    }).trim();
-    if (!out) return null;
+    });
+    out = (stdout ?? "").toString().trim();
+  } catch (err) {
+    if (err instanceof SpawnRefusedError || isShuttingDown()) throw err;
+    return null;
+  }
+  if (!out) return null;
+  try {
     return realpathSync(resolve(dir, out));
   } catch {
     return null;
@@ -3350,12 +3360,14 @@ export type MasterPlanTargetValidation =
  * returns null (never a placeholder/sentinel value treated as a match) —
  * a null on either side means the git-common-dir check can never pass, so
  * an unavailable/broken git falls through to rejection rather than being
- * silently treated as "same repository".
+ * silently treated as "same repository". The one exception is shutdown: a
+ * SpawnRefusedError (or a probe killed mid-flight by the shutdown drain)
+ * propagates to the caller, which still writes nothing.
  */
-export function validateMasterPlanTargetDir(
+export async function validateMasterPlanTargetDir(
   projectPath: string,
   targetDir: string,
-): MasterPlanTargetValidation {
+): Promise<MasterPlanTargetValidation> {
   let realProject: string;
   try {
     realProject = realpathSync(projectPath);
@@ -3380,8 +3392,8 @@ export function validateMasterPlanTargetDir(
     return { ok: true, resolved_target: realTarget };
   }
 
-  const projectCommonDir = resolveGitCommonDir(realProject);
-  const targetCommonDir = resolveGitCommonDir(realTarget);
+  const projectCommonDir = await resolveGitCommonDir(realProject);
+  const targetCommonDir = await resolveGitCommonDir(realTarget);
   if (
     projectCommonDir &&
     targetCommonDir &&
@@ -3410,13 +3422,13 @@ export function validateMasterPlanTargetDir(
  * default auto-patch (which would otherwise re-derive the same content
  * against project_path) is skipped.
  */
-export function applyRunMasterPlan(runId: string, targetDir: string): ApplyRunMasterPlanResult {
+export async function applyRunMasterPlan(runId: string, targetDir: string): Promise<ApplyRunMasterPlanResult> {
   const run = db().prepare(`SELECT project_path FROM runs WHERE id = ?`).get(runId) as
     | { project_path: string }
     | undefined;
   if (!run) throw new Error(`run ${runId} not found`);
 
-  const validation = validateMasterPlanTargetDir(run.project_path, targetDir);
+  const validation = await validateMasterPlanTargetDir(run.project_path, targetDir);
   if (!validation.ok) {
     throw new MasterPlanTargetDirError(
       `apply_run_master_plan refused for run ${runId}: ${validation.reason}`,
