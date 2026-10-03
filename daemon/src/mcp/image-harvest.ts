@@ -102,8 +102,11 @@ export type SessionDirResolution =
   | { kind: "absent"; reason: string }
   | { kind: "rejected"; reason: string };
 
-/** Test-only seam fired between the session dir's lstat and its realpath. */
-export type SessionDirHooks = { afterLstat?: (candidate: string) => void };
+/** Test-only seams fired after the session dir's lstat and after its realpath. Production never sets them. */
+export type SessionDirHooks = {
+  afterLstat?: (candidate: string) => void;
+  afterRealpath?: (candidate: string, dirReal: string) => void;
+};
 
 /**
  * Resolve `<imagesRoot>/<sessionId>` physically. Refuses a session directory
@@ -146,11 +149,23 @@ export function resolveSessionDir(
   } catch (err) {
     return { kind: "absent", reason: `session directory vanished: ${(err as Error).message}` };
   }
+  hooks.afterRealpath?.(candidate, dirReal);
   if (!isDirectChildReal(rootReal, dirReal)) {
     return { kind: "rejected", reason: `session directory resolves to ${dirReal}, outside images root ${rootReal}.` };
   }
   if (realSt.isSymbolicLink() || !sameIdentity(st, realSt)) {
     return { kind: "rejected", reason: `session directory ${candidate} was replaced between lstat and realpath (symlink/junction swap); refusing it.` };
+  }
+  // The directory must still BE `<root>/<sessionId>`: an identity-preserving
+  // swap (rename the real dir to a sibling, put a link at the old name) keeps
+  // dev+ino but resolves under a different name, and leaves a link at the
+  // candidate path. Both are refused.
+  if (!samePath(basename(dirReal), sessionId)) {
+    return { kind: "rejected", reason: `session directory ${candidate} resolves to ${dirReal}, not to itself (renamed and linked?); refusing it.` };
+  }
+  const again = lstatSync(candidate, { bigint: true, throwIfNoEntry: false });
+  if (!again || again.isSymbolicLink() || !again.isDirectory() || !sameIdentity(st, again)) {
+    return { kind: "rejected", reason: `session directory ${candidate} is no longer the plain directory first seen; refusing it.` };
   }
   return { kind: "ok", rootReal, dirReal, dirId: { dev: st.dev, ino: st.ino } };
 }
@@ -336,6 +351,7 @@ export type PngStructure =
   | { ok: false; reason: string };
 
 const CHANNELS: Record<number, number> = { 0: 1, 2: 3, 3: 1, 4: 2, 6: 4 };
+const CRITICAL_CHUNKS = new Set(["IHDR", "PLTE", "IDAT", "IEND"]);
 /** Adam7 pass origins and steps: [x0, y0, dx, dy]. */
 const ADAM7: [number, number, number, number][] = [
   [0, 0, 8, 8], [4, 0, 8, 8], [0, 4, 4, 8], [2, 0, 4, 4], [0, 2, 2, 4], [1, 0, 2, 2], [0, 1, 1, 2],
@@ -407,6 +423,11 @@ export function validatePngStructure(buf: Buffer, maxPixels: number = MAX_DECODE
       return { ok: false, reason: `CRC mismatch in ${type} chunk at byte ${off}.` };
     }
     if (index === 0 && type !== "IHDR") return { ok: false, reason: "first chunk is not IHDR." };
+    // An uppercase first letter marks a CRITICAL chunk: a decoder that does not
+    // know it must refuse the image, so we refuse it too.
+    if (/^[A-Z]/.test(type) && !CRITICAL_CHUNKS.has(type)) {
+      return { ok: false, reason: `unknown critical chunk ${type} at byte ${off}.` };
+    }
     if (idat.length > 0 && type !== "IDAT") idatClosed = true;
     if (type === "IHDR") {
       if (index !== 0) return { ok: false, reason: "IHDR is not the first chunk." };
@@ -434,6 +455,9 @@ export function validatePngStructure(buf: Buffer, maxPixels: number = MAX_DECODE
       if (idat.length > 0) return { ok: false, reason: "PLTE after IDAT." };
       if (ihdr?.colorType === 0 || ihdr?.colorType === 4) return { ok: false, reason: "PLTE in a greyscale image." };
       if (len === 0 || len % 3 !== 0 || len > 768) return { ok: false, reason: `PLTE length ${len} is invalid.` };
+      if (ihdr?.colorType === 3 && len / 3 > 2 ** ihdr.bitDepth) {
+        return { ok: false, reason: `PLTE has ${len / 3} entries; bit depth ${ihdr.bitDepth} allows at most ${2 ** ihdr.bitDepth}.` };
+      }
       sawPlte = true;
     } else if (type === "IDAT") {
       if (idatClosed) return { ok: false, reason: "IDAT chunks are not consecutive." };
@@ -481,6 +505,34 @@ export function validatePngStructure(buf: Buffer, maxPixels: number = MAX_DECODE
     }
   }
   return { ok: true, ...ihdr, rawBytes };
+}
+
+export type AcceptedPng =
+  | { ok: true; structure: Extract<PngStructure, { ok: true }>; decoded: PNG }
+  | { ok: false; reason: string };
+
+/**
+ * The acceptance gate for EVERY harvested file, including one copied
+ * verbatim: `validatePngStructure` (container rules, pixel cap, inflation
+ * bounded to the IHDR-implied size), then a full decode by the same decoder
+ * the downscale path uses. The decode reconstructs filtered scanlines and
+ * rejects what structure alone cannot prove — e.g. a palette index outside
+ * PLTE — and it is bounded because the bytes were just proven to inflate to
+ * exactly the IHDR size.
+ */
+export function acceptPng(buf: Buffer, maxPixels: number = MAX_DECODED_PIXELS_PER_IMAGE): AcceptedPng {
+  const structure = validatePngStructure(buf, maxPixels);
+  if (!structure.ok) return structure;
+  let decoded: PNG;
+  try {
+    decoded = PNG.sync.read(buf);
+  } catch (err) {
+    return { ok: false, reason: `does not decode: ${(err as Error).message}` };
+  }
+  if (decoded.width !== structure.width || decoded.height !== structure.height) {
+    return { ok: false, reason: `decoded ${decoded.width}x${decoded.height}, IHDR declares ${structure.width}x${structure.height}.` };
+  }
+  return { ok: true, structure, decoded };
 }
 
 /** Cheap completeness hint used while polling: does the file end with the IEND chunk? */

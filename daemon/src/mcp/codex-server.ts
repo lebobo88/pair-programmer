@@ -10,7 +10,6 @@ import { join, dirname, resolve } from "node:path";
 import { homedir } from "node:os";
 import { spawnSync } from "node:child_process";
 import { nanoid } from "nanoid";
-import { PNG } from "pngjs";
 import { errorContent, jsonContent, zodToJsonSchema } from "./helpers.js";
 import { extractLastJsonValue, buildCritiqueOutputSchema } from "./critique-schema.js";
 import { stabilizeCritiqueResult } from "./critique-bridge.js";
@@ -42,7 +41,7 @@ import {
   pollForSettledPngs,
   openVerifiedFile,
   readFdFully,
-  validatePngStructure,
+  acceptPng,
   prepareOutputDir,
   writeImageSafely,
   downscaleImageToFit,
@@ -732,30 +731,24 @@ export async function codexGenerateImage(
       } finally {
         closeSync(v.fd);
       }
-      // Pixel cap (before any inflation), container, and bounded inflation of
-      // the image data to exactly the IHDR-implied size. pngjs below only ever
-      // sees bytes proven to inflate to that size.
-      const png = validatePngStructure(raw, MAX_DECODED_PIXELS_PER_IMAGE);
-      if (!png.ok) {
-        failures.push({ file: name, reason: `malformed PNG: ${png.reason}` });
+      // Acceptance gate for every file, including the verbatim copy: pixel cap
+      // (before any inflation), container rules, inflation bounded to the
+      // IHDR-implied size, then a full decode (e.g. palette indices).
+      const accepted = acceptPng(raw, MAX_DECODED_PIXELS_PER_IMAGE);
+      if (!accepted.ok) {
+        failures.push({ file: name, reason: `malformed PNG: ${accepted.reason}` });
         continue;
       }
+      const png = accepted.structure;
       const provenance = { generator: "codex" as const, model: result.model, prompt: args.prompt };
       if (raw.length <= args.byte_budget_bytes && Math.max(png.width, png.height) <= args.max_dimension) {
-        // Already within both bounds: copy the validated bytes VERBATIM — no
-        // decode/re-encode, so palette/grayscale/16-bit/interlaced survive.
+        // Already within both bounds: copy the accepted bytes VERBATIM — no
+        // re-encode, so palette/grayscale/16-bit/interlaced survive.
         const path = writeImageSafely(out.outReal, name, raw);
         images.push({ path, bytes: raw.length, width: png.width, height: png.height, ...provenance });
         continue;
       }
-      let decoded: PNG;
-      try {
-        decoded = PNG.sync.read(raw);
-      } catch (err) {
-        failures.push({ file: name, reason: `failed to decode: ${(err as Error).message}` });
-        continue;
-      }
-      const { buffer, width, height } = downscaleImageToFit(decoded, args.max_dimension, args.byte_budget_bytes);
+      const { buffer, width, height } = downscaleImageToFit(accepted.decoded, args.max_dimension, args.byte_budget_bytes);
       const path = writeImageSafely(out.outReal, name, buffer);
       if (buffer.length > args.byte_budget_bytes) {
         // Floor reached and still over budget: NEVER reported as ok.
@@ -1034,9 +1027,9 @@ const TOOLS = [
       "before the codex turn; each created component's parent is identity-checked before its mkdir. Writes use exclusive create (never follow or overwrite), " +
       "re-check output_dir before and after each write, and verify the written file's realpath parent is output_dir. " +
       "VALIDATION: every PNG — including one copied verbatim — must pass a full structure check (signature, IHDR length 13 with legal fields, every chunk CRC, " +
-      "consecutive IDATs, PLTE rules, terminating IEND, no trailing bytes), and its image data must inflate — with the inflater capped at the exact size IHDR " +
+      "consecutive IDATs, PLTE rules incl. palette size, no unknown critical chunks, terminating IEND, no trailing bytes), and its image data must inflate — with the inflater capped at the exact size IHDR " +
       "implies, after the 4096x4096 pixel cap — to exactly that size with valid scanline filter bytes, so a decompression bomb is refused and the later " +
-      "decode is bounded by the same size. A file is harvested only once settled: size and mtime unchanged across two polls and ending in IEND. " +
+      "decode is bounded by the same size; it must then fully decode (e.g. every palette index within PLTE) before it is copied or downscaled. A file is harvested only once settled: size and mtime unchanged across two polls and ending in IEND. " +
       "Files whose mtime pre-dates the call are stale and refused. Malformed, unsettled, stale, linked or capped files are per-file `failures`, not a whole-call failure. " +
       "LIMITS: max_dimension must be in [256, 4096] (default 768; outside that range is REJECTED, not clamped). byte_budget_bytes default 300KB, max 32MiB. " +
       "Per call: at most 200 session-directory entries are examined (more sets enumeration_truncated), at most 20 PNGs are opened, each at most 32MiB " +

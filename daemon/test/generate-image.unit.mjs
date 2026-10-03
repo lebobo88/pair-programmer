@@ -800,7 +800,7 @@ function assemblePng({ width, height, bitDepth = 8, colorType = 0, interlace = 0
  * interlace=1 the Adam7 pass table is written out independently here — NOT
  * taken from the module — so the fixture does not share the code under test.
  */
-function greyScanlines(width, height, interlace = 0, filter = 0) {
+function greyScanlines(width, height, interlace = 0, filter = 0, value = 90) {
   const passes = interlace
     ? [[0, 0, 8, 8], [4, 0, 8, 8], [0, 4, 4, 8], [2, 0, 4, 4], [0, 2, 2, 4], [1, 0, 2, 2], [0, 1, 1, 2]]
     : [[0, 0, 1, 1]];
@@ -809,7 +809,7 @@ function greyScanlines(width, height, interlace = 0, filter = 0) {
     const w = width > x0 ? Math.ceil((width - x0) / dx) : 0;
     const h = height > y0 ? Math.ceil((height - y0) / dy) : 0;
     if (!w || !h) continue;
-    for (let r = 0; r < h; r++) parts.push(Buffer.from([filter]), Buffer.alloc(w, 90));
+    for (let r = 0; r < h; r++) parts.push(Buffer.from([filter]), Buffer.alloc(w, value));
   }
   return Buffer.concat(parts);
 }
@@ -954,6 +954,110 @@ describe("pp_codex.generate_image: round-2 findings", () => {
   });
 });
 
+// ─── round-3 findings ────────────────────────────────────────────────────────
+
+/** An 8-bit palette PNG whose every pixel is palette index `index`, with `entries` palette colours. */
+function palettePng({ width = 5, height = 3, interlace = 0, entries, index, bitDepth = 8 }) {
+  const plte = Buffer.alloc(entries * 3);
+  for (let i = 0; i < entries; i++) plte.set([i * 40, 255 - i * 40, 7], i * 3);
+  return assemblePng({ width, height, colorType: 3, bitDepth, interlace, plte, raw: greyScanlines(width, height, interlace, 0, index) });
+}
+
+describe("pp_codex.generate_image: round-3 findings", () => {
+  test("resolveSessionDir: an identity-preserving swap (rename the dir, link the old name to it) is refused", async () => {
+    const { resolveSessionDir } = await importDist("mcp/image-harvest.js");
+    const root = tmp("pp-img-root-");
+    const sessionId = newSessionId();
+    const renamedTo = join(root, newSessionId());
+    mkdirSync(join(root, sessionId));
+    const r = resolveSessionDir(root, sessionId, {
+      afterLstat: (candidate) => {
+        renameSync(candidate, renamedTo); // same dev+ino, different name
+        symlinkSync(renamedTo, candidate, "junction");
+      },
+    });
+    assert.equal(r.kind, "rejected");
+    assert.match(r.reason, /not to itself|no longer the plain directory/);
+  });
+
+  test("resolveSessionDir: resolution must land on <root>/<sessionId> itself (basename binding)", async () => {
+    const { resolveSessionDir } = await importDist("mcp/image-harvest.js");
+    const root = tmp("pp-img-root-");
+    const sessionId = newSessionId();
+    const renamedTo = join(root, newSessionId());
+    mkdirSync(join(root, sessionId));
+    // Swap so realpath lands on the renamed dir, then put the plain dir back:
+    // only the basename binding can tell that realpath resolved elsewhere.
+    const r = resolveSessionDir(root, sessionId, {
+      afterLstat: (candidate) => {
+        renameSync(candidate, renamedTo);
+        symlinkSync(renamedTo, candidate, "junction");
+      },
+      afterRealpath: (candidate) => {
+        rmSync(candidate);
+        renameSync(renamedTo, candidate);
+      },
+    });
+    assert.equal(r.kind, "rejected");
+    assert.match(r.reason, /not to itself/);
+  });
+
+  test("resolveSessionDir: the candidate is re-checked after realpath (re-lstat identity)", async () => {
+    const { resolveSessionDir } = await importDist("mcp/image-harvest.js");
+    const root = tmp("pp-img-root-");
+    const sessionId = newSessionId();
+    mkdirSync(join(root, sessionId));
+    const r = resolveSessionDir(root, sessionId, {
+      afterRealpath: (candidate) => {
+        renameSync(candidate, `${candidate}-moved`);
+        mkdirSync(candidate); // same name, plain, different identity
+      },
+    });
+    assert.equal(r.kind, "rejected");
+    assert.match(r.reason, /no longer the plain directory first seen/);
+  });
+
+  test("acceptPng: valid palette images (plain and Adam7) are accepted; out-of-range palette indices are refused", async () => {
+    const { acceptPng } = await importDist("mcp/image-harvest.js");
+    for (const interlace of [0, 1]) {
+      const good = acceptPng(palettePng({ interlace, entries: 2, index: 1 }));
+      assert.equal(good.ok, true, `valid palette interlace=${interlace}: ${good.reason}`);
+      const bad = acceptPng(palettePng({ interlace, entries: 1, index: 1 }));
+      assert.equal(bad.ok, false, `index 1 with a 1-entry palette, interlace=${interlace}`);
+      assert.match(bad.reason, /does not decode/);
+    }
+  });
+
+  test("validatePngStructure: unknown critical chunks and oversized palettes are refused; unknown ancillary chunks are not", async () => {
+    const { validatePngStructure } = await importDist("mcp/image-harvest.js");
+    const withAncillary = assemblePng({ width: 4, height: 4, raw: greyScanlines(4, 4), splitIdatWith: undefined });
+    const ancillary = Buffer.concat([withAncillary.subarray(0, 33), pngChunk("abCD", Buffer.from("x")), withAncillary.subarray(33)]);
+    assert.equal(validatePngStructure(ancillary).ok, true, "an unknown ANCILLARY chunk is legal");
+    const critical = Buffer.concat([withAncillary.subarray(0, 33), pngChunk("ABCD", Buffer.from("x")), withAncillary.subarray(33)]);
+    const rc = validatePngStructure(critical);
+    assert.equal(rc.ok, false);
+    assert.match(rc.reason, /unknown critical chunk ABCD/);
+    const big = palettePng({ width: 8, height: 1, bitDepth: 1, entries: 3, index: 0 });
+    const rp = validatePngStructure(big);
+    assert.equal(rp.ok, false);
+    assert.match(rp.reason, /allows at most 2/);
+  });
+
+  test("end to end: an out-of-range-palette PNG that fits as-is is never copied; a valid palette PNG is copied byte-for-byte", async () => {
+    const goodPalette = palettePng({ interlace: 1, entries: 2, index: 1 });
+    const { result, outputDir } = await runHarvest({
+      write: writePngs({
+        "exec-call-badpal.png": palettePng({ entries: 1, index: 1 }),
+        "exec-call-pal.png": goodPalette,
+      }),
+    });
+    assert.equal(result.status, "partial");
+    assert.deepEqual(readdirSync(outputDir), ["exec-call-pal.png"]);
+    assert.deepEqual(readFileSync(join(outputDir, "exec-call-pal.png")), goodPalette, "palette + Adam7 preserved verbatim");
+    assert.match(result.failures.find((f) => f.file === "exec-call-badpal.png")?.reason ?? "", /malformed PNG: does not decode/);
+  });
+});
+
 describe("pp_agy.generate_image", () => {
   test("returns a structured unsupported result naming the reason, per the real headless probe", async () => {
     const { agyGenerateImage } = await importDist("mcp/antigravity-server.js");
@@ -1021,4 +1125,12 @@ describe("pp_agy.generate_image", () => {
  *   PLTE in greyscale / non-consecutive IDAT /
  *   pixel cap before inflation                  -> validatePngStructure image data
  *   output_dir link refusal (early + final)     -> output_dir junction refused; prepareOutputDir
+ *
+ * Round 3:
+ *   session basename binding only               -> resolution must land on <root>/<sessionId> itself
+ *   candidate re-lstat after realpath only      -> the candidate is re-checked after realpath
+ *   both of the above                           -> + identity-preserving swap (rename + link) refused
+ *   acceptPng decode gate skipped               -> acceptPng palette; end-to-end out-of-range palette
+ *   unknown critical chunks allowed             -> unknown critical chunks / oversized palettes
+ *   palette size vs bit depth (always 2**8)     -> unknown critical chunks / oversized palettes
  */
