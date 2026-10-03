@@ -1560,7 +1560,7 @@ describe("pp_codex.generate_image: settle observation and per-call budgets", () 
     mkdirSync(dir);
     for (let i = 0; i < 150; i++) writeFileSync(join(dir, `pad-${i}.txt`), "");
     writeFileSync(join(dir, "never-settles.png"), make24ByteHeaderPng()); // keeps polling alive
-    const r = await pollForSettledPngs(root, sessionId);
+    const r = await pollForSettledPngs(root, sessionId, { timeoutMs: 60_000, intervalMs: 1 }); // only the budget can stop it, however loaded the machine
     assert.equal(r.kind, "ok");
     assert.equal(r.budgetExhausted, "entries");
     assert.equal(r.entriesExamined, MAX_DIR_ENTRIES_PER_CALL, "151 entries per poll would have reached ~4500 over 30 polls");
@@ -1574,7 +1574,7 @@ describe("pp_codex.generate_image: settle observation and per-call budgets", () 
     const files = {};
     for (let i = 0; i < 20; i++) files[`p${String(i).padStart(2, "0")}.png`] = make24ByteHeaderPng();
     writePngs(files)(join(root, sessionId));
-    const r = await pollForSettledPngs(root, sessionId);
+    const r = await pollForSettledPngs(root, sessionId, { timeoutMs: 60_000, intervalMs: 1 }); // only the budget can stop it, however loaded the machine
     assert.equal(r.kind, "ok");
     assert.equal(r.budgetExhausted, "opens");
     assert.equal(r.opens, MAX_POLL_OPENS_PER_CALL, "20 files x 30 polls would have been 600 opens");
@@ -1590,7 +1590,7 @@ describe("pp_codex.generate_image: settle observation and per-call budgets", () 
     for (let i = 0; i < 20; i++) files[`p${String(i).padStart(2, "0")}.png`] = make24ByteHeaderPng();
     writePngs(files)(dir);
     setTimeout(() => writeFileSync(join(dir, "a-late.png"), makeSolidPng(2, 2)), 250);
-    const r = await pollForSettledPngs(root, sessionId, { timeoutMs: 1000 });
+    const r = await pollForSettledPngs(root, sessionId, { timeoutMs: 60_000, intervalMs: 200 }); // the 250ms timer expires before poll 3 (timer order); the open budget ends polling at poll 9
     assert.equal(r.kind, "ok");
     assert.ok(r.overCap.includes("a-late.png"), `late PNG must be over the distinct cap: ${JSON.stringify(r.overCap)}`);
     assert.ok(!r.settled.some((s) => s.name === "a-late.png") && !r.unsettled.some((u) => u.name === "a-late.png"), "never tracked or opened");
