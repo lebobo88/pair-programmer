@@ -455,7 +455,17 @@ function classify(exitCode: number, passed: number | null, failed: number | null
   const p = passed ?? 0;
   const f = failed ?? 0;
   if (p === 0 && f === 0) return { actual: "error", passed: 0, failed: 0, reason: "runner reported zero tests executed" };
-  if (f === 0 && p > 0)  return { actual: "all_pass", passed: p, failed: 0, reason: null };
+  if (f === 0 && p > 0) {
+    // Parsed counts read all-pass, but a nonzero exit means the process failed
+    // anyway (a post-test hook, a crash after the summary, an unhandled
+    // rejection). That is not a clean green -- report "mixed" with a reason
+    // that names the exit so the persisted tdd_checks.reason is diagnosable.
+    if (exitCode === 0) return { actual: "all_pass", passed: p, failed: 0, reason: null };
+    return {
+      actual: "mixed", passed: p, failed: 0,
+      reason: `nonzero exit (${exitCode}) despite reported zero failures -- process likely failed after tests completed`,
+    };
+  }
   if (p === 0 && f > 0)  return { actual: "all_fail", passed: 0, failed: f, reason: null };
   return { actual: "mixed", passed: p, failed: f, reason: `mixed outcome: ${p} passed, ${f} failed` };
 }
@@ -637,15 +647,21 @@ export async function runTddCheck(opts: { stage_id: string; phase: "pre" | "post
 
   const parsed = parseTestOutcome(manifest.test_runner, exitCode ?? -1, stdout, stderr);
   let status: "verified" | "violation" | "execution_error";
+  // classify() reports "mixed" with failed === 0 when every parsed test passed
+  // but the process exited nonzero. That is not a red phase -- no assertion
+  // failed -- so it must never satisfy expected_pre_outcome: "mixed".
+  const mixedWithoutFailures = parsed.actual === "mixed" && parsed.failed === 0;
   if (parsed.actual === "error") status = "execution_error";
-  else if (parsed.actual === expected) status = "verified";
+  else if (parsed.actual === expected && !mixedWithoutFailures) status = "verified";
   else status = "violation";
 
-  const reason = parsed.reason ?? (
-    status === "verified" ? null
-    : status === "violation" ? `expected ${expected}, got ${parsed.actual}`
-    : null
-  );
+  const reason = (mixedWithoutFailures && expected === "mixed")
+    ? `expected mixed (a red phase with failing tests), got 0 failed tests: ${parsed.reason}`
+    : parsed.reason ?? (
+      status === "verified" ? null
+      : status === "violation" ? `expected ${expected}, got ${parsed.actual}`
+      : null
+    );
 
   return persistRow({
     run_id: runId,
