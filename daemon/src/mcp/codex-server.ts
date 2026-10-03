@@ -15,7 +15,7 @@ import { extractLastJsonValue, buildCritiqueOutputSchema } from "./critique-sche
 import { stabilizeCritiqueResult } from "./critique-bridge.js";
 import { wrapUntrusted } from "../security/untrusted-envelope.js";
 import { computeCost } from "../util/prices.js";
-import { SANDBOX_DIR, ensureDirs } from "../util/paths.js";
+import { SANDBOX_DIR, ROOT_DIR, ensureDirs } from "../util/paths.js";
 import { log } from "../util/logger.js";
 import {
   DEFAULT_CLI_TIMEOUT_MS,
@@ -48,6 +48,11 @@ import {
   acceptPng,
   prepareOutputDir,
   writeImageSafely,
+  createStagingDir,
+  removeStagingDir,
+  type StagingDir,
+  type WriteHooks,
+  type FsIdentity,
   downscaleImageToFit,
   type FileOpenHooks,
 } from "./image-harvest.js";
@@ -569,7 +574,7 @@ export type ImageFailure = {
   reason: string;
 };
 
-export type CodexGenerateImageResult =
+export type CodexGenerateImageResult = (
   | {
       /**
        * "ok": at least one image, nothing over budget, no failures.
@@ -596,9 +601,18 @@ export type CodexGenerateImageResult =
   | { status: "invalid_session_dir"; reason: string; session_id: string }
   | { status: "invalid_output_dir"; reason: string }
   | { status: "cli_failure"; reason: string; exit_code: number; session_id?: string }
-  | { status: "empty_session_dir"; reason: string; session_id: string };
+  | { status: "empty_session_dir"; reason: string; session_id: string }
+  | { status: "staging_unavailable"; reason: string }
+) & {
+  /** Set when the per-call staging directory could not be removed afterwards. */
+  staging_cleanup_error?: string;
+};
 
 export type CodexGenerateImageInternalOptions = {
+  /** Test-only DI seam: overrides PP_HOME/.pair-programmer/image-staging. */
+  _stagingParent?: string;
+  /** Test-only DI seam: fired around staging, hand-off and their verification. */
+  _writeHooks?: WriteHooks;
   /**
    * Test-only DI seam: replaces the whole codex turn (`codexGenerate`) so a
    * test controls the reported `session_id` without spawning the CLI.
@@ -637,6 +651,27 @@ export async function codexGenerateImage(
   const out = prepareOutputDir(args.output_dir);
   if (!out.ok) return { status: "invalid_output_dir", reason: out.reason };
 
+  // Private, daemon-owned staging: every image is written and verified here
+  // first; output_dir only ever receives the single exclusive hand-off.
+  const st = createStagingDir(opts._stagingParent ?? join(ROOT_DIR, "image-staging"));
+  if (!st.ok) return { status: "staging_unavailable", reason: st.reason };
+  let result: CodexGenerateImageResult | undefined;
+  try {
+    result = await harvestIntoOutput(args, opts, out, st.staging, callStartMs);
+    return result;
+  } finally {
+    const cleanupError = removeStagingDir(st.staging);
+    if (cleanupError && result) result.staging_cleanup_error = cleanupError;
+  }
+}
+
+async function harvestIntoOutput(
+  args: z.infer<typeof GenerateImageSchema>,
+  opts: CodexGenerateImageInternalOptions,
+  out: { outReal: string; outId: FsIdentity },
+  staging: StagingDir,
+  callStartMs: number,
+): Promise<CodexGenerateImageResult> {
   const genArgs: z.infer<typeof GenerateSchema> = {
     prompt: args.prompt,
     cwd: args.cwd,
@@ -755,12 +790,18 @@ export async function codexGenerateImage(
       if (raw.length <= args.byte_budget_bytes && Math.max(png.width, png.height) <= args.max_dimension) {
         // Already within both bounds: copy the accepted bytes VERBATIM — no
         // re-encode, so palette/grayscale/16-bit/interlaced survive.
-        const path = writeImageSafely(out.outReal, out.outId, name, raw);
+        const path = writeImageSafely(out.outReal, out.outId, staging, name, raw, MAX_OUTPUT_NAME_COLLISIONS, opts._writeHooks);
         images.push({ path, bytes: raw.length, width: png.width, height: png.height, ...provenance });
         continue;
       }
       const { buffer, width, height } = downscaleImageToFit(accepted.decoded, args.max_dimension, args.byte_budget_bytes);
-      const path = writeImageSafely(out.outReal, out.outId, name, buffer);
+      // The re-encoded output passes the same acceptance gate before it is staged.
+      const reencoded = acceptPng(buffer, MAX_DECODED_PIXELS_PER_IMAGE);
+      if (!reencoded.ok) {
+        failures.push({ file: name, reason: `re-encoded image failed validation: ${reencoded.reason}` });
+        continue;
+      }
+      const path = writeImageSafely(out.outReal, out.outId, staging, name, buffer, MAX_OUTPUT_NAME_COLLISIONS, opts._writeHooks);
       if (buffer.length > args.byte_budget_bytes) {
         // Floor reached and still over budget: NEVER reported as ok.
         overBudget.push({ file: name, path, bytes: buffer.length, width, height });
@@ -1036,11 +1077,22 @@ const TOOLS = [
       "lstat of the path and its realpath confined to the session directory, with the session-dir identity and the path-vs-fd identity re-checked LAST, after " +
       "all resolution; bytes are read from that fd only. An output_dir that is a symlink/junction (or a " +
       "component created for it that is one, or whose realpath is not the pinned existing ancestor plus the created names) is status invalid_output_dir, checked " +
-      "before the codex turn; each created component's parent is identity-checked before its mkdir. Writes use exclusive create (never follow or overwrite) " +
-      "and the created file is proven to be ours and directly inside output_dir BEFORE any byte is written (Node has no openat, so a parent swapped for a link " +
-      "in the instant before the create can at most receive an empty file, never content). output_dir's identity (dev/ino pinned at preparation, so a " +
-      "same-path replacement directory is refused) is checked before and after each write, and the returned path must still be the non-link regular file " +
-      "created through the write fd (same dev/ino and size) with realpath parent output_dir — all path resolution first, the identity checks last. On a failed check nothing is deleted by pathname; our own bytes are truncated through the still-open fd. " +
+      "before the codex turn; each created component's parent is identity-checked before its mkdir. " +
+      "WRITES: no content byte is ever written through a path inside output_dir. Each image (already validated, and a re-encoded one validated again) is written " +
+      "into a private per-call staging directory the daemon owns (PP_HOME/.pair-programmer/image-staging/<mkdtemp>, mode 0700 on POSIX; refused if it is a link " +
+      "or its identity changes) and verified there (path still the exclusively-created file by dev/ino and size, realpath inside staging, bytes read back " +
+      "through the fd equal the image). It then reaches output_dir by ONE exclusive hand-off per candidate name: a hard link of the staged file (link never " +
+      "follows or replaces an existing entry), or — only across volumes or where links are unsupported — a copy with COPYFILE_EXCL after checking that no " +
+      "entry at all exists at the name (on Windows an exclusive copy would follow a dangling symlink); an existing entry (file, symlink, dangling link) is " +
+      "never followed or overwritten and the next name is tried. The handed-off file is then verified through a fresh fd (regular file, the staged dev/ino when linked, exact size, identical bytes) with all path " +
+      "resolution first and the identity checks last (non-link, same dev/ino as the fd; output_dir's dev/ino pinned at preparation, so a same-path replacement " +
+      "directory is refused). Nothing is ever deleted by pathname. The staging directory is removed when the call ends; a removal failure is reported in " +
+      "staging_cleanup_error. RESIDUAL RISK (stated): Node has no openat, so if output_dir or an ancestor is swapped for a link in the instant before the " +
+      "hand-off syscall, the finished image can land in the link target; that is detected and the image is refused — in link mode the object is also " +
+      "truncated through the staging fd, in copy mode the copy cannot be bound to an fd and is reported as remaining with unknown content. In copy mode a " +
+      "dangling symlink planted at the target name in the instant between the no-entry check and the copy can likewise redirect the copy (detected, " +
+      "refused, reported as unknown content). After a " +
+      "successful hand-off, any process with write access to output_dir can of course move, replace or modify the finished file. " +
       "VALIDATION: every PNG — including one copied verbatim — must pass a full structure check (signature, IHDR length 13 with legal fields, every chunk CRC, " +
       "consecutive IDATs, PLTE rules incl. palette size, no unknown critical chunks, terminating IEND, no bytes after IEND; ancillary chunks are limited to " +
       "gAMA, cHRM, sRGB, iCCP, sBIT, bKGD, hIST, tRNS, pHYs, tIME, tEXt, zTXt, iTXt and eXIf, each checked for length, multiplicity, ordering and " +

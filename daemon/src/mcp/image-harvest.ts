@@ -26,9 +26,15 @@ import {
   writeSync,
   opendirSync,
   mkdirSync,
+  mkdtempSync,
+  chmodSync,
+  rmSync,
+  linkSync,
+  copyFileSync,
   ftruncateSync,
   constants as FS,
 } from "node:fs";
+import { randomUUID } from "node:crypto";
 import { join, dirname, basename, extname, resolve, relative } from "node:path";
 import zlib from "node:zlib";
 import { PNG } from "pngjs";
@@ -999,19 +1005,24 @@ function assertOutputDirIdentity(outReal: string, outId: FsIdentity): void {
   }
 }
 
-/** Test-only seams around the write and its verification. Production never sets them. */
+/** Test-only seams around staging, hand-off and verification. Production never sets them. */
 export type WriteHooks = {
-  /** Fired immediately before the exclusive create. */
-  beforeCreate?: (dest: string) => void;
-  afterWrite?: (dest: string) => void;
-  /** Fired between the first identity check and the realpath resolution. */
-  duringVerify?: (dest: string) => void;
+  /** Fired after the bytes are written to the STAGED file, before its verification. */
+  afterWrite?: (stagedPath: string) => void;
+  /** Fired between the first identity check and the realpath resolution (staging and hand-off verification). */
+  duringVerify?: (path: string) => void;
   /** Fired after every realpath resolution, before the final identity checks. */
-  afterResolve?: (dest: string) => void;
+  afterResolve?: (path: string) => void;
+  /** Fired immediately before the exclusive hand-off into output_dir. */
+  beforeHandOff?: (dest: string) => void;
+  /** Fired immediately after the exclusive hand-off, before its verification. */
+  afterHandOff?: (dest: string) => void;
   /** Fired after a failed verification, before the fd-bound neutralisation. */
-  beforeNeutralise?: (dest: string) => void;
+  beforeNeutralise?: (path: string) => void;
   /** Replaces ftruncateSync so a test can force the neutralisation to fail. */
   truncate?: (fd: number, len: number) => void;
+  /** Take the COPYFILE_EXCL branch even where a hard link would work. */
+  forceCopy?: boolean;
 };
 
 function assertIsWrittenFile(dest: string, fileId: FsIdentity, size: number): void {
@@ -1025,34 +1036,36 @@ function assertIsWrittenFile(dest: string, fileId: FsIdentity, size: number): vo
 }
 
 /**
- * Prove `dest` denotes the file created through the fd, inside `outReal`:
+ * Prove `dest` denotes the file created through the fd, directly inside the
+ * directory `dirReal` (identity `dirId`):
  *   1. lstat: non-link regular file with the fd's dev+ino and `size` bytes;
- *   2. ALL resolution: realpath(dest) must be a direct child of `outReal`, and
- *      realpath(outReal) must be `outReal` itself;
+ *   2. ALL resolution: realpath(dest) must be a direct child of `dirReal`, and
+ *      realpath(dirReal) must be `dirReal` itself;
  *   3. LAST, no further resolution: the file identity/size check again, then
- *      output_dir's identity.
+ *      the directory's identity.
  * Returns the file's realpath; throws otherwise.
  */
 export function verifyWrittenPath(
-  outReal: string,
-  outId: FsIdentity,
+  dirReal: string,
+  dirId: FsIdentity,
   dest: string,
   fileId: FsIdentity,
   size: number,
   hooks: WriteHooks = {},
+  label = "output_dir",
 ): string {
   assertIsWrittenFile(dest, fileId, size);
   hooks.duringVerify?.(dest);
   const real = realpathSync.native(dest);
-  if (!isDirectChildReal(outReal, real)) {
-    throw new Error(`written file resolves to ${real}, outside output_dir ${outReal}.`);
+  if (!isDirectChildReal(dirReal, real)) {
+    throw new Error(`written file resolves to ${real}, outside ${label} ${dirReal}.`);
   }
-  if (!samePath(realpathSync.native(outReal), outReal)) {
-    throw new Error(`output_dir ${outReal} no longer resolves to itself; refusing to report the write.`);
+  if (!samePath(realpathSync.native(dirReal), dirReal)) {
+    throw new Error(`${label} ${dirReal} no longer resolves to itself; refusing to report the write.`);
   }
   hooks.afterResolve?.(dest);
   assertIsWrittenFile(dest, fileId, size);
-  assertOutputDirIdentity(outReal, outId);
+  assertDirIdentity(dirReal, dirId, label);
   return real;
 }
 
@@ -1065,75 +1078,233 @@ export function safeOutputName(name: string): string {
 }
 
 /**
- * Write `buffer` into `outReal` under a sanitized `name`.
- *
- *   1. output_dir's identity is checked, then the file is created EMPTY with
- *      exclusive create (`wx`: never follows or overwrites an existing entry);
- *   2. before a single byte is written, `verifyWrittenPath` must prove the
- *      empty file is ours (fd dev+ino) and directly inside output_dir;
- *   3. only then are the bytes written through the fd, and `verifyWrittenPath`
- *      runs again before the path is reported.
- *
- * Node has no handle-relative (openat) create, so a parent directory swapped
- * for a link in the instant between step 1's check and the create syscall
- * cannot be PREVENTED from receiving the empty file — but it is detected in
- * step 2 and never receives any content. On collision `<stem>-1.png` …
- * `<stem>-<maxCollisions>.png` are tried, then the call throws.
- *
- * On any failed verification NOTHING is deleted by pathname — a path-based
- * unlink cannot be bound to the object we created and could remove a file
- * someone else put there. Our own bytes (if any were written) are truncated
- * through the still-open fd instead; an empty file may remain.
+ * Truncate OUR object through its still-open fd after a failed check, and
+ * throw an error that reports honestly whether that worked. Nothing is ever
+ * deleted by pathname (a path-based unlink cannot be bound to the object we
+ * created and could remove a file someone else put there).
+ */
+function neutraliseAndThrow(fd: number, path: string, err: unknown, hooks: WriteHooks): never {
+  hooks.beforeNeutralise?.(path);
+  let cleanup: string;
+  try {
+    (hooks.truncate ?? ftruncateSync)(fd, 0);
+    cleanup = "the bytes of the file this call created were truncated through its fd; an empty file may remain";
+  } catch (truncErr) {
+    cleanup =
+      `truncating our bytes through the fd FAILED (${(truncErr as NodeJS.ErrnoException).code ?? (truncErr as Error).message}); ` +
+      "the content of the file this call created is UNKNOWN and may remain wherever it now lives";
+  }
+  throw new Error(`${(err as Error).message} (${cleanup}.)`);
+}
+
+// ─── private staging ─────────────────────────────────────────────────────────
+
+/** A per-call, daemon-owned directory where content is written and verified before any hand-off. */
+export type StagingDir = { dirReal: string; id: FsIdentity };
+
+/**
+ * Create the per-call staging directory under the daemon-owned `parent`
+ * (PP_HOME/.pair-programmer/image-staging): `mkdtemp`, mode 0700 on POSIX.
+ * Refused if `parent` or the new directory is a link, if the new directory's
+ * realpath is not a direct child of the parent's, or if its identity changes
+ * between lstat and realpath.
+ */
+export function createStagingDir(parent: string): { ok: true; staging: StagingDir } | { ok: false; reason: string } {
+  try {
+    mkdirSync(parent, { recursive: true, mode: 0o700 });
+    const pst = lstatSync(parent);
+    if (pst.isSymbolicLink() || !pst.isDirectory()) return { ok: false, reason: `staging parent ${parent} is not a plain directory.` };
+    const parentReal = realpathSync.native(parent);
+    const dir = mkdtempSync(join(parentReal, "gi-"));
+    if (process.platform !== "win32") chmodSync(dir, 0o700);
+    const st = lstatSync(dir, { bigint: true });
+    if (st.isSymbolicLink() || !st.isDirectory()) return { ok: false, reason: `staging directory ${dir} is not a plain directory.` };
+    const dirReal = realpathSync.native(dir);
+    if (!isDirectChildReal(parentReal, dirReal)) return { ok: false, reason: `staging directory resolves to ${dirReal}, outside ${parentReal}.` };
+    const id = { dev: st.dev, ino: st.ino };
+    assertDirIdentity(dirReal, id, "staging directory");
+    return { ok: true, staging: { dirReal, id } };
+  } catch (err) {
+    return { ok: false, reason: `could not create the staging directory: ${(err as Error).message}` };
+  }
+}
+
+/** Throws unless the staging directory still resolves to itself and keeps its identity (resolution first, identity last). */
+export function assertStagingIntact(s: StagingDir): void {
+  if (!samePath(realpathSync.native(s.dirReal), s.dirReal)) {
+    throw new Error(`staging directory ${s.dirReal} no longer resolves to itself; refusing to use it.`);
+  }
+  assertDirIdentity(s.dirReal, s.id, "staging directory");
+}
+
+/** Remove the staging directory after the call. Returns a reason when it could not be removed (reported, never thrown). */
+export function removeStagingDir(s: StagingDir): string | undefined {
+  try {
+    assertStagingIntact(s);
+    rmSync(s.dirReal, { recursive: true, force: false });
+    return undefined;
+  } catch (err) {
+    return `staging directory ${s.dirReal} was not removed: ${(err as Error).message}`;
+  }
+}
+
+export type StagedFile = { path: string; fd: number; id: FsIdentity };
+
+/**
+ * Write `buffer` into a fresh, exclusively-created file inside the private
+ * staging directory, then prove — before any hand-off — that the path still
+ * denotes that file inside staging (identity, size, realpath) and that the
+ * bytes read back through the fd equal `buffer`. On failure our object is
+ * truncated through its fd and the error says whether that worked. The fd is
+ * returned open; the caller closes it.
+ */
+export function stageImage(staging: StagingDir, name: string, buffer: Buffer, hooks: WriteHooks = {}): StagedFile {
+  assertStagingIntact(staging);
+  const path = join(staging.dirReal, `${randomUUID()}-${safeOutputName(name)}`);
+  const fd = openSync(path, "wx+");
+  try {
+    const fst = fstatSync(fd, { bigint: true });
+    const id = { dev: fst.dev, ino: fst.ino };
+    let off = 0;
+    while (off < buffer.length) off += writeSync(fd, buffer, off, buffer.length - off);
+    hooks.afterWrite?.(path);
+    verifyWrittenPath(staging.dirReal, staging.id, path, id, buffer.length, hooks, "staging directory");
+    if (!readFdFully(fd, buffer.length).equals(buffer)) throw new Error("staged bytes differ from the verified image.");
+    return { path, fd, id };
+  } catch (err) {
+    try {
+      neutraliseAndThrow(fd, path, err, hooks);
+    } finally {
+      closeSync(fd);
+    }
+  }
+}
+
+// ─── hand-off into output_dir ────────────────────────────────────────────────
+
+const HANDOFF_COPY_FALLBACK = new Set(["EXDEV", "EPERM", "ENOTSUP", "ENOSYS", "EMLINK"]);
+
+/**
+ * Prove the handed-off `dest` is our image, directly inside output_dir:
+ *   1. open the path and check the FD: regular file, exactly `expected.length`
+ *      bytes, the staged file's dev+ino when hard-linked, and bytes read
+ *      through the fd equal to `expected`;
+ *   2. ALL resolution: realpath(dest) a direct child of `outReal`, and
+ *      realpath(outReal) equal to `outReal`;
+ *   3. LAST: lstat(dest) a non-link with the fd's dev+ino, then output_dir's
+ *      identity.
+ */
+export function verifyHandedOff(
+  outReal: string,
+  outId: FsIdentity,
+  dest: string,
+  expected: Buffer,
+  linkedId: FsIdentity | undefined,
+  hooks: WriteHooks = {},
+): string {
+  const fd = openSync(dest, OPEN_READ_FLAGS);
+  try {
+    const st = fstatSync(fd, { bigint: true });
+    if (!st.isFile()) throw new Error(`${dest} is not a regular file after the hand-off.`);
+    if (linkedId && !sameIdentity(st, linkedId)) throw new Error(`${dest} is not the staged file after the hand-off (replaced).`);
+    if (st.size !== BigInt(expected.length)) throw new Error(`${dest} has ${st.size} bytes; ${expected.length} were handed off.`);
+    if (!readFdFully(fd, expected.length).equals(expected)) throw new Error(`${dest} does not hold the handed-off bytes.`);
+    hooks.duringVerify?.(dest);
+    const real = realpathSync.native(dest);
+    if (!isDirectChildReal(outReal, real)) throw new Error(`handed-off file resolves to ${real}, outside output_dir ${outReal}.`);
+    if (!samePath(realpathSync.native(outReal), outReal)) throw new Error(`output_dir ${outReal} no longer resolves to itself.`);
+    hooks.afterResolve?.(dest);
+    const lst = lstatSync(dest, { bigint: true, throwIfNoEntry: false });
+    if (!lst || lst.isSymbolicLink() || !lst.isFile() || !sameIdentity(lst, st)) {
+      throw new Error(`${dest} is no longer the file that was handed off (replaced or linked); refusing to report it.`);
+    }
+    assertOutputDirIdentity(outReal, outId);
+    return real;
+  } finally {
+    closeSync(fd);
+  }
+}
+
+/**
+ * Write `buffer` for `name` into output_dir WITHOUT writing content through
+ * any path inside output_dir:
+ *   1. `stageImage`: written and verified inside the private staging dir;
+ *   2. ONE exclusive hand-off per candidate name: a hard link of the staged
+ *      file (`link` never follows or replaces an existing entry), or — across
+ *      volumes / where links are unsupported — `copyFile` with COPYFILE_EXCL;
+ *      an existing entry (file, link, dangling link) at the name is never
+ *      followed or overwritten and the next name is tried, up to
+ *      `maxCollisions` alternatives, then the call throws;
+ *   3. `verifyHandedOff` proves the result before the path is reported.
+ * Node has no openat, so an output_dir parent swapped for a link in the
+ * instant before the hand-off syscall can receive the finished file: that is
+ * detected in step 3 and refused. In link mode the handed-off object IS the
+ * staged inode, so it is also truncated through our fd; in copy mode the copy
+ * cannot be bound to an fd and is reported as remaining with unknown content.
+ * Copy mode also pre-checks that NO entry exists at the name, because on
+ * Windows an exclusive create/copy follows a dangling symlink; a dangling link
+ * planted in the instant between that check and the copy is the same class of
+ * residual. Nothing is ever deleted by pathname.
  */
 export function writeImageSafely(
   outReal: string,
   outId: FsIdentity,
+  staging: StagingDir,
   name: string,
   buffer: Buffer,
   maxCollisions: number = MAX_OUTPUT_NAME_COLLISIONS,
   hooks: WriteHooks = {},
 ): string {
-  const safe = safeOutputName(name);
-  const ext = extname(safe);
-  const stem = basename(safe, ext);
-  for (let attempt = 0; attempt <= maxCollisions; attempt++) {
-    const candidate = attempt === 0 ? safe : `${stem}-${attempt}${ext}`;
-    assertOutputDirIntact(outReal, outId);
-    const dest = join(outReal, candidate);
-    hooks.beforeCreate?.(dest);
-    let fd: number;
-    try {
-      fd = openSync(dest, "wx");
-    } catch (err) {
-      if ((err as NodeJS.ErrnoException).code === "EEXIST") continue;
-      throw err;
-    }
-    try {
-      const fst = fstatSync(fd, { bigint: true });
-      const fileId = { dev: fst.dev, ino: fst.ino };
-      verifyWrittenPath(outReal, outId, dest, fileId, 0);
-      let off = 0;
-      while (off < buffer.length) off += writeSync(fd, buffer, off, buffer.length - off);
-      hooks.afterWrite?.(dest);
-      return verifyWrittenPath(outReal, outId, dest, fileId, buffer.length, hooks);
-    } catch (err) {
-      hooks.beforeNeutralise?.(dest);
-      let cleanup: string;
+  const staged = stageImage(staging, name, buffer, hooks);
+  try {
+    const safe = safeOutputName(name);
+    const ext = extname(safe);
+    const stem = basename(safe, ext);
+    for (let attempt = 0; attempt <= maxCollisions; attempt++) {
+      const candidate = attempt === 0 ? safe : `${stem}-${attempt}${ext}`;
+      assertStagingIntact(staging);
+      assertOutputDirIntact(outReal, outId);
+      const dest = join(outReal, candidate);
+      hooks.beforeHandOff?.(dest);
+      let mode: "link" | "copy";
       try {
-        (hooks.truncate ?? ftruncateSync)(fd, 0);
-        cleanup = "any bytes we wrote were truncated through the fd; an empty file may remain";
-      } catch (truncErr) {
-        cleanup =
-          `truncating our bytes through the fd FAILED (${(truncErr as NodeJS.ErrnoException).code ?? (truncErr as Error).message}); ` +
-          "the content of the file this call created is UNKNOWN and may remain wherever it now lives";
+        if (hooks.forceCopy) throw Object.assign(new Error("forced copy"), { code: "EXDEV" });
+        linkSync(staged.path, dest);
+        mode = "link";
+      } catch (err) {
+        const code = (err as NodeJS.ErrnoException).code ?? "";
+        if (code === "EEXIST") continue;
+        if (!HANDOFF_COPY_FALLBACK.has(code)) throw err;
+        // COPYFILE_EXCL alone is NOT enough on Windows: an exclusive create or
+        // copy FOLLOWS a dangling symlink at the target name and creates its
+        // target (a hard link refuses it). So any existing entry — including a
+        // dangling link — is treated as taken before the copy.
+        if (lstatSync(dest, { throwIfNoEntry: false })) continue;
+        try {
+          copyFileSync(staged.path, dest, FS.COPYFILE_EXCL);
+          mode = "copy";
+        } catch (copyErr) {
+          if ((copyErr as NodeJS.ErrnoException).code === "EEXIST") continue;
+          throw copyErr;
+        }
       }
-      throw new Error(`${(err as Error).message} (${cleanup}.)`);
-    } finally {
-      closeSync(fd);
+      hooks.afterHandOff?.(dest);
+      try {
+        return verifyHandedOff(outReal, outId, dest, buffer, mode === "link" ? staged.id : undefined, hooks);
+      } catch (err) {
+        if (mode === "link") neutraliseAndThrow(staged.fd, dest, err, hooks);
+        throw new Error(
+          `${(err as Error).message} (the copy handed off to ${dest} could not be bound to an fd; it was NOT deleted by pathname and ` +
+            "whatever is at that path now has UNKNOWN content.)",
+        );
+      }
     }
+    throw new Error(`output name collision cap reached: ${safe} and ${maxCollisions} alternatives already exist.`);
+  } finally {
+    closeSync(staged.fd);
   }
-  throw new Error(`output name collision cap reached: ${safe} and ${maxCollisions} alternatives already exist.`);
 }
+
 
 
 // ─── downscale ───────────────────────────────────────────────────────────────

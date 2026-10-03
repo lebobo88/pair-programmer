@@ -37,6 +37,7 @@ import {
   realpathSync,
   openSync,
   closeSync,
+  writeSync,
 } from "node:fs";
 import zlib from "node:zlib";
 import { PNG } from "pngjs";
@@ -64,6 +65,15 @@ after(async () => {
 });
 
 const real = (p) => realpathSync.native(p);
+
+// A private staging directory for direct writeImageSafely calls (PP_HOME is
+// already isolated above, so this import cannot reach the real ledger).
+const { createStagingDir } = await importDist("mcp/image-harvest.js");
+function newStaging() {
+  const r = createStagingDir(join(tmp("pp-img-stage-"), "image-staging"));
+  assert.ok(r.ok, r.reason);
+  return r.staging;
+}
 
 // ─── PNG fixtures ────────────────────────────────────────────────────────────
 
@@ -497,10 +507,10 @@ describe("pp_codex.generate_image: limits", () => {
     const { outReal, outId } = prepareOutputDir(tmp("pp-img-out-"));
     const png = makeSolidPng(2, 2);
     writeFileSync(join(outReal, "a.png"), "taken");
-    assert.equal(writeImageSafely(outReal, outId, "a.png", png, 3), join(outReal, "a-1.png"));
+    assert.equal(writeImageSafely(outReal, outId, newStaging(), "a.png", png, 3), join(outReal, "a-1.png"));
     writeFileSync(join(outReal, "a-2.png"), "taken");
     writeFileSync(join(outReal, "a-3.png"), "taken");
-    assert.throws(() => writeImageSafely(outReal, outId, "a.png", png, 3), /collision cap reached/);
+    assert.throws(() => writeImageSafely(outReal, outId, newStaging(), "a.png", png, 3), /collision cap reached/);
   });
 });
 
@@ -743,7 +753,7 @@ describe("pp_codex.generate_image: output containment", () => {
     rmSync(prepared.outReal, { recursive: true });
     symlinkSync(escape, prepared.outReal, "junction");
     assert.throws(() => assertOutputDirIntact(prepared.outReal, prepared.outId), /no longer resolves to itself|no longer a plain directory/);
-    assert.throws(() => writeImageSafely(prepared.outReal, prepared.outId, "x.png", makeSolidPng(2, 2)), /no longer resolves to itself|no longer a plain directory/);
+    assert.throws(() => writeImageSafely(prepared.outReal, prepared.outId, newStaging(), "x.png", makeSolidPng(2, 2)), /no longer resolves to itself|no longer a plain directory/);
     assert.deepEqual(readdirSync(escape), [], "nothing landed in the junction target");
   });
 
@@ -768,7 +778,7 @@ describe("pp_codex.generate_image: output containment", () => {
     renameSync(direct.outReal, `${direct.outReal}-moved`);
     mkdirSync(direct.outReal);
     assert.throws(() => assertOutputDirIntact(direct.outReal, direct.outId), /replaced by a different directory/);
-    assert.throws(() => writeImageSafely(direct.outReal, direct.outId, "x.png", makeSolidPng(2, 2)), /replaced by a different directory/);
+    assert.throws(() => writeImageSafely(direct.outReal, direct.outId, newStaging(), "x.png", makeSolidPng(2, 2)), /replaced by a different directory/);
     assert.deepEqual(readdirSync(direct.outReal), []);
 
     const viaAncestor = prepareOutputDir(join(base, "p", "out"));
@@ -794,7 +804,7 @@ describe("pp_codex.generate_image: output containment", () => {
     assert.deepEqual(readdirSync(outputDir), []);
   });
 
-  test("writeImageSafely: a destination replaced after the write (by another file or a link to a sibling) is refused; the replacement survives and only our own bytes are truncated", async () => {
+  test("writeImageSafely: a handed-off file replaced (by another file or a link to a sibling) is refused; the replacement survives and only our own object is truncated", async () => {
     const { writeImageSafely, prepareOutputDir } = await importDist("mcp/image-harvest.js");
     for (const kind of ["file", "link"]) {
       const { outReal, outId } = prepareOutputDir(tmp("pp-img-out-"));
@@ -802,36 +812,38 @@ describe("pp_codex.generate_image: output containment", () => {
       writeFileSync(sibling, makeSolidPng(3, 3));
       assert.throws(
         () =>
-          writeImageSafely(outReal, outId, "x.png", makeSolidPng(2, 2), 0, {
-            afterWrite: (dest) => {
+          writeImageSafely(outReal, outId, newStaging(), "x.png", makeSolidPng(2, 2), 0, {
+            afterHandOff: (dest) => {
               renameSync(dest, `${dest}.ours`);
               if (kind === "file") writeFileSync(dest, makeSolidPng(3, 3));
               else symlinkSync(sibling, dest, "file");
             },
           }),
-        /no longer the file that was written/,
+        /not the staged file after the hand-off/,
         kind,
       );
       assert.ok(readdirSync(outReal).includes("x.png"), `${kind}: the replacement is not deleted by us`);
-      assert.equal(statSync(join(outReal, "x.png.ours")).size, 0, `${kind}: our own bytes were truncated through the fd`);
+      assert.equal(statSync(join(outReal, "x.png.ours")).size, 0, `${kind}: our own (hard-linked) object was truncated through the staging fd`);
+      assert.deepEqual(readFileSync(sibling), makeSolidPng(3, 3), `${kind}: the sibling is untouched`);
     }
   });
 
-  test("writeImageSafely: a destination swapped DURING verification (between the identity check and realpath) is refused", async () => {
+  test("writeImageSafely: a handed-off file swapped DURING its verification (between the fd checks and realpath) is refused", async () => {
     const { writeImageSafely, prepareOutputDir } = await importDist("mcp/image-harvest.js");
     const { outReal, outId } = prepareOutputDir(tmp("pp-img-out-"));
     const theirs = makeSolidPng(3, 3);
     let swapped = false;
     assert.throws(
       () =>
-        writeImageSafely(outReal, outId, "x.png", makeSolidPng(2, 2), 0, {
-          duringVerify: (dest) => {
-            renameSync(dest, `${dest}.ours`);
-            writeFileSync(dest, theirs);
+        writeImageSafely(outReal, outId, newStaging(), "x.png", makeSolidPng(2, 2), 0, {
+          duringVerify: (p) => {
+            if (dirname(p) !== outReal) return; // only the hand-off verification, not the staging one
+            renameSync(p, `${p}.ours`);
+            writeFileSync(p, theirs);
             swapped = true;
           },
         }),
-      /no longer the file that was written/,
+      /no longer the file that was handed off/,
     );
     assert.equal(swapped, true, "the swap really happened inside verification");
     assert.deepEqual(readFileSync(join(outReal, "x.png")), theirs, "the replacement is untouched");
@@ -843,8 +855,8 @@ describe("pp_codex.generate_image: output containment", () => {
     const third = makeSolidPng(5, 5);
     assert.throws(
       () =>
-        writeImageSafely(outReal, outId, "x.png", makeSolidPng(2, 2), 0, {
-          afterWrite: (dest) => {
+        writeImageSafely(outReal, outId, newStaging(), "x.png", makeSolidPng(2, 2), 0, {
+          afterHandOff: (dest) => {
             renameSync(dest, `${dest}.ours`);
             writeFileSync(dest, makeSolidPng(3, 3)); // forces a failed verification
           },
@@ -853,7 +865,7 @@ describe("pp_codex.generate_image: output containment", () => {
             writeFileSync(dest, third); // swapped in between failure and cleanup
           },
         }),
-      /no longer the file that was written/,
+      /not the staged file after the hand-off/,
     );
     assert.deepEqual(readFileSync(join(outReal, "x.png")), third, "the file swapped in at cleanup time survives intact");
     assert.equal(statSync(join(outReal, "x.png.ours")).size, 0, "only our own object was neutralised, through its fd");
@@ -1212,9 +1224,9 @@ describe("pp_codex.generate_image: round-5 findings", () => {
     let staged = false;
     assert.throws(
       () =>
-        writeImageSafely(outReal, outId, "x.png", makeSolidPng(2, 2), 0, {
+        writeImageSafely(outReal, outId, newStaging(), "x.png", makeSolidPng(2, 2), 0, {
           afterResolve: (dest) => {
-            if (statSync(dest).size === 0) return; // only on the post-write verification
+            if (dirname(dest) !== outReal) return; // only the hand-off verification
             // Move our (open) file out first — Windows forbids renaming a
             // directory that holds an open file — then swap the directory and
             // move the file back: file identity is unchanged, so only the
@@ -1231,28 +1243,164 @@ describe("pp_codex.generate_image: round-5 findings", () => {
     assert.equal(staged, true, "the swap really happened after resolution");
   });
 
-  test("output: a parent swapped for a junction right before the create receives no content (verified before any byte is written)", async () => {
+  test("output: a parent swapped for a junction right before the hand-off is detected; in link mode the object is neutralised, in copy mode reported as unknown", async () => {
     const { writeImageSafely, prepareOutputDir } = await importDist("mcp/image-harvest.js");
-    const escape = tmp("pp-img-escape-");
-    const { outReal, outId } = prepareOutputDir(join(tmp("pp-img-outbase-"), "out"));
-    // Sizes are captured BEFORE the fd-bound truncation, which would otherwise
-    // hide a premature write.
-    const sizesAtFailure = [];
+    for (const forceCopy of [false, true]) {
+      const escape = tmp("pp-img-escape-");
+      const { outReal, outId } = prepareOutputDir(join(tmp("pp-img-outbase-"), "out"));
+      assert.throws(
+        () =>
+          writeImageSafely(outReal, outId, newStaging(), "x.png", makeSolidPng(2, 2), 0, {
+            forceCopy,
+            beforeHandOff: () => {
+              rmSync(outReal, { recursive: true });
+              symlinkSync(escape, outReal, "junction");
+            },
+          }),
+        (err) => {
+          assert.match(err.message, /outside output_dir|no longer resolves to itself/);
+          if (forceCopy) assert.match(err.message, /NOT deleted by pathname .* UNKNOWN content/);
+          else assert.match(err.message, /truncated through its fd/);
+          return true;
+        },
+      );
+      const landed = readdirSync(escape);
+      assert.deepEqual(landed, ["x.png"], "precondition: the hand-off really was redirected into the junction target");
+      const size = statSync(join(escape, "x.png")).size;
+      if (forceCopy) assert.ok(size > 0, "copy mode: the stated residual — the copy cannot be neutralised, and the error says so");
+      else assert.equal(size, 0, "link mode: the redirected object IS the staged inode and was truncated through the staging fd");
+    }
+  });
+});
+
+// ─── staging + exclusive hand-off ─────────────────────────────────────────────
+
+describe("pp_codex.generate_image: private staging and exclusive hand-off", () => {
+  test("a staged file relocated into output_dir during the staging write cannot leave content there", async () => {
+    const { writeImageSafely, prepareOutputDir } = await importDist("mcp/image-harvest.js");
+    const { outReal, outId } = prepareOutputDir(tmp("pp-img-out-"));
     assert.throws(
       () =>
-        writeImageSafely(outReal, outId, "x.png", makeSolidPng(2, 2), 0, {
-          beforeCreate: () => {
-            rmSync(outReal, { recursive: true });
-            symlinkSync(escape, outReal, "junction");
-          },
-          beforeNeutralise: () => {
-            for (const f of readdirSync(escape)) sizesAtFailure.push([f, statSync(join(escape, f)).size]);
+        writeImageSafely(outReal, outId, newStaging(), "x.png", makeSolidPng(2, 2), 0, {
+          afterWrite: (stagedPath) => renameSync(stagedPath, join(outReal, "stolen.png")),
+        }),
+      /no longer the file that was written/,
+    );
+    const left = readdirSync(outReal);
+    assert.deepEqual(left, ["stolen.png"], "precondition: the relocation really put the staged object in output_dir");
+    assert.equal(statSync(join(outReal, "stolen.png")).size, 0, "the relocated object was neutralised through the staging fd");
+  });
+
+  test("end to end: relocation during staging leaves no content in output_dir and no image is reported", async () => {
+    const outputDir = tmp("pp-img-out-");
+    const { result } = await runHarvest({
+      args: { output_dir: outputDir },
+      write: writePngs({ "exec-call-1.png": makeSolidPng(4, 4) }),
+      opts: { _writeHooks: { afterWrite: (stagedPath) => renameSync(stagedPath, join(real(outputDir), "stolen.png")) } },
+    });
+    assert.equal(result.status, "failed");
+    for (const f of readdirSync(outputDir)) assert.equal(statSync(join(outputDir, f)).size, 0, `${f} must hold no content`);
+  });
+
+  test("staged bytes altered in place (same inode, same size) are caught by the read-back comparison before any hand-off", async () => {
+    const { writeImageSafely, prepareOutputDir } = await importDist("mcp/image-harvest.js");
+    const { outReal, outId } = prepareOutputDir(tmp("pp-img-out-"));
+    const png = makeSolidPng(2, 2);
+    assert.throws(
+      () =>
+        writeImageSafely(outReal, outId, newStaging(), "x.png", png, 0, {
+          afterWrite: (stagedPath) => {
+            const fd = openSync(stagedPath, "r+");
+            try { writeSync(fd, Buffer.from([0x00]), 0, 1, png.length - 1); } finally { closeSync(fd); }
           },
         }),
-      /outside output_dir|no longer resolves to itself|no longer a plain directory/,
+      /staged bytes differ from the verified image/,
     );
-    assert.ok(sizesAtFailure.length > 0, "precondition: the redirected create really landed in the junction target");
-    for (const [f, size] of sizesAtFailure) assert.equal(size, 0, `${f} received ${size} bytes before verification`);
+    assert.deepEqual(readdirSync(outReal), [], "nothing was handed off");
+  });
+
+  test("a handed-off file altered in place (same identity, same size) is refused by the byte comparison (link and copy mode)", async () => {
+    const { writeImageSafely, prepareOutputDir } = await importDist("mcp/image-harvest.js");
+    const png = makeSolidPng(2, 2);
+    for (const forceCopy of [false, true]) {
+      const { outReal, outId } = prepareOutputDir(tmp("pp-img-out-"));
+      assert.throws(
+        () =>
+          writeImageSafely(outReal, outId, newStaging(), "x.png", png, 0, {
+            forceCopy,
+            afterHandOff: (dest) => {
+              const fd = openSync(dest, "r+");
+              try { writeSync(fd, Buffer.from([0x00]), 0, 1, png.length - 1); } finally { closeSync(fd); }
+            },
+          }),
+        /does not hold the handed-off bytes/,
+        forceCopy ? "copy" : "link",
+      );
+    }
+  });
+
+  test("hand-off refuses a pre-existing file, symlink or dangling symlink at the target name (link and copy mode)", async () => {
+    const { writeImageSafely, prepareOutputDir } = await importDist("mcp/image-harvest.js");
+    for (const forceCopy of [false, true]) {
+      for (const kind of ["file", "symlink", "dangling"]) {
+        const { outReal, outId } = prepareOutputDir(tmp("pp-img-out-"));
+        const escape = tmp("pp-img-escape-");
+        const canary = join(escape, "canary.txt");
+        writeFileSync(canary, "do-not-touch");
+        if (kind === "file") writeFileSync(join(outReal, "x.png"), "existing");
+        else symlinkSync(kind === "symlink" ? canary : join(escape, "missing.txt"), join(outReal, "x.png"), "file");
+        const label = `${kind}, ${forceCopy ? "copy" : "link"}`;
+        assert.throws(() => writeImageSafely(outReal, outId, newStaging(), "x.png", makeSolidPng(2, 2), 0, { forceCopy }), /collision cap reached/, label);
+        assert.equal(readFileSync(canary, "utf8"), "do-not-touch", `${label}: link target untouched`);
+        assert.deepEqual(readdirSync(escape), ["canary.txt"], `${label}: nothing created through the link`);
+        if (kind === "file") assert.equal(readFileSync(join(outReal, "x.png"), "utf8"), "existing", `${label}: existing file untouched`);
+        const path = writeImageSafely(outReal, outId, newStaging(), "x.png", makeSolidPng(2, 2), 1, { forceCopy });
+        assert.equal(path, join(outReal, "x-1.png"), `${label}: the next free name is used`);
+      }
+    }
+  });
+
+  test("link mode hands off the verified staged inode; copy mode hands off identical bytes", async () => {
+    const { writeImageSafely, prepareOutputDir } = await importDist("mcp/image-harvest.js");
+    const png = makeSolidPng(3, 2);
+    for (const forceCopy of [false, true]) {
+      const { outReal, outId } = prepareOutputDir(tmp("pp-img-out-"));
+      const staging = newStaging();
+      const path = writeImageSafely(outReal, outId, staging, "x.png", png, 0, { forceCopy });
+      assert.deepEqual(readFileSync(path), png);
+      const stagedNames = readdirSync(staging.dirReal);
+      assert.equal(stagedNames.length, 1, "exactly one staged file");
+      const sameInode = statSync(join(staging.dirReal, stagedNames[0]), { bigint: true }).ino === statSync(path, { bigint: true }).ino;
+      assert.equal(sameInode, !forceCopy, forceCopy ? "copy mode is a separate file" : "link mode is the staged inode itself");
+    }
+  });
+
+  test("createStagingDir refuses a linked staging parent; assertStagingIntact and removeStagingDir refuse a replaced staging dir", async () => {
+    const { createStagingDir, assertStagingIntact, removeStagingDir } = await importDist("mcp/image-harvest.js");
+    const escape = tmp("pp-img-escape-");
+    const linkedParent = join(tmp("pp-img-stagebase-"), "image-staging");
+    symlinkSync(escape, linkedParent, "junction");
+    const r = createStagingDir(linkedParent);
+    assert.equal(r.ok, false);
+    assert.match(r.reason, /not a plain directory/);
+    assert.deepEqual(readdirSync(escape), [], "nothing created through the linked parent");
+
+    const s = newStaging();
+    assert.doesNotThrow(() => assertStagingIntact(s));
+    renameSync(s.dirReal, `${s.dirReal}-orig`);
+    mkdirSync(s.dirReal);
+    assert.throws(() => assertStagingIntact(s), /staging directory .* was replaced/);
+    const why = removeStagingDir(s);
+    assert.match(why ?? "", /was not removed/, "a replaced staging dir is reported, not deleted");
+    assert.ok(statSync(s.dirReal).isDirectory() && statSync(`${s.dirReal}-orig`).isDirectory(), "neither directory was deleted");
+  });
+
+  test("end to end: the per-call staging directory is removed when the call ends", async () => {
+    const stagingParent = join(tmp("pp-img-stagebase-"), "image-staging");
+    const { result } = await runHarvest({ write: writePngs({ "exec-call-1.png": makeSolidPng(4, 4) }), opts: { _stagingParent: stagingParent } });
+    assert.equal(result.status, "ok");
+    assert.equal(result.staging_cleanup_error, undefined);
+    assert.deepEqual(readdirSync(stagingParent), [], "no staging directory left behind");
   });
 });
 
@@ -1362,14 +1510,14 @@ describe("pp_codex.generate_image: settle observation and per-call budgets", () 
     const forced = (fn) =>
       assert.throws(
         () =>
-          writeImageSafely(outReal, outId, "x.png", makeSolidPng(2, 2), 0, {
-            afterWrite: (dest) => { renameSync(dest, `${dest}.ours`); writeFileSync(dest, "theirs"); },
+          writeImageSafely(outReal, outId, newStaging(), "x.png", makeSolidPng(2, 2), 0, {
+            afterHandOff: (dest) => { renameSync(dest, `${dest}.ours`); writeFileSync(dest, "theirs"); },
             truncate: fn,
           }),
         (err) => {
           assert.match(err.message, /truncating our bytes through the fd FAILED \(EIO\)/);
           assert.match(err.message, /content .* is UNKNOWN/);
-          assert.doesNotMatch(err.message, /were truncated through the fd/, "never claims a truncation that did not happen");
+          assert.doesNotMatch(err.message, /were truncated through its fd/, "never claims a truncation that did not happen");
           return true;
         },
       );
@@ -1558,6 +1706,19 @@ describe("pp_agy.generate_image", () => {
  *   distinct-image cap reset per poll           -> image cap; distinct-image cap across polls
  *   truncation failure swallowed                -> failed truncation reported as such
  *   (re-run red: stale refusal, decode gate, unknown critical chunks)
+ *
+ * Operator decision — private staging + single exclusive hand-off:
+ *   staged file not verified inside staging     -> relocation during staging write (direct + end to end)
+ *   staged bytes not read back / compared       -> staged bytes altered in place
+ *   hand-off replaced by a direct write         -> 29 tests red (identity binding to the staged inode everywhere)
+ *   copy-mode no-entry pre-check removed        -> pre-existing file/symlink/DANGLING symlink (Windows exclusive copy follows it)
+ *   hand-off identity vs staged inode removed   -> handed-off file replaced; cleanup-swap
+ *   hand-off byte comparison removed            -> handed-off file altered in place (link and copy)
+ *   link-mode neutralisation removed            -> replaced; cleanup-swap; parent junction swap; forced truncation failure
+ *   staging identity / linked parent / replaced-dir removal / end-of-call removal -> the staging tests
+ *   truncation failure swallowed (re-run)       -> failed truncation reported as such
+ *   NOT FALSIFIABLE (disclosed): re-validating the RE-ENCODED output with acceptPng — pngjs always emits a valid PNG, so
+ *   no fixture can make that defence-in-depth check fire without replacing the encoder.
  *   NOTE: removing only the link/type clause of the output_dir check stays GREEN — it is subsumed, not missing:
  *   realpath equality runs first and catches a link, and a link can never carry the directory's pinned dev+ino
  *   (that identity check, when removed, turns three tests red).
