@@ -49,7 +49,7 @@ import {
   prepareOutputDir,
   writeImageSafely,
   createStagingDir,
-  removeStagingDir,
+  sweepStagingDirs,
   type StagingDir,
   type WriteHooks,
   type FsIdentity,
@@ -604,8 +604,12 @@ export type CodexGenerateImageResult = (
   | { status: "empty_session_dir"; reason: string; session_id: string }
   | { status: "staging_unavailable"; reason: string }
 ) & {
-  /** Set when the per-call staging directory could not be removed afterwards. */
-  staging_cleanup_error?: string;
+  /**
+   * The per-call staging directory. RETAINED by design: nothing is deleted
+   * during a call; stale staging directories are removed by the conservative
+   * sweep at the start of a later call.
+   */
+  staging_dir?: string;
 };
 
 export type CodexGenerateImageInternalOptions = {
@@ -613,8 +617,6 @@ export type CodexGenerateImageInternalOptions = {
   _stagingParent?: string;
   /** Test-only DI seam: fired around staging, hand-off and their verification. */
   _writeHooks?: WriteHooks;
-  /** Test-only DI seam: replaces removeStagingDir so a test can force a cleanup failure. */
-  _removeStaging?: (s: StagingDir) => string | undefined;
   /**
    * Test-only DI seam: replaces the whole codex turn (`codexGenerate`) so a
    * test controls the reported `session_id` without spawning the CLI.
@@ -655,23 +657,16 @@ export async function codexGenerateImage(
 
   // Private, daemon-owned staging: every image is written and verified here
   // first; output_dir only ever receives the single exclusive hand-off.
-  const st = createStagingDir(opts._stagingParent ?? join(ROOT_DIR, "image-staging"));
+  // Stale staging directories from EARLIER calls are swept conservatively
+  // first (skips and logs anything it cannot verify); this call's own staging
+  // directory is retained by design and never deleted during the call.
+  const stagingParent = opts._stagingParent ?? join(ROOT_DIR, "image-staging");
+  sweepStagingDirs(stagingParent);
+  const st = createStagingDir(stagingParent);
   if (!st.ok) return { status: "staging_unavailable", reason: st.reason };
-  let result: CodexGenerateImageResult | undefined;
-  try {
-    result = await harvestIntoOutput(args, opts, out, st.staging, callStartMs);
-    return result;
-  } finally {
-    const cleanupError = (opts._removeStaging ?? removeStagingDir)(st.staging);
-    if (cleanupError && result) {
-      // A cleanup failure is a failure: never leave the call reporting "ok".
-      result.staging_cleanup_error = cleanupError;
-      if ("failures" in result) {
-        result.failures.push({ file: "*", reason: cleanupError });
-        if (result.status === "ok") result.status = "partial";
-      }
-    }
-  }
+  const result = await harvestIntoOutput(args, opts, out, st.staging, callStartMs);
+  result.staging_dir = st.staging.dirReal;
+  return result;
 }
 
 async function harvestIntoOutput(
@@ -1096,20 +1091,21 @@ const TOOLS = [
       "a hard link is impossible (output_dir on a different filesystem from PP_HOME, or a filesystem without hard links) that image fails and nothing is " +
       "written into output_dir. The handed-off file is then verified through a fresh fd (regular file, the staged dev/ino, exact size, identical bytes) with all path " +
       "resolution first and the identity checks last (non-link, same dev/ino as the fd; output_dir's dev/ino pinned at preparation, so a same-path replacement " +
-      "directory is refused). Nothing in output_dir is ever deleted. When the call ends, staging is cleaned up WITHOUT recursive deletion: only the files " +
-      "this call staged are unlinked, each only while its path is still the regular file it created (same dev/ino), then the directory is removed only " +
-      "if empty (rmdir); anything else is left in place and named in staging_cleanup_error and in `failures`, which turns an otherwise \"ok\" status " +
-      "into \"partial\". If creating the staging directory fails after it was allocated, that empty directory is removed (or reported as remaining). RESIDUAL RISK (stated, operator-accepted): Node has no " +
+      "directory is refused). Nothing in output_dir is ever deleted, and NOTHING is deleted during a call at all: the call's staging directory (returned " +
+      "as staging_dir) is RETAINED by design, also when setup fails after it was allocated. At the start of each call, staging directories older than 24h " +
+      "are swept conservatively: each directory and then each file in it is observed (non-link, plain type, dev/ino), moved aside under a fresh random " +
+      "name and re-checked; anything replaced after observation, any link or unexpected type, or any error makes the sweep skip and log that directory and " +
+      "leave it in place; directories are removed only when empty (rmdir); at most 200 entries are examined per sweep and per directory. " +
+      "RESIDUAL RISKS (stated, operator-accepted): (1) staging directories are retained until a later call sweeps them; a same-user process racing the " +
+      "sweep's final unlink of a freshly random-named file could have its object deleted (the staging parent is daemon-private, 0700 on POSIX). (2) Node has no " +
       "openat, so if output_dir or an ancestor is swapped for a link in the instant before the link syscall, the finished image can land in the link target; " +
       "that is detected and the image is refused, and because the handed-off object IS the staged inode it is also truncated through the staging fd (a " +
       "failed truncation is reported as such, with the content described as unknown). After a " +
       "successful hand-off, any process with write access to output_dir can of course move, replace or modify the finished file. " +
       "VALIDATION: every PNG — including one copied verbatim — must pass a full structure check (signature, IHDR length 13 with legal fields, every chunk CRC, " +
-      "consecutive IDATs, PLTE rules incl. palette size, no unknown critical chunks, terminating IEND, no bytes after IEND; ancillary chunks are limited to " +
-      "gAMA, cHRM, sRGB, sBIT, bKGD, hIST, tRNS, pHYs, tIME (a real calendar date), tEXt (printable Latin-1 keyword, Latin-1 text without NUL) and " +
-      "uncompressed iTXt (printable keyword, ASCII language tag, UTF-8 translated keyword and text without NUL), each checked for length, multiplicity, " +
-      "ordering and colour-type rules; chunks whose payload this harvester does not fully validate (iCCP, zTXt, compressed iTXt, eXIf) and any OTHER " +
-      "ancillary chunk are refused), and its image data must inflate — with the inflater capped at the exact size IHDR " +
+      "PLTE rules incl. palette size, no unknown critical chunks, terminating IEND, no bytes after IEND). ONLY the four critical chunks IHDR, PLTE, IDAT " +
+      "and IEND are accepted: a PNG carrying ANY ancillary chunk (gAMA, cHRM, sRGB, iCCP, tEXt, zTXt, iTXt, eXIf, pHYs, tIME, tRNS, bKGD, …) is " +
+      "REFUSED, because the harvester does not validate metadata payloads. Its image data must inflate — with the inflater capped at the exact size IHDR " +
       "implies, after the 4096x4096 pixel cap — to exactly that size with valid scanline filter bytes (unused padding after the zlib stream is ignored, per PNG §11.2.3), so a decompression bomb is refused and the later " +
       "decode is bounded by the same size; it must then fully decode (e.g. every palette index within PLTE) before it is copied or downscaled. A file is harvested only once settled: the same dev/ino, size and mtime on two consecutive polls and ending in IEND; that observation must match the " +
       "fd at the final open and still match after the read, so a settled file swapped for another is refused. " +

@@ -20,7 +20,7 @@
 import { test, describe, after } from "node:test";
 import assert from "node:assert/strict";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 import {
   mkdtempSync,
@@ -33,6 +33,7 @@ import {
   rmSync,
   symlinkSync,
   utimesSync,
+  lutimesSync,
   statSync,
   lstatSync,
   realpathSync,
@@ -956,7 +957,9 @@ describe("pp_codex.generate_image: round-2 findings", () => {
       "short image data": [assemblePng({ width: 4, height: 4, raw: Buffer.alloc(10) }), /inflates to 10 bytes; IHDR implies exactly 20/],
       "bad filter byte": [assemblePng({ width: 4, height: 4, raw: greyScanlines(4, 4, 0, 5) }), /invalid scanline filter type 5/],
       "PLTE in greyscale": [assemblePng({ width: 4, height: 4, raw: greyScanlines(4, 4), plte: Buffer.alloc(3) }), /PLTE in a greyscale/],
-      "non-consecutive IDAT": [assemblePng({ width: 4, height: 4, raw: greyScanlines(4, 4), splitIdatWith: "tEXt" }), /not consecutive/],
+      // A chunk between IDATs can only be ancillary (PLTE/IHDR there are refused on their own), so it is refused as such.
+      "chunk between IDATs": [assemblePng({ width: 4, height: 4, raw: greyScanlines(4, 4), splitIdatWith: "tEXt" }), /ancillary chunks are not accepted/],
+      "PLTE after IDAT": [assemblePng({ width: 4, height: 4, colorType: 2, raw: Buffer.concat(Array.from({ length: 4 }, () => Buffer.from([0, ...Array(12).fill(5)]))), splitIdatWith: "PLTE" }), /PLTE after IDAT/],
       "pixel cap before inflation": [assemblePng({ width: 5000, height: 5000, idat: Buffer.from([1]) }), /pixel budget/],
     };
     for (const [label, [buf, reason]] of Object.entries(cases)) {
@@ -1145,15 +1148,14 @@ describe("pp_codex.generate_image: round-3 findings", () => {
     }
   });
 
-  test("validatePngStructure: unknown critical chunks, unvalidated ancillary chunks and oversized palettes are refused", async () => {
+  test("validatePngStructure: unknown critical chunks, any ancillary chunk and oversized palettes are refused", async () => {
     const { validatePngStructure } = await importDist("mcp/image-harvest.js");
     const withAncillary = assemblePng({ width: 4, height: 4, raw: greyScanlines(4, 4), splitIdatWith: undefined });
-    const text = Buffer.concat([withAncillary.subarray(0, 33), pngChunk("tEXt", Buffer.from("Title\0hello")), withAncillary.subarray(33)]);
-    assert.equal(validatePngStructure(text).ok, true, "a well-formed known ancillary chunk (tEXt) is accepted");
+    assert.equal(validatePngStructure(withAncillary).ok, true, "precondition: the critical-only base is accepted");
     const ancillary = Buffer.concat([withAncillary.subarray(0, 33), pngChunk("abCD", Buffer.from("x")), withAncillary.subarray(33)]);
     const ra = validatePngStructure(ancillary);
-    assert.equal(ra.ok, false, "an ancillary chunk the harvester does not validate is refused");
-    assert.match(ra.reason, /not one this harvester validates/);
+    assert.equal(ra.ok, false, "an ancillary chunk is refused");
+    assert.match(ra.reason, /ancillary chunks are not accepted/);
     const critical = Buffer.concat([withAncillary.subarray(0, 33), pngChunk("ABCD", Buffer.from("x")), withAncillary.subarray(33)]);
     const rc = validatePngStructure(critical);
     assert.equal(rc.ok, false);
@@ -1380,7 +1382,7 @@ describe("pp_codex.generate_image: private staging and exclusive hand-off", () =
     assert.deepEqual(readdirSync(outputDir), []);
   });
 
-  test("createStagingDir: a failure after allocation removes the allocated (empty) directory and says so", async () => {
+  test("createStagingDir: a failure after allocation deletes nothing — the allocated directory is retained and named", async () => {
     const { createStagingDir } = await importDist("mcp/image-harvest.js");
     const parent = join(tmp("pp-img-stagebase-"), "image-staging");
     let allocated;
@@ -1392,67 +1394,13 @@ describe("pp_codex.generate_image: private staging and exclusive hand-off", () =
     });
     assert.equal(r.ok, false);
     assert.ok(allocated, "precondition: a directory really was allocated before the failure");
-    assert.match(r.reason, /forced EIO.*was removed/);
-    assert.deepEqual(readdirSync(parent), [], "no orphaned staging directory");
+    assert.match(r.reason, /forced EIO.*is retained by design and will be swept once stale/);
+    assert.ok(r.reason.includes(allocated), "the retained directory is named");
+    assert.ok(statSync(allocated).isDirectory(), "and it was not deleted");
   });
 
-  test("createStagingDir: when the allocated directory cannot be removed, the reason says it remains", async () => {
-    const { createStagingDir } = await importDist("mcp/image-harvest.js");
-    const parent = join(tmp("pp-img-stagebase-"), "image-staging");
-    const r = createStagingDir(parent, {
-      afterMkdtemp: (dir) => {
-        writeFileSync(join(dir, "blocker"), "x"); // rmdir refuses a non-empty directory
-        throw Object.assign(new Error("forced EIO"), { code: "EIO" });
-      },
-    });
-    assert.equal(r.ok, false);
-    assert.match(r.reason, /could NOT be removed \(ENOTEMPTY\); it remains/);
-    assert.equal(readdirSync(parent).length, 1, "the directory that could not be removed is the one reported");
-  });
-
-  test("removeStagingDir removes only the files this call staged (after a failed hand-off too), then the empty directory", async () => {
-    const { writeImageSafely, prepareOutputDir, removeStagingDir } = await importDist("mcp/image-harvest.js");
-    const { outReal, outId } = prepareOutputDir(tmp("pp-img-out-"));
-    const staging = newStaging();
-    assert.throws(() => writeImageSafely(outReal, outId, staging, "x.png", makeSolidPng(2, 2), 0, { linkError: "EXDEV" }), /no copy fallback/);
-    assert.equal(staging.files.length, 1, "precondition: the failed call staged one file");
-    assert.equal(readdirSync(staging.dirReal).length, 1, "precondition: it is still in staging");
-    assert.equal(removeStagingDir(staging), undefined);
-    assert.equal(lstatSync(staging.dirReal, { throwIfNoEntry: false }), undefined, "the staging directory is gone");
-  });
-
-  test("removeStagingDir leaves a staged path that was replaced at cleanup time, and anything it did not stage, and reports them", async () => {
-    const { writeImageSafely, prepareOutputDir, removeStagingDir } = await importDist("mcp/image-harvest.js");
-    const { outReal, outId } = prepareOutputDir(tmp("pp-img-out-"));
-    const staging = newStaging();
-    writeImageSafely(outReal, outId, staging, "x.png", makeSolidPng(2, 2), 0);
-    const foreign = join(staging.dirReal, "not-ours.bin");
-    writeFileSync(foreign, "keep me");
-    const why = removeStagingDir(staging, {
-      beforeUnlink: (p) => {
-        rmSync(p);
-        writeFileSync(p, "replacement"); // a different file at the staged path
-      },
-    });
-    assert.match(why ?? "", /not fully removed; retained: .*no longer the staged file; left in place/);
-    assert.match(why ?? "", /ENOTEMPTY/, "the directory is reported as retained, not recursively deleted");
-    assert.equal(readFileSync(foreign, "utf8"), "keep me", "a file this call did not stage is never deleted");
-    assert.equal(readFileSync(staging.files[0].path, "utf8"), "replacement", "the replacement is never deleted");
-  });
-
-  test("end to end: a staging cleanup failure is reported and an otherwise-ok call becomes partial", async () => {
-    const { result } = await runHarvest({
-      write: writePngs({ "exec-call-1.png": makeSolidPng(4, 4) }),
-      opts: { _removeStaging: () => "staging directory X was not removed: EBUSY (forced)" },
-    });
-    assert.equal(result.images.length, 1, "precondition: the image itself succeeded");
-    assert.equal(result.status, "partial", "never ok while the cleanup failed");
-    assert.match(result.staging_cleanup_error ?? "", /was not removed: EBUSY/);
-    assert.ok(result.failures.some((f) => f.file === "*" && /was not removed/.test(f.reason)));
-  });
-
-  test("createStagingDir refuses a linked staging parent; assertStagingIntact and removeStagingDir refuse a replaced staging dir", async () => {
-    const { createStagingDir, assertStagingIntact, removeStagingDir } = await importDist("mcp/image-harvest.js");
+  test("createStagingDir refuses a linked staging parent; assertStagingIntact refuses a replaced staging dir", async () => {
+    const { createStagingDir, assertStagingIntact } = await importDist("mcp/image-harvest.js");
     const escape = tmp("pp-img-escape-");
     const linkedParent = join(tmp("pp-img-stagebase-"), "image-staging");
     symlinkSync(escape, linkedParent, "junction");
@@ -1466,17 +1414,87 @@ describe("pp_codex.generate_image: private staging and exclusive hand-off", () =
     renameSync(s.dirReal, `${s.dirReal}-orig`);
     mkdirSync(s.dirReal);
     assert.throws(() => assertStagingIntact(s), /staging directory .* was replaced/);
-    const why = removeStagingDir(s);
-    assert.match(why ?? "", /was not removed/, "a replaced staging dir is reported, not deleted");
-    assert.ok(statSync(s.dirReal).isDirectory() && statSync(`${s.dirReal}-orig`).isDirectory(), "neither directory was deleted");
   });
 
-  test("end to end: the per-call staging directory is removed when the call ends", async () => {
+  test("end to end: the call deletes nothing — its staging directory (with the staged image) is retained and reported", async () => {
     const stagingParent = join(tmp("pp-img-stagebase-"), "image-staging");
     const { result } = await runHarvest({ write: writePngs({ "exec-call-1.png": makeSolidPng(4, 4) }), opts: { _stagingParent: stagingParent } });
     assert.equal(result.status, "ok");
-    assert.equal(result.staging_cleanup_error, undefined);
-    assert.deepEqual(readdirSync(stagingParent), [], "no staging directory left behind");
+    assert.ok(result.staging_dir, "the staging directory is reported");
+    assert.equal(dirname(result.staging_dir), real(stagingParent));
+    assert.equal(readdirSync(result.staging_dir).length, 1, "the staged image is still there: nothing was deleted during the call");
+  });
+
+  test("sweepStagingDirs removes only STALE staging directories, and a later call sweeps an earlier call's directory", async () => {
+    const { sweepStagingDirs, STAGING_SWEEP_AGE_MS } = await importDist("mcp/image-harvest.js");
+    const stagingParent = join(tmp("pp-img-stagebase-"), "image-staging");
+    const first = await runHarvest({ write: writePngs({ "exec-call-1.png": makeSolidPng(4, 4) }), opts: { _stagingParent: stagingParent } });
+    const oldDir = first.result.staging_dir;
+    const fresh = sweepStagingDirs(stagingParent);
+    assert.deepEqual(fresh.removed, [], "a fresh staging directory is not swept");
+    const old = new Date(Date.now() - STAGING_SWEEP_AGE_MS - 60_000);
+    utimesSync(oldDir, old, old);
+    const second = await runHarvest({ write: writePngs({ "exec-call-1.png": makeSolidPng(4, 4) }), opts: { _stagingParent: stagingParent } });
+    assert.equal(lstatSync(oldDir, { throwIfNoEntry: false }), undefined, "the stale directory was swept at the start of the later call");
+    assert.deepEqual(readdirSync(stagingParent), [basename(second.result.staging_dir)], "only the later call's own directory remains");
+  });
+
+  test("sweep: a file replaced AFTER it was observed is moved aside and left in place, never deleted", async () => {
+    const { sweepStagingDirs, createStagingDir } = await importDist("mcp/image-harvest.js");
+    const parent = join(tmp("pp-img-stagebase-"), "image-staging");
+    const { staging } = createStagingDir(parent);
+    writeFileSync(join(staging.dirReal, "staged.png"), "ours");
+    const old = new Date(Date.now() - 48 * 3600_000);
+    utimesSync(staging.dirReal, old, old);
+    const report = sweepStagingDirs(parent, undefined, {
+      afterObserve: (p) => {
+        if (!p.endsWith("staged.png")) return;
+        rmSync(p);
+        writeFileSync(p, "theirs"); // swapped in after the sweep's lstat
+      },
+    });
+    assert.deepEqual(report.removed, []);
+    assert.match(report.skipped[0]?.reason ?? "", /replaced after it was observed; .* left in place/);
+    const aside = report.skipped[0].path;
+    assert.equal(readFileSync(aside, "utf8"), "theirs", "the replacement survives (moved aside, not deleted)");
+  });
+
+  test("sweep: a staging DIRECTORY replaced after it was observed is moved aside and left in place, never deleted", async () => {
+    const { sweepStagingDirs, createStagingDir } = await importDist("mcp/image-harvest.js");
+    const parent = join(tmp("pp-img-stagebase-"), "image-staging");
+    const { staging } = createStagingDir(parent);
+    const old = new Date(Date.now() - 48 * 3600_000);
+    utimesSync(staging.dirReal, old, old);
+    const report = sweepStagingDirs(parent, undefined, {
+      afterObserve: (p) => {
+        if (p !== staging.dirReal) return;
+        renameSync(p, `${p}-orig`);
+        mkdirSync(p);
+        writeFileSync(join(p, "theirs.txt"), "keep");
+      },
+    });
+    assert.deepEqual(report.removed, []);
+    assert.match(report.skipped[0]?.reason ?? "", /was replaced after it was observed/);
+    assert.equal(readFileSync(join(report.skipped[0].path, "theirs.txt"), "utf8"), "keep", "the replacement directory and its content survive");
+    assert.ok(statSync(`${staging.dirReal}-orig`).isDirectory(), "the original is untouched too");
+  });
+
+  test("sweep: links and unexpected entries are skipped and logged, never followed or deleted", async () => {
+    const { sweepStagingDirs, createStagingDir } = await importDist("mcp/image-harvest.js");
+    const parent = join(tmp("pp-img-stagebase-"), "image-staging");
+    const { staging } = createStagingDir(parent);
+    const escape = tmp("pp-img-escape-");
+    writeFileSync(join(escape, "victim.txt"), "keep");
+    symlinkSync(escape, join(parent, "gi-linked"), "junction");
+    mkdirSync(join(staging.dirReal, "subdir"));
+    const old = new Date(Date.now() - 48 * 3600_000);
+    utimesSync(staging.dirReal, old, old);
+    lutimesSync(join(parent, "gi-linked"), old, old); // the LINK itself looks stale, so only the link check can stop the sweep
+    const report = sweepStagingDirs(parent);
+    assert.deepEqual(report.removed, []);
+    assert.ok(report.skipped.some((s) => s.path === join(real(parent), "gi-linked") && /link/.test(s.reason)));
+    assert.ok(report.skipped.some((s) => /not a regular file/.test(s.reason)));
+    assert.equal(readFileSync(join(escape, "victim.txt"), "utf8"), "keep", "nothing deleted through the link");
   });
 });
 
@@ -1488,106 +1506,64 @@ const GREY_4x4 = { width: 4, height: 4, colorType: 0, raw: greyScanlines(4, 4) }
 const RGB_2x1 = { width: 2, height: 1, colorType: 2, raw: Buffer.from([0, 1, 2, 3, 4, 5, 6]) };
 const PAL_2x1 = { width: 2, height: 1, colorType: 3, raw: Buffer.from([0, 0, 1]), plte: Buffer.from([255, 0, 0, 0, 255, 0]) };
 
-describe("pp_codex.generate_image: ancillary chunk rules", () => {
-  test("acceptPng accepts a PNG carrying well-formed known ancillary chunks (and pngjs decodes it)", async () => {
+describe("pp_codex.generate_image: only critical chunks are accepted", () => {
+  test("acceptPng accepts PNGs made only of IHDR/PLTE/IDAT/IEND (greyscale, RGB, RGBA, palette, Adam7) and pngjs decodes them", async () => {
     const { acceptPng } = await importDist("mcp/image-harvest.js");
     const good = [
-      assemblePng({ ...GREY_4x4, extra: [
-        { at: "ihdr", type: "gAMA", data: u32(45455) },
-        { at: "ihdr", type: "cHRM", data: u32(31270, 32900, 64000, 33000, 30000, 60000, 15000, 6000) },
-        { at: "ihdr", type: "sBIT", data: Buffer.from([8]) },
-        { at: "ihdr", type: "bKGD", data: Buffer.from([0, 9]) },
-        { at: "ihdr", type: "tRNS", data: Buffer.from([0, 7]) },
-        { at: "ihdr", type: "pHYs", data: Buffer.concat([u32(2835, 2835), Buffer.from([1])]) },
-        { at: "ihdr", type: "tIME", data: Buffer.from([0x07, 0xe8, 2, 29, 12, 30, 0]) }, // 2024-02-29: a real leap day
-        { at: "idat", type: "tEXt", data: Buffer.from("Comment\0ok, caf\xe9", "latin1") }, // Latin-1 text
-        { at: "idat", type: "tEXt", data: Buffer.from("Author\0me") },
-        { at: "idat", type: "iTXt", data: Buffer.concat([Buffer.from("Title\0\0\0en-GB\0"), Buffer.from("Titre\0héllo ✓", "utf8")]) },
-      ] }),
-      assemblePng({ ...RGB_2x1, plte: Buffer.from([1, 2, 3]), extra: [{ at: "plte", type: "tRNS", data: Buffer.alloc(6) }, { at: "plte", type: "bKGD", data: Buffer.alloc(6) }] }),
-      assemblePng({ ...RGB_2x1, extra: [{ at: "ihdr", type: "sRGB", data: Buffer.from([0]) }] }),
-      assemblePng({ ...PAL_2x1, extra: [
-        { at: "plte", type: "bKGD", data: Buffer.from([1]) },
-        { at: "plte", type: "hIST", data: Buffer.from([0, 1, 0, 1]) },
-        { at: "plte", type: "tRNS", data: Buffer.from([128]) },
-      ] }),
+      assemblePng(GREY_4x4),
+      assemblePng(RGB_2x1),
+      assemblePng(RGBA_1x1),
+      assemblePng(PAL_2x1),
+      assemblePng({ ...RGB_2x1, plte: Buffer.from([1, 2, 3]) }), // suggested palette on an RGB image
+      assemblePng({ width: 13, height: 11, interlace: 1, raw: greyScanlines(13, 11, 1) }),
     ];
     for (const [i, buf] of good.entries()) {
-      assert.doesNotThrow(() => PNG.sync.read(buf), `oracle: pngjs decodes good fixture ${i}`);
+      assert.doesNotThrow(() => PNG.sync.read(buf), `oracle: pngjs decodes fixture ${i}`);
       const r = acceptPng(buf);
-      assert.equal(r.ok, true, `good fixture ${i}: ${r.reason}`);
+      assert.equal(r.ok, true, `critical-only fixture ${i}: ${r.reason}`);
     }
   });
 
-  test("acceptPng refuses CRC-correct PNGs that break ancillary chunk rules (incl. tRNS on RGBA, 5-byte gAMA, duplicate gAMA)", async () => {
+  test("acceptPng refuses ANY ancillary chunk — including every counterexample from earlier review rounds", async () => {
     const { acceptPng } = await importDist("mcp/image-harvest.js");
-    const bad = {
-      "tRNS on 1x1 RGBA": [assemblePng({ ...RGBA_1x1, extra: [{ at: "ihdr", type: "tRNS", data: Buffer.from([0, 0]) }] }), /tRNS .*forbidden for colour type 6/],
-      "5-byte gAMA": [assemblePng({ ...GREY_4x4, extra: [{ at: "ihdr", type: "gAMA", data: Buffer.alloc(5) }] }), /gAMA .*length 5, expected 4/],
-      "duplicate gAMA": [assemblePng({ ...GREY_4x4, extra: [{ at: "ihdr", type: "gAMA", data: u32(1) }, { at: "ihdr", type: "gAMA", data: u32(1) }] }), /gAMA .*more than once/],
-      "gAMA after PLTE": [assemblePng({ ...PAL_2x1, extra: [{ at: "plte", type: "gAMA", data: u32(1) }] }), /gAMA .*must precede PLTE/],
-      "31-byte cHRM": [assemblePng({ ...GREY_4x4, extra: [{ at: "ihdr", type: "cHRM", data: Buffer.alloc(31) }] }), /cHRM .*length 31/],
-      "sRGB intent 4": [assemblePng({ ...RGB_2x1, extra: [{ at: "ihdr", type: "sRGB", data: Buffer.from([4]) }] }), /sRGB .*intent 4/],
-      "iCCP with non-zlib bytes": [assemblePng({ ...RGB_2x1, extra: [{ at: "ihdr", type: "iCCP", data: Buffer.from("p\0\0xx") }] }), /iCCP .*compressed payload this harvester does not validate/],
-      "iCCP with an RGB profile on a greyscale image": [assemblePng({ ...GREY_4x4, extra: [{ at: "ihdr", type: "iCCP", data: Buffer.concat([Buffer.from("p\0\0"), zlib.deflateSync(Buffer.concat([Buffer.alloc(16), Buffer.from("mntrRGB "), Buffer.alloc(104)]))]) }] }), /iCCP .*compressed payload this harvester does not validate/],
-      "zTXt with no compressed stream": [assemblePng({ ...GREY_4x4, extra: [{ at: "idat", type: "zTXt", data: Buffer.from("Comment\0\0") }] }), /zTXt .*compressed payload this harvester does not validate/],
-      "compressed iTXt": [assemblePng({ ...GREY_4x4, extra: [{ at: "idat", type: "iTXt", data: Buffer.concat([Buffer.from("Title\0\x01\0en\0\0"), zlib.deflateSync(Buffer.from("hi"))]) }] }), /compressed iTXt .*does not validate/],
-      "eXIf (Exif profile not validated)": [assemblePng({ ...GREY_4x4, extra: [{ at: "ihdr", type: "eXIf", data: Buffer.from("MM\0*") }] }), /eXIf .*Exif profile this harvester does not validate/],
-      "tEXt keyword with a control byte": [assemblePng({ ...GREY_4x4, extra: [{ at: "idat", type: "tEXt", data: Buffer.from("Com\x01ment\0x", "latin1") }] }), /tEXt .*keyword is not 1-79 printable/],
-      "tEXt keyword with a leading space": [assemblePng({ ...GREY_4x4, extra: [{ at: "idat", type: "tEXt", data: Buffer.from(" Comment\0x") }] }), /tEXt .*keyword is not 1-79 printable/],
-      "tEXt text with an embedded NUL": [assemblePng({ ...GREY_4x4, extra: [{ at: "idat", type: "tEXt", data: Buffer.from("Comment\0a\0b") }] }), /tEXt .*text contains a NUL/],
-      "iTXt text that is not UTF-8": [assemblePng({ ...GREY_4x4, extra: [{ at: "idat", type: "iTXt", data: Buffer.concat([Buffer.from("Title\0\0\0en\0\0"), Buffer.from([0xff])]) }] }), /iTXt .*text is not valid UTF-8/],
-      "iTXt translated keyword that is not UTF-8": [assemblePng({ ...GREY_4x4, extra: [{ at: "idat", type: "iTXt", data: Buffer.concat([Buffer.from("Title\0\0\0en\0"), Buffer.from([0xc3, 0x28, 0]), Buffer.from("x")]) }] }), /iTXt .*translated keyword is not valid UTF-8/],
-      "iTXt language tag with a space": [assemblePng({ ...GREY_4x4, extra: [{ at: "idat", type: "iTXt", data: Buffer.from("Title\0\0\0e n\0\0x") }] }), /iTXt .*language tag/],
-      "tIME 2026-02-29 (not a leap year)": [assemblePng({ ...GREY_4x4, extra: [{ at: "ihdr", type: "tIME", data: Buffer.from([0x07, 0xea, 2, 29, 0, 0, 0]) }] }), /tIME .*out of range/],
-      "sBIT wrong length": [assemblePng({ ...RGB_2x1, extra: [{ at: "ihdr", type: "sBIT", data: Buffer.from([8]) }] }), /sBIT .*expected 3/],
-      "sBIT zero": [assemblePng({ ...GREY_4x4, extra: [{ at: "ihdr", type: "sBIT", data: Buffer.from([0]) }] }), /significant bits 0/],
-      "bKGD wrong length for RGB": [assemblePng({ ...RGB_2x1, extra: [{ at: "ihdr", type: "bKGD", data: Buffer.alloc(2) }] }), /bKGD .*wrong for colour type 2/],
-      "bKGD palette index out of range": [assemblePng({ ...PAL_2x1, extra: [{ at: "plte", type: "bKGD", data: Buffer.from([5]) }] }), /palette index 5 out of range/],
-      "hIST without PLTE": [assemblePng({ ...GREY_4x4, extra: [{ at: "ihdr", type: "hIST", data: Buffer.alloc(2) }] }), /hIST .*requires a preceding PLTE/],
-      "hIST wrong length": [assemblePng({ ...PAL_2x1, extra: [{ at: "plte", type: "hIST", data: Buffer.alloc(2) }] }), /hIST .*expected 4/],
-      "tRNS longer than palette": [assemblePng({ ...PAL_2x1, extra: [{ at: "plte", type: "tRNS", data: Buffer.alloc(3) }] }), /tRNS .*expected 1..2/],
-      "tRNS after IDAT": [assemblePng({ ...GREY_4x4, extra: [{ at: "idat", type: "tRNS", data: Buffer.alloc(2) }] }), /tRNS .*must precede IDAT/],
-      "pHYs unit 2": [assemblePng({ ...GREY_4x4, extra: [{ at: "ihdr", type: "pHYs", data: Buffer.concat([u32(1, 1), Buffer.from([2])]) }] }), /unit specifier 2/],
-      "tIME month 13": [assemblePng({ ...GREY_4x4, extra: [{ at: "ihdr", type: "tIME", data: Buffer.from([0x07, 0xea, 13, 1, 0, 0, 0]) }] }), /tIME .*out of range/],
-      "tEXt empty keyword": [assemblePng({ ...GREY_4x4, extra: [{ at: "idat", type: "tEXt", data: Buffer.from("\0x") }] }), /tEXt .*keyword/],
-      "iTXt compression flag 2": [assemblePng({ ...GREY_4x4, extra: [{ at: "idat", type: "iTXt", data: Buffer.from("K\0\x02\0\0\0t") }] }), /iTXt .*compression flag/],
-      "unvalidated ancillary type": [assemblePng({ ...GREY_4x4, extra: [{ at: "ihdr", type: "vpAg", data: Buffer.alloc(9) }] }), /not one this harvester validates/],
-      "tRNS before a later (suggested) PLTE": [assemblePng({ ...RGB_2x1, plte: Buffer.from([1, 2, 3]), extra: [{ at: "ihdr", type: "tRNS", data: Buffer.alloc(6) }] }), /PLTE after tRNS/],
-      "bKGD before a later (suggested) PLTE": [assemblePng({ ...RGB_2x1, plte: Buffer.from([1, 2, 3]), extra: [{ at: "ihdr", type: "bKGD", data: Buffer.alloc(6) }] }), /PLTE after bKGD/],
+    const anc = (base, at, type, data) => assemblePng({ ...base, extra: [{ at, type, data }] });
+    const cases = {
+      // round D counterexamples
+      "gAMA = 0xffffffff": anc(GREY_4x4, "ihdr", "gAMA", u32(0xffffffff)),
+      "cHRM components = 0xffffffff": anc(GREY_4x4, "ihdr", "cHRM", u32(...Array(8).fill(0xffffffff))),
+      "pHYs density = 0xffffffff": anc(GREY_4x4, "ihdr", "pHYs", Buffer.concat([u32(0xffffffff, 0xffffffff), Buffer.from([1])])),
+      "iTXt language tag --": anc(GREY_4x4, "idat", "iTXt", Buffer.from("Title\0\0\0--\0\0x")),
+      "sRGB with gAMA = 1": assemblePng({ ...RGB_2x1, extra: [{ at: "ihdr", type: "sRGB", data: Buffer.from([0]) }, { at: "ihdr", type: "gAMA", data: u32(1) }] }),
+      // earlier rounds
+      "tRNS on 1x1 RGBA": anc(RGBA_1x1, "ihdr", "tRNS", Buffer.from([0, 0])),
+      "5-byte gAMA": anc(GREY_4x4, "ihdr", "gAMA", Buffer.alloc(5)),
+      "iCCP with non-zlib bytes": anc(RGB_2x1, "ihdr", "iCCP", Buffer.from("p\0\0xx")),
+      "zTXt with no stream": anc(GREY_4x4, "idat", "zTXt", Buffer.from("Comment\0\0")),
+      "eXIf prefix only": anc(GREY_4x4, "ihdr", "eXIf", Buffer.from("MM\0*")),
+      "tEXt keyword with a control byte": anc(GREY_4x4, "idat", "tEXt", Buffer.from("Com\x01ment\0x", "latin1")),
+      "tIME 2026-02-29": anc(GREY_4x4, "ihdr", "tIME", Buffer.from([0x07, 0xea, 2, 29, 0, 0, 0])),
+      // and perfectly well-formed metadata is refused too
+      "well-formed tEXt": anc(GREY_4x4, "idat", "tEXt", Buffer.from("Comment\0ok")),
+      "well-formed gAMA": anc(GREY_4x4, "ihdr", "gAMA", u32(45455)),
+      "unknown ancillary type": anc(GREY_4x4, "ihdr", "vpAg", Buffer.alloc(9)),
     };
-    for (const [label, [buf, reason]] of Object.entries(bad)) {
+    for (const [label, buf] of Object.entries(cases)) {
       const r = acceptPng(buf);
       assert.equal(r.ok, false, `${label} must be refused`);
-      assert.match(r.reason, reason, label);
+      assert.match(r.reason, /ancillary chunks are not accepted \(only IHDR, PLTE, IDAT and IEND\)/, label);
     }
   });
 
-  test("end to end: a PNG carrying an unvalidated compressed payload (iCCP) that fits as-is is never copied", async () => {
+  test("end to end: a PNG carrying an ancillary chunk that fits as-is is never copied", async () => {
     const { result, outputDir } = await runHarvest({
-      write: writePngs({ "exec-call-iccp.png": assemblePng({ ...RGB_2x1, extra: [{ at: "ihdr", type: "iCCP", data: Buffer.from("p\0\0xx") }] }) }),
+      write: writePngs({
+        "exec-call-meta.png": assemblePng({ ...GREY_4x4, extra: [{ at: "ihdr", type: "gAMA", data: u32(45455) }] }),
+        "exec-call-plain.png": assemblePng(GREY_4x4),
+      }),
     });
-    assert.equal(result.status, "failed");
-    assert.match(result.failures[0].reason, /iCCP .*compressed payload/);
-    assert.deepEqual(readdirSync(outputDir), []);
-  });
-
-  test("end to end: an eXIf-carrying PNG that fits as-is is never copied (Exif profiles are refused)", async () => {
-    const { result, outputDir } = await runHarvest({
-      write: writePngs({ "exec-call-exif.png": assemblePng({ ...GREY_4x4, extra: [{ at: "idat", type: "eXIf", data: Buffer.from("MM\0*") }] }) }),
-    });
-    assert.equal(result.status, "failed");
-    assert.match(result.failures[0].reason, /eXIf .*Exif profile this harvester does not validate/);
-    assert.deepEqual(readdirSync(outputDir), []);
-  });
-
-  test("end to end: a tRNS-on-RGBA PNG that fits as-is is never copied", async () => {
-    const { result, outputDir } = await runHarvest({
-      write: writePngs({ "exec-call-trns.png": assemblePng({ ...RGBA_1x1, extra: [{ at: "ihdr", type: "tRNS", data: Buffer.from([0, 0]) }] }) }),
-    });
-    assert.equal(result.status, "failed");
-    assert.match(result.failures[0].reason, /forbidden for colour type 6/);
-    assert.deepEqual(readdirSync(outputDir), []);
+    assert.equal(result.status, "partial");
+    assert.deepEqual(readdirSync(outputDir), ["exec-call-plain.png"]);
+    assert.match(result.failures.find((f) => f.file === "exec-call-meta.png")?.reason ?? "", /ancillary chunks are not accepted/);
   });
 });
 
@@ -1730,6 +1706,33 @@ describe("pp_codex.generate_image: settle observation and per-call budgets", () 
     assert.deepEqual([over.scanned, over.read, over.truncated], [3, 4, true]);
     const exact = listSessionEntries(dir, 5);
     assert.deepEqual([exact.scanned, exact.read, exact.truncated], [5, 5, false]);
+  });
+
+  test("distinct-object bound holds when every open FAILS verification with a fresh identity (identity recorded right after fstat)", async () => {
+    const { pollForSettledPngs } = await importDist("mcp/image-harvest.js");
+    const root = tmp("pp-img-root-");
+    const sessionId = newSessionId();
+    const dir = join(root, sessionId);
+    const p = join(dir, "a.png");
+    writePngs({ "a.png": makeSolidPng(2, 2) })(dir);
+    let created = 1;
+    const r = await pollForSettledPngs(root, sessionId, {
+      timeoutMs: 60_000,
+      intervalMs: 1,
+      fileHooks: {
+        // The opened object vanishes between the first check and realpath: a
+        // NON-terminal "verification failed" — the path the reviewer showed
+        // could open unboundedly many distinct objects under one name.
+        afterFirstCheck: (path) => renameSync(path, `${path}.gone-${created}`),
+      },
+      sleep: async () => {
+        writeFileSync(p, makeSolidPng(2, 2)); // a fresh object (new identity) under the same name for the next poll
+        created += 1;
+      },
+    });
+    assert.equal(r.kind, "ok");
+    assert.match(r.rejected.find((x) => x.name === "a.png")?.reason ?? "", /replaced by a different file while polling/);
+    assert.ok(r.opens <= 2, `at most two distinct objects opened under one name (opened ${r.opens})`);
   });
 
   test("distinct-file cap counts identities: a chosen name replaced by a different file between polls is refused", async () => {
@@ -1913,6 +1916,17 @@ describe("pp_agy.generate_image", () => {
  *                                                   full-suite load, now deterministic via the sleep seam)
  *   NOTE: the pre-sleep "next poll would start after the deadline" check now stays GREEN when removed — the
  *   post-sleep check subsumes it for the invariant; it only avoids a useless sleep.
+ *
+ * Operator decision "Simplify" (supersedes the per-chunk ancillary rules and the
+ * end-of-call staging cleanup listed above, which were REMOVED from the code):
+ *   any ancillary chunk accepted again          -> 4 tests (all counterexamples, e2e, structure)
+ *   allocation failure deletes its directory    -> retained and named
+ *   call deletes its own staging directory      -> retained and reported; later-call sweep
+ *   stale dirs not swept at call start          -> later call sweeps an earlier call's directory
+ *   sweep ignores staleness                     -> fresh directory not swept
+ *   sweep does not re-check a moved file / dir  -> replaced-after-observation file / directory left in place
+ *   sweep does not skip links / unexpected types -> links and unexpected entries skipped
+ *   identity of rejected opens not counted / not recorded right after fstat -> repeated failing opens stay bounded
  *   NOT FALSIFIABLE (disclosed): re-validating the RE-ENCODED output with acceptPng — pngjs always emits a valid PNG, so
  *   no fixture can make that defence-in-depth check fire without replacing the encoder.
  *   NOTE: removing only the link/type clause of the output_dir check stays GREEN — it is subsumed, not missing:

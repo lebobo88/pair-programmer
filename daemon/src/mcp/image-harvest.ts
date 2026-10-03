@@ -30,6 +30,7 @@ import {
   chmodSync,
   unlinkSync,
   rmdirSync,
+  renameSync,
   linkSync,
   ftruncateSync,
   constants as FS,
@@ -38,6 +39,7 @@ import { randomUUID } from "node:crypto";
 import { join, dirname, basename, extname, resolve, relative } from "node:path";
 import zlib from "node:zlib";
 import { PNG } from "pngjs";
+import { log } from "../util/logger.js";
 
 // ─── caps ────────────────────────────────────────────────────────────────────
 
@@ -254,6 +256,11 @@ export type VerifiedFile =
       reason: string;
       /** True for rejections no amount of waiting can fix (symlink, size cap, escape). */
       terminal: boolean;
+      /**
+       * Identity of the object that WAS opened, when the open got as far as
+       * fstat — set even though the open is rejected, so callers can count it.
+       */
+      id?: FsIdentity;
     };
 
 const OPEN_READ_FLAGS = FS.O_RDONLY | (FS.O_NOFOLLOW ?? 0) | (FS.O_NONBLOCK ?? 0);
@@ -290,13 +297,15 @@ export function openVerifiedFile(
     const code = (err as NodeJS.ErrnoException).code;
     return { ok: false, reason: `open failed (${code ?? "error"}).`, terminal: code === "ELOOP" };
   }
+  let openedId: FsIdentity | undefined;
   const fail = (reason: string, terminal: boolean): VerifiedFile => {
     closeSync(fd);
-    return { ok: false, reason, terminal };
+    return { ok: false, reason, terminal, ...(openedId ? { id: openedId } : {}) };
   };
   try {
     hooks.afterOpen?.(p);
     const st = fstatSync(fd, { bigint: true });
+    openedId = { dev: st.dev, ino: st.ino }; // recorded at once: counted even if the open is rejected below
     if (!st.isFile()) return fail("not a regular file.", true);
     if (st.size > BigInt(maxBytes)) {
       return fail(`size ${st.size} bytes exceeds the per-image size cap (${maxBytes} bytes); not read.`, true);
@@ -386,142 +395,7 @@ export type PngStructure =
 const CHANNELS: Record<number, number> = { 0: 1, 2: 3, 3: 1, 4: 2, 6: 4 };
 const CRITICAL_CHUNKS = new Set(["IHDR", "PLTE", "IDAT", "IEND"]);
 
-export type AncillaryContext = {
-  ihdr: { bitDepth: number; colorType: number } | undefined;
-  /** Palette entry count once PLTE has been seen; undefined before it. */
-  plteEntries: number | undefined;
-  idatStarted: boolean;
-  /** Ancillary types already seen in this file. */
-  seen: Set<string>;
-};
 
-/** Ancillary chunks that may appear more than once. */
-const REPEATABLE_ANCILLARY = new Set(["tEXt", "iTXt"]);
-/** Must precede PLTE (and IDAT). */
-const BEFORE_PLTE = new Set(["gAMA", "cHRM", "sRGB", "sBIT"]);
-/** Must follow PLTE (when present) and precede IDAT. */
-const AFTER_PLTE_BEFORE_IDAT = new Set(["bKGD", "hIST", "tRNS"]);
-
-/**
- * A PNG keyword at the start of `data` (§11.3.3.2): 1..79 bytes of printable
- * Latin-1 (32..126, 161..255), no leading, trailing or consecutive spaces,
- * terminated by NUL. Returns the NUL's offset, or -1 when it is not one.
- */
-export function keywordEnd(data: Buffer): number {
-  const nul = data.indexOf(0);
-  if (nul < 1 || nul > 79) return -1;
-  for (let i = 0; i < nul; i++) {
-    const b = data[i] as number;
-    if (!((b >= 32 && b <= 126) || b >= 161)) return -1;
-    if (b === 32 && (i === 0 || i === nul - 1 || data[i - 1] === 32)) return -1;
-  }
-  return nul;
-}
-
-const UTF8 = new TextDecoder("utf-8", { fatal: true });
-function isUtf8(buf: Buffer): boolean {
-  try {
-    UTF8.decode(buf);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-/**
- * The PNG rules for each ANCILLARY chunk this harvester accepts: length,
- * multiplicity, ordering, and colour-type constraints (PNG 3rd ed. §11.3).
- * Any ancillary chunk type NOT listed here is refused — the harvester only
- * passes on what it can vouch for. Returns a reason, or null when legal.
- */
-export function checkAncillaryChunk(type: string, data: Buffer, ctx: AncillaryContext): string | null {
-  const len = data.length;
-  const ct = ctx.ihdr?.colorType;
-  if (!ctx.ihdr) return "appears before IHDR.";
-  if (!REPEATABLE_ANCILLARY.has(type) && ctx.seen.has(type)) return "appears more than once.";
-  if (BEFORE_PLTE.has(type) && (ctx.plteEntries !== undefined || ctx.idatStarted)) return "must precede PLTE and IDAT.";
-  if (AFTER_PLTE_BEFORE_IDAT.has(type) && ctx.idatStarted) return "must precede IDAT.";
-  switch (type) {
-    case "gAMA":
-      return len === 4 ? null : `length ${len}, expected 4.`;
-    case "cHRM":
-      return len === 32 ? null : `length ${len}, expected 32.`;
-    case "sRGB":
-      if (len !== 1) return `length ${len}, expected 1.`;
-      return (data[0] as number) <= 3 ? null : `rendering intent ${data[0]} is invalid.`;
-    case "iCCP":
-    case "zTXt":
-      // Their payload is a compressed datastream (an ICC profile whose colour
-      // space must match the image, or text) that pngjs ignores and this
-      // harvester does not decompress and validate — so they are refused.
-      return "carries a compressed payload this harvester does not validate; refused.";
-    case "sBIT": {
-      const expected = { 0: 1, 2: 3, 3: 3, 4: 2, 6: 4 }[ct as 0 | 2 | 3 | 4 | 6];
-      if (len !== expected) return `length ${len}, expected ${expected} for colour type ${ct}.`;
-      const depth = ct === 3 ? 8 : (ctx.ihdr.bitDepth as number);
-      for (const v of data) if (v === 0 || v > depth) return `significant bits ${v} outside 1..${depth}.`;
-      return null;
-    }
-    case "bKGD":
-      if (ct === 3) {
-        if (ctx.plteEntries === undefined) return "palette image has bKGD before PLTE.";
-        if (len !== 1) return `length ${len}, expected 1.`;
-        return (data[0] as number) < ctx.plteEntries ? null : `palette index ${data[0]} out of range.`;
-      }
-      return len === (ct === 0 || ct === 4 ? 2 : 6) ? null : `length ${len} wrong for colour type ${ct}.`;
-    case "hIST":
-      if (ctx.plteEntries === undefined) return "requires a preceding PLTE.";
-      return len === 2 * ctx.plteEntries ? null : `length ${len}, expected ${2 * ctx.plteEntries}.`;
-    case "tRNS":
-      if (ct === 4 || ct === 6) return `forbidden for colour type ${ct} (it already has alpha).`;
-      if (ct === 3) {
-        if (ctx.plteEntries === undefined) return "palette image has tRNS before PLTE.";
-        return len >= 1 && len <= ctx.plteEntries ? null : `length ${len}, expected 1..${ctx.plteEntries}.`;
-      }
-      return len === (ct === 0 ? 2 : 6) ? null : `length ${len} wrong for colour type ${ct}.`;
-    case "pHYs":
-      if (ctx.idatStarted) return "must precede IDAT.";
-      if (len !== 9) return `length ${len}, expected 9.`;
-      return (data[8] as number) <= 1 ? null : `unit specifier ${data[8]} is invalid.`;
-    case "tIME": {
-      if (len !== 7) return `length ${len}, expected 7.`;
-      const year = data.readUInt16BE(0);
-      const [mo, d, h, mi, s] = [data[2], data[3], data[4], data[5], data[6]] as number[];
-      const leap = (year % 4 === 0 && year % 100 !== 0) || year % 400 === 0;
-      const days = [31, leap ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31][(mo as number) - 1];
-      const legal = days !== undefined && d! >= 1 && d! <= days && h! <= 23 && mi! <= 59 && s! <= 60;
-      return legal ? null : "date/time fields out of range.";
-    }
-    case "tEXt": {
-      // Latin-1 keyword, NUL separator, Latin-1 text with no further NUL.
-      const k = keywordEnd(data);
-      if (k < 0) return "keyword is not 1-79 printable Latin-1 bytes (no leading/trailing/double spaces) followed by NUL.";
-      return data.indexOf(0, k + 1) < 0 ? null : "text contains a NUL byte.";
-    }
-    case "iTXt": {
-      const k = keywordEnd(data);
-      if (k < 0) return "keyword is not 1-79 printable Latin-1 bytes (no leading/trailing/double spaces) followed by NUL.";
-      if (len < k + 3) return "truncated header.";
-      const flag = data[k + 1] as number;
-      if (flag === 1) return "compressed iTXt carries a payload this harvester does not validate; refused.";
-      if (flag !== 0 || data[k + 2] !== 0) return "compression flag/method invalid.";
-      const lang = data.indexOf(0, k + 3);
-      if (lang < 0) return "language tag is not NUL-terminated.";
-      if (!/^[A-Za-z0-9-]*$/.test(data.toString("latin1", k + 3, lang))) return "language tag is not ASCII letters, digits and hyphens.";
-      const tk = data.indexOf(0, lang + 1);
-      if (tk < 0) return "translated keyword is not NUL-terminated.";
-      if (!isUtf8(data.subarray(lang + 1, tk))) return "translated keyword is not valid UTF-8.";
-      const text = data.subarray(tk + 1);
-      if (text.indexOf(0) >= 0) return "text contains a NUL byte.";
-      return isUtf8(text) ? null : "text is not valid UTF-8.";
-    }
-    case "eXIf":
-      // An Exif profile cannot be validated here beyond its prefix, so it is refused.
-      return "carries an Exif profile this harvester does not validate; refused.";
-    default:
-      return "ancillary chunk type is not one this harvester validates; refused.";
-  }
-}
 /** Adam7 pass origins and steps: [x0, y0, dx, dy]. */
 const ADAM7: [number, number, number, number][] = [
   [0, 0, 8, 8], [4, 0, 8, 8], [0, 4, 4, 8], [2, 0, 4, 4], [0, 2, 2, 4], [1, 0, 2, 2], [0, 1, 1, 2],
@@ -557,9 +431,13 @@ export function pngScanlineLayout(
  *   - signature; first chunk IHDR, length 13, legal dimensions / colour type /
  *     bit depth / methods; IHDR dimensions within `maxPixels` (checked BEFORE
  *     any inflation);
- *   - every chunk's length in bounds and CRC correct; IHDR, PLTE and IEND at
- *     most once; PLTE required before IDAT for palette images and forbidden
- *     for greyscale(+alpha); IDAT chunks consecutive and at least one;
+ *   - every chunk's length in bounds and CRC correct; ONLY the four critical
+ *     chunks IHDR, PLTE, IDAT and IEND are accepted — ANY ancillary chunk
+ *     (gAMA, tEXt, iCCP, eXIf, …) refuses the file, so no metadata payload
+ *     ever has to be trusted; IHDR, PLTE and IEND at most once; PLTE before
+ *     IDAT, required for palette images and forbidden for greyscale(+alpha);
+ *     at least one IDAT (with only critical chunks allowed, IDATs are
+ *     necessarily consecutive: anything after them is IEND or refused);
  *   - a final zero-length IEND with no trailing bytes;
  *   - the concatenated IDAT stream inflates — with `maxOutputLength` set to
  *     the exact size IHDR implies, so a decompression bomb stops at that bound —
@@ -577,11 +455,8 @@ export function validatePngStructure(buf: Buffer, maxPixels: number = MAX_DECODE
   let index = 0;
   let ihdr: { width: number; height: number; bitDepth: number; colorType: number; interlaced: boolean } | undefined;
   const idat: Buffer[] = [];
-  let idatClosed = false;
   let sawPlte = false;
-  let plteEntries = 0;
   let sawIend = false;
-  const seenAncillary = new Set<string>();
   while (off < buf.length) {
     if (sawIend) return { ok: false, reason: "bytes after IEND." };
     if (off + 12 > buf.length) return { ok: false, reason: `truncated chunk header at byte ${off}.` };
@@ -601,19 +476,11 @@ export function validatePngStructure(buf: Buffer, maxPixels: number = MAX_DECODE
     if (/^[A-Z]/.test(type) && !CRITICAL_CHUNKS.has(type)) {
       return { ok: false, reason: `unknown critical chunk ${type} at byte ${off}.` };
     }
-    if (idat.length > 0 && type !== "IDAT") idatClosed = true;
-    if (/^[a-z]/.test(type)) {
-      const why = checkAncillaryChunk(type, buf.subarray(off + 8, off + 8 + len), {
-        ihdr,
-        plteEntries: sawPlte ? plteEntries : undefined,
-        idatStarted: idat.length > 0,
-        seen: seenAncillary,
-      });
-      if (why) return { ok: false, reason: `${type} chunk at byte ${off}: ${why}` };
-      seenAncillary.add(type);
-      off = end;
-      index += 1;
-      continue;
+    // Lowercase first letter = ANCILLARY. None is accepted: the harvester
+    // passes on only what it fully validates, and it does not validate
+    // metadata payloads.
+    if (!CRITICAL_CHUNKS.has(type)) {
+      return { ok: false, reason: `${type} chunk at byte ${off}: ancillary chunks are not accepted (only IHDR, PLTE, IDAT and IEND).` };
     }
     if (type === "IHDR") {
       if (index !== 0) return { ok: false, reason: "IHDR is not the first chunk." };
@@ -638,9 +505,6 @@ export function validatePngStructure(buf: Buffer, maxPixels: number = MAX_DECODE
       ihdr = { width, height, bitDepth, colorType, interlaced: buf[d + 12] === 1 };
     } else if (type === "PLTE") {
       if (sawPlte) return { ok: false, reason: "more than one PLTE chunk." };
-      for (const after of AFTER_PLTE_BEFORE_IDAT) {
-        if (seenAncillary.has(after)) return { ok: false, reason: `PLTE after ${after} (${after} must follow PLTE).` };
-      }
       if (idat.length > 0) return { ok: false, reason: "PLTE after IDAT." };
       if (ihdr?.colorType === 0 || ihdr?.colorType === 4) return { ok: false, reason: "PLTE in a greyscale image." };
       if (len === 0 || len % 3 !== 0 || len > 768) return { ok: false, reason: `PLTE length ${len} is invalid.` };
@@ -648,9 +512,7 @@ export function validatePngStructure(buf: Buffer, maxPixels: number = MAX_DECODE
         return { ok: false, reason: `PLTE has ${len / 3} entries; bit depth ${ihdr.bitDepth} allows at most ${2 ** ihdr.bitDepth}.` };
       }
       sawPlte = true;
-      plteEntries = len / 3;
     } else if (type === "IDAT") {
-      if (idatClosed) return { ok: false, reason: "IDAT chunks are not consecutive." };
       if (ihdr?.colorType === 3 && !sawPlte) return { ok: false, reason: "palette image has IDAT before PLTE." };
       idat.push(buf.subarray(off + 8, off + 8 + len));
     } else if (type === "IEND") {
@@ -767,6 +629,8 @@ export type SettleOptions = {
   maxPolls?: number;
   /** Test-only seam: replaces the inter-poll sleep (e.g. to simulate a timer firing late). */
   sleep?: (ms: number) => Promise<void>;
+  /** Test-only seam: hooks around each verified open made while polling. */
+  fileHooks?: FileOpenHooks;
 };
 
 export type SettledHarvest =
@@ -880,22 +744,26 @@ export async function pollForSettledPngs(
           continue;
         }
         opens += 1;
-        const v = openVerifiedFile(res.dirReal, res.dirId, name, maxBytes);
+        const v = openVerifiedFile(res.dirReal, res.dirId, name, maxBytes, opts.fileHooks);
+        // Each chosen NAME is bound to the first object identity ever OPENED
+        // under it — recorded straight after fstat, including opens that are
+        // then rejected — and a different object under that name is refused
+        // terminally, so at most two distinct objects are ever opened per name.
+        if (v.id) {
+          const first = firstIds.get(name);
+          if (first && !sameIdentity(first, v.id)) {
+            if (v.ok) closeSync(v.fd);
+            rejected.set(name, "replaced by a different file while polling (identity changed since first seen); refused.");
+            continue;
+          }
+          if (!first) firstIds.set(name, v.id);
+        }
         if (!v.ok) {
           if (v.terminal) rejected.set(name, v.reason);
           else pending.set(name, v.reason);
           continue;
         }
         try {
-          // Each chosen NAME is bound to the first file identity seen under it:
-          // a replacement is refused (once), so the distinct OBJECTS ever opened
-          // are bounded too (at most two per chosen name), not just the names.
-          const first = firstIds.get(name);
-          if (first && !sameIdentity(first, v.id)) {
-            rejected.set(name, "replaced by a different file while polling (identity changed since first seen); refused.");
-            continue;
-          }
-          if (!first) firstIds.set(name, v.id);
           seen.set(name, { ...v.id, size: v.size, mtimeMs: v.mtimeMs });
           if (!hasPngTrailer(v.fd, v.size)) pending.set(name, "no IEND trailer yet (incomplete or malformed PNG).");
         } finally {
@@ -1180,12 +1048,7 @@ function neutraliseAndThrow(fd: number, path: string, err: unknown, hooks: Write
 // ─── private staging ─────────────────────────────────────────────────────────
 
 /** A per-call, daemon-owned directory where content is written and verified before any hand-off. */
-export type StagingDir = {
-  dirReal: string;
-  id: FsIdentity;
-  /** Every file this call staged, with the identity it had at creation (cleanup removes only these). */
-  files: { path: string; id: FsIdentity }[];
-};
+export type StagingDir = { dirReal: string; id: FsIdentity };
 
 /** Test-only seam fired right after the staging directory is allocated. Production never sets it. */
 export type StagingHooks = { afterMkdtemp?: (dir: string) => void };
@@ -1197,26 +1060,24 @@ export type StagingHooks = { afterMkdtemp?: (dir: string) => void };
  * realpath is not a direct child of the parent's, or if its identity changes
  * between lstat and realpath.
  *
- * If anything fails AFTER the directory was allocated, that directory — and
- * only it, and only while empty (`rmdir` refuses anything else) — is removed,
- * and the returned reason says whether that removal succeeded or the
- * directory remains.
+ * Nothing is ever deleted during a call: the staging directory (and anything
+ * staged in it) is RETAINED by design when the call ends, and is removed later
+ * only by the conservative `sweepStagingDirs` once stale. If setup fails after
+ * the directory was allocated, that directory is likewise retained and the
+ * returned reason names it.
  */
 export function createStagingDir(
   parent: string,
   hooks: StagingHooks = {},
 ): { ok: true; staging: StagingDir } | { ok: false; reason: string } {
   let allocated: string | undefined;
-  const fail = (reason: string): { ok: false; reason: string } => {
-    if (allocated === undefined) return { ok: false, reason };
-    try {
-      rmdirSync(allocated);
-      return { ok: false, reason: `${reason} The staging directory it had allocated (${allocated}) was removed.` };
-    } catch (rmErr) {
-      const code = (rmErr as NodeJS.ErrnoException).code ?? (rmErr as Error).message;
-      return { ok: false, reason: `${reason} The staging directory it had allocated (${allocated}) could NOT be removed (${code}); it remains.` };
-    }
-  };
+  // Nothing is deleted during a call, not even on this failure path: a
+  // directory already allocated is retained, reported, and left for the
+  // conservative sweep (`sweepStagingDirs`).
+  const fail = (reason: string): { ok: false; reason: string } =>
+    allocated === undefined
+      ? { ok: false, reason }
+      : { ok: false, reason: `${reason} The staging directory it had allocated (${allocated}) is retained by design and will be swept once stale.` };
   try {
     mkdirSync(parent, { recursive: true, mode: 0o700 });
     const pst = lstatSync(parent);
@@ -1231,7 +1092,7 @@ export function createStagingDir(
     if (!isDirectChildReal(parentReal, dirReal)) return fail(`staging directory resolves to ${dirReal}, outside ${parentReal}.`);
     const id = { dev: st.dev, ino: st.ino };
     assertDirIdentity(dirReal, id, "staging directory");
-    return { ok: true, staging: { dirReal, id, files: [] } };
+    return { ok: true, staging: { dirReal, id } };
   } catch (err) {
     return fail(`could not create the staging directory: ${(err as Error).message}.`);
   }
@@ -1245,45 +1106,132 @@ export function assertStagingIntact(s: StagingDir): void {
   assertDirIdentity(s.dirReal, s.id, "staging directory");
 }
 
-/** Test-only seam fired before each staged file is unlinked during cleanup. Production never sets it. */
-export type StagingCleanupHooks = { beforeUnlink?: (path: string) => void };
+/** Staging directories older than this (by mtime) are swept at the start of a later call. */
+export const STAGING_SWEEP_AGE_MS = 24 * 60 * 60 * 1000;
+/** Directory entries examined per sweep, and entries per swept directory (bounds the sweep's work). */
+export const MAX_SWEEP_ENTRIES = 200;
+
+/** Test-only seam fired right after a path has been observed (lstat) and before it is moved aside. */
+export type SweepHooks = { afterObserve?: (path: string) => void };
+
+export type SweepReport = {
+  /** Stale staging directories removed (original paths). */
+  removed: string[];
+  /** Paths the sweep did not delete, and why. Each is also logged. */
+  skipped: { path: string; reason: string }[];
+};
 
 /**
- * Clean up the staging directory after the call — WITHOUT any recursive or
- * blind deletion. Only the files this call staged (recorded in `s.files`) are
- * unlinked, each only if its path is still a non-link regular file with the
- * identity recorded when it was created; then the directory itself is removed
- * with `rmdir`, which refuses anything that is not an empty directory. Any
- * file or directory that does not match is LEFT IN PLACE and named in the
- * returned reason. Returns undefined only when everything was removed.
+ * Remove STALE per-call staging directories (`gi-*`, mtime older than
+ * `maxAgeMs`) under the daemon-owned staging parent — conservatively, and
+ * never during the call that created them.
+ *
+ * Nothing is deleted that was not verified AFTER it was moved: each directory,
+ * then each file inside it, is first observed (lstat: non-link, plain
+ * directory / regular file, dev+ino), then renamed aside under a fresh random
+ * name, and the renamed path must still carry the observed identity — so an
+ * object swapped in after the observation is caught (it is what got moved)
+ * and is skipped, logged and left in place, never deleted. Links, unexpected
+ * entry types and any failure also skip that directory. Directories are
+ * removed with `rmdir`, which refuses anything but an empty directory.
+ * Residual (stated): Node has no handle-bound unlink, so a same-user process
+ * that finds the fresh random name and swaps it in the instant between the
+ * post-move check and the unlink could have its object deleted; the staging
+ * parent is daemon-private (0700 on POSIX).
  */
-export function removeStagingDir(s: StagingDir, hooks: StagingCleanupHooks = {}): string | undefined {
-  const retained: string[] = [];
-  try {
-    assertStagingIntact(s);
-  } catch (err) {
-    return `staging directory ${s.dirReal} was not removed: ${(err as Error).message}`;
+export function sweepStagingDirs(
+  parent: string,
+  maxAgeMs: number = STAGING_SWEEP_AGE_MS,
+  hooks: SweepHooks = {},
+  now: number = Date.now(),
+): SweepReport {
+  const report: SweepReport = { removed: [], skipped: [] };
+  const skip = (path: string, reason: string): void => {
+    report.skipped.push({ path, reason });
+    log.warn({ path, reason }, "generate_image staging sweep skipped a path (nothing deleted)");
+  };
+  const pst = lstatSync(parent, { throwIfNoEntry: false });
+  if (!pst) return report;
+  if (pst.isSymbolicLink() || !pst.isDirectory()) {
+    skip(parent, "staging parent is not a plain directory.");
+    return report;
   }
-  for (const f of s.files) {
-    hooks.beforeUnlink?.(f.path);
-    const st = lstatSync(f.path, { bigint: true, throwIfNoEntry: false });
-    if (!st) continue; // already gone
-    if (st.isSymbolicLink() || !st.isFile() || !sameIdentity(st, f.id)) {
-      retained.push(`${f.path} (no longer the staged file; left in place)`);
-      continue;
-    }
+  let parentReal: string;
+  try {
+    parentReal = realpathSync.native(parent);
+  } catch (err) {
+    skip(parent, `could not resolve the staging parent: ${(err as Error).message}`);
+    return report;
+  }
+  let names: string[];
+  try {
+    names = boundedNames(parentReal, MAX_SWEEP_ENTRIES).filter(n => n.startsWith("gi-"));
+  } catch (err) {
+    skip(parent, `could not list the staging parent: ${(err as Error).message}`);
+    return report;
+  }
+  for (const name of names) {
+    const dir = join(parentReal, name);
     try {
-      unlinkSync(f.path);
+      sweepOne(parentReal, dir, maxAgeMs, now, hooks, report, skip);
     } catch (err) {
-      retained.push(`${f.path} (${(err as NodeJS.ErrnoException).code ?? (err as Error).message})`);
+      skip(dir, `sweep error: ${(err as Error).message}`);
     }
   }
+  return report;
+}
+
+function boundedNames(dirReal: string, max: number): string[] {
+  const out: string[] = [];
+  const dir = opendirSync(dirReal);
   try {
-    rmdirSync(s.dirReal);
-  } catch (err) {
-    retained.push(`${s.dirReal} (${(err as NodeJS.ErrnoException).code ?? (err as Error).message})`);
+    for (let ent = dir.readSync(); ent !== null && out.length < max; ent = dir.readSync()) out.push(ent.name);
+  } finally {
+    dir.closeSync();
   }
-  return retained.length === 0 ? undefined : `staging directory ${s.dirReal} was not fully removed; retained: ${retained.join("; ")}`;
+  return out;
+}
+
+function sweepOne(
+  parentReal: string,
+  dir: string,
+  maxAgeMs: number,
+  now: number,
+  hooks: SweepHooks,
+  report: SweepReport,
+  skip: (path: string, reason: string) => void,
+): void {
+  const st = lstatSync(dir, { bigint: true, throwIfNoEntry: false });
+  if (!st) return;
+  if (st.isSymbolicLink() || !st.isDirectory()) return skip(dir, "not a plain directory (link or other type); left in place.");
+  if (now - Number(st.mtimeMs) < maxAgeMs) return; // not stale yet
+  const dirId = { dev: st.dev, ino: st.ino };
+  hooks.afterObserve?.(dir);
+  const moved = join(parentReal, `sweep-${randomUUID()}`);
+  renameSync(dir, moved);
+  const mst = lstatSync(moved, { bigint: true, throwIfNoEntry: false });
+  if (!mst || mst.isSymbolicLink() || !mst.isDirectory() || !sameIdentity(mst, dirId)) {
+    return skip(moved, `the object at ${dir} was replaced after it was observed; it was moved aside to ${moved} and left in place.`);
+  }
+  const entries = boundedNames(moved, MAX_SWEEP_ENTRIES + 1);
+  if (entries.length > MAX_SWEEP_ENTRIES) return skip(moved, `more than ${MAX_SWEEP_ENTRIES} entries; left in place.`);
+  for (const e of entries) {
+    const p = join(moved, e);
+    const fst = lstatSync(p, { bigint: true, throwIfNoEntry: false });
+    if (!fst) continue;
+    if (fst.isSymbolicLink() || !fst.isFile()) return skip(p, "not a regular file; directory left in place.");
+    const fileId = { dev: fst.dev, ino: fst.ino };
+    hooks.afterObserve?.(p);
+    const aside = join(moved, `del-${randomUUID()}`);
+    renameSync(p, aside);
+    const ast = lstatSync(aside, { bigint: true, throwIfNoEntry: false });
+    if (!ast || ast.isSymbolicLink() || !ast.isFile() || !sameIdentity(ast, fileId)) {
+      return skip(aside, `the file at ${p} was replaced after it was observed; it was moved aside to ${aside} and left in place.`);
+    }
+    unlinkSync(aside);
+  }
+  rmdirSync(moved);
+  report.removed.push(dir);
 }
 
 export type StagedFile = { path: string; fd: number; id: FsIdentity };
@@ -1303,7 +1251,6 @@ export function stageImage(staging: StagingDir, name: string, buffer: Buffer, ho
   try {
     const fst = fstatSync(fd, { bigint: true });
     const id = { dev: fst.dev, ino: fst.ino };
-    staging.files.push({ path, id }); // recorded before any write, so cleanup can find it whatever happens next
     let off = 0;
     while (off < buffer.length) off += writeSync(fd, buffer, off, buffer.length - off);
     hooks.afterWrite?.(path);
