@@ -65,7 +65,7 @@ const { resolveAgyInvocation, splitAgyModelId } = await importDist("mcp/agy-mode
 
 // Tripwire literals — intentionally NOT derived.
 const EXPECTED_AGY_PIN = "gemini-3.8-flash-medium";
-const EXPECTED_AGY_ESCALATED = "gemini-3.1-pro-high";
+const EXPECTED_AGY_ESCALATED = "gemini-3.8-flash-medium"; // Article V 2026-10-03: no separate agy escalation
 
 let passed = 0;
 let failed = 0;
@@ -90,9 +90,9 @@ it(`agy default pin is ${EXPECTED_AGY_PIN}`, () => {
   assert.equal(DEFAULT_MODELS.agy_generate, EXPECTED_AGY_PIN);
 });
 
-it(`agy escalated pin is ${EXPECTED_AGY_ESCALATED} at high effort`, () => {
+it(`agy escalated pin is ${EXPECTED_AGY_ESCALATED} at medium effort`, () => {
   assert.equal(JUDGE_MODEL_POLICY.agy.escalated.model, EXPECTED_AGY_ESCALATED);
-  assert.equal(JUDGE_MODEL_POLICY.agy.escalated.reasoning_effort, "high");
+  assert.equal(JUDGE_MODEL_POLICY.agy.escalated.reasoning_effort, "medium");
   assert.equal(DEFAULT_MODELS.agy_critique_escalated, EXPECTED_AGY_ESCALATED);
 });
 
@@ -252,7 +252,7 @@ it("resolveJudgeSelection: escalate:true → the escalated pin, source escalated
 
 it("resolveJudgeSelection: model + escalate:true is ambiguous", () => {
   assert.throws(
-    () => resolveJudgeSelection({ producer: "codex", model: "gpt-5.6-luna", escalate: true }),
+    () => resolveJudgeSelection({ producer: "codex", model: "gpt-6-astra", escalate: true }),
     /ambiguous/i,
   );
 });
@@ -285,7 +285,7 @@ it("resolveJudgeSelection: effort outside the vendor range throws", () => {
 
 it("resolveJudgeSelection: override without a reason throws", () => {
   assert.throws(
-    () => resolveJudgeSelection({ producer: "codex", model: "gpt-5.6-luna", override_source: "cli" }),
+    () => resolveJudgeSelection({ producer: "codex", model: "gpt-6-astra", override_source: "cli" }),
     /override requires override_source and override_reason/,
   );
 });
@@ -295,7 +295,7 @@ it("resolveJudgeSelection: override with an unrecognized source throws", () => {
     () =>
       resolveJudgeSelection({
         producer: "codex",
-        model: "gpt-5.6-luna",
+        model: "gpt-6-astra",
         override_source: "vibes",
         override_reason: "felt right",
       }),
@@ -303,16 +303,32 @@ it("resolveJudgeSelection: override with an unrecognized source throws", () => {
   );
 });
 
-it("resolveJudgeSelection: codex explicit gpt-5.6-luna with source cli + reason is accepted", () => {
+it("resolveJudgeSelection: codex explicit gpt-6-astra with source cli + reason is accepted", () => {
   assert.deepEqual(
     resolveJudgeSelection({
       producer: "codex",
-      model: "gpt-5.6-luna",
+      model: "gpt-6-astra",
       override_source: "cli",
-      override_reason: "A/B-ing the generator model as a judge on a scratch run",
+      override_reason: "selecting the astra judge explicitly rather than via escalate",
     }),
-    { model: "gpt-5.6-luna", reasoning_effort: "medium", source: "cli" },
+    { model: "gpt-6-astra", reasoning_effort: "medium", source: "cli" },
   );
+});
+
+it("resolveJudgeSelection: retired gpt-5.6-* judge ids are rejected even with source + reason", () => {
+  for (const id of ["gpt-5.6-terra", "gpt-5.6-sol", "gpt-5.6-luna"]) {
+    assert.throws(
+      () =>
+        resolveJudgeSelection({
+          producer: "codex",
+          model: id,
+          override_source: "cli",
+          override_reason: "operator asked for the old judge",
+        }),
+      /allowed models/,
+      `${id} was removed from the codex judge allow-list on 2026-10-03`,
+    );
+  }
 });
 
 it("resolveJudgeSelection: explicitly restating the default needs no override", () => {

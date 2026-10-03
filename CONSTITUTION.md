@@ -84,10 +84,12 @@ corresponding new test file triggers a constitution-guard advisory.
 ## Article V — Judge-Plane Invariants
 
 **JUDGE-1**: Cross-vendor judging is mandated at every gate. The default judge is
-Codex (`pp_codex`, gpt-5.6-terra at medium reasoning effort). The default
-Antigravity (agy) judge is `gemini-3.8-flash-medium`. Escalated lanes,
-selectable only by an explicit `escalate` request, are Codex `gpt-5.6-sol`
-(medium) and agy `gemini-3.1-pro-high`. Antigravity (agy) joins for Borda
+Codex (`pp_codex`, `gpt-6.1-sol` at medium reasoning effort). The escalated
+Codex lane, selectable only by an explicit `escalate` request, is `gpt-6-astra`
+at medium reasoning effort. The Antigravity (agy) judge is
+`gemini-3.8-flash-medium` for both default and `escalate` requests; agy has no
+separate escalated model. Every pinned judge lane runs at medium reasoning
+effort; any other effort is a JUDGE-1a override. Antigravity (agy) joins for Borda
 scoring when N ≥ 3 whenever agy is enabled; when agy is disabled
 (`PP_DISABLE_AGY=1`) the second Borda judge is the other eligible cross-vendor
 lane and the run summary MUST state the substitution.

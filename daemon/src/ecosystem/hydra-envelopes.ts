@@ -24,9 +24,10 @@
  * Graceful-degradation contract: every emitter returns { recorded: boolean,
  * envelope_id: string }. When TheEights is offline, recorded=false but
  * the envelope_id is still allocated locally — pp can show it to the
- * operator so they know what *would have been* dispatched. The local
- * boardroom-agent fallback is opt-in via the spawn_local parameter; we
- * never silently substitute a local execution for an ecosystem dispatch.
+ * operator so they know what *would have been* dispatched. A local
+ * boardroom-agent fallback would require ExecutiveSuite to be installed
+ * in this checkout; absent that, the ecosystem dispatch above is the
+ * only path, and pp never silently substitutes a local execution for it.
  */
 
 import { nanoid } from "nanoid";
@@ -120,7 +121,8 @@ export type CSuitePacketContext = {
  *
  * Returns the envelope_id pp emitted (always allocated, even when
  * TheEights refused the record). The driver agent is expected to wait
- * a bounded period before falling back to local boardroom invocation.
+ * a bounded period, then surface the timeout to the operator and proceed
+ * without executive framing (no local boardroom agent ships in this repo).
  */
 export async function emitStrategicFramingRequest(ctx: CSuitePacketContext): Promise<EnvelopeResult> {
   const envelope_id = `env_pp_csp_${nanoid(10)}`;

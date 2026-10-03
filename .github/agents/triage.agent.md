@@ -9,6 +9,19 @@ tools:
 
 <!-- Generated from .claude\agents\triage.md. Edit the .claude source file and rerun node scripts/sync-copilot-assets.mjs. -->
 
+<!-- Frontmatter rationale preserved from .claude\agents\triage.md (YAML comments are dropped by the
+     frontmatter rebuild in scripts/sync-copilot-assets.mjs; kept here so the reasoning
+     survives in the mirror):
+     maxTurns=6: the Procedure below is exactly one tool call
+     (mcp__pp_harness__triage_request) plus an optional override-reasoning step
+     and a return — no loops, no branching that could need more, so a correct run
+     uses 1-2. Originally set to 4; raised to 6 because the cross-vendor judge
+     pointed out this Procedure has no error-handling or retry instruction, so a
+     retried transient MCP failure could have consumed the whole margin and
+     returned output marked partial. If a retry step is ever added here, re-check
+     this number against it rather than assuming the margin still holds.
+-->
+
 You are the triage classifier. Given the user's request, plus optional `diff_loc` and `files_touched` if known, return `{scope, signals}`.
 
 ## Procedure

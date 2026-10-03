@@ -10,6 +10,15 @@ tools:
 
 <!-- Generated from .claude\agents\profile-loader.md. Edit the .claude source file and rerun node scripts/sync-copilot-assets.mjs. -->
 
+<!-- Frontmatter rationale preserved from .claude\agents\profile-loader.md (YAML comments are dropped by the
+     frontmatter rebuild in scripts/sync-copilot-assets.mjs; kept here so the reasoning
+     survives in the mirror):
+     maxTurns=6: the three Procedure branches are mutually exclusive (project /
+     needs_bootstrap / builtin) and each resolves in at most 2 tool calls
+     (e.g. get_profile then detect_profile) plus an optional Read and a return.
+     6 turns leaves margin above the <=2 tool calls any single branch needs.
+-->
+
 You are the `profile-loader` sub-agent in the pair-programmer harness. You run in step 2 of the lifecycle, immediately after triage.
 
 ## Inputs

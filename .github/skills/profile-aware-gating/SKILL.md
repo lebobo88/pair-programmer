@@ -1,9 +1,10 @@
 ---
 name: profile-aware-gating
 description: How `<project>/.harness/profile.yaml` modifies gates. Loaded by the `profile-loader` agent and referenced by the master skill. On first run, the harness detects the project type and writes profile.yaml after a one-line confirmation; only an explicit `skip` (or pre-existing absent file the user opts not to bootstrap) leaves the run in generic mode.
+user-invocable: false
 ---
 
-<!-- Generated from .claude\skills\profile-aware-gating.md. Edit the .claude source file and rerun node scripts/sync-copilot-assets.mjs. -->
+<!-- Generated from .claude\skills\profile-aware-gating\SKILL.md. Edit the .claude source file and rerun node scripts/sync-copilot-assets.mjs. -->
 
 # Profile-aware gating
 
@@ -66,12 +67,12 @@ When the driver calls `gate_eligible_judges(gate_type, generator_producer, gener
 3. Apply **profile-aware upgrade**:
    - `enterprise` → cross-vendor on every gate.
    - `ai-agentic` → cross-vendor on any gate touching evals or tool permissions.
-4. Apply any **vendor capability upgrade**. Example: same-vendor Codex is unavailable when `generator_model` resolves to the same id the Codex judge would use (`gpt-5.6-terra` by default), because same-producer + same-model verdicts are rejected for every producer; the default generator pin `gpt-5.6-luna` differs, so the ordinary route is fine, and the daemon upgrades the colliding path to cross-vendor automatically.
+4. Apply any **vendor capability upgrade**. Example: same-vendor Codex is unavailable when `generator_model` resolves to the same id the Codex judge would use (`gpt-6.1-sol` by default), because same-producer + same-model verdicts are rejected for every producer; the default generator pin `gpt-5.6-luna` differs, so the ordinary route is fine, and the daemon upgrades the colliding path to cross-vendor automatically.
 5. Pick the **rubric** in this priority order: explicit `rubric_hint` (when it names a real rubric) → artifact-kind-specific mapping (including explicit null overrides for test-plan/test-strategy-style artifacts) → built-in default for the gate (WCAG for design, ASVS for security, OpenAPI for contract, RFC 2119 for spec).
 
 The decision payload returned to the driver carries `upgraded`, `reason`, and `rubric_id`, so the user can see *why* a gate was tightened.
 
-- **Operator judge overrides (JUDGE-1a) apply AFTER the daemon's gate decision, and never downgrade a gate.** `--judge-vendor` / `--judge-model` / `--judge-effort` / `--judge-escalate` (and their team-yaml `judge.{model,reasoning_effort,escalate}` equivalents) only pin *how* the already-chosen judge runs; the profile-driven `required_cross_vendor` and `rubric_id` stand. An override that would make the closing verdict same-vendor is rejected by `judge-router` as `cross_vendor_impossible` and the run aborts — it is never silently downgraded. See `.claude/skills/judge-policy.md` § "Operator overrides (JUDGE-1a)".
+- **Operator judge overrides (JUDGE-1a) apply AFTER the daemon's gate decision, and never downgrade a gate.** `--judge-vendor` / `--judge-model` / `--judge-effort` / `--judge-escalate` (and their team-yaml `judge.{model,reasoning_effort,escalate}` equivalents) only pin *how* the already-chosen judge runs; the profile-driven `required_cross_vendor` and `rubric_id` stand. An override that would make the closing verdict same-vendor is rejected by `judge-router` as `cross_vendor_impossible` and the run aborts — it is never silently downgraded. See `.github/skills/judge-policy/SKILL.md` § "Operator overrides (JUDGE-1a)".
 
 ## Profile + missability
 

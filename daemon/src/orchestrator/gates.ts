@@ -26,7 +26,7 @@ export type Profile = ProfileName;
 /**
  * Base judge tier per gate type.
  *
- * JUDGE-1 (CONSTITUTION.md Article V, as amended 2026-09-03, SHA 5df284cb)
+ * JUDGE-1 (CONSTITUTION.md Article V, as amended 2026-10-03, SHA 27ae414d)
  * mandates cross-vendor judging at EVERY gate — there is no same-vendor base
  * tier any more. The table is kept (rather than collapsed into a constant) so
  * `base_tier` stays a reported, per-gate value and any future amendment has an
@@ -43,7 +43,7 @@ const BASE_TIERS: Record<GateType, Tier> = {
 };
 
 const JUDGE1_CITATION =
-  "JUDGE-1 (CONSTITUTION.md Article V, as amended 2026-09-03, SHA 5df284cb) mandates cross-vendor judging at every gate";
+  "JUDGE-1 (CONSTITUTION.md Article V, as amended 2026-10-03, SHA 27ae414d) mandates cross-vendor judging at every gate";
 
 /** Keywords that force cross-vendor judging regardless of base gate type. */
 const ESCALATION_RE = new RegExp(

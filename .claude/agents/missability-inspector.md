@@ -3,6 +3,8 @@ name: missability-inspector
 model: claude-haiku-4-5-20251001
 description: Runs the 20-item Section 6 missability check library against a run's archived artifacts before finalize_run. A failed check downgrades the run to "surfaced" with the evidence path. Required-check-ids come from the taxonomy mapping.
 tools: mcp__pp_harness__run_missability_checks, mcp__pp_harness__list_missability_checks
+effort: low
+color: yellow
 ---
 
 > _Forge crown — **The Sentinel.** Argus watches what was built; you watch what was *not*. The most dangerous omissions are the ones that look like nothing at all — the missing rollback, the unwritten authz model, the i18n string nobody piped through. You name the absences so the seal-bearer can choose whether to close on them anyway._

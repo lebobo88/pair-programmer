@@ -8,7 +8,7 @@ argument-hint: <team_name> <free-text request>
 
 You are about to drive a `/pp:team` invocation. Follow the `pair-programmer` skill protocol exactly. Parse `$ARGUMENTS` as `team_name` followed by the free-text request.
 
-**Delegation contract:** All MCP tool access flows through sub-agent delegation per the Delegation Contract in `pair-programmer.md` (the master skill). Do not bypass. `PP_ALLOW_AD_HOC=1` is daemon-developer-debug only and MUST NOT be proposed as a remedy in this lifecycle.
+**Delegation contract:** All MCP tool access flows through sub-agent delegation per the Delegation Contract in the `pair-programmer` skill (the master skill). Do not bypass. `PP_ALLOW_AD_HOC=1` is daemon-developer-debug only and MUST NOT be proposed as a remedy in this lifecycle.
 
 **CLI-flag pre-parse:** Same convention as `/pp:run` — see the "CLI-flag pre-parse" section of `run.md`, which is canonical. Strip both flag families out of the request text into a `cli_flags` object **before** parsing `team_name`:
 
@@ -71,7 +71,7 @@ See `/pp:run` (run.md) for the AGENT_TIER_DEFAULTS table, the full tier-resolver
 
 9. **Finalize.** Use the Task tool to invoke `run-finalizer` with `mode="team"`.
 
-10. **Report.** Per-stage table (`stage | gate_type | rubric | producer/judge | model_tier | judge | verdict | tokens | cost`). The `model_tier` column shows `<tier>` for Claude generators (e.g. `sonnet`, or `sonnet→opus` if Reflexion escalated) and `—` for Codex/agy. The `judge` column shows `vendor/model@effort` from `judge_decisions.json`'s `resolved` block (e.g. `codex/gpt-5.6-terra@medium`), with ` ⚠pin_mismatch` appended when the critique envelope reported one. Add an **"Operator judge overrides"** block listing every stage whose `source != "default"` (`stage | source | resolved vendor/model@effort | reason`), omitted entirely when every stage ran at the default. Add a tier-breakdown row from `budget_status(scope="tier:opus|sonnet|haiku")` so the user sees where spend went. Missability tally, master-plan delta, total cost, artifact paths (including `tier_decisions.json` and `judge_decisions.json`). **For TDD-shaped runs**, add a `TDD checks` section: per `tests_pre`/`code` pair, show `mode | runner | pre: expected→actual (status) | post: expected→actual (status) | duration_ms | output_path`. Surface any violation or execution_error verbatim.
+10. **Report.** Per-stage table (`stage | gate_type | rubric | producer/judge | model_tier | judge | verdict | tokens | cost`). The `model_tier` column shows `<tier>` for Claude generators (e.g. `sonnet`, or `sonnet→opus` if Reflexion escalated) and `—` for Codex/agy. The `judge` column shows `vendor/model@effort` from `judge_decisions.json`'s `resolved` block (e.g. `codex/gpt-6.1-sol@medium`), with ` ⚠pin_mismatch` appended when the critique envelope reported one. Add an **"Operator judge overrides"** block listing every stage whose `source != "default"` (`stage | source | resolved vendor/model@effort | reason`), omitted entirely when every stage ran at the default. Add a tier-breakdown row from `budget_status(scope="tier:opus|sonnet|haiku")` so the user sees where spend went. Missability tally, master-plan delta, total cost, artifact paths (including `tier_decisions.json` and `judge_decisions.json`). **For TDD-shaped runs**, add a `TDD checks` section: per `tests_pre`/`code` pair, show `mode | runner | pre: expected→actual (status) | post: expected→actual (status) | duration_ms | output_path`. Surface any violation or execution_error verbatim.
 
 ## Notes
 

@@ -3,6 +3,13 @@ name: profile-loader
 model: claude-haiku-4-5-20251001
 description: Loads `<project>/.harness/profile.yaml` and applies overrides. Returns the profile snapshot the driver passes to subsequent steps. Falls back to a built-in template when an exact name is known but the file is absent. Use ONLY inside an active /pp:* run, in step 2 of the lifecycle.
 tools: mcp__pp_harness__get_profile, mcp__pp_harness__get_builtin_profile, mcp__pp_harness__list_profiles, mcp__pp_harness__detect_profile, mcp__pp_harness__write_profile, Read
+effort: low
+color: yellow
+maxTurns: 6
+# maxTurns=6: the three Procedure branches are mutually exclusive (project /
+# needs_bootstrap / builtin) and each resolves in at most 2 tool calls
+# (e.g. get_profile then detect_profile) plus an optional Read and a return.
+# 6 turns leaves margin above the <=2 tool calls any single branch needs.
 ---
 
 You are the `profile-loader` sub-agent in the pair-programmer harness. You run in step 2 of the lifecycle, immediately after triage.

@@ -35,7 +35,7 @@ The full nine-phase run lifecycle (triage → profile → taxonomy → stage loo
 | Concept | What it does |
 |---------|-------------|
 | **16-Section Taxonomy** | Every task maps to sections of [`taxonomy_blueprint.md`](taxonomy_blueprint.md) — discovery, spec, architecture, contracts, code, security, tests, docs, and more. The harness ensures no section is skipped when the profile requires it. |
-| **Cross-Vendor Judging** | *Every* gate requires a judge from a different vendor than the generator (JUDGE-1, `CONSTITUTION.md` Article V as amended 2026-09-03, SHA `5df284cb`). Defaults: Codex `gpt-5.6-terra` @ medium and agy `gemini-3.8-flash-medium`; escalated lanes `gpt-5.6-sol` and `gemini-3.1-pro-high` via `escalate: true`. The same-vendor lane is supplementary and never closes a stage; identical generator/judge model ids are rejected for every producer. Operators may override the judge with `--judge-vendor` / `--judge-model` / `--judge-effort` / `--judge-escalate` / `--judge-reason` on `/pp:run`, `/pp:team`, `/pp:best-of`, `/pp:gate`, `/pp:retry` and `/pp:review` — allow-listed values only, source + reason recorded on the verdict, never a downgrade to same-vendor (JUDGE-1a). |
+| **Cross-Vendor Judging** | *Every* gate requires a judge from a different vendor than the generator (JUDGE-1, `CONSTITUTION.md` Article V as amended 2026-10-03, SHA `27ae414d`). Defaults: Codex `gpt-6.1-sol` @ medium and agy `gemini-3.8-flash-medium` @ medium; `escalate: true` selects Codex `gpt-6-astra` @ medium (agy has no separate escalated model). The same-vendor lane is supplementary and never closes a stage; identical generator/judge model ids are rejected for every producer. Operators may override the judge with `--judge-vendor` / `--judge-model` / `--judge-effort` / `--judge-escalate` / `--judge-reason` on `/pp:run`, `/pp:team`, `/pp:best-of`, `/pp:gate`, `/pp:retry` and `/pp:review` — allow-listed values only, source + reason recorded on the verdict, never a downgrade to same-vendor (JUDGE-1a). |
 | **Reflexion ×1** | On judge failure, the critique is fed back to the generator for exactly one retry. If it fails again, the stage surfaces for human review. Maximum 6 validator calls per run. |
 | **Best-of-N + Borda Count** | For major-scope requests, fan out to N parallel candidates (different model/seed mix in isolated git worktrees). A tournament judge picks the winner via Borda count + diff-entropy analysis. |
 | **Missability Gates** | Before finalization, 56 checks verify non-functional requirements: authorization models, data retention, rollout reversibility, accessibility, console cert compliance, and more. |
@@ -144,14 +144,14 @@ Cross-vendor gates require **two** configured vendors. The `SessionStart.vendor-
 | Category | Count | Highlights |
 |----------|-------|------------|
 | **MCP Tools** | 79 | 75 on `pp_harness` (orchestration, taxonomy, gates, best-of-N, replay, janitor) + 2 on `pp_codex` + 2 on `pp_agy` |
-| **Sub-Agents** | 75 | engineer, architect, judge-cross-vendor, security-reviewer, designer, game-ai-programmer, live-ops-manager, and 68 more |
+| **Sub-Agents** | 42 | engineer, architect, judge-cross-vendor, security-reviewer, designer, game-ai-programmer, live-ops-manager, and 35 more |
 | **Slash Commands** | 19 | `/pp:run`, `/pp:best-of`, `/pp:team`, `/pp:review`, `/pp:constitution`, `/pp:evolution`, and 13 more |
 | **Teams** | 25 | feature, bug-fix, refactor, security-review, ux, design-system, deep-reasoning (Fable-5), game-cert, game-live-ops, and 16 more |
 | **Profiles** | 16 | web-ui, api-platform, enterprise, ai-agentic, mobile, game-dev-unity, game-dev-unreal, and 9 more |
-| **Rubrics** | see `list_rubrics` | WCAG 2.2 AA, OWASP ASVS L1/L2, C4, OpenAPI 3.1, SLSA L2/L3, NIST AI RMF, Game Accessibility Guidelines, and more |
-| **Hooks** | 29 | across 5 events (SessionStart, PreToolUse, PostToolUse, UserPromptSubmit, Stop): `block-destructive-shell`, cost tallying, vendor-matrix check, +3 TheEights recall hooks, and 23 more (26 wired in `settings.json`, all 29 in `hooks.json`) |
+| **Rubrics** | see `list_rubrics` | WCAG 2.2 AA, OWASP ASVS L1/L2, C4, OpenAPI 3.1, SLSA L2/L3, NIST AI RMF, Game Accessibility Guidelines, PRD/plan-decomposition quality, and more |
+| **Hooks** | 29 | across 5 events (SessionStart, PreToolUse, PostToolUse, UserPromptSubmit, Stop): `block-destructive-shell`, cost tallying, vendor-matrix check, +3 TheEights recall hooks, and 23 more — all 29 wired in both `.claude/settings.json` (generated from `settings.template.json`) and `hooks.json` |
 | **Missability Checks** | 56 | 23 generic (NFRs, authz, data retention) + 33 game-dev (console TRC, netcode, live-service, accessibility) |
-| **Skills** | 8 | pair-programmer master skill, taxonomy-adherence, master-plan-patching, game-design, frontend-design, and 3 more |
+| **Skills** | 11 | pair-programmer master skill, taxonomy-adherence, master-plan-patching, game-design, design-discovery, and 6 more |
 
 ---
 
@@ -227,13 +227,13 @@ pair-programmer/
     test/                         # smoke tests (MCP roundtrip)
     package.json
   .claude/
-    agents/                       # 75 sub-agent definitions
+    agents/                       # 42 sub-agent definitions
     commands/pp/                  # 19 slash commands
     teams/                        # 25 specialized team pipelines (incl. deep-reasoning-team)
     profiles/                     # 16 project profile templates
     rubrics/                      # rubric markdown mirrors
-    skills/                       # 8 domain skills
-    settings.json                 # permissions + 26 hook commands (hooks.json adds 3 eights-recall → 29)
+    skills/                       # 11 domain skills
+    settings.json                 # permissions + 29 hook commands
   .github/                        # generated Copilot CLI assets
   docs/
     USER_GUIDE.md                 # full reference guide
@@ -253,11 +253,11 @@ pair-programmer/
 
 | Env var | Effect |
 |---------|--------|
-| `PP_ENFORCE_ACTIVE_RUN=1` | PreToolUse hook hard-blocks Edit/Write outside an active run |
-| `PP_ALLOW_DANGER=1` | Allows `--sandbox=danger-full-access` on Codex calls (off by default) |
+| `PP_ALLOW_AD_HOC=1` | Escape hatch for `enforce-active-run` (`daemon/src/hooks/dispatcher.ts`), which **hard-blocks** Edit/Write/NotebookEdit/MultiEdit outside an active run by default — there is no advisory mode, and no PP\_ENFORCE\_ACTIVE\_RUN flag exists to opt into one (that name is not read anywhere in the daemon; corrected 2026-09-07, Phase J of cc-standards-alignment, issue #51). **Phase L (#53) qualified this**: the handler always *intended* to hard-block and its logic is unchanged, but until Phase L it emitted an **undocumented** decision shape (a bare `permissionDecision` rather than one nested under `hookSpecificOutput`), and the hooks docs state that an object failing schema validation is a *non-blocking* error in which "the action proceeds". Whether the old shape was accepted as a legacy alias could not be determined from the documentation, so **it is not known whether the pre-Phase-L blockers actually blocked**. They emit the documented shape now, verified live. `enforce-active-run` also matched the owning run by exact `project_path`, so a session whose cwd was a subdirectory was refused despite a valid active run; it now walks to the nearest ancestor. |
+| `PP_ALLOW_DANGER=1` | Allows `--sandbox=danger-full-access` on Codex calls; **blocked by default** (i.e. `PP_ALLOW_DANGER` unset already gives the hardened behavior — there is no need to set it to `0`) |
 | `PP_LOG_LEVEL=debug` | Verbose pino logs |
 | `PP_DEBUG=1` | Include stack traces in MCP error responses |
-| `PP_STRICT_AGENT_TYPE=1` | Reject `record_attempt` calls with `agent_type='general-purpose'` |
+| `PP_STRICT_AGENT_TYPE=0` | Opt out of the **default-on** rejection of `record_attempt` calls with `agent_type='general-purpose'` (strict is the default; `=1` is a no-op) |
 
 ---
 

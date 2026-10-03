@@ -10,6 +10,7 @@ import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { dirname, join } from "node:path";
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { isolatedChildEnv } from "./fixtures/isolated-env.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const DAEMON = join(__dirname, "..", "dist", "index.js");
@@ -127,9 +128,21 @@ Some consequences will follow.
 `;
 
 async function main() {
+  // HERMETIC: this spawns a real `pp-daemon mcp` subprocess. isolatedChildEnv
+  // scrubs any ambient PP_DB_PATH/PP_HOME out of the base env FIRST, then
+  // sets an explicit temp PP_HOME and explicit temp PP_DB_PATH inside it —
+  // an operator-exported PP_DB_PATH (which WINS over PP_HOME in
+  // src/util/paths.ts) can never leak the OPERATOR'S REAL
+  // ~/.pair-programmer/state.db into this run (observed: 22 leaked
+  // 'av-smoke' runs from the old PP_HOME-only override).
+  const { env: daemonEnv, ppHome } = isolatedChildEnv({
+    extra: { EIGHTS_SKIP_AUDIT_CHECK: "1" },
+    prefix: "pp-av-smoke-home-",
+  });
   const transport = new StdioClientTransport({
     command: process.execPath,
     args: [DAEMON, "mcp"],
+    env: daemonEnv,
   });
   const client = new Client({ name: "av-smoke", version: "0.0.1" }, { capabilities: {} });
   await client.connect(transport);
@@ -282,9 +295,14 @@ async function main() {
       await callTool(client, "finalize_run", { run_id: run.run_id, status: "surfaced" });
     }
 
-    // ─── Negative: artifact archived but no validator call → finalize refuses. ─
+    // ─── Missing call + VALID artifact: finalize_stage(passed) AUTO-RUNS the ──
+    // missing validator (see runs.ts finalizeStage, "Auto-run any required
+    // validators that haven't been recorded yet" — commit 140cab5, 2026-05-20).
+    // Readiness computed BEFORE finalize still reports run_artifact_validate
+    // (it does not itself run the validator); finalize_stage(passed) then
+    // succeeds because the auto-run records a 'verified' row for a valid ADR.
     {
-      const run = await callTool(client, "start_run", { request_text: "av-smoke missing-call", project_path: projectPath, mode: "single" });
+      const run = await callTool(client, "start_run", { request_text: "av-smoke missing-call-valid", project_path: projectPath, mode: "single" });
       const stage = await callTool(client, "start_stage", { run_id: run.run_id, kind: "architecture", gate_type: "design" });
       const att = await callTool(client, "record_attempt", {
         stage_id: stage.stage_id, producer: "claude", model_id: GENERATOR_MODEL,
@@ -293,38 +311,100 @@ async function main() {
       await callTool(client, "archive_artifact", {
         run_id: run.run_id, stage_id: stage.stage_id,
         kind: "adr",
-        relative_path: "architecture/adr-no-validator-called.md",
+        relative_path: "architecture/adr-no-validator-called-valid.md",
         bytes: VALID_ADR,
       });
       await callTool(client, "record_verdict", {
         attempt_id: att.attempt_id, judge_producer: "claude", judge_model_id: JUDGE_MODEL,
         outcome: "pass",
-        critique_md: "Critique long enough to satisfy the anti-vacuous-pass refine. The validator was intentionally not called to exercise the missing-row branch of the validator gate.",
+        critique_md: "Critique long enough to satisfy the anti-vacuous-pass refine. The validator was intentionally not called to exercise the finalize-time auto-run branch of the validator gate against a VALID artifact.",
         score_json: { structure: 0.9 },
+      });
+
+      const beforeCheck = await callTool(client, "get_artifact_validation", { stage_id: stage.stage_id, validator_kind: "adr_structure_lint" });
+      if (beforeCheck.check !== null) throw new Error(`expected no artifact_validations row before finalize, got ${pretty(beforeCheck)}`);
+
+      // Readiness is computed from the CURRENT (empty) row set, so it still
+      // names run_artifact_validate as next_action — it does not itself
+      // trigger the auto-run that finalize_stage performs.
+      const readiness = await callTool(client, "get_stage_finalize_readiness", { stage_id: stage.stage_id });
+      if (readiness.can_pass) throw new Error(`expected blocked readiness when validator was never called, got ${pretty(readiness)}`);
+      if (readiness.next_action !== "run_artifact_validate") throw new Error(`expected run_artifact_validate readiness, got ${pretty(readiness)}`);
+      console.log(`✓ get_stage_finalize_readiness (missing validator call, valid artifact) -> ${readiness.next_action}`);
+
+      // finalize_stage(passed) SUCCEEDS: the missing row is auto-run against
+      // the valid ADR and records 'verified' before readiness is re-checked.
+      await callTool(client, "finalize_stage", { stage_id: stage.stage_id, status: "passed", winner_attempt_id: att.attempt_id });
+      console.log(`✓ finalize_stage(passed) succeeds via auto-run for a missing call + VALID artifact`);
+
+      const afterCheck = await callTool(client, "get_artifact_validation", { stage_id: stage.stage_id, validator_kind: "adr_structure_lint" });
+      if (afterCheck.check?.status !== "verified") {
+        throw new Error(`expected a 'verified' artifact_validations row recorded by the auto-run, got ${pretty(afterCheck)}`);
+      }
+      console.log(`✓ auto-run recorded a 'verified' artifact_validations row for the winning stage/artifact`);
+
+      await callTool(client, "finalize_run", { run_id: run.run_id, status: "complete" });
+    }
+
+    // ─── Missing call + INVALID artifact: finalize_stage(passed) is refused ──
+    // by the auto-run's own 'violation' result (not masked) and a violation
+    // row is recorded.
+    {
+      const run = await callTool(client, "start_run", { request_text: "av-smoke missing-call-invalid", project_path: projectPath, mode: "single" });
+      const stage = await callTool(client, "start_stage", { run_id: run.run_id, kind: "architecture", gate_type: "design" });
+      const att = await callTool(client, "record_attempt", {
+        stage_id: stage.stage_id, producer: "claude", model_id: GENERATOR_MODEL,
+        tokens_in: 1, tokens_out: 1, cost_usd: 0.0001, status: "ok",
+      });
+      await callTool(client, "archive_artifact", {
+        run_id: run.run_id, stage_id: stage.stage_id,
+        kind: "adr",
+        relative_path: "architecture/adr-no-validator-called-invalid.md",
+        bytes: BAD_ADR_NO_DECISION,
+      });
+      await callTool(client, "record_verdict", {
+        attempt_id: att.attempt_id, judge_producer: "claude", judge_model_id: JUDGE_MODEL,
+        outcome: "pass",
+        critique_md: "Critique long enough to satisfy the anti-vacuous-pass refine. The validator was intentionally not called to exercise the finalize-time auto-run branch of the validator gate against an INVALID artifact missing its Decision section.",
+        score_json: { structure: 0.5 },
       });
 
       const readiness = await callTool(client, "get_stage_finalize_readiness", { stage_id: stage.stage_id });
       if (readiness.can_pass) throw new Error(`expected blocked readiness when validator was never called, got ${pretty(readiness)}`);
       if (readiness.next_action !== "run_artifact_validate") throw new Error(`expected run_artifact_validate readiness, got ${pretty(readiness)}`);
-      console.log(`✓ get_stage_finalize_readiness (missing validator call) -> ${readiness.next_action}`);
+      console.log(`✓ get_stage_finalize_readiness (missing validator call, invalid artifact) -> ${readiness.next_action}`);
 
       await expectThrow(
         () => callTool(client, "finalize_stage", { stage_id: stage.stage_id, status: "passed", winner_attempt_id: att.attempt_id }),
-        err => /artifact_validate/i.test(err.message),
-        "finalize_stage(passed) refused when validator never called",
+        err => /ValidatorGateViolation|adr_structure_lint|finalize_stage refused/i.test(err.message),
+        "finalize_stage(passed) refused when the auto-run finds the artifact invalid",
       );
+
+      const afterCheck = await callTool(client, "get_artifact_validation", { stage_id: stage.stage_id, validator_kind: "adr_structure_lint" });
+      if (afterCheck.check?.status !== "violation") {
+        throw new Error(`expected a 'violation' artifact_validations row recorded by the auto-run, got ${pretty(afterCheck)}`);
+      }
+      console.log(`✓ auto-run recorded a 'violation' artifact_validations row for the missing-call + invalid case`);
 
       await callTool(client, "finalize_stage", { stage_id: stage.stage_id, status: "surfaced", winner_attempt_id: att.attempt_id });
       await callTool(client, "finalize_run", { run_id: run.run_id, status: "surfaced" });
     }
 
     // ─── Sanity: unrelated artifact kinds don't get gated. ───────────────────
+    // A 'diff' artifact binds to no artifact validator, so no validator call
+    // is needed here. But it DOES trip PP-VG-5 (the code/diff smoke gate) —
+    // satisfy that the way a real run would: record the winner's
+    // candidate_index on the attempt and call record_smoke_status(pass) for
+    // it before finalize_stage(passed). This is a distinct gate from the
+    // artifact-validator gate under test, so we also assert no
+    // artifact_validations row was created for this stage.
     {
       const run = await callTool(client, "start_run", { request_text: "av-smoke unrelated", project_path: projectPath, mode: "single" });
       const stage = await callTool(client, "start_stage", { run_id: run.run_id, kind: "code", gate_type: "code_style" });
       const att = await callTool(client, "record_attempt", {
         stage_id: stage.stage_id, producer: "claude", model_id: GENERATOR_MODEL,
         tokens_in: 1, tokens_out: 1, cost_usd: 0.0001, status: "ok",
+        notes: { candidate_index: 1 },
       });
       await callTool(client, "archive_artifact", {
         run_id: run.run_id, stage_id: stage.stage_id,
@@ -338,10 +418,18 @@ async function main() {
         critique_md: "Diff-only artifact that does NOT bind to any validator. finalize_stage(passed) should succeed without any validator calls. Anti-vacuous-pass guard text continues here to clear the 80-char floor.",
         score_json: { correctness: 0.9 },
       });
+      await callTool(client, "record_smoke_status", {
+        stage_id: stage.stage_id, candidate_index: 1, status: "pass",
+        reason: "synthetic-smoke exit=0 (artifact-validator sanity fixture, PP-VG-5)",
+      });
 
       await callTool(client, "finalize_stage", { stage_id: stage.stage_id, status: "passed", winner_attempt_id: att.attempt_id });
       await callTool(client, "finalize_run", { run_id: run.run_id, status: "complete" });
       console.log(`✓ unrelated artifact kinds (diff) bypass the validator gate`);
+
+      const noValidation = await callTool(client, "get_artifact_validation", { stage_id: stage.stage_id, validator_kind: "adr_structure_lint" });
+      if (noValidation.check !== null) throw new Error(`expected no artifact_validations row for a diff-only stage, got ${pretty(noValidation)}`);
+      console.log(`✓ no artifact_validations row created for the diff-only stage`);
     }
 
     // ─── Schema sanity: artifact_validations table query works. ──────────────
@@ -846,6 +934,7 @@ operations:
   } finally {
     await client.close();
     rmSync(runtimeRoot, { recursive: true, force: true });
+    try { rmSync(ppHome, { recursive: true, force: true }); } catch { /* best-effort cleanup */ }
   }
 }
 

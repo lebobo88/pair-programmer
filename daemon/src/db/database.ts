@@ -217,6 +217,53 @@ function applyMigrations(conn: Database.Database): void {
     CREATE INDEX IF NOT EXISTS idx_evolution_proposals_run    ON evolution_proposals(run_id);
     CREATE INDEX IF NOT EXISTS idx_evolution_proposals_status ON evolution_proposals(status);
   `);
+
+  // v11 (Phase H, GitHub #49). Additive only, per R5b/R5c: (i) the
+  // execution_events table + its three indexes, defensive for a DB created
+  // before SCHEMA_SQL included it (same rationale as evolution_proposals
+  // above); (ii) runs.surfaced_reason, guarded by the same
+  // PRAGMA-table_info-then-ALTER pattern used throughout this function. No
+  // DROP, no RENAME, no data rewrite, no backfill -- pre-v11 runs simply
+  // have no execution events and no surfaced_reason, which is the correct
+  // representation of "the daemon never observed a cause for this run",
+  // not a gap to paper over (same reasoning as the v10 comment above for
+  // judge-selection provenance).
+  conn.exec(`
+    CREATE TABLE IF NOT EXISTS execution_events (
+      id                  TEXT PRIMARY KEY,
+      call_key            TEXT NOT NULL,
+      event_kind          TEXT NOT NULL,
+      tool_name           TEXT,
+      producer            TEXT,
+      run_id              TEXT,
+      stage_id            TEXT,
+      session_id          TEXT,
+      agent_id            TEXT,
+      attempt_slot_id     TEXT,
+      status              TEXT NOT NULL,
+      reason              TEXT,
+      detail              TEXT,
+      tokens_in           INTEGER,
+      tokens_out          INTEGER,
+      cost_usd            REAL,
+      wall_ms             INTEGER,
+      created_at          TEXT NOT NULL
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_execution_events_call_key ON execution_events(call_key);
+    CREATE INDEX IF NOT EXISTS idx_execution_events_run  ON execution_events(run_id);
+    CREATE INDEX IF NOT EXISTS idx_execution_events_kind ON execution_events(event_kind);
+  `);
+  // MED-2 fix (run_p8JPpVhDonUA retry): re-read `runs` columns here rather
+  // than reusing `runColsAfter`, which was snapshotted at the v7RunCols
+  // guard above (before this v11 block runs). Nothing currently mutates
+  // `runs` columns between that snapshot and here, but relying on that
+  // being true forever is exactly the staleness hazard the judge flagged —
+  // a guard reading a snapshot taken before the state it decides on is
+  // wrong by construction even when today's ordering happens to save it.
+  const runColsForV11 = conn.prepare("PRAGMA table_info(runs)").all() as Array<{ name: string }>;
+  if (!runColsForV11.some(c => c.name === "surfaced_reason")) {
+    conn.exec("ALTER TABLE runs ADD COLUMN surfaced_reason TEXT");
+  }
 }
 
 export function closeDb(): void {

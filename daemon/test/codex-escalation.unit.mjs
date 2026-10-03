@@ -55,12 +55,14 @@ const { DEFAULT_MODELS, CLAUDE_TIER_MODELS } = await import(
 );
 
 // Tripwire literals — intentionally NOT derived. CONSTITUTION.md Article V (as
-// amended 2026-09-03, SHA 5df284cb, previously 13b4fa18) pins JUDGE-1 to gpt-5.6-terra at medium reasoning
-// effort; the escalated lane is gpt-5.6-sol. Changing DEFAULT_MODELS without a
+// amended 2026-10-03, SHA 27ae414d, previously 5df284cb / 13b4fa18) pins JUDGE-1 to gpt-6.1-sol at
+// medium reasoning effort; the escalated lane is gpt-6-astra at medium. Changing DEFAULT_MODELS without a
 // constitution amendment must break this file loudly, which a self-referential
 // assertion could never do.
-const EXPECTED_JUDGE1_PIN = "gpt-5.6-terra";
-const EXPECTED_ESCALATED_PIN = "gpt-5.6-sol";
+const EXPECTED_JUDGE1_PIN = "gpt-6.1-sol";
+const EXPECTED_ESCALATED_PIN = "gpt-6-astra";
+// Ids the 2026-10-03 amendment REMOVED from the codex judge allow-list.
+const RETIRED_JUDGE_IDS = ["gpt-5.6-terra", "gpt-5.6-sol", "gpt-5.6-luna"];
 // Generator model for the recordVerdict fixtures — derived so a tier repin
 // cannot silently desync the fixture from the shipped tier map.
 const GENERATOR_MODEL = CLAUDE_TIER_MODELS.sonnet;
@@ -69,11 +71,14 @@ const { selectCritiqueModel, selectCritiqueInvocation, codexCritique } = await i
 );
 
 // An allow-listed NON-default codex judge model, used for the override cases.
+// Since the 2026-10-03 amendment the codex allow-list is exactly the two pins,
+// so the only non-default id is the escalated one, selected here EXPLICITLY via
+// `model` + override_source (a JUDGE-1a override), never via `escalate`.
 // Derived from JUDGE_MODEL_POLICY so an allow-list edit cannot silently make
-// this case vacuous; asserted distinct from both pins below.
+// this case vacuous; asserted allow-listed and distinct from the default below.
 const { JUDGE_MODEL_POLICY } = await import(pathToFileURL(join(DIST, "config.js")).href);
 const ALLOWED_OVERRIDE_MODEL = JUDGE_MODEL_POLICY.codex.allowed_models.find(
-  (m) => m !== DEFAULT_MODELS.codex_critique && m !== DEFAULT_MODELS.codex_critique_escalated,
+  (m) => m !== DEFAULT_MODELS.codex_critique,
 );
 
 let passed = 0;
@@ -280,12 +285,34 @@ async function captureGenArgs(critiqueArgs) {
   return captured;
 }
 
-it("the override fixture model is allow-listed and distinct from both pins", () => {
+it("the override fixture model is allow-listed and distinct from the default pin", () => {
   assert.ok(
     ALLOWED_OVERRIDE_MODEL,
-    "JUDGE_MODEL_POLICY.codex.allowed_models must carry a third id for the override case to be meaningful",
+    "JUDGE_MODEL_POLICY.codex.allowed_models must carry a non-default id for the override case to be meaningful",
   );
+  assert.notEqual(ALLOWED_OVERRIDE_MODEL, DEFAULT_MODELS.codex_critique);
+  assert.ok(JUDGE_MODEL_POLICY.codex.allowed_models.includes(ALLOWED_OVERRIDE_MODEL));
 });
+
+it("the gpt-5.6-* ids are no longer codex judge models (2026-10-03 amendment)", () => {
+  for (const id of RETIRED_JUDGE_IDS) {
+    assert.ok(
+      !JUDGE_MODEL_POLICY.codex.allowed_models.includes(id),
+      `${id} must not be on the codex judge allow-list after the amendment`,
+    );
+  }
+});
+
+// The real function under test (codexCritique via the DI seam) must refuse a
+// retired id even when the override is fully justified.
+for (const id of RETIRED_JUDGE_IDS) {
+  await itAsync(`codexCritique e2e: retired judge id ${id} THROWS even with source+reason`, async () => {
+    await assert.rejects(
+      () => captureGenArgs({ model: id, override_source: "cli", override_reason: "operator asked for the old judge" }),
+      "a retired judge id must be rejected, never silently replaced",
+    );
+  });
+}
 
 await itAsync("codexCritique e2e: escalate:true → invoked with the escalated pin", async () => {
   // NOTE: no `model` is passed. Since J5, model + escalate is an ambiguity
@@ -312,7 +339,7 @@ await itAsync("codexCritique e2e: an allow-listed override with source+reason RE
   const genArgs = await captureGenArgs({
     model: ALLOWED_OVERRIDE_MODEL,
     override_source: "cli",
-    override_reason: "operator pinned a cheaper judge for a throwaway smoke gate",
+    override_reason: "operator pinned the astra judge explicitly for this gate",
   });
   assert.equal(
     genArgs.model,

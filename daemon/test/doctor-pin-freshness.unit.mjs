@@ -149,7 +149,9 @@ test("doctor's agy surface: a retired default pin degrades google", () => {
   const res = evaluateAgyPins(defaultAgyPins(), served);
   assert.equal(res.agy_pin_served, false);
   assert.equal(res.per_pin.critique_default, false);
-  assert.equal(res.per_pin.critique_escalated, true);
+  // Article V as amended 2026-10-03: the agy escalated pin is the default pin,
+  // so retiring it degrades the escalated lane too.
+  assert.equal(res.per_pin.critique_escalated, false);
 });
 
 test("doctor's skipped-CLI shape matches the AgyPinCheck contract", () => {

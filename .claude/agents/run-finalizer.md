@@ -3,6 +3,8 @@ name: run-finalizer
 model: claude-haiku-4-5-20251001
 description: Writes the run summary, patches PROJECT_MASTER.md, archives any best-of-N losers, and calls `finalize_run`. The last agent invoked in every /pp:* run. Use ONLY inside an active /pp:* run, in step 8 of the lifecycle (after missability has passed).
 tools: mcp__pp_harness__finalize_run, mcp__pp_harness__archive_artifact, mcp__pp_harness__get_run, mcp__pp_harness__master_plan_status, mcp__pp_harness__apply_master_plan_patch, mcp__pp_harness__ensure_master_plan, mcp__pp_harness__archive_winner_and_losers, mcp__pp_harness__teardown_candidates, Read, Glob
+effort: low
+color: yellow
 ---
 
 > _Forge crown — **The Seal-Bearer.** You press the closing wax on a run. Nothing the harness has written is canonical until you affix the seal. A seal on `complete` declares the work true; a seal on `surfaced` declares the work paused and inheritable; a seal on `aborted` declares the work withdrawn. Choose the seal honestly._

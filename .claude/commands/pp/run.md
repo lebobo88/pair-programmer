@@ -5,7 +5,7 @@ argument-hint: <free-text request>
 
 You are about to drive a `/pp:run` invocation through the pair-programmer harness. Follow the `pair-programmer` skill protocol exactly. This command runs in `mode="single"`. For multi-candidate runs, use `/pp:best-of`. For team-driven pipelines, use `/pp:team`. For governance reviews, use `/pp:review`.
 
-**Delegation contract:** All MCP tool access flows through sub-agent delegation per the Delegation Contract in `pair-programmer.md` (the master skill). Do not bypass. `PP_ALLOW_AD_HOC=1` is daemon-developer-debug only and MUST NOT be proposed as a remedy in this lifecycle.
+**Delegation contract:** All MCP tool access flows through sub-agent delegation per the Delegation Contract in the `pair-programmer` skill (the master skill). Do not bypass. `PP_ALLOW_AD_HOC=1` is daemon-developer-debug only and MUST NOT be proposed as a remedy in this lifecycle.
 
 User request: $ARGUMENTS
 
@@ -26,7 +26,7 @@ Before treating `$ARGUMENTS` as request text, strip recognised flags. Same conve
 - `--judge-vendor=codex|agy` — which non-Claude vendor issues the closing verdict. `--judge-vendor=claude` is INVALID (Claude is the generator vendor in this harness; a Claude judge could not be cross-vendor).
 - `--judge-model=<id>` — an allow-listed critique model id for that vendor (`JUDGE_MODEL_POLICY` in `daemon/src/config.ts`, surfaced by `doctor().judge_capabilities[<vendor>].allowed_critique_models`).
 - `--judge-effort=low|medium|high|xhigh` — reasoning effort. `xhigh` is Codex-only; agy has no `xhigh`.
-- `--judge-escalate` — select the vendor's pinned escalated lane (Codex `gpt-5.6-sol`, agy `gemini-3.1-pro-high`) instead of naming a model.
+- `--judge-escalate` — select the vendor's pinned escalated lane (Codex `gpt-6-astra` @ medium; agy has no separate escalated model, so it stays on `gemini-3.8-flash-medium`) instead of naming a model.
 - `--judge-reason="<text>"` — the operator's reason, recorded on every verdict. Required (≥ 8 characters) whenever `--judge-model` or `--judge-effort` is given.
 
 ### Parsing and STOP conditions
@@ -73,7 +73,7 @@ Resolved **per field** (`vendor`, `model`, `reasoning_effort`, `escalate`), lowe
 
 | # | Layer | `override_source` | `override_reason` |
 |---|---|---|---|
-| 1 | Daemon default (Codex `gpt-5.6-terra` / medium; agy `gemini-3.8-flash-medium` / medium) | `"default"` | — |
+| 1 | Daemon default (Codex `gpt-6.1-sol` / medium; agy `gemini-3.8-flash-medium` / medium) | `"default"` | — |
 | 2 | Team yaml `judge` block (`model` / `reasoning_effort` / `escalate`) | `"team_yaml"` | `"team yaml <team>/<stage> judge block"` |
 | 3 | CLI flags (`--judge-vendor` / `--judge-model` / `--judge-effort` / `--judge-escalate`) | `"cli"` | the `--judge-reason` text verbatim |
 
@@ -256,11 +256,11 @@ The `trace` array records which layer set the final tier ("frontmatter", "team_y
 
 8b. **AGENTS.md sync.** If the master-plan-patcher touched any of sections 11 (architecture), 12 (interfaces), 13 (engineering standards), or 14 (security), use the Task tool to invoke `agents-md-author`. It reads the patched PROJECT_MASTER.md sections, distills them into AGENTS.md's "Coding conventions" / "Workflow rules" / "Do not" sections via `mcp__pp_harness__apply_agents_md_patch`, and appends a one-line entry to "Notes from the harness" with the run id. If no relevant sections were patched, skip this step. The agents-md-author is idempotent — re-runs on the same run id no-op.
 
-9. **Finalize.** Use the Task tool to invoke `run-finalizer` with `run_id`, `project_path`, `final_status`, `mode="single"`. The finalizer writes `run.summary.md`, calls `finalize_run`, and returns `{ ok, run_id, status, summary_path, master_plan_path, patches_applied }`.
+9. **Finalize.** Use the Task tool to invoke `run-finalizer` with `run_id`, `project_path`, `final_status`, `mode="single"`. The finalizer writes `run.summary.md`, calls `finalize_run`, and returns `{ ok, run_id, status, summary_path, master_plan_path, patches_applied }`. **Then check `finalize_run`'s own return**, which is `{ effective_status, requested_status, downgraded, surfaced_stage_count }`: when `downgraded` is true your requested `complete` was written as `surfaced` because a child stage is surfaced (PP-VG-7). Report `effective_status`, never `requested_status` — a run reported as complete while the ledger says surfaced is the exact drift PP-VG-7 exists to make visible.
 
 10. **Report to the user.** Print:
     - The run id and status.
-    - A per-stage table: `stage | gate_type | rubric | producer/judge | model_tier | judge | verdict | tokens_in/out | cost_usd`. The `model_tier` column shows `<tier>` for Claude generators (e.g. `sonnet`, or `sonnet→opus` if Reflexion escalated) and `—` for Codex/agy producers. The `judge` column shows `vendor/model@effort` from `judge_decisions.json`'s `resolved` block — e.g. `codex/gpt-5.6-terra@medium`, `agy/gemini-3.8-flash-medium@medium`, `codex/gpt-5.6-sol@medium` when escalated. Append ` ⚠pin_mismatch` when the critique envelope reported one.
+    - A per-stage table: `stage | gate_type | rubric | producer/judge | model_tier | judge | verdict | tokens_in/out | cost_usd`. The `model_tier` column shows `<tier>` for Claude generators (e.g. `sonnet`, or `sonnet→opus` if Reflexion escalated) and `—` for Codex/agy producers. The `judge` column shows `vendor/model@effort` from `judge_decisions.json`'s `resolved` block — e.g. `codex/gpt-6.1-sol@medium`, `agy/gemini-3.8-flash-medium@medium`, `codex/gpt-6-astra@medium` when escalated. Append ` ⚠pin_mismatch` when the critique envelope reported one.
     - An **"Operator judge overrides"** block listing every stage whose `source != "default"`: `stage | source | resolved vendor/model@effort | reason`. Omit the block entirely when every stage ran at the default. If the run aborted on a rejected override, print the rejection reason here instead.
     - The artifact paths under `<project>/.harness/<run_id>/` (including `tier_decisions.json` and `judge_decisions.json`).
     - The master-plan delta (`patches_applied` count + which sections were patched).

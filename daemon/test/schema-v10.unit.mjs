@@ -63,11 +63,19 @@ const cols = (conn, table) =>
 
 // ─── 1. Version bumped ───────────────────────────────────────────────────
 
-it("SCHEMA_VERSION is 10", () => {
-  assert.equal(
-    SCHEMA_VERSION,
-    10,
-    "v10 reconciles the gap left by the unbumped v8/v9 migration labels in database.ts",
+it("SCHEMA_VERSION is at least 10 (v10 columns present)", () => {
+  // Phase H (GitHub #49) bumped SCHEMA_VERSION 10 -> 11 for the
+  // execution_events table + runs.surfaced_reason. This test's ORIGINAL
+  // purpose -- proving the v10 verdict-provenance columns exist and the
+  // v7-v9 versioning gap was reconciled -- does not depend on 10 being the
+  // CURRENT version, only that it has been reached. A literal `=== 10`
+  // would go red on every future version bump for no defect; `>= 10` keeps
+  // this assertion meaningful without re-editing it on each subsequent
+  // schema phase. See daemon/test/schema-v11-migration.unit.mjs for the
+  // v11-specific assertions this phase adds.
+  assert.ok(
+    SCHEMA_VERSION >= 10,
+    "v10 reconciled the gap left by the unbumped v8/v9 migration labels in database.ts; later phases only increase this",
   );
 });
 
@@ -99,7 +107,11 @@ it("a FRESH database has the three columns and stamps schema_version = 10", () =
   const meta = conn
     .prepare("SELECT value FROM daemon_meta WHERE key = 'schema_version'")
     .get();
-  assert.equal(meta.value, "10");
+  // Compare against the imported constant, not a transcribed literal, so
+  // this assertion stays correct across future version bumps (Phase H
+  // bumped 10 -> 11; see the comment on the "SCHEMA_VERSION is at least 10"
+  // test above for why).
+  assert.equal(meta.value, String(SCHEMA_VERSION));
 });
 
 // ─── 4. In-place upgrade from a pre-change verdicts table ────────────────
@@ -194,7 +206,10 @@ it("a PRE-CHANGE database upgrades in place and gains the three columns", () => 
   for (const col of V10_COLUMNS) {
     assert.ok(report.columns.includes(col), `upgraded DB verdicts table must have ${col}`);
   }
-  assert.equal(report.schema_version, "10", "meta row must restamp 7 -> 10 in place");
+  // Compare against the imported constant (not a transcribed "10") so this
+  // keeps proving "restamps from the pre-change 7 to whatever the CURRENT
+  // SCHEMA_VERSION is" across future version bumps (Phase H: 10 -> 11).
+  assert.equal(report.schema_version, String(SCHEMA_VERSION), `meta row must restamp 7 -> ${SCHEMA_VERSION} in place`);
   assert.equal(report.legacy_row_count, 1, "the pre-existing verdict row must survive the upgrade");
   assert.equal(
     report.legacy_source,

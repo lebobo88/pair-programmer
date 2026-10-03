@@ -480,7 +480,14 @@ async function codexGenerate(
     wall_ms: run.wall_ms,
     exit_code: run.exit_code,
     session_id: parsed.session_id,
-    resumed: !!existing,
+    // `resumed` is read from the argv actually issued (`cliArgs`, built by
+    // `buildCodexExecArgs` above), not from `existing`/`resumeSessionId`.
+    // `!!existing` happened to agree with "`--resume` is in argv" only via
+    // two invariants in other modules (setSession refuses empty ids;
+    // buildCodexExecArgs gates on `opts.resumeSessionId` truthiness) that no
+    // test asserted — the same proxy shape that made the agy `resumed` field
+    // wrong the moment `fresh_session` was introduced there (R1.13/R1.14/R1.15).
+    resumed: cliArgs.includes("--resume"),
     attempts: run.attempts,
     failure_archive_path: run.failure_archive_path,
   };
@@ -978,7 +985,7 @@ export async function codexGenerateImage(
 
 /**
  * Select the pinned critique model based on the escalate flag.
- * escalate selects a PINNED allow-listed model (gpt-5.6-sol); caller-passed args.model remains ignored (invented-id guard).
+ * escalate selects a PINNED allow-listed model (JUDGE_MODEL_POLICY.codex.escalated — gpt-6-astra as of the 2026-10-03 amendment); caller-passed args.model remains ignored (invented-id guard).
  *
  * This is a pure exported helper so it can be unit-tested offline without
  * spawning the Codex CLI. codexCritique delegates to it internally.
@@ -1038,7 +1045,7 @@ ${wrappedArtifact}
     model: effectiveModel,
     sandbox: "read-only",
     skip_recap: true,
-    // CONSTITUTION.md Article V as amended 2026-09-03 (SHA 5df284cb, previously 13b4fa18) pins JUDGE-1 at
+    // CONSTITUTION.md Article V as amended 2026-10-03 (SHA 27ae414d) pins every judge lane at
     // medium reasoning effort. The default path still resolves to medium; a
     // different effort only arrives through the escalated pin or a justified
     // override. Do not raise the DEFAULT without a constitution amendment.
@@ -1167,6 +1174,39 @@ function num(v: unknown): number | null {
   return null;
 }
 
+// ─── Server instructions (Phase B / R1.24-R1.29) ──────────────────────────
+//
+// Self-imposed 2048-byte UTF-8 budget (U-1, not a documented platform
+// limit). R1.28 / GitHub #55: codexCritique DOES resume a prior Codex
+// session today (:240 pushes --resume when getSession finds a row), so this
+// string MUST NOT claim statelessness or describe the resume as intended —
+// either would be false or would enshrine a known defect. It carries only
+// the directive that is true both before and after #55 is fixed: pass the
+// complete artifact and rubric every call, never rely on prior context.
+// R1.29: fixing #55 MUST NOT require editing this string.
+//
+// NOTE TO THE GUARD-TEST AUTHOR: this comment necessarily contains the very
+// phrases the guard forbids in the string ("resume a prior", "--resume") —
+// its whole job is to explain why the string must not say them. So the guard
+// MUST assert against the imported `CODEX_INSTRUCTIONS` const from `dist/`,
+// never a grep over this source file: a source grep fires on these comment
+// lines and reports a false positive. The same trap applies to the AC-7
+// regex `documented (truncation )?limit` — the comments here and in
+// harness-server.ts deliberately write "NOT a documented platform limit",
+// so a loosened variant of that regex will match the honest comment. Assert
+// on imported values, not on file text.
+export const CODEX_INSTRUCTIONS =
+  "pp_codex is a critique-only bridge to the Codex CLI, the default cross-vendor judge lane " +
+  "(JUDGE-1). Its generate tool is deprecated and must not be used for stage generation.\n\n" +
+  "critique takes the artifact and rubric. Pass the complete artifact and rubric on every call; " +
+  "never rely on context from a previous call. Omit model to take the pinned default. model and " +
+  "escalate are mutually exclusive. A non-allow-listed model or reasoning effort is rejected, never " +
+  "silently replaced. Any non-default selection requires override_source and a non-empty " +
+  "override_reason (JUDGE-1a).\n\n" +
+  "A bridge error is never a verdict. A non-zero exit, timeout, transport failure or unparseable " +
+  "response is an infrastructure failure — retry or surface it to the operator; do not record it " +
+  "as a fail verdict.";
+
 // ─── MCP server ──────────────────────────────────────────────────────────
 
 const TOOLS = [
@@ -1214,10 +1254,17 @@ const TOOLS = [
   },
 ];
 
+// Phase B / R3.1: side-effect-free surface projection, mirroring
+// harness-server.ts's describeToolSurface(). No `_meta` plumbing exists on
+// this bridge (R2.3), so no descriptor here ever carries one.
+export function describeToolSurface(): Array<{ name: string; description: string }> {
+  return TOOLS.map(t => ({ name: t.name, description: t.description }));
+}
+
 export async function runCodexMcpServer(): Promise<void> {
   const server = new Server(
     { name: "pp_codex", version: "0.1.0" },
-    { capabilities: { tools: {} } }
+    { capabilities: { tools: {} }, instructions: CODEX_INSTRUCTIONS }
   );
 
   server.setRequestHandler(ListToolsRequestSchema, async () => ({

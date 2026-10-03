@@ -272,17 +272,44 @@ export function browserValidationFinalize(input: FinalizeInput): FinalizeOutput 
   }
 
   // Use a timestamp suffix so multiple finalize calls don't clobber each other.
+  //
+  // `Date.now()` ALONE DID NOT ACHIEVE THAT, and the gap was not cosmetic.
+  // Millisecond granularity means two finalize calls completing in the same
+  // millisecond produced the SAME filename, and `writeFileSync` overwrites
+  // silently. That defeats PP-VG-3's whole purpose: the ratchet retains
+  // `effective_report_path` pointing at the highest-severity report, so a
+  // later clean call landing in the same millisecond would overwrite that very
+  // file with clean content — leaving the gate correctly reporting "errors
+  // retained" while the retained file said the opposite. A comment claiming
+  // collision-safety sat above the code that lacked it.
+  //
+  // Found in Phase M via `finalize-gates-a.unit.mjs`'s
+  // "new report path is timestamped differently" assertion, which failed
+  // intermittently under full-suite parallel load and never when run alone —
+  // and was at first misdiagnosed as the #57 timeout flake.
+  //
+  // `writeUniqueFile` resolves a collision by suffixing rather than by adding
+  // entropy: the names stay sorted and readable. It creates the file with
+  // `flag: "wx"`, so the existence check and the write are one atomic
+  // operation -- which is what makes the cross-process claim true. An earlier
+  // fix picked a free name and let the caller write it; a cross-vendor judge
+  // pointed out the TOCTOU window that left, and that the comment claimed a
+  // guarantee the code did not provide.
   const ts = Date.now();
-  const findingsPath = join(root, `findings-${ts}.json`);
-  writeFileSync(
-    findingsPath,
+  writeUniqueFile(
+    root,
+    `findings-${ts}`,
+    ".json",
     JSON.stringify({ engine: input.engine, base_url: input.base_url ?? null, findings: input.findings }, null, 2),
-    "utf8",
   );
 
   // Markdown report — judge-friendly, embeds GIF + screenshots.
-  const reportPath = join(root, `report-${ts}.md`);
-  writeFileSync(reportPath, renderReport({ ...input, severity, fail_count, warn_count, pass_count, console_error_total, network_error_total }, root), "utf8");
+  const reportPath = writeUniqueFile(
+    root,
+    `report-${ts}`,
+    ".md",
+    renderReport({ ...input, severity, fail_count, warn_count, pass_count, console_error_total, network_error_total }, root),
+  );
 
   const thisReportRelative = relative(run.project_path, reportPath).replaceAll("\\", "/");
 
@@ -328,6 +355,51 @@ export function browserValidationFinalize(input: FinalizeInput): FinalizeOutput 
       network_error_total,
     },
   };
+}
+
+/**
+ * Write `content` to `<dir>/<base><ext>`, suffixing `-2`, `-3`, … until it
+ * lands on a name that did not already exist. Returns the path written.
+ *
+ * Phase M: the callers used a bare `Date.now()` suffix under a comment claiming
+ * it stopped finalize calls clobbering each other. At millisecond granularity it
+ * did not, and the overwrite was silent — see the call site for why that
+ * defeated PP-VG-3's severity ratchet.
+ *
+ * ── WHY THIS WRITES RATHER THAN JUST PICKING A NAME ─────────────────────────
+ *
+ * The first fix was a `uniquePath()` that returned a free name for the caller to
+ * write. A cross-vendor judge pointed out the obvious hole: between the
+ * `existsSync` check and the caller's `writeFileSync` there is a TOCTOU window,
+ * so two processes could both see the name free and one would still overwrite
+ * the other — while the comment claimed cross-process safety. The claim was
+ * wrong, and narrowing the comment would have left the hole.
+ *
+ * Closed instead by making the check and the write the same operation:
+ * `flag: "wx"` fails with `EEXIST` if the file appeared in the meantime, and the
+ * loop then tries the next suffix. There is no window, and the cross-process
+ * guarantee the comment makes is now the one the code provides.
+ *
+ * Bounded, and it throws rather than looping forever or falling back to an
+ * overwriting write: an unbounded retry would turn a full disk into a hang, and
+ * a silent fallback would restore the very bug this replaces. Any error other
+ * than `EEXIST` propagates immediately — a permission fault must not be retried
+ * 1000 times and then reported as a naming problem.
+ */
+function writeUniqueFile(dir: string, base: string, ext: string, content: string): string {
+  for (let i = 1; i <= 1000; i += 1) {
+    const candidate = join(dir, i === 1 ? `${base}${ext}` : `${base}-${i}${ext}`);
+    try {
+      writeFileSync(candidate, content, { encoding: "utf8", flag: "wx" });
+      return candidate;
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException)?.code !== "EEXIST") throw err;
+    }
+  }
+  throw new Error(
+    `[pp] browser-validation: could not find a free filename for ${base}${ext} in ${dir} after 1000 ` +
+    `attempts — refusing to overwrite an existing report.`,
+  );
 }
 
 function renderReport(

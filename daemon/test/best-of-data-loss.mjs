@@ -13,8 +13,9 @@ import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
-import { mkdtempSync, mkdirSync, writeFileSync, existsSync, readFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync, existsSync, readFileSync } from "node:fs";
 import { execaSync } from "execa";
+import { isolatedChildEnv } from "./fixtures/isolated-env.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const DAEMON = join(__dirname, "..", "dist", "index.js");
@@ -44,18 +45,33 @@ function gitInit(dir) {
   execaSync("git", ["commit", "-q", "-m", "init"], { cwd: dir });
 }
 
-async function withClient(env, fn) {
+async function withClient(extraEnv, fn) {
+  // HERMETIC: this spawns a real `pp-daemon mcp` subprocess. isolatedChildEnv
+  // scrubs any ambient PP_DB_PATH/PP_HOME out of the base env FIRST, then
+  // sets an explicit temp PP_HOME and an explicit temp PP_DB_PATH inside it
+  // (extraEnv, e.g. PP_ALLOW_BEST_OF_WITHOUT_JUDGE, is applied on top and
+  // never touches the ledger location) — so no operator-exported PP_DB_PATH
+  // can ever cause this test to open the OPERATOR'S REAL
+  // ~/.pair-programmer/state.db. Always cleaned up.
+  const { env, ppHome, ppDbPath } = isolatedChildEnv({
+    extra: { EIGHTS_SKIP_AUDIT_CHECK: "1", ...extraEnv },
+    prefix: "pp-bof-home-",
+  });
   const transport = new StdioClientTransport({
     command: process.execPath,
     args: [DAEMON, "mcp"],
-    env: { ...process.env, ...env },
+    env,
   });
   const client = new Client({ name: "best-of-data-loss-test", version: "0.0.1" }, { capabilities: {} });
   await client.connect(transport);
   try {
-    await fn(client);
+    // The explicit temp path the isolated child env above actually opens —
+    // NEVER an inherited env.PP_DB_PATH / process.env.PP_DB_PATH, both of
+    // which could resolve to the operator's real ledger.
+    await fn(client, ppDbPath);
   } finally {
     try { await client.close(); } catch { /* ignore */ }
+    try { rmSync(ppHome, { recursive: true, force: true }); } catch { /* best-effort cleanup */ }
   }
 }
 
@@ -63,7 +79,7 @@ async function main() {
   // All tests bypass the cross-vendor judge precondition so they can run in
   // any environment. Test 4 specifically removes this override to verify
   // the precondition fires.
-  await withClient({ PP_ALLOW_BEST_OF_WITHOUT_JUDGE: "1" }, async (client) => {
+  await withClient({ PP_ALLOW_BEST_OF_WITHOUT_JUDGE: "1" }, async (client, dbPath) => {
 
     // ─── Setup ────────────────────────────────────────────────────────────
     const projectPath = mkdtempSync(join(tmpdir(), "pp-bof-"));
@@ -170,9 +186,10 @@ async function main() {
     // worktree, simulating the regression. Path is relative to .harness/<run_id>/.
     const harnessRoot = join(projectPath, ".harness", run.run_id);
     const relInsideWorktree = `code2/candidate-1/lost-treasure.txt`;
-    // Use the daemon's own SQLite file so we hit the same DB the MCP tools see.
+    // Use the daemon's own SQLite file (the temp PP_HOME this test spawned
+    // the daemon with, per src/util/paths.ts's derivation) so we hit the
+    // same DB the MCP tools see — never the operator's real ledger.
     const Database = (await import("better-sqlite3")).default;
-    const dbPath = join(process.env.USERPROFILE ?? process.env.HOME, ".pair-programmer", "state.db");
     const dbConn = new Database(dbPath);
     const testArtifactId = `artifact_test_lost_${run.run_id.slice(-6)}`;
     dbConn.prepare(
