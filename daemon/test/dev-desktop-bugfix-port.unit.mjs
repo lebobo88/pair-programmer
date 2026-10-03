@@ -327,4 +327,70 @@ describe("BUG-3b classify() exit-code cross-check", () => {
     assert.equal(r.failed, 2);
     assert.match(r.reason, /mixed outcome: 3 passed, 2 failed/);
   });
+
+  // Caller-level: runTddCheck() compares the classified outcome to the
+  // manifest. The new zero-failure "mixed" must not verify a pre-phase that
+  // expects "mixed" (no test failed, so it is not a red phase), and must not
+  // verify the post-phase all_pass. Each case has a positive control proving
+  // the same fixture CAN produce "verified".
+  const ALL_PASS_EXIT_1 = `console.log("Tests  5 passed (5)"); process.exitCode = 1;\n`;
+  const MIXED_EXIT_1 = `console.log("Tests  3 passed | 2 failed (5)"); process.exitCode = 1;\n`;
+  const ALL_PASS_EXIT_0 = `console.log("Tests  5 passed (5)");\n`;
+
+  async function tddStage(scriptBody, expectedPre) {
+    const project = makeProject();
+    const script = join(project, "fake-runner.js");
+    writeFileSync(script, scriptBody, "utf8");
+    const run = await runs.ensureRun({ request_text: "bug3b tdd", project_path: project, mode: "single" });
+    const pre = runs.startStage({ run_id: run.run_id, kind: "tests_pre", gate_type: "tests_pre" });
+    const manifestYaml =
+      `tdd_mode: bug-fix\n` +
+      `test_runner: vitest\n` +
+      `test_command: "node ${script.replaceAll("\\", "\\\\")}"\n` +
+      `test_files:\n  - dummy.test.js\n` +
+      `expected_pre_outcome: ${expectedPre}\n` +
+      `expected_post_outcome: all_pass\n` +
+      `cited_artifacts:\n  - kind: tdd_manifest\n    path: tests_pre/manifest.yaml\n`;
+    const archived = runs.archiveArtifact({
+      run_id: run.run_id, stage_id: pre.stage_id, kind: "tdd_manifest",
+      relative_path: "tests_pre/manifest.yaml", bytes: manifestYaml,
+    });
+    assert.equal(archived.status, "ok");
+    return { run, pre };
+  }
+
+  async function codeStageAfter(run) {
+    await new Promise((r) => setTimeout(r, 20)); // findPriorTestsPreStage needs started_at strictly later
+    return runs.startStage({ run_id: run.run_id, kind: "code", gate_type: "code" });
+  }
+
+  test("runTddCheck pre (expects mixed): 5 passed + exit 1 -> violation, not a red phase", async () => {
+    const { pre } = await tddStage(ALL_PASS_EXIT_1, "mixed");
+    const row = await tdd.runTddCheck({ stage_id: pre.stage_id, phase: "pre" });
+    assert.equal(row.actual, "mixed");
+    assert.equal(row.status, "violation", `reason: ${row.reason}`);
+    assert.match(row.reason ?? "", /got 0 failed tests/);
+  });
+
+  test("runTddCheck pre (expects mixed) control: 3 passed / 2 failed + exit 1 -> verified", async () => {
+    const { pre } = await tddStage(MIXED_EXIT_1, "mixed");
+    const row = await tdd.runTddCheck({ stage_id: pre.stage_id, phase: "pre" });
+    assert.equal(row.status, "verified", `reason: ${row.reason}`);
+  });
+
+  test("runTddCheck post: 5 passed + exit 1 -> violation naming the nonzero exit", async () => {
+    const { run } = await tddStage(ALL_PASS_EXIT_1, "mixed");
+    const code = await codeStageAfter(run);
+    const row = await tdd.runTddCheck({ stage_id: code.stage_id, phase: "post" });
+    assert.equal(row.actual, "mixed");
+    assert.equal(row.status, "violation", `reason: ${row.reason}`);
+    assert.match(row.reason ?? "", /nonzero exit \(1\)/);
+  });
+
+  test("runTddCheck post control: 5 passed + exit 0 -> verified", async () => {
+    const { run } = await tddStage(ALL_PASS_EXIT_0, "mixed");
+    const code = await codeStageAfter(run);
+    const row = await tdd.runTddCheck({ stage_id: code.stage_id, phase: "post" });
+    assert.equal(row.status, "verified", `reason: ${row.reason}`);
+  });
 });
