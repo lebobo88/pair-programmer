@@ -772,6 +772,188 @@ describe("pp_codex.generate_image: output containment", () => {
   });
 });
 
+// ─── round-2 findings: swap races and image-data validation ──────────────────
+
+/** Assemble a PNG from parts: IHDR fields, an optional PLTE, and IDAT data (raw scanlines or an explicit zlib stream). */
+function assemblePng({ width, height, bitDepth = 8, colorType = 0, interlace = 0, raw, idat, plte, splitIdatWith }) {
+  const ihdrData = Buffer.alloc(13);
+  ihdrData.writeUInt32BE(width, 0);
+  ihdrData.writeUInt32BE(height, 4);
+  ihdrData[8] = bitDepth;
+  ihdrData[9] = colorType;
+  ihdrData[12] = interlace;
+  const stream = idat ?? zlib.deflateSync(raw);
+  const chunks = [SIGNATURE, pngChunk("IHDR", ihdrData)];
+  if (plte) chunks.push(pngChunk("PLTE", plte));
+  if (splitIdatWith) {
+    const half = Math.floor(stream.length / 2);
+    chunks.push(pngChunk("IDAT", stream.subarray(0, half)), pngChunk(splitIdatWith, Buffer.from("x")), pngChunk("IDAT", stream.subarray(half)));
+  } else {
+    chunks.push(pngChunk("IDAT", stream));
+  }
+  chunks.push(IEND);
+  return Buffer.concat(chunks);
+}
+
+/**
+ * Raw (inflated) scanlines for an 8-bit greyscale image, filter type 0. For
+ * interlace=1 the Adam7 pass table is written out independently here — NOT
+ * taken from the module — so the fixture does not share the code under test.
+ */
+function greyScanlines(width, height, interlace = 0, filter = 0) {
+  const passes = interlace
+    ? [[0, 0, 8, 8], [4, 0, 8, 8], [0, 4, 4, 8], [2, 0, 4, 4], [0, 2, 2, 4], [1, 0, 2, 2], [0, 1, 1, 2]]
+    : [[0, 0, 1, 1]];
+  const parts = [];
+  for (const [x0, y0, dx, dy] of passes) {
+    const w = width > x0 ? Math.ceil((width - x0) / dx) : 0;
+    const h = height > y0 ? Math.ceil((height - y0) / dy) : 0;
+    if (!w || !h) continue;
+    for (let r = 0; r < h; r++) parts.push(Buffer.from([filter]), Buffer.alloc(w, 90));
+  }
+  return Buffer.concat(parts);
+}
+
+describe("pp_codex.generate_image: round-2 findings", () => {
+  test("fixture oracle: pngjs decodes the hand-assembled interlaced and plain PNGs", () => {
+    for (const interlace of [0, 1]) {
+      const buf = assemblePng({ width: 13, height: 11, interlace, raw: greyScanlines(13, 11, interlace) });
+      const decoded = PNG.sync.read(buf);
+      assert.equal(decoded.width, 13, `interlace=${interlace}`);
+    }
+  });
+
+  test("validatePngStructure validates image data: undecodable IDAT, bombs, wrong length, bad filters, trailing zlib bytes, chunk rules and the pixel cap", async () => {
+    const { validatePngStructure } = await importDist("mcp/image-harvest.js");
+    for (const interlace of [0, 1]) {
+      const good = assemblePng({ width: 13, height: 11, interlace, raw: greyScanlines(13, 11, interlace) });
+      const r = validatePngStructure(good);
+      assert.equal(r.ok, true, `valid interlace=${interlace}: ${r.reason}`);
+      assert.equal(r.interlaced, interlace === 1);
+    }
+    const cases = {
+      "CRC-correct garbage IDAT": [assemblePng({ width: 4, height: 4, idat: Buffer.from([1, 2, 3, 4]) }), /does not inflate/],
+      "interlaced decompression bomb": [assemblePng({ width: 4, height: 4, interlace: 1, raw: Buffer.alloc(8 * 1024 * 1024) }), /inflates past/],
+      "plain decompression bomb": [assemblePng({ width: 4, height: 4, raw: Buffer.alloc(8 * 1024 * 1024) }), /inflates past/],
+      "short image data": [assemblePng({ width: 4, height: 4, raw: Buffer.alloc(10) }), /inflates to 10 bytes; IHDR implies exactly 20/],
+      "bad filter byte": [assemblePng({ width: 4, height: 4, raw: greyScanlines(4, 4, 0, 5) }), /invalid scanline filter type 5/],
+      "trailing zlib bytes": [assemblePng({ width: 4, height: 4, idat: Buffer.concat([zlib.deflateSync(greyScanlines(4, 4)), Buffer.from([7, 7])]) }), /trailing bytes after the zlib stream/],
+      "PLTE in greyscale": [assemblePng({ width: 4, height: 4, raw: greyScanlines(4, 4), plte: Buffer.alloc(3) }), /PLTE in a greyscale/],
+      "non-consecutive IDAT": [assemblePng({ width: 4, height: 4, raw: greyScanlines(4, 4), splitIdatWith: "tEXt" }), /not consecutive/],
+      "pixel cap before inflation": [assemblePng({ width: 5000, height: 5000, idat: Buffer.from([1]) }), /pixel budget/],
+    };
+    for (const [label, [buf, reason]] of Object.entries(cases)) {
+      const r = validatePngStructure(buf);
+      assert.equal(r.ok, false, `${label} must be rejected`);
+      assert.match(r.reason, reason, label);
+    }
+  });
+
+  test("a CRC-correct undecodable PNG and an interlaced decompression bomb that 'fit as-is' are never copied", async () => {
+    const bomb = assemblePng({ width: 4, height: 4, interlace: 1, raw: Buffer.alloc(8 * 1024 * 1024) });
+    assert.ok(bomb.length < 300 * 1024, "the bomb is small enough to take the verbatim-copy path");
+    const { result, outputDir } = await runHarvest({
+      write: writePngs({
+        "exec-call-bomb.png": bomb,
+        "exec-call-garbage.png": assemblePng({ width: 4, height: 4, idat: Buffer.from([1, 2, 3, 4]) }),
+        "exec-call-good.png": makeSolidPng(4, 4),
+      }),
+    });
+    assert.equal(result.status, "partial");
+    assert.deepEqual(readdirSync(outputDir), ["exec-call-good.png"]);
+    assert.match(result.failures.find((f) => f.file === "exec-call-bomb.png")?.reason ?? "", /inflates past/);
+    assert.match(result.failures.find((f) => f.file === "exec-call-garbage.png")?.reason ?? "", /does not inflate/);
+  });
+
+  test("resolveSessionDir: a plain session dir swapped for a junction to another session between lstat and realpath is refused", async () => {
+    const { resolveSessionDir } = await importDist("mcp/image-harvest.js");
+    const root = tmp("pp-img-root-");
+    const victim = join(root, newSessionId());
+    writePngs({ "secret.png": makeSolidPng(4, 4) })(victim);
+    const sessionId = newSessionId();
+    mkdirSync(join(root, sessionId));
+    assert.equal(resolveSessionDir(root, sessionId).kind, "ok", "precondition: the unswapped dir resolves");
+    const r = resolveSessionDir(root, sessionId, {
+      afterLstat: (candidate) => {
+        renameSync(candidate, `${candidate}-moved`);
+        symlinkSync(victim, candidate, "junction");
+      },
+    });
+    assert.equal(r.kind, "rejected");
+    assert.match(r.reason, /replaced between lstat and realpath/);
+  });
+
+  test("a session dir replaced after resolution is refused at file open, even by a same-named plain directory", async () => {
+    const { result, outputDir } = await runHarvest({
+      write: writePngs({ "exec-call-1.png": makeSolidPng(4, 4) }),
+      opts: {
+        _fileHooks: {
+          beforeOpen: (p) => {
+            const dir = dirname(p);
+            renameSync(dir, `${dir}-moved`);
+            writePngs({ "exec-call-1.png": makeSolidPng(4, 4, [0, 0, 255, 255]) })(dir);
+          },
+        },
+      },
+    });
+    assert.equal(result.status, "failed");
+    assert.match(result.failures[0].reason, /session directory .* was replaced/);
+    assert.deepEqual(readdirSync(outputDir), []);
+  });
+
+  test("prepareOutputDir: an intermediate created component swapped for a junction stops the walk before anything is created through it", async () => {
+    const { prepareOutputDir } = await importDist("mcp/image-harvest.js");
+    const base = tmp("pp-img-outbase-");
+    const escape = tmp("pp-img-escape-");
+    const r = prepareOutputDir(join(base, "a", "b", "c"), {
+      afterCreate: (dir) => {
+        if (dir !== join(base, "a")) return;
+        rmSync(dir, { recursive: true });
+        symlinkSync(escape, dir, "junction");
+      },
+    });
+    assert.equal(r.ok, false);
+    assert.match(r.reason, /was replaced/);
+    assert.deepEqual(readdirSync(escape), [], "no directory was created inside the junction target");
+  });
+
+  test("prepareOutputDir: a created component replaced before the final check is refused by identity", async () => {
+    const { prepareOutputDir } = await importDist("mcp/image-harvest.js");
+    const base = tmp("pp-img-outbase-");
+    const b = join(base, "a", "b");
+    const r = prepareOutputDir(b, {
+      beforeFinalCheck: () => {
+        renameSync(b, `${b}-moved`);
+        mkdirSync(b); // same path, plain directory, different identity
+      },
+    });
+    assert.equal(r.ok, false);
+    assert.match(r.reason, /created output component .* was replaced/);
+  });
+
+  test("prepareOutputDir: a linked existing ancestor retargeted before the final check is refused by realpath", async () => {
+    const { prepareOutputDir } = await importDist("mcp/image-harvest.js");
+    const base = tmp("pp-img-outbase-");
+    const t1 = tmp("pp-img-t1-");
+    const t2 = tmp("pp-img-t2-");
+    mkdirSync(join(t1, "x"));
+    mkdirSync(join(t2, "x"));
+    const link = join(base, "link");
+    symlinkSync(t1, link, "junction"); // an existing linked ANCESTOR is allowed
+    const ok = prepareOutputDir(join(link, "x"));
+    assert.equal(ok.ok, true, ok.reason);
+    assert.equal(ok.outReal, real(join(t1, "x")));
+    const r = prepareOutputDir(join(link, "x"), {
+      beforeFinalCheck: () => {
+        rmSync(link);
+        symlinkSync(t2, link, "junction");
+      },
+    });
+    assert.equal(r.ok, false);
+    assert.match(r.reason, /resolves to .*, not /);
+  });
+});
+
 describe("pp_agy.generate_image", () => {
   test("returns a structured unsupported result naming the reason, per the real headless probe", async () => {
     const { agyGenerateImage } = await importDist("mcp/antigravity-server.js");
@@ -824,4 +1006,19 @@ describe("pp_agy.generate_image", () => {
  *   fits-as-is verbatim copy disabled           -> non-RGBA PNG preserved byte-for-byte
  *   exit_code check removed                     -> non-zero CLI result returns cli_failure
  *   newest-mtime scan instead of session id     -> concurrent session newer (mtimes set); junction alias
+ *
+ * Round 2 (every guard above re-run against the round-2 code, plus):
+ *   session dir lstat/realpath identity         -> resolveSessionDir: swapped between lstat and realpath
+ *   session dir identity re-checked at open     -> session dir replaced after resolution
+ *   pre-mkdir parent identity                   -> intermediate created component swapped for a junction
+ *   final created-component identity           -> created component replaced before the final check
+ *   realpath == pinned ancestor + created names -> linked existing ancestor retargeted
+ *   inflate maxOutputLength removed             -> validatePngStructure image data; bomb never copied
+ *   exact inflated length                       -> validatePngStructure image data (short data)
+ *   scanline filter bytes                       -> validatePngStructure image data (bad filter)
+ *   trailing zlib bytes                         -> validatePngStructure image data (trailing bytes)
+ *   image data not validated at all             -> validatePngStructure image data; bomb/garbage never copied
+ *   PLTE in greyscale / non-consecutive IDAT /
+ *   pixel cap before inflation                  -> validatePngStructure image data
+ *   output_dir link refusal (early + final)     -> output_dir junction refused; prepareOutputDir
  */

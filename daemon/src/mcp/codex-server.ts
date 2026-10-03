@@ -717,7 +717,7 @@ export async function codexGenerateImage(
   const overBudget: OverBudgetImage[] = [];
   for (const { name } of fresh) {
     try {
-      const v = openVerifiedFile(harvest.dirReal, name, MAX_SOURCE_BYTES, opts._fileHooks);
+      const v = openVerifiedFile(harvest.dirReal, harvest.dirId, name, MAX_SOURCE_BYTES, opts._fileHooks);
       if (!v.ok) {
         failures.push({ file: name, reason: v.reason });
         continue;
@@ -732,16 +732,12 @@ export async function codexGenerateImage(
       } finally {
         closeSync(v.fd);
       }
-      const png = validatePngStructure(raw);
+      // Pixel cap (before any inflation), container, and bounded inflation of
+      // the image data to exactly the IHDR-implied size. pngjs below only ever
+      // sees bytes proven to inflate to that size.
+      const png = validatePngStructure(raw, MAX_DECODED_PIXELS_PER_IMAGE);
       if (!png.ok) {
         failures.push({ file: name, reason: `malformed PNG: ${png.reason}` });
-        continue;
-      }
-      if (png.width * png.height > MAX_DECODED_PIXELS_PER_IMAGE) {
-        failures.push({
-          file: name,
-          reason: `exceeds decoded pixel budget (${png.width}x${png.height} > ${MAX_DECODED_PIXELS_PER_IMAGE}px cap); not decoded.`,
-        });
         continue;
       }
       const provenance = { generator: "codex" as const, model: result.model, prompt: args.prompt };
@@ -1032,12 +1028,15 @@ const TOOLS = [
       "never a newest-mtime scan, never another session's directory. The session id must be a hex/dash single path segment (else status invalid_session_id); " +
       "no reported id is status no_session_id. The turn is never resumed and never retried; a non-zero codex exit is status cli_failure. " +
       "CONTAINMENT: containment is physical (realpath), not lexical. A session directory that is a symlink/junction or resolves outside the images root is " +
-      "status invalid_session_dir. Each source file is opened, then the open fd is fstat-checked (regular file, size cap) and its dev/ino re-checked against an " +
+      "status invalid_session_dir; the session directory's dev/ino seen by lstat must match its realpath's, and is re-checked on every file open. Each source file is opened, then the open fd is fstat-checked (regular file, size cap) and its dev/ino re-checked against an " +
       "lstat of the path and its realpath confined to the session directory; bytes are read from that fd only. An output_dir that is a symlink/junction (or a " +
-      "component created for it that is one) is status invalid_output_dir, checked before the codex turn. Writes use exclusive create (never follow or overwrite), " +
+      "component created for it that is one, or whose realpath is not the pinned existing ancestor plus the created names) is status invalid_output_dir, checked " +
+      "before the codex turn; each created component's parent is identity-checked before its mkdir. Writes use exclusive create (never follow or overwrite), " +
       "re-check output_dir before and after each write, and verify the written file's realpath parent is output_dir. " +
       "VALIDATION: every PNG — including one copied verbatim — must pass a full structure check (signature, IHDR length 13 with legal fields, every chunk CRC, " +
-      "at least one IDAT, terminating IEND, no trailing bytes). A file is harvested only once settled: size and mtime unchanged across two polls and ending in IEND. " +
+      "consecutive IDATs, PLTE rules, terminating IEND, no trailing bytes), and its image data must inflate — with the inflater capped at the exact size IHDR " +
+      "implies, after the 4096x4096 pixel cap — to exactly that size with valid scanline filter bytes, so a decompression bomb is refused and the later " +
+      "decode is bounded by the same size. A file is harvested only once settled: size and mtime unchanged across two polls and ending in IEND. " +
       "Files whose mtime pre-dates the call are stale and refused. Malformed, unsettled, stale, linked or capped files are per-file `failures`, not a whole-call failure. " +
       "LIMITS: max_dimension must be in [256, 4096] (default 768; outside that range is REJECTED, not clamped). byte_budget_bytes default 300KB, max 32MiB. " +
       "Per call: at most 200 session-directory entries are examined (more sets enumeration_truncated), at most 20 PNGs are opened, each at most 32MiB " +

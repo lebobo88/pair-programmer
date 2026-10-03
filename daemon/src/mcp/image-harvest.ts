@@ -29,7 +29,7 @@ import {
   unlinkSync,
   constants as FS,
 } from "node:fs";
-import { join, dirname, basename, extname, resolve } from "node:path";
+import { join, dirname, basename, extname, resolve, relative } from "node:path";
 import zlib from "node:zlib";
 import { PNG } from "pngjs";
 
@@ -82,18 +82,43 @@ export function isValidSessionId(id: string): boolean {
   return SESSION_ID_PATTERN.test(id);
 }
 
+/** Filesystem identity of a directory or file (dev + ino, as bigints so Windows file ids stay exact). */
+export type FsIdentity = { dev: bigint; ino: bigint };
+
+function sameIdentity(a: FsIdentity, b: FsIdentity): boolean {
+  return a.dev === b.dev && a.ino === b.ino;
+}
+
+/** Throws unless `dirReal` is still a plain (non-link) directory with identity `id`. */
+export function assertDirIdentity(dirReal: string, id: FsIdentity, label: string): void {
+  const st = lstatSync(dirReal, { bigint: true, throwIfNoEntry: false });
+  if (!st || st.isSymbolicLink() || !st.isDirectory() || !sameIdentity(st, id)) {
+    throw new Error(`${label} ${dirReal} was replaced (symlink/junction or different directory); refusing to use it.`);
+  }
+}
+
 export type SessionDirResolution =
-  | { kind: "ok"; rootReal: string; dirReal: string }
+  | { kind: "ok"; rootReal: string; dirReal: string; dirId: FsIdentity }
   | { kind: "absent"; reason: string }
   | { kind: "rejected"; reason: string };
 
+/** Test-only seam fired between the session dir's lstat and its realpath. */
+export type SessionDirHooks = { afterLstat?: (candidate: string) => void };
+
 /**
  * Resolve `<imagesRoot>/<sessionId>` physically. Refuses a session directory
- * that is itself a symlink/junction (even one aliasing ANOTHER session's
- * directory inside the root) and one whose realpath is not a direct child of
- * the images root's realpath.
+ * that is itself a symlink/junction, and one whose realpath is not a direct
+ * child of the images root's realpath. The dev+ino seen by `lstat` must equal
+ * the dev+ino of the realpath, so a plain directory swapped for a junction
+ * (e.g. to ANOTHER session's directory inside the root) between the two calls
+ * is refused rather than followed. The returned `dirId` is re-checked on every
+ * later file open.
  */
-export function resolveSessionDir(imagesRoot: string, sessionId: string): SessionDirResolution {
+export function resolveSessionDir(
+  imagesRoot: string,
+  sessionId: string,
+  hooks: SessionDirHooks = {},
+): SessionDirResolution {
   if (!isValidSessionId(sessionId)) {
     return { kind: "rejected", reason: `session_id "${sessionId}" is not a safe single path segment (hex/dash only).` };
   }
@@ -104,7 +129,7 @@ export function resolveSessionDir(imagesRoot: string, sessionId: string): Sessio
     return { kind: "absent", reason: `images root ${imagesRoot} does not exist.` };
   }
   const candidate = join(rootReal, sessionId);
-  const st = lstatSync(candidate, { throwIfNoEntry: false });
+  const st = lstatSync(candidate, { bigint: true, throwIfNoEntry: false });
   if (!st) return { kind: "absent", reason: `no directory exists for session ${sessionId}.` };
   if (st.isSymbolicLink()) {
     return { kind: "rejected", reason: `session directory ${candidate} is a symlink/junction; refusing to follow it.` };
@@ -112,16 +137,22 @@ export function resolveSessionDir(imagesRoot: string, sessionId: string): Sessio
   if (!st.isDirectory()) {
     return { kind: "rejected", reason: `session path ${candidate} is not a directory.` };
   }
+  hooks.afterLstat?.(candidate);
   let dirReal: string;
+  let realSt;
   try {
     dirReal = realpathSync.native(candidate);
+    realSt = lstatSync(dirReal, { bigint: true });
   } catch (err) {
     return { kind: "absent", reason: `session directory vanished: ${(err as Error).message}` };
   }
   if (!isDirectChildReal(rootReal, dirReal)) {
     return { kind: "rejected", reason: `session directory resolves to ${dirReal}, outside images root ${rootReal}.` };
   }
-  return { kind: "ok", rootReal, dirReal };
+  if (realSt.isSymbolicLink() || !sameIdentity(st, realSt)) {
+    return { kind: "rejected", reason: `session directory ${candidate} was replaced between lstat and realpath (symlink/junction swap); refusing it.` };
+  }
+  return { kind: "ok", rootReal, dirReal, dirId: { dev: st.dev, ino: st.ino } };
 }
 
 // ─── enumeration ─────────────────────────────────────────────────────────────
@@ -197,12 +228,15 @@ const OPEN_READ_FLAGS = FS.O_RDONLY | (FS.O_NOFOLLOW ?? 0) | (FS.O_NONBLOCK ?? 0
  *      checked before a single byte is read;
  *   3. `lstat` the PATH: must not be a symlink, and must have the fd's dev+ino
  *      (a path swapped after the open, or a symlink followed by the open, fails here);
- *   4. realpath of the path must be a direct child of `dirReal`.
+ *   4. realpath of the path must be a direct child of `dirReal`, and `dirReal`
+ *      must still be the plain directory resolved earlier (`dirId`), so a
+ *      session dir swapped for a junction after resolution is refused too.
  * The caller reads from the returned fd only, so a later swap of the path
  * cannot redirect the read. The caller owns closing the fd.
  */
 export function openVerifiedFile(
   dirReal: string,
+  dirId: FsIdentity,
   name: string,
   maxBytes: number,
   hooks: FileOpenHooks = {},
@@ -236,6 +270,11 @@ export function openVerifiedFile(
     const real = realpathSync.native(p);
     if (!isDirectChildReal(dirReal, real)) {
       return fail(`file resolves to ${real}, outside the session directory.`, true);
+    }
+    try {
+      assertDirIdentity(dirReal, dirId, "session directory");
+    } catch (err) {
+      return fail((err as Error).message, true);
     }
     hooks.afterVerify?.(p);
     return { ok: true, fd, size: Number(st.size), mtimeMs: Number(st.mtimeMs) };
@@ -293,24 +332,65 @@ const VALID_BIT_DEPTHS: Record<number, number[]> = {
 };
 
 export type PngStructure =
-  | { ok: true; width: number; height: number; bitDepth: number; colorType: number }
+  | { ok: true; width: number; height: number; bitDepth: number; colorType: number; interlaced: boolean; rawBytes: number }
   | { ok: false; reason: string };
 
+const CHANNELS: Record<number, number> = { 0: 1, 2: 3, 3: 1, 4: 2, 6: 4 };
+/** Adam7 pass origins and steps: [x0, y0, dx, dy]. */
+const ADAM7: [number, number, number, number][] = [
+  [0, 0, 8, 8], [4, 0, 8, 8], [0, 4, 4, 8], [2, 0, 4, 4], [0, 2, 2, 4], [1, 0, 2, 2], [0, 1, 1, 2],
+];
+
 /**
- * Validate the WHOLE PNG container before any file is accepted — including the
- * fits-as-is verbatim copy: signature; first chunk IHDR with length 13, legal
- * fields and a correct CRC; every chunk's length in bounds and CRC correct; at
- * least one IDAT; PLTE before IDAT for palette images; and a final IEND with no
- * trailing bytes. A 24-byte header, a truncated file and a flipped CRC all fail.
+ * The exact scanline layout the IDAT stream must inflate to, as (rows, bytes
+ * per row incl. the filter byte) per pass — one pass when not interlaced,
+ * up to seven Adam7 passes when interlaced (empty passes are omitted).
  */
-export function validatePngStructure(buf: Buffer): PngStructure {
+export function pngScanlineLayout(
+  width: number,
+  height: number,
+  bitDepth: number,
+  colorType: number,
+  interlaced: boolean,
+): { rows: number; rowBytes: number }[] {
+  const bitsPerPixel = bitDepth * (CHANNELS[colorType] as number);
+  const rowBytes = (w: number) => 1 + Math.ceil((w * bitsPerPixel) / 8);
+  if (!interlaced) return [{ rows: height, rowBytes: rowBytes(width) }];
+  const passes: { rows: number; rowBytes: number }[] = [];
+  for (const [x0, y0, dx, dy] of ADAM7) {
+    const w = width > x0 ? Math.ceil((width - x0) / dx) : 0;
+    const h = height > y0 ? Math.ceil((height - y0) / dy) : 0;
+    if (w > 0 && h > 0) passes.push({ rows: h, rowBytes: rowBytes(w) });
+  }
+  return passes;
+}
+
+/**
+ * Validate the WHOLE PNG before any file is accepted — including the
+ * fits-as-is verbatim copy:
+ *   - signature; first chunk IHDR, length 13, legal dimensions / colour type /
+ *     bit depth / methods; IHDR dimensions within `maxPixels` (checked BEFORE
+ *     any inflation);
+ *   - every chunk's length in bounds and CRC correct; IHDR, PLTE and IEND at
+ *     most once; PLTE required before IDAT for palette images and forbidden
+ *     for greyscale(+alpha); IDAT chunks consecutive and at least one;
+ *   - a final zero-length IEND with no trailing bytes;
+ *   - the concatenated IDAT stream inflates — with `maxOutputLength` set to
+ *     the exact size IHDR implies, so a decompression bomb stops at that bound —
+ *     to EXACTLY that size with no trailing zlib input, and every scanline's
+ *     filter byte is 0..4.
+ * Because the image data is proven to inflate to exactly the declared layout,
+ * a later pngjs decode of the same bytes is bounded by the same size.
+ */
+export function validatePngStructure(buf: Buffer, maxPixels: number = MAX_DECODED_PIXELS_PER_IMAGE): PngStructure {
   if (buf.length < PNG_SIGNATURE.length || !buf.subarray(0, 8).equals(PNG_SIGNATURE)) {
     return { ok: false, reason: "missing PNG signature." };
   }
   let off = 8;
   let index = 0;
-  let ihdr: { width: number; height: number; bitDepth: number; colorType: number } | undefined;
-  let idatCount = 0;
+  let ihdr: { width: number; height: number; bitDepth: number; colorType: number; interlaced: boolean } | undefined;
+  const idat: Buffer[] = [];
+  let idatClosed = false;
   let sawPlte = false;
   let sawIend = false;
   while (off < buf.length) {
@@ -327,6 +407,7 @@ export function validatePngStructure(buf: Buffer): PngStructure {
       return { ok: false, reason: `CRC mismatch in ${type} chunk at byte ${off}.` };
     }
     if (index === 0 && type !== "IHDR") return { ok: false, reason: "first chunk is not IHDR." };
+    if (idat.length > 0 && type !== "IDAT") idatClosed = true;
     if (type === "IHDR") {
       if (index !== 0) return { ok: false, reason: "IHDR is not the first chunk." };
       if (len !== 13) return { ok: false, reason: `IHDR length ${len}, expected 13.` };
@@ -338,18 +419,26 @@ export function validatePngStructure(buf: Buffer): PngStructure {
       if (width === 0 || height === 0 || width > 0x7fffffff || height > 0x7fffffff) {
         return { ok: false, reason: `IHDR dimensions ${width}x${height} out of range.` };
       }
+      if (width * height > maxPixels) {
+        return { ok: false, reason: `exceeds decoded pixel budget (${width}x${height} > ${maxPixels}px cap); not inflated.` };
+      }
       if (!VALID_BIT_DEPTHS[colorType]?.includes(bitDepth)) {
         return { ok: false, reason: `IHDR colour type ${colorType} / bit depth ${bitDepth} is not a legal combination.` };
       }
       if (buf[d + 10] !== 0 || buf[d + 11] !== 0 || (buf[d + 12] as number) > 1) {
         return { ok: false, reason: "IHDR compression/filter/interlace method is invalid." };
       }
-      ihdr = { width, height, bitDepth, colorType };
+      ihdr = { width, height, bitDepth, colorType, interlaced: buf[d + 12] === 1 };
     } else if (type === "PLTE") {
+      if (sawPlte) return { ok: false, reason: "more than one PLTE chunk." };
+      if (idat.length > 0) return { ok: false, reason: "PLTE after IDAT." };
+      if (ihdr?.colorType === 0 || ihdr?.colorType === 4) return { ok: false, reason: "PLTE in a greyscale image." };
+      if (len === 0 || len % 3 !== 0 || len > 768) return { ok: false, reason: `PLTE length ${len} is invalid.` };
       sawPlte = true;
     } else if (type === "IDAT") {
+      if (idatClosed) return { ok: false, reason: "IDAT chunks are not consecutive." };
       if (ihdr?.colorType === 3 && !sawPlte) return { ok: false, reason: "palette image has IDAT before PLTE." };
-      idatCount += 1;
+      idat.push(buf.subarray(off + 8, off + 8 + len));
     } else if (type === "IEND") {
       if (len !== 0) return { ok: false, reason: "IEND chunk has a non-zero length." };
       sawIend = true;
@@ -358,9 +447,40 @@ export function validatePngStructure(buf: Buffer): PngStructure {
     index += 1;
   }
   if (!ihdr) return { ok: false, reason: "no IHDR chunk." };
-  if (idatCount === 0) return { ok: false, reason: "no IDAT chunk." };
+  if (idat.length === 0) return { ok: false, reason: "no IDAT chunk." };
   if (!sawIend) return { ok: false, reason: "no IEND chunk (truncated)." };
-  return { ok: true, ...ihdr };
+
+  const layout = pngScanlineLayout(ihdr.width, ihdr.height, ihdr.bitDepth, ihdr.colorType, ihdr.interlaced);
+  const rawBytes = layout.reduce((acc, p) => acc + p.rows * p.rowBytes, 0);
+  const stream = Buffer.concat(idat);
+  let raw: Buffer;
+  try {
+    // `info: true` exposes how much input the inflater consumed, so trailing
+    // bytes after the zlib stream are caught too.
+    const res = zlib.inflateSync(stream, { maxOutputLength: rawBytes, info: true }) as unknown as {
+      buffer: Buffer;
+      engine: { bytesWritten: number };
+    };
+    raw = res.buffer;
+    if (res.engine.bytesWritten !== stream.length) {
+      return { ok: false, reason: "IDAT stream has trailing bytes after the zlib stream." };
+    }
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    return code === "ERR_BUFFER_TOO_LARGE"
+      ? { ok: false, reason: `IDAT data inflates past the ${rawBytes} bytes IHDR implies (decompression bomb); not decoded.` }
+      : { ok: false, reason: `IDAT data does not inflate (${code ?? (err as Error).message}).` };
+  }
+  if (raw.length !== rawBytes) {
+    return { ok: false, reason: `IDAT data inflates to ${raw.length} bytes; IHDR implies exactly ${rawBytes}.` };
+  }
+  let pos = 0;
+  for (const p of layout) {
+    for (let r = 0; r < p.rows; r++, pos += p.rowBytes) {
+      if ((raw[pos] as number) > 4) return { ok: false, reason: `invalid scanline filter type ${raw[pos]} at inflated byte ${pos}.` };
+    }
+  }
+  return { ok: true, ...ihdr, rawBytes };
 }
 
 /** Cheap completeness hint used while polling: does the file end with the IEND chunk? */
@@ -387,6 +507,8 @@ export type SettledHarvest =
   | {
       kind: "ok";
       dirReal: string;
+      /** Identity of the session dir as resolved; every later open re-checks it. */
+      dirId: FsIdentity;
       /** Size+mtime unchanged across two consecutive polls AND ending in IEND. */
       settled: { name: string; mtimeMs: number }[];
       /** Still changing or incomplete when the poll window closed. */
@@ -436,7 +558,7 @@ export async function pollForSettledPngs(
       const pending = new Map<string, string>();
       for (const name of tracked) {
         if (rejected.has(name)) continue;
-        const v = openVerifiedFile(res.dirReal, name, maxBytes);
+        const v = openVerifiedFile(res.dirReal, res.dirId, name, maxBytes);
         if (!v.ok) {
           if (v.terminal) rejected.set(name, v.reason);
           else pending.set(name, v.reason);
@@ -457,6 +579,7 @@ export async function pollForSettledPngs(
         return {
           kind: "ok",
           dirReal: res.dirReal,
+          dirId: res.dirId,
           settled: settled.map(name => ({ name, mtimeMs: mtimes.get(name) as number })),
           unsettled: live
             .filter(n => !settled.includes(n))
@@ -482,45 +605,101 @@ export async function pollForSettledPngs(
 
 export type OutputDirResolution = { ok: true; outReal: string } | { ok: false; reason: string };
 
+/** Test-only seams for staging a swap at an exact point. Production never sets them. */
+export type OutputDirHooks = {
+  afterCreate?: (dir: string) => void;
+  beforeFinalCheck?: () => void;
+};
+
 /**
- * Create (if needed) and physically resolve `outputDir`. Refuses an
- * output_dir that is itself a symlink/junction, and refuses if any component
- * this call creates turns out to be one (a racing swap). Existing ANCESTORS may
- * be links — the caller chose the path — but every later write is checked
- * against the returned realpath.
+ * Create (if needed) and physically resolve `outputDir`.
+ *
+ * The nearest EXISTING ancestor is the caller's choice and may itself be a
+ * link (macOS /tmp); its realpath and identity are pinned once. Every
+ * component this call creates is then made one level at a time, and before
+ * each mkdir its parent must still be the pinned/created directory (same
+ * dev+ino, not a link) — so an intermediate component swapped for a junction
+ * stops the walk before anything is created through it. After the walk, every
+ * created component must still carry its recorded identity, output_dir itself
+ * must not be a link, and realpath(output_dir) must equal the pinned ancestor
+ * realpath joined with the created names; any swap that slipped between a
+ * check and a mkdir is caught there.
  */
-export function prepareOutputDir(outputDir: string): OutputDirResolution {
+export function prepareOutputDir(outputDir: string, hooks: OutputDirHooks = {}): OutputDirResolution {
   const abs = resolve(outputDir);
   const toCreate: string[] = [];
-  let cur = abs;
+  let ancestor = abs;
   for (;;) {
-    if (lstatSync(cur, { throwIfNoEntry: false })) break;
-    const parent = dirname(cur);
-    if (parent === cur) return { ok: false, reason: `no existing ancestor for output_dir ${abs}.` };
-    toCreate.unshift(cur);
+    if (lstatSync(ancestor, { throwIfNoEntry: false })) break;
+    const parent = dirname(ancestor);
+    if (parent === ancestor) return { ok: false, reason: `no existing ancestor for output_dir ${abs}.` };
+    toCreate.unshift(ancestor);
     if (toCreate.length > MAX_CREATED_OUTPUT_COMPONENTS) {
       return { ok: false, reason: `output_dir would create more than ${MAX_CREATED_OUTPUT_COMPONENTS} directories.` };
     }
-    cur = parent;
+    ancestor = parent;
   }
-  for (const dir of toCreate) {
-    try {
-      mkdirSync(dir);
-    } catch (err) {
-      if ((err as NodeJS.ErrnoException).code !== "EEXIST") {
-        return { ok: false, reason: `could not create ${dir}: ${(err as Error).message}` };
+  if (toCreate.length === 0) {
+    const st = lstatSync(abs, { throwIfNoEntry: false });
+    if (!st) return { ok: false, reason: `output_dir ${abs} vanished.` };
+    if (st.isSymbolicLink()) return { ok: false, reason: `output_dir ${abs} is a symlink/junction; refusing to write through it.` };
+    if (!st.isDirectory()) return { ok: false, reason: `output_dir ${abs} is not a directory.` };
+  }
+  let ancestorReal: string;
+  let ancestorId: FsIdentity;
+  try {
+    ancestorReal = realpathSync.native(ancestor);
+    const st = lstatSync(ancestorReal, { bigint: true });
+    if (!st.isDirectory()) return { ok: false, reason: `output_dir ancestor ${ancestor} is not a directory.` };
+    ancestorId = { dev: st.dev, ino: st.ino };
+  } catch (err) {
+    return { ok: false, reason: `could not resolve output_dir ancestor ${ancestor}: ${(err as Error).message}` };
+  }
+
+  const created: { path: string; id: FsIdentity }[] = [];
+  try {
+    for (const dir of toCreate) {
+      const parent = created.at(-1);
+      if (parent) {
+        assertDirIdentity(parent.path, parent.id, "created output component");
+      } else if (!samePath(realpathSync.native(ancestor), ancestorReal)) {
+        throw new Error(`output_dir ancestor ${ancestor} no longer resolves to ${ancestorReal}; refusing to create under it.`);
+      } else {
+        assertDirIdentity(ancestorReal, ancestorId, "output_dir ancestor");
       }
+      try {
+        mkdirSync(dir);
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
+      }
+      const st = lstatSync(dir, { bigint: true, throwIfNoEntry: false });
+      if (!st || st.isSymbolicLink() || !st.isDirectory()) {
+        throw new Error(`created output component ${dir} is not a plain directory (symlink/junction swap?).`);
+      }
+      created.push({ path: dir, id: { dev: st.dev, ino: st.ino } });
+      hooks.afterCreate?.(dir);
     }
-    const st = lstatSync(dir, { throwIfNoEntry: false });
-    if (!st || st.isSymbolicLink() || !st.isDirectory()) {
-      return { ok: false, reason: `created output component ${dir} is not a plain directory (symlink/junction swap?).` };
-    }
+    hooks.beforeFinalCheck?.();
+    for (const c of created) assertDirIdentity(c.path, c.id, "created output component");
+  } catch (err) {
+    return { ok: false, reason: (err as Error).message };
   }
-  const st = lstatSync(abs, { throwIfNoEntry: false });
-  if (!st) return { ok: false, reason: `output_dir ${abs} vanished.` };
-  if (st.isSymbolicLink()) return { ok: false, reason: `output_dir ${abs} is a symlink/junction; refusing to write through it.` };
-  if (!st.isDirectory()) return { ok: false, reason: `output_dir ${abs} is not a directory.` };
-  return { ok: true, outReal: realpathSync.native(abs) };
+
+  let outReal: string;
+  try {
+    const st = lstatSync(abs, { throwIfNoEntry: false });
+    if (!st || st.isSymbolicLink() || !st.isDirectory()) {
+      return { ok: false, reason: `output_dir ${abs} is not a plain directory (symlink/junction?).` };
+    }
+    outReal = realpathSync.native(abs);
+  } catch (err) {
+    return { ok: false, reason: `could not resolve output_dir ${abs}: ${(err as Error).message}` };
+  }
+  const expected = join(ancestorReal, relative(ancestor, abs));
+  if (!samePath(outReal, expected)) {
+    return { ok: false, reason: `output_dir resolves to ${outReal}, not ${expected} (a component was swapped for a link).` };
+  }
+  return { ok: true, outReal };
 }
 
 /** Throws unless `outReal` is still a plain directory whose realpath is itself. */
