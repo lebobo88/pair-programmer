@@ -1108,7 +1108,12 @@ export function assertStagingIntact(s: StagingDir): void {
 
 /** Staging directories older than this (by mtime) are swept at the start of a later call. */
 export const STAGING_SWEEP_AGE_MS = 24 * 60 * 60 * 1000;
-/** Directory entries examined per sweep, and entries per swept directory (bounds the sweep's work). */
+/**
+ * At most this many entries are READ from any one directory listing during a
+ * sweep (the staging parent, or one staging directory). A staging directory
+ * whose listing reaches the bound is skipped and left in place — no extra
+ * entry is read to find out whether there are more.
+ */
 export const MAX_SWEEP_ENTRIES = 200;
 
 /** Test-only seam fired right after a path has been observed (lstat) and before it is moved aside. */
@@ -1121,10 +1126,35 @@ export type SweepReport = {
   skipped: { path: string; reason: string }[];
 };
 
+/** Thrown when a directory the sweep is working in no longer is the directory it bound: the WHOLE sweep stops. */
+class SweepAbort extends Error {}
+
+/** Resolution first, identity last: `dirReal` must still resolve to itself and be the plain directory `id`. */
+function assertBoundDir(dirReal: string, id: FsIdentity, label: string): void {
+  let resolved: string;
+  try {
+    resolved = realpathSync.native(dirReal);
+  } catch (err) {
+    throw new SweepAbort(`${label} ${dirReal} no longer resolves (${(err as Error).message}).`);
+  }
+  if (!samePath(resolved, dirReal)) throw new SweepAbort(`${label} ${dirReal} no longer resolves to itself.`);
+  try {
+    assertDirIdentity(dirReal, id, label);
+  } catch (err) {
+    throw new SweepAbort((err as Error).message);
+  }
+}
+
 /**
  * Remove STALE per-call staging directories (`gi-*`, mtime older than
  * `maxAgeMs`) under the daemon-owned staging parent — conservatively, and
  * never during the call that created them.
+ *
+ * Bound directories: the staging parent's realpath and dev+ino are bound once,
+ * and so is each staging directory once it has been moved aside; BOTH are
+ * re-checked (resolution first, identity last) immediately before every
+ * rename, unlink and rmdir. If either was replaced — e.g. by a link — the
+ * WHOLE sweep stops (fail closed): nothing further is renamed or deleted.
  *
  * Nothing is deleted that was not verified AFTER it was moved: each directory,
  * then each file inside it, is first observed (lstat: non-link, plain
@@ -1132,12 +1162,14 @@ export type SweepReport = {
  * name, and the renamed path must still carry the observed identity — so an
  * object swapped in after the observation is caught (it is what got moved)
  * and is skipped, logged and left in place, never deleted. Links, unexpected
- * entry types and any failure also skip that directory. Directories are
- * removed with `rmdir`, which refuses anything but an empty directory.
- * Residual (stated): Node has no handle-bound unlink, so a same-user process
- * that finds the fresh random name and swaps it in the instant between the
- * post-move check and the unlink could have its object deleted; the staging
- * parent is daemon-private (0700 on POSIX).
+ * entry types, listings that reach MAX_SWEEP_ENTRIES and any error also skip
+ * that directory. Directories are removed with `rmdir`, which refuses
+ * anything but an empty directory.
+ *
+ * Residual (stated, operator-accepted): Node has no handle-bound rename,
+ * unlink or rmdir, so a same-user process swapping a path inside the
+ * daemon-private staging parent (0700 on POSIX) in the instant between a
+ * re-check and the following syscall is not excluded.
  */
 export function sweepStagingDirs(
   parent: string,
@@ -1150,7 +1182,7 @@ export function sweepStagingDirs(
     report.skipped.push({ path, reason });
     log.warn({ path, reason }, "generate_image staging sweep skipped a path (nothing deleted)");
   };
-  const pst = lstatSync(parent, { throwIfNoEntry: false });
+  const pst = lstatSync(parent, { bigint: true, throwIfNoEntry: false });
   if (!pst) return report;
   if (pst.isSymbolicLink() || !pst.isDirectory()) {
     skip(parent, "staging parent is not a plain directory.");
@@ -1163,8 +1195,10 @@ export function sweepStagingDirs(
     skip(parent, `could not resolve the staging parent: ${(err as Error).message}`);
     return report;
   }
+  const parentId = { dev: pst.dev, ino: pst.ino };
   let names: string[];
   try {
+    assertBoundDir(parentReal, parentId, "staging parent");
     names = boundedNames(parentReal, MAX_SWEEP_ENTRIES).filter(n => n.startsWith("gi-"));
   } catch (err) {
     skip(parent, `could not list the staging parent: ${(err as Error).message}`);
@@ -1173,19 +1207,28 @@ export function sweepStagingDirs(
   for (const name of names) {
     const dir = join(parentReal, name);
     try {
-      sweepOne(parentReal, dir, maxAgeMs, now, hooks, report, skip);
+      sweepOne(parentReal, parentId, dir, maxAgeMs, now, hooks, report, skip);
     } catch (err) {
+      if (err instanceof SweepAbort) {
+        skip(dir, `sweep STOPPED (fail closed): ${err.message} Nothing further was renamed or deleted.`);
+        return report;
+      }
       skip(dir, `sweep error: ${(err as Error).message}`);
     }
   }
   return report;
 }
 
-function boundedNames(dirReal: string, max: number): string[] {
+/** Read at most `max` entry names from `dirReal` — never more, not even a probe. */
+export function boundedNames(dirReal: string, max: number): string[] {
   const out: string[] = [];
   const dir = opendirSync(dirReal);
   try {
-    for (let ent = dir.readSync(); ent !== null && out.length < max; ent = dir.readSync()) out.push(ent.name);
+    while (out.length < max) {
+      const ent = dir.readSync();
+      if (ent === null) break;
+      out.push(ent.name);
+    }
   } finally {
     dir.closeSync();
   }
@@ -1194,6 +1237,7 @@ function boundedNames(dirReal: string, max: number): string[] {
 
 function sweepOne(
   parentReal: string,
+  parentId: FsIdentity,
   dir: string,
   maxAgeMs: number,
   now: number,
@@ -1208,13 +1252,19 @@ function sweepOne(
   const dirId = { dev: st.dev, ino: st.ino };
   hooks.afterObserve?.(dir);
   const moved = join(parentReal, `sweep-${randomUUID()}`);
+  assertBoundDir(parentReal, parentId, "staging parent");
   renameSync(dir, moved);
   const mst = lstatSync(moved, { bigint: true, throwIfNoEntry: false });
   if (!mst || mst.isSymbolicLink() || !mst.isDirectory() || !sameIdentity(mst, dirId)) {
     return skip(moved, `the object at ${dir} was replaced after it was observed; it was moved aside to ${moved} and left in place.`);
   }
-  const entries = boundedNames(moved, MAX_SWEEP_ENTRIES + 1);
-  if (entries.length > MAX_SWEEP_ENTRIES) return skip(moved, `more than ${MAX_SWEEP_ENTRIES} entries; left in place.`);
+  const bound = (): void => {
+    assertBoundDir(parentReal, parentId, "staging parent");
+    assertBoundDir(moved, dirId, "staging directory being swept");
+  };
+  bound();
+  const entries = boundedNames(moved, MAX_SWEEP_ENTRIES);
+  if (entries.length >= MAX_SWEEP_ENTRIES) return skip(moved, `listing reached ${MAX_SWEEP_ENTRIES} entries; left in place.`);
   for (const e of entries) {
     const p = join(moved, e);
     const fst = lstatSync(p, { bigint: true, throwIfNoEntry: false });
@@ -1223,13 +1273,16 @@ function sweepOne(
     const fileId = { dev: fst.dev, ino: fst.ino };
     hooks.afterObserve?.(p);
     const aside = join(moved, `del-${randomUUID()}`);
+    bound();
     renameSync(p, aside);
     const ast = lstatSync(aside, { bigint: true, throwIfNoEntry: false });
     if (!ast || ast.isSymbolicLink() || !ast.isFile() || !sameIdentity(ast, fileId)) {
       return skip(aside, `the file at ${p} was replaced after it was observed; it was moved aside to ${aside} and left in place.`);
     }
+    bound();
     unlinkSync(aside);
   }
+  bound();
   rmdirSync(moved);
   report.removed.push(dir);
 }

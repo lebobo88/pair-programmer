@@ -1093,11 +1093,14 @@ const TOOLS = [
       "resolution first and the identity checks last (non-link, same dev/ino as the fd; output_dir's dev/ino pinned at preparation, so a same-path replacement " +
       "directory is refused). Nothing in output_dir is ever deleted, and NOTHING is deleted during a call at all: the call's staging directory (returned " +
       "as staging_dir) is RETAINED by design, also when setup fails after it was allocated. At the start of each call, staging directories older than 24h " +
-      "are swept conservatively: each directory and then each file in it is observed (non-link, plain type, dev/ino), moved aside under a fresh random " +
-      "name and re-checked; anything replaced after observation, any link or unexpected type, or any error makes the sweep skip and log that directory and " +
-      "leave it in place; directories are removed only when empty (rmdir); at most 200 entries are examined per sweep and per directory. " +
-      "RESIDUAL RISKS (stated, operator-accepted): (1) staging directories are retained until a later call sweeps them; a same-user process racing the " +
-      "sweep's final unlink of a freshly random-named file could have its object deleted (the staging parent is daemon-private, 0700 on POSIX). (2) Node has no " +
+      "are swept conservatively: the staging parent's realpath and dev/ino, and each staging directory's once moved aside, are bound and re-checked " +
+      "(resolution first, identity last) before EVERY rename, unlink and rmdir — if either was replaced (e.g. by a link) the whole sweep stops and " +
+      "nothing further is renamed or deleted; each directory and then each file in it is observed (non-link, plain type, dev/ino), moved aside under a " +
+      "fresh random name and re-checked; anything replaced after observation, any link or unexpected type, or any error makes the sweep skip and log that " +
+      "directory and leave it in place; directories are removed only when empty (rmdir); every listing reads at most 200 entries, and a staging " +
+      "directory whose listing reaches 200 is skipped. RESIDUAL RISKS (stated, operator-accepted): (1) staging directories are retained until a later " +
+      "call sweeps them; Node has no handle-bound rename/unlink/rmdir, so a same-user process swapping a path inside the daemon-private staging parent " +
+      "(0700 on POSIX) in the instant between a re-check and the following syscall is not excluded. (2) Node has no " +
       "openat, so if output_dir or an ancestor is swapped for a link in the instant before the link syscall, the finished image can land in the link target; " +
       "that is detected and the image is refused, and because the handed-off object IS the staged inode it is also truncated through the staging fd (a " +
       "failed truncation is reported as such, with the content described as unknown). After a " +

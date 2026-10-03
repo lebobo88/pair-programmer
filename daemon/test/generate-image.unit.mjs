@@ -40,6 +40,7 @@ import {
   openSync,
   closeSync,
   writeSync,
+  linkSync,
 } from "node:fs";
 import zlib from "node:zlib";
 import { PNG } from "pngjs";
@@ -1479,6 +1480,78 @@ describe("pp_codex.generate_image: private staging and exclusive hand-off", () =
     assert.ok(statSync(`${staging.dirReal}-orig`).isDirectory(), "the original is untouched too");
   });
 
+  test("sweep: a staging PARENT swapped for a junction mid-sweep stops the whole sweep — nothing behind the link is renamed or deleted", async () => {
+    const { sweepStagingDirs } = await importDist("mcp/image-harvest.js");
+    const base = tmp("pp-img-stagebase-");
+    const parent = join(base, "image-staging");
+    const escape = tmp("pp-img-escape-");
+    const old = new Date(Date.now() - 48 * 3600_000);
+    for (const root of [parent, escape]) {
+      for (const n of ["gi-a", "gi-b"]) {
+        mkdirSync(join(root, n), { recursive: true });
+        writeFileSync(join(root, n, "f.txt"), root === escape ? "victim" : "ours");
+        utimesSync(join(root, n), old, old);
+      }
+    }
+    let swapped = false;
+    const report = sweepStagingDirs(parent, undefined, {
+      afterObserve: () => {
+        if (swapped) return;
+        swapped = true;
+        renameSync(parent, `${parent}-orig`);
+        symlinkSync(escape, parent, "junction");
+      },
+    });
+    assert.equal(swapped, true, "precondition: the parent really was swapped after the first observation");
+    assert.deepEqual(report.removed, []);
+    assert.ok(report.skipped.some((s) => /sweep STOPPED \(fail closed\)/.test(s.reason)), JSON.stringify(report.skipped));
+    assert.deepEqual(readdirSync(escape).sort(), ["gi-a", "gi-b"], "nothing behind the link was renamed");
+    for (const n of ["gi-a", "gi-b"]) assert.equal(readFileSync(join(escape, n, "f.txt"), "utf8"), "victim", `${n} intact`);
+  });
+
+  test("sweep: a moved-aside directory swapped for a junction to a hard link of the SAME file stops the sweep — the outside name survives", async () => {
+    const { sweepStagingDirs } = await importDist("mcp/image-harvest.js");
+    const parent = join(tmp("pp-img-stagebase-"), "image-staging");
+    mkdirSync(join(parent, "gi-a"), { recursive: true });
+    writeFileSync(join(parent, "gi-a", "f.png"), "ours");
+    const old = new Date(Date.now() - 48 * 3600_000);
+    utimesSync(join(parent, "gi-a"), old, old);
+    const escape = tmp("pp-img-escape-");
+    let staged = false;
+    const report = sweepStagingDirs(parent, undefined, {
+      afterObserve: (p) => {
+        if (!p.endsWith("f.png") || staged) return;
+        staged = true;
+        const moved = dirname(p);
+        renameSync(moved, `${moved}-orig`);
+        // Same inode under an OUTSIDE name: identity checks on the file alone would pass.
+        linkSync(join(`${moved}-orig`, "f.png"), join(escape, "f.png"));
+        symlinkSync(escape, moved, "junction");
+      },
+    });
+    assert.equal(staged, true, "precondition: the swap really happened");
+    assert.ok(report.skipped.some((s) => /sweep STOPPED \(fail closed\)/.test(s.reason)), JSON.stringify(report.skipped));
+    assert.equal(readFileSync(join(escape, "f.png"), "utf8"), "ours", "the outside name was neither renamed nor deleted");
+  });
+
+  test("sweep: listings read at most 200 entries; a staging directory reaching 200 is skipped without reading more", async () => {
+    const { sweepStagingDirs, boundedNames, MAX_SWEEP_ENTRIES } = await importDist("mcp/image-harvest.js");
+    const listDir = tmp("pp-img-list-");
+    for (let i = 0; i < 5; i++) writeFileSync(join(listDir, `f${i}`), "");
+    assert.equal(boundedNames(listDir, 3).length, 3);
+    assert.equal(boundedNames(listDir, 10).length, 5);
+    const parent = join(tmp("pp-img-stagebase-"), "image-staging");
+    const old = new Date(Date.now() - 48 * 3600_000);
+    for (const [n, count] of [["gi-full", MAX_SWEEP_ENTRIES], ["gi-small", MAX_SWEEP_ENTRIES - 1]]) {
+      mkdirSync(join(parent, n), { recursive: true });
+      for (let i = 0; i < count; i++) writeFileSync(join(parent, n, `f${i}`), "");
+      utimesSync(join(parent, n), old, old);
+    }
+    const report = sweepStagingDirs(parent);
+    assert.deepEqual(report.removed.map((p) => basename(p)), ["gi-small"], "199 entries: swept");
+    assert.ok(report.skipped.some((s) => /listing reached 200 entries/.test(s.reason)), "200 entries: skipped, left in place");
+  });
+
   test("sweep: links and unexpected entries are skipped and logged, never followed or deleted", async () => {
     const { sweepStagingDirs, createStagingDir } = await importDist("mcp/image-harvest.js");
     const parent = join(tmp("pp-img-stagebase-"), "image-staging");
@@ -1927,6 +2000,16 @@ describe("pp_agy.generate_image", () => {
  *   sweep does not re-check a moved file / dir  -> replaced-after-observation file / directory left in place
  *   sweep does not skip links / unexpected types -> links and unexpected entries skipped
  *   identity of rejected opens not counted / not recorded right after fstat -> repeated failing opens stay bounded
+ *
+ * "Simplify" round 1 findings:
+ *   staging parent not re-checked before moving a dir -> parent swapped for a junction mid-sweep
+ *   parent + moved dir not re-checked before file ops  -> moved dir swapped for a junction to a hard link of the same file
+ *   listing reads max+1 / dir at the bound swept        -> listings read at most 200; a dir reaching 200 is skipped
+ *   (re-run red: post-move file / directory re-check, link skip)
+ *   NOTE (subsumed, disclosed): stopping the WHOLE sweep after an abort is defence in depth — every later
+ *   rename/unlink/rmdir re-checks the same bound directories, so removing the early stop alone stays green.
+ *   The individual bound() calls before unlink and rmdir are covered only collectively (Z2): there is no seam
+ *   between a rename and the following unlink to stage a swap at exactly that point.
  *   NOT FALSIFIABLE (disclosed): re-validating the RE-ENCODED output with acceptPng — pngjs always emits a valid PNG, so
  *   no fixture can make that defence-in-depth check fire without replacing the encoder.
  *   NOTE: removing only the link/type clause of the output_dir check stays GREEN — it is subsumed, not missing:
