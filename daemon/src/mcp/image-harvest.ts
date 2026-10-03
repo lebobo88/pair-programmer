@@ -30,7 +30,6 @@ import {
   chmodSync,
   rmSync,
   linkSync,
-  copyFileSync,
   ftruncateSync,
   constants as FS,
 } from "node:fs";
@@ -479,6 +478,7 @@ export function checkAncillaryChunk(type: string, data: Buffer, ctx: AncillaryCo
       return data.indexOf(0, lang + 1) >= 0 ? null : "translated keyword is not NUL-terminated.";
     }
     case "eXIf":
+      if (ctx.idatStarted) return "must precede IDAT.";
       return len >= 4 ? null : `length ${len} is too short for an Exif header.`;
     default:
       return "ancillary chunk type is not one this harvester validates; refused.";
@@ -600,6 +600,9 @@ export function validatePngStructure(buf: Buffer, maxPixels: number = MAX_DECODE
       ihdr = { width, height, bitDepth, colorType, interlaced: buf[d + 12] === 1 };
     } else if (type === "PLTE") {
       if (sawPlte) return { ok: false, reason: "more than one PLTE chunk." };
+      for (const after of AFTER_PLTE_BEFORE_IDAT) {
+        if (seenAncillary.has(after)) return { ok: false, reason: `PLTE after ${after} (${after} must follow PLTE).` };
+      }
       if (idat.length > 0) return { ok: false, reason: "PLTE after IDAT." };
       if (ihdr?.colorType === 0 || ihdr?.colorType === 4) return { ok: false, reason: "PLTE in a greyscale image." };
       if (len === 0 || len % 3 !== 0 || len > 768) return { ok: false, reason: `PLTE length ${len} is invalid.` };
@@ -768,6 +771,8 @@ function sleep(ms: number): Promise<void> {
  *     `maxEntriesPerCall` (1000) across all polls;
  *   - at most `maxImages` (20) DISTINCT PNG names are ever opened — the first
  *     ones seen, in sorted order — and the rest are reported, never opened;
+ *     each name is bound to the first file identity seen under it and refused
+ *     if that identity changes, so at most 2 x 20 distinct files are opened;
  *   - at most `maxOpensPerCall` (180) file opens across all polls, leaving at
  *     most 20 more for the final reads (≤ 200 opens per call in total).
  * Exhausting a budget stops polling; files not yet settled are reported.
@@ -789,6 +794,7 @@ export async function pollForSettledPngs(
   let prev = new Map<string, FileObservation>();
   const rejected = new Map<string, string>();
   const chosen = new Set<string>();
+  const firstIds = new Map<string, FsIdentity>();
   let entriesExamined = 0;
   let opens = 0;
 
@@ -824,6 +830,15 @@ export async function pollForSettledPngs(
           continue;
         }
         try {
+          // Each chosen NAME is bound to the first file identity seen under it:
+          // a replacement is refused (once), so the distinct OBJECTS ever opened
+          // are bounded too (at most two per chosen name), not just the names.
+          const first = firstIds.get(name);
+          if (first && !sameIdentity(first, v.id)) {
+            rejected.set(name, "replaced by a different file while polling (identity changed since first seen); refused.");
+            continue;
+          }
+          if (!first) firstIds.set(name, v.id);
           seen.set(name, { ...v.id, size: v.size, mtimeMs: v.mtimeMs });
           if (!hasPngTrailer(v.fd, v.size)) pending.set(name, "no IEND trailer yet (incomplete or malformed PNG).");
         } finally {
@@ -1021,8 +1036,8 @@ export type WriteHooks = {
   beforeNeutralise?: (path: string) => void;
   /** Replaces ftruncateSync so a test can force the neutralisation to fail. */
   truncate?: (fd: number, len: number) => void;
-  /** Take the COPYFILE_EXCL branch even where a hard link would work. */
-  forceCopy?: boolean;
+  /** Force the hard-link hand-off to fail with this error code (e.g. EXDEV). */
+  linkError?: string;
 };
 
 function assertIsWrittenFile(dest: string, fileId: FsIdentity, size: number): void {
@@ -1182,13 +1197,11 @@ export function stageImage(staging: StagingDir, name: string, buffer: Buffer, ho
 
 // ─── hand-off into output_dir ────────────────────────────────────────────────
 
-const HANDOFF_COPY_FALLBACK = new Set(["EXDEV", "EPERM", "ENOTSUP", "ENOSYS", "EMLINK"]);
-
 /**
- * Prove the handed-off `dest` is our image, directly inside output_dir:
- *   1. open the path and check the FD: regular file, exactly `expected.length`
- *      bytes, the staged file's dev+ino when hard-linked, and bytes read
- *      through the fd equal to `expected`;
+ * Prove the handed-off `dest` is our staged image, directly inside output_dir:
+ *   1. open the path and check the FD: regular file, the staged file's dev+ino,
+ *      exactly `expected.length` bytes, and bytes read through the fd equal to
+ *      `expected`;
  *   2. ALL resolution: realpath(dest) a direct child of `outReal`, and
  *      realpath(outReal) equal to `outReal`;
  *   3. LAST: lstat(dest) a non-link with the fd's dev+ino, then output_dir's
@@ -1199,14 +1212,14 @@ export function verifyHandedOff(
   outId: FsIdentity,
   dest: string,
   expected: Buffer,
-  linkedId: FsIdentity | undefined,
+  stagedId: FsIdentity,
   hooks: WriteHooks = {},
 ): string {
   const fd = openSync(dest, OPEN_READ_FLAGS);
   try {
     const st = fstatSync(fd, { bigint: true });
     if (!st.isFile()) throw new Error(`${dest} is not a regular file after the hand-off.`);
-    if (linkedId && !sameIdentity(st, linkedId)) throw new Error(`${dest} is not the staged file after the hand-off (replaced).`);
+    if (!sameIdentity(st, stagedId)) throw new Error(`${dest} is not the staged file after the hand-off (replaced).`);
     if (st.size !== BigInt(expected.length)) throw new Error(`${dest} has ${st.size} bytes; ${expected.length} were handed off.`);
     if (!readFdFully(fd, expected.length).equals(expected)) throw new Error(`${dest} does not hold the handed-off bytes.`);
     hooks.duringVerify?.(dest);
@@ -1229,22 +1242,23 @@ export function verifyHandedOff(
  * Write `buffer` for `name` into output_dir WITHOUT writing content through
  * any path inside output_dir:
  *   1. `stageImage`: written and verified inside the private staging dir;
- *   2. ONE exclusive hand-off per candidate name: a hard link of the staged
- *      file (`link` never follows or replaces an existing entry), or — across
- *      volumes / where links are unsupported — `copyFile` with COPYFILE_EXCL;
- *      an existing entry (file, link, dangling link) at the name is never
- *      followed or overwritten and the next name is tried, up to
- *      `maxCollisions` alternatives, then the call throws;
+ *   2. ONE exclusive hand-off per candidate name: a HARD LINK of the staged
+ *      file. `link` never follows or replaces an existing entry — file,
+ *      symlink, or dangling symlink — so an occupied name is skipped and the
+ *      next is tried, up to `maxCollisions` alternatives, then the call throws;
  *   3. `verifyHandedOff` proves the result before the path is reported.
+ *
+ * FAIL CLOSED: there is NO copy fallback. When a hard link is impossible
+ * (staging and output_dir on different volumes, or a filesystem without hard
+ * links) the image is refused: every copy primitive available to Node can
+ * follow a link at the destination name (on Windows an exclusive create/copy
+ * follows a dangling symlink), which a hard link cannot.
+ *
  * Node has no openat, so an output_dir parent swapped for a link in the
- * instant before the hand-off syscall can receive the finished file: that is
- * detected in step 3 and refused. In link mode the handed-off object IS the
- * staged inode, so it is also truncated through our fd; in copy mode the copy
- * cannot be bound to an fd and is reported as remaining with unknown content.
- * Copy mode also pre-checks that NO entry exists at the name, because on
- * Windows an exclusive create/copy follows a dangling symlink; a dangling link
- * planted in the instant between that check and the copy is the same class of
- * residual. Nothing is ever deleted by pathname.
+ * instant before the link syscall can receive the finished file: that is
+ * detected in step 3 and refused, and because the handed-off object IS the
+ * staged inode it is truncated through our fd. Nothing is ever deleted by
+ * pathname.
  */
 export function writeImageSafely(
   outReal: string,
@@ -1266,37 +1280,23 @@ export function writeImageSafely(
       assertOutputDirIntact(outReal, outId);
       const dest = join(outReal, candidate);
       hooks.beforeHandOff?.(dest);
-      let mode: "link" | "copy";
       try {
-        if (hooks.forceCopy) throw Object.assign(new Error("forced copy"), { code: "EXDEV" });
+        if (hooks.linkError) throw Object.assign(new Error(`forced ${hooks.linkError}`), { code: hooks.linkError });
         linkSync(staged.path, dest);
-        mode = "link";
       } catch (err) {
         const code = (err as NodeJS.ErrnoException).code ?? "";
         if (code === "EEXIST") continue;
-        if (!HANDOFF_COPY_FALLBACK.has(code)) throw err;
-        // COPYFILE_EXCL alone is NOT enough on Windows: an exclusive create or
-        // copy FOLLOWS a dangling symlink at the target name and creates its
-        // target (a hard link refuses it). So any existing entry — including a
-        // dangling link — is treated as taken before the copy.
-        if (lstatSync(dest, { throwIfNoEntry: false })) continue;
-        try {
-          copyFileSync(staged.path, dest, FS.COPYFILE_EXCL);
-          mode = "copy";
-        } catch (copyErr) {
-          if ((copyErr as NodeJS.ErrnoException).code === "EEXIST") continue;
-          throw copyErr;
-        }
+        throw new Error(
+          `hand-off refused: a hard link into output_dir failed (${code || (err as Error).message}); there is deliberately no copy ` +
+            "fallback, because a copy can follow a link at the destination name. output_dir must be on the same filesystem as the " +
+            "daemon's staging directory (PP_HOME) and that filesystem must support hard links. Nothing was written into output_dir.",
+        );
       }
       hooks.afterHandOff?.(dest);
       try {
-        return verifyHandedOff(outReal, outId, dest, buffer, mode === "link" ? staged.id : undefined, hooks);
+        return verifyHandedOff(outReal, outId, dest, buffer, staged.id, hooks);
       } catch (err) {
-        if (mode === "link") neutraliseAndThrow(staged.fd, dest, err, hooks);
-        throw new Error(
-          `${(err as Error).message} (the copy handed off to ${dest} could not be bound to an fd; it was NOT deleted by pathname and ` +
-            "whatever is at that path now has UNKNOWN content.)",
-        );
+        neutraliseAndThrow(staged.fd, dest, err, hooks);
       }
     }
     throw new Error(`output name collision cap reached: ${safe} and ${maxCollisions} alternatives already exist.`);
@@ -1304,7 +1304,6 @@ export function writeImageSafely(
     closeSync(staged.fd);
   }
 }
-
 
 
 // ─── downscale ───────────────────────────────────────────────────────────────

@@ -613,6 +613,8 @@ export type CodexGenerateImageInternalOptions = {
   _stagingParent?: string;
   /** Test-only DI seam: fired around staging, hand-off and their verification. */
   _writeHooks?: WriteHooks;
+  /** Test-only DI seam: replaces removeStagingDir so a test can force a cleanup failure. */
+  _removeStaging?: (s: StagingDir) => string | undefined;
   /**
    * Test-only DI seam: replaces the whole codex turn (`codexGenerate`) so a
    * test controls the reported `session_id` without spawning the CLI.
@@ -660,8 +662,15 @@ export async function codexGenerateImage(
     result = await harvestIntoOutput(args, opts, out, st.staging, callStartMs);
     return result;
   } finally {
-    const cleanupError = removeStagingDir(st.staging);
-    if (cleanupError && result) result.staging_cleanup_error = cleanupError;
+    const cleanupError = (opts._removeStaging ?? removeStagingDir)(st.staging);
+    if (cleanupError && result) {
+      // A cleanup failure is a failure: never leave the call reporting "ok".
+      result.staging_cleanup_error = cleanupError;
+      if ("failures" in result) {
+        result.failures.push({ file: "*", reason: cleanupError });
+        if (result.status === "ok") result.status = "partial";
+      }
+    }
   }
 }
 
@@ -1081,17 +1090,17 @@ const TOOLS = [
       "WRITES: no content byte is ever written through a path inside output_dir. Each image (already validated, and a re-encoded one validated again) is written " +
       "into a private per-call staging directory the daemon owns (PP_HOME/.pair-programmer/image-staging/<mkdtemp>, mode 0700 on POSIX; refused if it is a link " +
       "or its identity changes) and verified there (path still the exclusively-created file by dev/ino and size, realpath inside staging, bytes read back " +
-      "through the fd equal the image). It then reaches output_dir by ONE exclusive hand-off per candidate name: a hard link of the staged file (link never " +
-      "follows or replaces an existing entry), or — only across volumes or where links are unsupported — a copy with COPYFILE_EXCL after checking that no " +
-      "entry at all exists at the name (on Windows an exclusive copy would follow a dangling symlink); an existing entry (file, symlink, dangling link) is " +
-      "never followed or overwritten and the next name is tried. The handed-off file is then verified through a fresh fd (regular file, the staged dev/ino when linked, exact size, identical bytes) with all path " +
+      "through the fd equal the image). It then reaches output_dir by ONE exclusive hand-off per candidate name: a HARD LINK of the staged file (a link never " +
+      "follows or replaces an existing entry — file, symlink or dangling symlink — so an occupied name is skipped and the next is tried). FAIL CLOSED: there is " +
+      "no copy fallback, because every copy primitive can follow a link at the destination (on Windows even an exclusive copy follows a dangling symlink); if " +
+      "a hard link is impossible (output_dir on a different filesystem from PP_HOME, or a filesystem without hard links) that image fails and nothing is " +
+      "written into output_dir. The handed-off file is then verified through a fresh fd (regular file, the staged dev/ino, exact size, identical bytes) with all path " +
       "resolution first and the identity checks last (non-link, same dev/ino as the fd; output_dir's dev/ino pinned at preparation, so a same-path replacement " +
       "directory is refused). Nothing is ever deleted by pathname. The staging directory is removed when the call ends; a removal failure is reported in " +
-      "staging_cleanup_error. RESIDUAL RISK (stated): Node has no openat, so if output_dir or an ancestor is swapped for a link in the instant before the " +
-      "hand-off syscall, the finished image can land in the link target; that is detected and the image is refused — in link mode the object is also " +
-      "truncated through the staging fd, in copy mode the copy cannot be bound to an fd and is reported as remaining with unknown content. In copy mode a " +
-      "dangling symlink planted at the target name in the instant between the no-entry check and the copy can likewise redirect the copy (detected, " +
-      "refused, reported as unknown content). After a " +
+      "staging_cleanup_error and in `failures`, and turns an otherwise \"ok\" status into \"partial\". RESIDUAL RISK (stated, operator-accepted): Node has no " +
+      "openat, so if output_dir or an ancestor is swapped for a link in the instant before the link syscall, the finished image can land in the link target; " +
+      "that is detected and the image is refused, and because the handed-off object IS the staged inode it is also truncated through the staging fd (a " +
+      "failed truncation is reported as such, with the content described as unknown). After a " +
       "successful hand-off, any process with write access to output_dir can of course move, replace or modify the finished file. " +
       "VALIDATION: every PNG — including one copied verbatim — must pass a full structure check (signature, IHDR length 13 with legal fields, every chunk CRC, " +
       "consecutive IDATs, PLTE rules incl. palette size, no unknown critical chunks, terminating IEND, no bytes after IEND; ancillary chunks are limited to " +

@@ -1243,33 +1243,26 @@ describe("pp_codex.generate_image: round-5 findings", () => {
     assert.equal(staged, true, "the swap really happened after resolution");
   });
 
-  test("output: a parent swapped for a junction right before the hand-off is detected; in link mode the object is neutralised, in copy mode reported as unknown", async () => {
+  test("output: a parent swapped for a junction right before the hand-off is detected, refused, and the object neutralised through the staging fd", async () => {
     const { writeImageSafely, prepareOutputDir } = await importDist("mcp/image-harvest.js");
-    for (const forceCopy of [false, true]) {
-      const escape = tmp("pp-img-escape-");
-      const { outReal, outId } = prepareOutputDir(join(tmp("pp-img-outbase-"), "out"));
-      assert.throws(
-        () =>
-          writeImageSafely(outReal, outId, newStaging(), "x.png", makeSolidPng(2, 2), 0, {
-            forceCopy,
-            beforeHandOff: () => {
-              rmSync(outReal, { recursive: true });
-              symlinkSync(escape, outReal, "junction");
-            },
-          }),
-        (err) => {
-          assert.match(err.message, /outside output_dir|no longer resolves to itself/);
-          if (forceCopy) assert.match(err.message, /NOT deleted by pathname .* UNKNOWN content/);
-          else assert.match(err.message, /truncated through its fd/);
-          return true;
-        },
-      );
-      const landed = readdirSync(escape);
-      assert.deepEqual(landed, ["x.png"], "precondition: the hand-off really was redirected into the junction target");
-      const size = statSync(join(escape, "x.png")).size;
-      if (forceCopy) assert.ok(size > 0, "copy mode: the stated residual — the copy cannot be neutralised, and the error says so");
-      else assert.equal(size, 0, "link mode: the redirected object IS the staged inode and was truncated through the staging fd");
-    }
+    const escape = tmp("pp-img-escape-");
+    const { outReal, outId } = prepareOutputDir(join(tmp("pp-img-outbase-"), "out"));
+    assert.throws(
+      () =>
+        writeImageSafely(outReal, outId, newStaging(), "x.png", makeSolidPng(2, 2), 0, {
+          beforeHandOff: () => {
+            rmSync(outReal, { recursive: true });
+            symlinkSync(escape, outReal, "junction");
+          },
+        }),
+      (err) => {
+        assert.match(err.message, /outside output_dir|no longer resolves to itself/);
+        assert.match(err.message, /truncated through its fd/);
+        return true;
+      },
+    );
+    assert.deepEqual(readdirSync(escape), ["x.png"], "precondition: the hand-off really was redirected into the junction target (the stated residual)");
+    assert.equal(statSync(join(escape, "x.png")).size, 0, "the redirected object IS the staged inode and was truncated through the staging fd");
   });
 });
 
@@ -1319,60 +1312,82 @@ describe("pp_codex.generate_image: private staging and exclusive hand-off", () =
     assert.deepEqual(readdirSync(outReal), [], "nothing was handed off");
   });
 
-  test("a handed-off file altered in place (same identity, same size) is refused by the byte comparison (link and copy mode)", async () => {
+  test("a handed-off file altered in place (same identity, same size) is refused by the byte comparison", async () => {
     const { writeImageSafely, prepareOutputDir } = await importDist("mcp/image-harvest.js");
     const png = makeSolidPng(2, 2);
-    for (const forceCopy of [false, true]) {
-      const { outReal, outId } = prepareOutputDir(tmp("pp-img-out-"));
-      assert.throws(
-        () =>
-          writeImageSafely(outReal, outId, newStaging(), "x.png", png, 0, {
-            forceCopy,
-            afterHandOff: (dest) => {
-              const fd = openSync(dest, "r+");
-              try { writeSync(fd, Buffer.from([0x00]), 0, 1, png.length - 1); } finally { closeSync(fd); }
-            },
-          }),
-        /does not hold the handed-off bytes/,
-        forceCopy ? "copy" : "link",
-      );
-    }
+    const { outReal, outId } = prepareOutputDir(tmp("pp-img-out-"));
+    assert.throws(
+      () =>
+        writeImageSafely(outReal, outId, newStaging(), "x.png", png, 0, {
+          afterHandOff: (dest) => {
+            const fd = openSync(dest, "r+");
+            try { writeSync(fd, Buffer.from([0x00]), 0, 1, png.length - 1); } finally { closeSync(fd); }
+          },
+        }),
+      /does not hold the handed-off bytes/,
+    );
   });
 
-  test("hand-off refuses a pre-existing file, symlink or dangling symlink at the target name (link and copy mode)", async () => {
+  test("hand-off refuses a pre-existing file, symlink or dangling symlink at the target name; nothing is created through a link", async () => {
     const { writeImageSafely, prepareOutputDir } = await importDist("mcp/image-harvest.js");
-    for (const forceCopy of [false, true]) {
-      for (const kind of ["file", "symlink", "dangling"]) {
-        const { outReal, outId } = prepareOutputDir(tmp("pp-img-out-"));
-        const escape = tmp("pp-img-escape-");
-        const canary = join(escape, "canary.txt");
-        writeFileSync(canary, "do-not-touch");
-        if (kind === "file") writeFileSync(join(outReal, "x.png"), "existing");
-        else symlinkSync(kind === "symlink" ? canary : join(escape, "missing.txt"), join(outReal, "x.png"), "file");
-        const label = `${kind}, ${forceCopy ? "copy" : "link"}`;
-        assert.throws(() => writeImageSafely(outReal, outId, newStaging(), "x.png", makeSolidPng(2, 2), 0, { forceCopy }), /collision cap reached/, label);
-        assert.equal(readFileSync(canary, "utf8"), "do-not-touch", `${label}: link target untouched`);
-        assert.deepEqual(readdirSync(escape), ["canary.txt"], `${label}: nothing created through the link`);
-        if (kind === "file") assert.equal(readFileSync(join(outReal, "x.png"), "utf8"), "existing", `${label}: existing file untouched`);
-        const path = writeImageSafely(outReal, outId, newStaging(), "x.png", makeSolidPng(2, 2), 1, { forceCopy });
-        assert.equal(path, join(outReal, "x-1.png"), `${label}: the next free name is used`);
-      }
+    for (const kind of ["file", "symlink", "dangling"]) {
+      const { outReal, outId } = prepareOutputDir(tmp("pp-img-out-"));
+      const escape = tmp("pp-img-escape-");
+      const canary = join(escape, "canary.txt");
+      writeFileSync(canary, "do-not-touch");
+      if (kind === "file") writeFileSync(join(outReal, "x.png"), "existing");
+      else symlinkSync(kind === "symlink" ? canary : join(escape, "missing.txt"), join(outReal, "x.png"), "file");
+      assert.throws(() => writeImageSafely(outReal, outId, newStaging(), "x.png", makeSolidPng(2, 2), 0), /collision cap reached/, kind);
+      assert.equal(readFileSync(canary, "utf8"), "do-not-touch", `${kind}: link target untouched`);
+      assert.deepEqual(readdirSync(escape), ["canary.txt"], `${kind}: nothing created through the link (a dangling link's target stays absent)`);
+      if (kind === "file") assert.equal(readFileSync(join(outReal, "x.png"), "utf8"), "existing", `${kind}: existing file untouched`);
+      const path = writeImageSafely(outReal, outId, newStaging(), "x.png", makeSolidPng(2, 2), 1);
+      assert.equal(path, join(outReal, "x-1.png"), `${kind}: the next free name is used`);
     }
   });
 
-  test("link mode hands off the verified staged inode; copy mode hands off identical bytes", async () => {
+  test("the hand-off is a hard link of the verified staged inode", async () => {
     const { writeImageSafely, prepareOutputDir } = await importDist("mcp/image-harvest.js");
     const png = makeSolidPng(3, 2);
-    for (const forceCopy of [false, true]) {
+    const { outReal, outId } = prepareOutputDir(tmp("pp-img-out-"));
+    const staging = newStaging();
+    const path = writeImageSafely(outReal, outId, staging, "x.png", png, 0);
+    assert.deepEqual(readFileSync(path), png);
+    const stagedNames = readdirSync(staging.dirReal);
+    assert.equal(stagedNames.length, 1, "exactly one staged file");
+    assert.equal(statSync(join(staging.dirReal, stagedNames[0]), { bigint: true }).ino, statSync(path, { bigint: true }).ino, "same inode");
+  });
+
+  test("fail closed: when a hard link is impossible (EXDEV / EPERM) there is no copy fallback and nothing reaches output_dir", async () => {
+    const { writeImageSafely, prepareOutputDir } = await importDist("mcp/image-harvest.js");
+    for (const code of ["EXDEV", "EPERM"]) {
       const { outReal, outId } = prepareOutputDir(tmp("pp-img-out-"));
-      const staging = newStaging();
-      const path = writeImageSafely(outReal, outId, staging, "x.png", png, 0, { forceCopy });
-      assert.deepEqual(readFileSync(path), png);
-      const stagedNames = readdirSync(staging.dirReal);
-      assert.equal(stagedNames.length, 1, "exactly one staged file");
-      const sameInode = statSync(join(staging.dirReal, stagedNames[0]), { bigint: true }).ino === statSync(path, { bigint: true }).ino;
-      assert.equal(sameInode, !forceCopy, forceCopy ? "copy mode is a separate file" : "link mode is the staged inode itself");
+      assert.throws(
+        () => writeImageSafely(outReal, outId, newStaging(), "x.png", makeSolidPng(2, 2), 0, { linkError: code }),
+        new RegExp(`hand-off refused: a hard link into output_dir failed \\(${code}\\); there is deliberately no copy fallback`),
+      );
+      assert.deepEqual(readdirSync(outReal), [], `${code}: nothing was written into output_dir`);
     }
+    const outputDir = tmp("pp-img-out-");
+    const { result } = await runHarvest({
+      args: { output_dir: outputDir },
+      write: writePngs({ "exec-call-1.png": makeSolidPng(4, 4) }),
+      opts: { _writeHooks: { linkError: "EXDEV" } },
+    });
+    assert.equal(result.status, "failed");
+    assert.match(result.failures[0].reason, /no copy fallback/);
+    assert.deepEqual(readdirSync(outputDir), []);
+  });
+
+  test("end to end: a staging cleanup failure is reported and an otherwise-ok call becomes partial", async () => {
+    const { result } = await runHarvest({
+      write: writePngs({ "exec-call-1.png": makeSolidPng(4, 4) }),
+      opts: { _removeStaging: () => "staging directory X was not removed: EBUSY (forced)" },
+    });
+    assert.equal(result.images.length, 1, "precondition: the image itself succeeded");
+    assert.equal(result.status, "partial", "never ok while the cleanup failed");
+    assert.match(result.staging_cleanup_error ?? "", /was not removed: EBUSY/);
+    assert.ok(result.failures.some((f) => f.file === "*" && /was not removed/.test(f.reason)));
   });
 
   test("createStagingDir refuses a linked staging parent; assertStagingIntact and removeStagingDir refuse a replaced staging dir", async () => {
@@ -1427,7 +1442,9 @@ describe("pp_codex.generate_image: ancillary chunk rules", () => {
         { at: "idat", type: "tEXt", data: Buffer.from("Comment\0ok") },
         { at: "idat", type: "tEXt", data: Buffer.from("Author\0me") },
         { at: "idat", type: "iTXt", data: Buffer.from("Title\0\0\0en\0\0hi") },
+        { at: "ihdr", type: "eXIf", data: Buffer.from("MM\0*") },
       ] }),
+      assemblePng({ ...RGB_2x1, plte: Buffer.from([1, 2, 3]), extra: [{ at: "plte", type: "tRNS", data: Buffer.alloc(6) }, { at: "plte", type: "bKGD", data: Buffer.alloc(6) }] }),
       assemblePng({ ...RGB_2x1, extra: [{ at: "ihdr", type: "sRGB", data: Buffer.from([0]) }] }),
       assemblePng({ ...PAL_2x1, extra: [
         { at: "plte", type: "bKGD", data: Buffer.from([1]) },
@@ -1465,12 +1482,24 @@ describe("pp_codex.generate_image: ancillary chunk rules", () => {
       "tEXt empty keyword": [assemblePng({ ...GREY_4x4, extra: [{ at: "idat", type: "tEXt", data: Buffer.from("\0x") }] }), /tEXt .*keyword/],
       "iTXt compression flag 2": [assemblePng({ ...GREY_4x4, extra: [{ at: "idat", type: "iTXt", data: Buffer.from("K\0\x02\0\0\0t") }] }), /iTXt .*compression flag/],
       "unvalidated ancillary type": [assemblePng({ ...GREY_4x4, extra: [{ at: "ihdr", type: "vpAg", data: Buffer.alloc(9) }] }), /not one this harvester validates/],
+      "tRNS before a later (suggested) PLTE": [assemblePng({ ...RGB_2x1, plte: Buffer.from([1, 2, 3]), extra: [{ at: "ihdr", type: "tRNS", data: Buffer.alloc(6) }] }), /PLTE after tRNS/],
+      "bKGD before a later (suggested) PLTE": [assemblePng({ ...RGB_2x1, plte: Buffer.from([1, 2, 3]), extra: [{ at: "ihdr", type: "bKGD", data: Buffer.alloc(6) }] }), /PLTE after bKGD/],
+      "eXIf after IDAT": [assemblePng({ ...GREY_4x4, extra: [{ at: "idat", type: "eXIf", data: Buffer.from("MM\0*") }] }), /eXIf .*must precede IDAT/],
     };
     for (const [label, [buf, reason]] of Object.entries(bad)) {
       const r = acceptPng(buf);
       assert.equal(r.ok, false, `${label} must be refused`);
       assert.match(r.reason, reason, label);
     }
+  });
+
+  test("end to end: an eXIf-after-IDAT PNG that fits as-is is never copied", async () => {
+    const { result, outputDir } = await runHarvest({
+      write: writePngs({ "exec-call-exif.png": assemblePng({ ...GREY_4x4, extra: [{ at: "idat", type: "eXIf", data: Buffer.from("MM\0*") }] }) }),
+    });
+    assert.equal(result.status, "failed");
+    assert.match(result.failures[0].reason, /eXIf .*must precede IDAT/);
+    assert.deepEqual(readdirSync(outputDir), []);
   });
 
   test("end to end: a tRNS-on-RGBA PNG that fits as-is is never copied", async () => {
@@ -1579,6 +1608,19 @@ describe("pp_codex.generate_image: settle observation and per-call budgets", () 
     assert.equal(r.budgetExhausted, "opens");
     assert.equal(r.opens, MAX_POLL_OPENS_PER_CALL, "20 files x 30 polls would have been 600 opens");
     assert.ok(r.unsettled.some((u) => /open budget \(180\) exhausted/.test(u.reason)));
+  });
+
+  test("distinct-file cap counts identities: a chosen name replaced by a different file between polls is refused", async () => {
+    const { pollForSettledPngs } = await importDist("mcp/image-harvest.js");
+    const root = tmp("pp-img-root-");
+    const sessionId = newSessionId();
+    const p = join(root, sessionId, "a.png");
+    writePngs({ "a.png": make24ByteHeaderPng() })(join(root, sessionId)); // never settles, so it is re-opened every poll
+    setTimeout(() => { rmSync(p); writeFileSync(p, make24ByteHeaderPng()); }, 100); // expires before poll 2 (timer order)
+    const r = await pollForSettledPngs(root, sessionId, { timeoutMs: 60_000, intervalMs: 200 });
+    assert.equal(r.kind, "ok");
+    assert.match(r.rejected.find((x) => x.name === "a.png")?.reason ?? "", /replaced by a different file while polling/);
+    assert.ok(r.opens <= 3, `the replacement was refused at once instead of being polled (${r.opens} opens)`);
   });
 
   test("distinct-image cap holds across polls: a PNG appearing later (sorting first) is never opened beyond the first 20", async () => {
@@ -1717,6 +1759,14 @@ describe("pp_agy.generate_image", () => {
  *   link-mode neutralisation removed            -> replaced; cleanup-swap; parent junction swap; forced truncation failure
  *   staging identity / linked parent / replaced-dir removal / end-of-call removal -> the staging tests
  *   truncation failure swallowed (re-run)       -> failed truncation reported as such
+ *
+ * Authorized round A findings:
+ *   PLTE after bKGD/tRNS allowed                -> ancillary rule fixtures
+ *   eXIf after IDAT allowed                     -> ancillary rule fixtures; eXIf-after-IDAT e2e
+ *   chosen name not bound to its first identity -> same-name replacement refused (the mutated run also hit the file timeout)
+ *   copy fallback reintroduced on EXDEV         -> fail closed (no copy fallback, nothing reaches output_dir)
+ *   cleanup failure left status ok              -> staging cleanup failure turns ok into partial
+ *   (re-run red on the link-only code: direct write instead of link -> 30 tests; staged-inode identity; fd neutralisation)
  *   NOT FALSIFIABLE (disclosed): re-validating the RE-ENCODED output with acceptPng — pngjs always emits a valid PNG, so
  *   no fixture can make that defence-in-depth check fire without replacing the encoder.
  *   NOTE: removing only the link/type clause of the output_dir check stays GREEN — it is subsumed, not missing:
