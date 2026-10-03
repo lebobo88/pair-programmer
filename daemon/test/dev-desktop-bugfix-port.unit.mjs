@@ -143,6 +143,25 @@ describe("BUG-1 normalizeArtifactRelPath", () => {
     });
   }
 
+  test("AC1-10 isPathContainedIn: case-sensitive under posix, case-insensitive under win32, never equal-to or escaping", async () => {
+    const { posix, win32 } = await import("node:path");
+    const c = runs.isPathContainedIn;
+    const P = "/tmp/project/.harness/run_abc";
+    // posix: a differently-cased sibling is a DIFFERENT directory -> refused.
+    assert.equal(c(posix.join(P, "../RUN_ABC/escaped.md"), P, posix), false, "posix: case-distinct sibling must be refused");
+    assert.equal(c(posix.join(P, "code/x.md"), P, posix), true, "posix: nested file is contained");
+    assert.equal(c(posix.join(P, "../../escaped.md"), P, posix), false, "posix: .. escape refused");
+    assert.equal(c(P, P, posix), false, "posix: the dir itself is not a file inside it");
+    assert.equal(c(`${P}-sibling/x.md`, P, posix), false, "posix: prefix-sharing sibling refused");
+    assert.equal(c(posix.join(P, "..notes/x.md"), P, posix), true, "posix: a directory NAMED '..notes' inside the run dir is contained (not a '..' segment)");
+    assert.equal(c(posix.join(P, "code/..notes/x.md"), P, posix), true, "posix: a '..notes' segment INSIDE the dir is contained");
+    // win32: casing is not significant, so the same-dir-different-case path is inside.
+    const W = "C:\\proj\\.harness\\run_abc";
+    assert.equal(c("C:\\proj\\.harness\\RUN_ABC\\x.md", W, win32), true, "win32: case-only difference is the same directory");
+    assert.equal(c("C:\\proj\\.harness\\run_abd\\x.md", W, win32), false, "win32: a different run dir is refused");
+    assert.equal(c("D:\\proj\\.harness\\run_abc\\x.md", W, win32), false, "win32: another drive is refused");
+  });
+
   test("AC1-9 a '..' that stays inside .harness/<runId>/ is still accepted (the guard is containment, not a '..' ban)", async () => {
     const project = makeProject();
     const run = await runs.ensureRun({ request_text: "bug1 inner dotdot", project_path: project, mode: "single" });

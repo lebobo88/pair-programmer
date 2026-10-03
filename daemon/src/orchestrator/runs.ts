@@ -1,7 +1,7 @@
 import { nanoid } from "nanoid";
 import { createHash } from "node:crypto";
 import { mkdirSync, writeFileSync, statSync, existsSync, readFileSync, realpathSync } from "node:fs";
-import { join, relative, dirname, extname, resolve } from "node:path";
+import { join, relative, dirname, extname, resolve, isAbsolute } from "node:path";
 import { trackedExeca, SpawnRefusedError, isShuttingDown } from "../mcp/cli-runner.js";
 import YAML from "yaml";
 import { db, txImmediate, txImmediateWithRetry } from "../db/database.js";
@@ -3547,6 +3547,26 @@ function activeCandidateWorktrees(run_id: string): string[] {
   return out;
 }
 
+/**
+ * True iff `child` resolves to a path strictly INSIDE `parent` (not equal to
+ * it), with filesystem-appropriate case semantics: `path.relative` compares
+ * case-insensitively under win32 and case-sensitively under posix. Unlike
+ * isInside() below (which lowercases unconditionally, fine for its
+ * worktree-exclusion use), this is the SECURITY containment check for
+ * archiveArtifact: on a case-sensitive filesystem "../RUN_ABC/x" from
+ * ".harness/run_abc" is a different directory and must be refused
+ * (cross-vendor review, 2026-10-03). `pathMod` is injectable so tests can
+ * prove posix and win32 semantics deterministically on either OS.
+ */
+export function isPathContainedIn(
+  child: string,
+  parent: string,
+  pathMod: Pick<typeof import("node:path"), "resolve" | "relative" | "isAbsolute"> = { resolve, relative, isAbsolute },
+): boolean {
+  const rel = pathMod.relative(pathMod.resolve(parent), pathMod.resolve(child));
+  return rel !== "" && rel !== ".." && !rel.startsWith(".." + "/") && !rel.startsWith(".." + "\\") && !pathMod.isAbsolute(rel);
+}
+
 function isInside(child: string, parent: string): boolean {
   const norm = (s: string) => s.replaceAll("\\", "/").replace(/\/$/, "");
   const c = norm(child).toLowerCase();
@@ -3623,7 +3643,7 @@ export function archiveArtifact(input: ArchiveArtifactInput): ArchiveArtifactOut
   // `z.string().min(1)` at the MCP boundary, so "../../x" (or, after prefix
   // normalization, ".harness/<runId>/../../x") would otherwise write outside
   // .harness/<run_id>/. Checked before any filesystem access.
-  if (!isInside(resolve(absolute), resolve(dir))) {
+  if (!isPathContainedIn(absolute, dir)) {
     throw new ArchiveArtifactPathError(
       `archive_artifact rejected: relative_path "${input.relative_path}" resolves to ${resolve(absolute)}, ` +
       `which is outside the run's artifact directory ${resolve(dir)}. Archive paths must stay under .harness/<run_id>/.`,
