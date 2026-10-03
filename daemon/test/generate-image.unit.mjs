@@ -748,17 +748,17 @@ describe("pp_codex.generate_image: output containment", () => {
   });
 
   test("verifyWrittenPath rejects a written file whose realpath parent is not output_dir", async () => {
-    const { verifyWrittenPath } = await importDist("mcp/image-harvest.js");
-    const outReal = real(tmp("pp-img-out-"));
+    const { verifyWrittenPath, prepareOutputDir } = await importDist("mcp/image-harvest.js");
+    const { outReal, outId } = prepareOutputDir(tmp("pp-img-out-"));
     const escape = real(tmp("pp-img-escape-"));
     const idOf = (p) => { const s = statSync(p, { bigint: true }); return { dev: s.dev, ino: s.ino }; };
     writeFileSync(join(outReal, "fine.png"), "x");
-    assert.equal(verifyWrittenPath(outReal, join(outReal, "fine.png"), idOf(join(outReal, "fine.png")), 1), join(outReal, "fine.png"));
+    assert.equal(verifyWrittenPath(outReal, outId, join(outReal, "fine.png"), idOf(join(outReal, "fine.png")), 1), join(outReal, "fine.png"));
     mkdirSync(join(escape, "d"));
     writeFileSync(join(escape, "d", "x.png"), "x");
     symlinkSync(join(escape, "d"), join(outReal, "via"), "junction");
     const viaFile = join(outReal, "via", "x.png");
-    assert.throws(() => verifyWrittenPath(outReal, viaFile, idOf(viaFile), 1), /outside output_dir/);
+    assert.throws(() => verifyWrittenPath(outReal, outId, viaFile, idOf(viaFile), 1), /outside output_dir/);
   });
 
   test("output_dir replaced by a different PLAIN directory after preparation is refused (direct and via an ancestor)", async () => {
@@ -794,7 +794,7 @@ describe("pp_codex.generate_image: output containment", () => {
     assert.deepEqual(readdirSync(outputDir), []);
   });
 
-  test("writeImageSafely: a destination replaced after the write (by another file or a link to a sibling) is refused, and only our own file is removed", async () => {
+  test("writeImageSafely: a destination replaced after the write (by another file or a link to a sibling) is refused; the replacement survives and only our own bytes are truncated", async () => {
     const { writeImageSafely, prepareOutputDir } = await importDist("mcp/image-harvest.js");
     for (const kind of ["file", "link"]) {
       const { outReal, outId } = prepareOutputDir(tmp("pp-img-out-"));
@@ -813,7 +813,50 @@ describe("pp_codex.generate_image: output containment", () => {
         kind,
       );
       assert.ok(readdirSync(outReal).includes("x.png"), `${kind}: the replacement is not deleted by us`);
+      assert.equal(statSync(join(outReal, "x.png.ours")).size, 0, `${kind}: our own bytes were truncated through the fd`);
     }
+  });
+
+  test("writeImageSafely: a destination swapped DURING verification (between the identity check and realpath) is refused", async () => {
+    const { writeImageSafely, prepareOutputDir } = await importDist("mcp/image-harvest.js");
+    const { outReal, outId } = prepareOutputDir(tmp("pp-img-out-"));
+    const theirs = makeSolidPng(3, 3);
+    let swapped = false;
+    assert.throws(
+      () =>
+        writeImageSafely(outReal, outId, "x.png", makeSolidPng(2, 2), 0, {
+          duringVerify: (dest) => {
+            renameSync(dest, `${dest}.ours`);
+            writeFileSync(dest, theirs);
+            swapped = true;
+          },
+        }),
+      /no longer the file that was written/,
+    );
+    assert.equal(swapped, true, "the swap really happened inside verification");
+    assert.deepEqual(readFileSync(join(outReal, "x.png")), theirs, "the replacement is untouched");
+  });
+
+  test("writeImageSafely: failure cleanup never deletes by pathname, even if the path is swapped right before cleanup", async () => {
+    const { writeImageSafely, prepareOutputDir } = await importDist("mcp/image-harvest.js");
+    const { outReal, outId } = prepareOutputDir(tmp("pp-img-out-"));
+    const third = makeSolidPng(5, 5);
+    assert.throws(
+      () =>
+        writeImageSafely(outReal, outId, "x.png", makeSolidPng(2, 2), 0, {
+          afterWrite: (dest) => {
+            renameSync(dest, `${dest}.ours`);
+            writeFileSync(dest, makeSolidPng(3, 3)); // forces a failed verification
+          },
+          beforeNeutralise: (dest) => {
+            rmSync(dest);
+            writeFileSync(dest, third); // swapped in between failure and cleanup
+          },
+        }),
+      /no longer the file that was written/,
+    );
+    assert.deepEqual(readFileSync(join(outReal, "x.png")), third, "the file swapped in at cleanup time survives intact");
+    assert.equal(statSync(join(outReal, "x.png.ours")).size, 0, "only our own object was neutralised, through its fd");
   });
 
   test("a pre-existing symlink at the destination name is never followed or overwritten", async () => {
@@ -1196,4 +1239,10 @@ describe("pp_agy.generate_image", () => {
  *   written path bound to the created fd        -> destination replaced after the write
  *   only our own file removed on failure        -> destination replaced after the write (replacement survives)
  *   (re-run on the new code: collision cap, output_dir link refusal, assertOutputDirIntact lstat, verifyWrittenPath realpath)
+ *
+ * After round 4 (verification ordering, no pathname deletion):
+ *   file identity re-checked after realpath     -> destination swapped DURING verification
+ *   path-based unlink reintroduced on failure   -> replaced after the write; swapped during verification; swapped before cleanup
+ *   fd truncation of our own bytes removed      -> replaced after the write; swapped before cleanup
+ *   (re-run: output_dir identity, written-path fd binding, assertOutputDirIntact lstat, verifyWrittenPath realpath)
  */

@@ -26,7 +26,7 @@ import {
   writeSync,
   opendirSync,
   mkdirSync,
-  unlinkSync,
+  ftruncateSync,
   constants as FS,
 } from "node:fs";
 import { join, dirname, basename, extname, resolve, relative } from "node:path";
@@ -778,13 +778,16 @@ export function assertOutputDirIntact(outReal: string, outId: FsIdentity): void 
   }
 }
 
-/**
- * After a write: the pathname must still denote the file that was created
- * and written through the fd — a non-link regular file with the fd's dev+ino
- * and the written size — and its realpath parent must equal `outReal`.
- * Returns the file's realpath; throws otherwise.
- */
-export function verifyWrittenPath(outReal: string, dest: string, fileId: FsIdentity, size: number): string {
+/** Test-only seams around the write and its verification. Production never sets them. */
+export type WriteHooks = {
+  afterWrite?: (dest: string) => void;
+  /** Fired between the first identity check and the realpath resolution. */
+  duringVerify?: (dest: string) => void;
+  /** Fired after a failed verification, before the fd-bound neutralisation. */
+  beforeNeutralise?: (dest: string) => void;
+};
+
+function assertIsWrittenFile(dest: string, fileId: FsIdentity, size: number): void {
   const st = lstatSync(dest, { bigint: true, throwIfNoEntry: false });
   if (!st || st.isSymbolicLink() || !st.isFile() || !sameIdentity(st, fileId)) {
     throw new Error(`${dest} is no longer the file that was written (replaced or linked); refusing to report it.`);
@@ -792,10 +795,32 @@ export function verifyWrittenPath(outReal: string, dest: string, fileId: FsIdent
   if (st.size !== BigInt(size)) {
     throw new Error(`${dest} has ${st.size} bytes; ${size} were written.`);
   }
+}
+
+/**
+ * After a write, before the path is reported: the pathname must denote the
+ * file created and written through the fd (non-link regular file, the fd's
+ * dev+ino, the written size), its realpath parent must be `outReal`, and the
+ * file identity is checked AGAIN after the realpath resolution, followed by
+ * output_dir's identity — so a swap during resolution is caught too. The
+ * identity checks are the last operations before returning.
+ */
+export function verifyWrittenPath(
+  outReal: string,
+  outId: FsIdentity,
+  dest: string,
+  fileId: FsIdentity,
+  size: number,
+  hooks: WriteHooks = {},
+): string {
+  assertIsWrittenFile(dest, fileId, size);
+  hooks.duringVerify?.(dest);
   const real = realpathSync.native(dest);
   if (!isDirectChildReal(outReal, real)) {
     throw new Error(`written file resolves to ${real}, outside output_dir ${outReal}.`);
   }
+  assertIsWrittenFile(dest, fileId, size);
+  assertOutputDirIntact(outReal, outId);
   return real;
 }
 
@@ -807,17 +832,19 @@ export function safeOutputName(name: string): string {
   return `${stem && !reserved ? stem : `image_${stem}`}.png`;
 }
 
-/** Test-only seam fired after the bytes are written, before verification. Production never sets it. */
-export type WriteHooks = { afterWrite?: (dest: string) => void };
-
 /**
  * Write `buffer` into `outReal` under a sanitized `name`, never following or
  * overwriting an existing entry (`wx` = O_CREAT|O_EXCL). On collision tries
  * `<stem>-1.png` … `<stem>-<maxCollisions>.png`, then throws. output_dir's
- * identity is re-checked immediately before each create and again after the
- * write; the created fd's identity is captured and the returned pathname must
- * still denote that same file. On a failed verification our own file is
- * removed (only if the path still denotes it) and the write fails.
+ * identity is re-checked immediately before each create; the created fd's
+ * identity is captured and `verifyWrittenPath` must prove the pathname still
+ * denotes that file before it is reported.
+ *
+ * On a failed verification NOTHING is deleted by pathname — a path-based
+ * unlink cannot be bound to the object we created, so it could remove a file
+ * someone else put there. Instead our own bytes are neutralised through the
+ * still-open fd (truncated to zero length), which can only ever affect the
+ * file this call created; an empty file may remain wherever it now lives.
  */
 export function writeImageSafely(
   outReal: string,
@@ -841,29 +868,24 @@ export function writeImageSafely(
       if ((err as NodeJS.ErrnoException).code === "EEXIST") continue;
       throw err;
     }
-    let fileId: FsIdentity | undefined;
     try {
       const fst = fstatSync(fd, { bigint: true });
-      fileId = { dev: fst.dev, ino: fst.ino };
+      const fileId = { dev: fst.dev, ino: fst.ino };
       let off = 0;
       while (off < buffer.length) off += writeSync(fd, buffer, off, buffer.length - off);
       hooks.afterWrite?.(dest);
-      assertOutputDirIntact(outReal, outId);
-      return verifyWrittenPath(outReal, dest, fileId, buffer.length);
+      return verifyWrittenPath(outReal, outId, dest, fileId, buffer.length, hooks);
     } catch (err) {
-      if (fileId) {
-        const st = lstatSync(dest, { bigint: true, throwIfNoEntry: false });
-        if (st && !st.isSymbolicLink() && sameIdentity(st, fileId)) {
-          try { unlinkSync(dest); } catch { /* best effort: the failure is reported regardless */ }
-        }
-      }
-      throw err;
+      hooks.beforeNeutralise?.(dest);
+      try { ftruncateSync(fd, 0); } catch { /* the failure is reported regardless */ }
+      throw new Error(`${(err as Error).message} (our written bytes were truncated through the fd; an empty file may remain.)`);
     } finally {
       closeSync(fd);
     }
   }
   throw new Error(`output name collision cap reached: ${safe} and ${maxCollisions} alternatives already exist.`);
 }
+
 
 // ─── downscale ───────────────────────────────────────────────────────────────
 

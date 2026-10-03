@@ -1026,7 +1026,7 @@ const TOOLS = [
       "component created for it that is one, or whose realpath is not the pinned existing ancestor plus the created names) is status invalid_output_dir, checked " +
       "before the codex turn; each created component's parent is identity-checked before its mkdir. Writes use exclusive create (never follow or overwrite), " +
       "re-check output_dir's identity (dev/ino pinned at preparation, so a same-path replacement directory is refused) before and after each write, and verify the " +
-      "returned path is still the non-link regular file created through the write fd (same dev/ino and size) with realpath parent output_dir. " +
+      "returned path is still the non-link regular file created through the write fd (same dev/ino and size) with realpath parent output_dir, re-checked after the realpath resolution. On a failed check nothing is deleted by pathname; our own bytes are truncated through the still-open fd. " +
       "VALIDATION: every PNG — including one copied verbatim — must pass a full structure check (signature, IHDR length 13 with legal fields, every chunk CRC, " +
       "consecutive IDATs, PLTE rules incl. palette size, no unknown critical chunks, terminating IEND, no trailing bytes), and its image data must inflate — with the inflater capped at the exact size IHDR " +
       "implies, after the 4096x4096 pixel cap — to exactly that size with valid scanline filter bytes, so a decompression bomb is refused and the later " +
