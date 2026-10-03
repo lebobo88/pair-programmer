@@ -30,6 +30,9 @@ import { setIsolatedProcessEnv } from "./fixtures/isolated-env.mjs";
 const ledger = setIsolatedProcessEnv({ prefix: "pp-devdesktop-port-" });
 mkdirSync(join(ledger.ppHome, ".pair-programmer"), { recursive: true });
 process.env.EIGHTS_SKIP_AUDIT_CHECK = "1";
+// Nothing here asserts on TheEights: short-circuit the eights-client probe so
+// no TheEights process is spawned against the operator's real ~/.eights.
+process.env.PP_ECOSYSTEM_DISABLED = "1";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const DIST = join(__dirname, "..", "dist");
