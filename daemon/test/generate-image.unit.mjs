@@ -1451,6 +1451,68 @@ describe("pp_codex.generate_image: private staging and exclusive hand-off", () =
     assert.ok(statSync(allocated).isDirectory(), "and it was not deleted");
   });
 
+  /** Replace the freshly allocated staging dir with a link to `outside` (afterMkdtemp seam). */
+  const substituteAllocatedWithLink = (outside) => (allocated) => {
+    rmSync(allocated, { recursive: true });
+    symlinkSync(outside, allocated, "junction"); // "junction" is ignored on POSIX: a directory symlink there
+  };
+
+  test("createStagingDir: the allocated dir substituted by a link right after mkdtemp is REFUSED, and nothing is applied through the path first", async () => {
+    const { createStagingDir } = await importDist("mcp/image-harvest.js");
+    const outside = tmp("pp-img-outside-");
+    writeFileSync(join(outside, "victim.txt"), "keep");
+    const parent = join(tmp("pp-img-stagebase-"), "image-staging");
+    const r = createStagingDir(parent, { afterMkdtemp: substituteAllocatedWithLink(outside) });
+    assert.equal(r.ok, false);
+    assert.match(r.reason, /is not a plain directory/);
+    assert.deepEqual(readdirSync(outside), ["victim.txt"], "nothing created through the link");
+    // Structural guard that also holds on Windows (where a chmod would not follow the junction anyway):
+    // the setup path performs no chmod call at all — permissions are verified, never applied by pathname.
+    assert.ok(!/\bchmod(Sync)?\s*\(/.test(createStagingDir.toString()), "createStagingDir must not chmod by pathname");
+  });
+
+  test(
+    "createStagingDir (POSIX): a link substituted after mkdtemp leaves the OUTSIDE directory's mode unchanged",
+    { skip: process.platform === "win32" ? "POSIX mode semantics: on Windows the dir inherits user-profile ACLs and chmod does not follow a junction" : false },
+    async () => {
+      const { createStagingDir } = await importDist("mcp/image-harvest.js");
+      const outside = tmp("pp-img-outside-");
+      chmodSync(outside, 0o755);
+      const parent = join(tmp("pp-img-stagebase-"), "image-staging");
+      const r = createStagingDir(parent, { afterMkdtemp: substituteAllocatedWithLink(outside) });
+      assert.equal(r.ok, false);
+      assert.equal(statSync(outside).mode & 0o777, 0o755, "the outside directory's permissions were not changed");
+    },
+  );
+
+  test(
+    "createStagingDir (POSIX): an allocated dir that is not mode 0700 is refused at the call site",
+    { skip: process.platform === "win32" ? "POSIX mode semantics: on Windows the dir inherits user-profile ACLs" : false },
+    async () => {
+      const { createStagingDir } = await importDist("mcp/image-harvest.js");
+      const parent = join(tmp("pp-img-stagebase-"), "image-staging");
+      const r = createStagingDir(parent, { afterMkdtemp: (allocated) => chmodSync(allocated, 0o755) });
+      assert.equal(r.ok, false);
+      assert.match(r.reason, /is not private to the daemon: mode is 0755, not 0700/);
+    },
+  );
+
+  test("stagingPrivacyProblem: POSIX requires exactly mode 0700 and the daemon's uid; Windows is exempt (inherits profile ACLs)", async () => {
+    const { stagingPrivacyProblem } = await importDist("mcp/image-harvest.js");
+    const dir = (mode, uid) => ({ mode: BigInt(0o040000 | mode), uid: BigInt(uid) });
+    assert.equal(stagingPrivacyProblem(dir(0o700, 1000), "linux", 1000), null);
+    assert.match(stagingPrivacyProblem(dir(0o755, 1000), "linux", 1000), /mode is 0755, not 0700/);
+    assert.match(stagingPrivacyProblem(dir(0o770, 1000), "darwin", 1000), /mode is 0770, not 0700/);
+    assert.match(stagingPrivacyProblem(dir(0o700, 0), "linux", 1000), /owner uid 0 is not the daemon's \(1000\)/);
+    assert.match(stagingPrivacyProblem(dir(0o700, 1000), "linux", undefined), /not the daemon's \(unknown\)/);
+    assert.equal(stagingPrivacyProblem(dir(0o777, 0), "win32", undefined), null);
+    // The real call site applies it: on POSIX a freshly created staging dir passes; everywhere it is created ok.
+    const { createStagingDir } = await importDist("mcp/image-harvest.js");
+    const r = createStagingDir(join(tmp("pp-img-stagebase-"), "image-staging"));
+    assert.equal(r.ok, true, r.reason);
+    assert.equal(stagingPrivacyProblem(statSync(r.staging.dirReal, { bigint: true }), process.platform, process.getuid?.()), null);
+  });
+
   test("createStagingDir refuses a linked staging parent; assertStagingIntact refuses a replaced staging dir", async () => {
     const { createStagingDir, assertStagingIntact } = await importDist("mcp/image-harvest.js");
     const escape = tmp("pp-img-escape-");
@@ -2793,6 +2855,15 @@ describe("pp_agy.generate_image", () => {
  *   unprocessed directories not recorded after a stop          -> 12 tests
  *   deleted list dropped from the stopped record               -> 5 tests (incl. thrown exception, unlink, rmdir)
  *   parent lstat failure thrown to the caller                  -> parent that cannot even be observed
+ *
+ * Operator decision "Remove chmod" (the pathname chmod of the allocated staging dir was REMOVED):
+ *   pathname chmod reintroduced before verification -> link substituted after mkdtemp (structural no-chmod guard;
+ *                                                      on POSIX also the outside-mode test, skipped on win32)
+ *   mode check dropped from stagingPrivacyProblem    -> stagingPrivacyProblem
+ *   owner uid check dropped                          -> stagingPrivacyProblem
+ *   NOTE (disclosed, platform-bound): dropping the privacy check at the createStagingDir call site stays GREEN on
+ *   this Windows host — the check is a no-op on win32 by design; it is covered by the POSIX-only fixture
+ *   "an allocated dir that is not mode 0700 is refused at the call site" (skipped here with an explicit message).
  *   NOT FALSIFIABLE (disclosed): re-validating the RE-ENCODED output with acceptPng — pngjs always emits a valid PNG, so
  *   no fixture can make that defence-in-depth check fire without replacing the encoder.
  *   NOTE: removing only the link/type clause of the output_dir check stays GREEN — it is subsumed, not missing:

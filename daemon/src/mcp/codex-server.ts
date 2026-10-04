@@ -1083,8 +1083,9 @@ const TOOLS = [
       "component created for it that is one, or whose realpath is not the pinned existing ancestor plus the created names) is status invalid_output_dir, checked " +
       "before the codex turn; each created component's parent is identity-checked before its mkdir. " +
       "WRITES: no content byte is ever written through a path inside output_dir. Each image (already validated, and a re-encoded one validated again) is written " +
-      "into a private per-call staging directory the daemon owns (PP_HOME/.pair-programmer/image-staging/<mkdtemp>, mode 0700 on POSIX; refused if it is a link " +
-      "or its identity changes) and verified there (path still the exclusively-created file by dev/ino and size, realpath inside staging, bytes read back " +
+      "into a private per-call staging directory the daemon owns (PP_HOME/.pair-programmer/image-staging/<mkdtemp>; mkdtemp creates it 0700 on POSIX and nothing is " +
+      "changed or written through its path before it is verified: refused if it is a link, resolves outside the staging parent or its identity changes, " +
+      "and on POSIX — checked after that — unless it is exactly mode 0700 and owned by the daemon's uid; on Windows it inherits the user-profile ACLs) and verified there (path still the exclusively-created file by dev/ino and size, realpath inside staging, bytes read back " +
       "through the fd equal the image). It then reaches output_dir by ONE exclusive hand-off per candidate name: a HARD LINK of the staged file (a link never " +
       "follows or replaces an existing entry — file, symlink or dangling symlink — so an occupied name is skipped and the next is tried). FAIL CLOSED: there is " +
       "no copy fallback, because every copy primitive can follow a link at the destination (on Windows even an exclusive copy follows a dangling symlink); if " +

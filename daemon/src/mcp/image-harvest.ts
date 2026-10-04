@@ -27,7 +27,6 @@ import {
   opendirSync,
   mkdirSync,
   mkdtempSync,
-  chmodSync,
   unlinkSync,
   rmdirSync,
   renameSync,
@@ -1064,11 +1063,32 @@ export type StagingDir = { dirReal: string; id: FsIdentity };
 export type StagingHooks = { afterMkdtemp?: (dir: string) => void };
 
 /**
+ * POSIX only: the staging directory must be private to the daemon — exactly
+ * mode 0700 and owned by the daemon's uid. Returns the refusal reason, or null
+ * when acceptable. On Windows there is no POSIX mode: the directory inherits
+ * the user profile's ACLs, so this check does not apply there.
+ */
+export function stagingPrivacyProblem(
+  st: { mode: number | bigint; uid: number | bigint },
+  platform: NodeJS.Platform,
+  daemonUid: number | undefined,
+): string | null {
+  if (platform === "win32") return null;
+  const mode = Number(st.mode) & 0o777;
+  if (mode !== 0o700) return `mode is 0${mode.toString(8)}, not 0700`;
+  if (daemonUid === undefined || Number(st.uid) !== daemonUid) return `owner uid ${Number(st.uid)} is not the daemon's (${daemonUid ?? "unknown"})`;
+  return null;
+}
+
+/**
  * Create the per-call staging directory under the daemon-owned `parent`
- * (PP_HOME/.pair-programmer/image-staging): `mkdtemp`, mode 0700 on POSIX.
- * Refused if `parent` or the new directory is a link, if the new directory's
- * realpath is not a direct child of the parent's, or if its identity changes
- * between lstat and realpath.
+ * (PP_HOME/.pair-programmer/image-staging) with `mkdtemp`, which creates it
+ * mode 0700 on POSIX. Nothing is changed or written through the path before it
+ * is verified: refused if `parent` or the new directory is a link, if the new
+ * directory's realpath is not a direct child of the parent's, if its identity
+ * changes between lstat and realpath, or — on POSIX, checked only after that
+ * verification — if it is not exactly mode 0700 and owned by the daemon's uid.
+ * On Windows it inherits the user profile's ACLs.
  *
  * Nothing is ever deleted during a call: the staging directory (and anything
  * staged in it) is RETAINED by design when the call ends, and is removed later
@@ -1095,13 +1115,17 @@ export function createStagingDir(
     const parentReal = realpathSync.native(parent);
     allocated = mkdtempSync(join(parentReal, "gi-"));
     hooks.afterMkdtemp?.(allocated);
-    if (process.platform !== "win32") chmodSync(allocated, 0o700);
+    // No pathname chmod: it would follow a link substituted after mkdtemp and
+    // change an outside directory before verification. mkdtemp already
+    // creates the directory 0700; that is verified below, after the identity.
     const st = lstatSync(allocated, { bigint: true });
     if (st.isSymbolicLink() || !st.isDirectory()) return fail(`staging directory ${allocated} is not a plain directory.`);
     const dirReal = realpathSync.native(allocated);
     if (!isDirectChildReal(parentReal, dirReal)) return fail(`staging directory resolves to ${dirReal}, outside ${parentReal}.`);
     const id = { dev: st.dev, ino: st.ino };
     assertDirIdentity(dirReal, id, "staging directory");
+    const privacy = stagingPrivacyProblem(st, process.platform, process.getuid?.());
+    if (privacy) return fail(`staging directory ${dirReal} is not private to the daemon: ${privacy}.`);
     return { ok: true, staging: { dirReal, id } };
   } catch (err) {
     return fail(`could not create the staging directory: ${(err as Error).message}.`);
