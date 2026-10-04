@@ -77,6 +77,70 @@ const CritiqueSchema = z.object({
   timeout_ms:       z.number().int().positive().optional(),
 });
 
+/**
+ * `generate_image` — see the "Real probe" note above `agyGenerateImage` for
+ * why this always returns `unsupported`. Accepts the same option surface as
+ * `pp_codex.generate_image` so a caller can try one vendor then the other
+ * without reshaping the request.
+ */
+const GenerateImageSchema = z.object({
+  prompt:            z.string().min(1),
+  cwd:               z.string().min(1),
+  model:             z.string().optional(),
+  output_dir:        z.string().min(1),
+  max_dimension:     z.number().int().min(256).max(4096).default(768),
+  byte_budget_bytes: z.number().int().positive().max(32 * 1024 * 1024).default(300 * 1024),
+  timeout_ms:        z.number().int().positive().optional(),
+});
+
+export type AgyGenerateImageResult = {
+  status: "unsupported";
+  reason: string;
+};
+
+/**
+ * Real probe (run once, 2026-09-17, headless): a single `agy exec` turn was
+ * asked to draw a red circle and save it as a PNG in the caller's cwd.
+ *
+ *   Command: agy --model gemini-3.8-flash-medium --sandbox
+ *     --dangerously-skip-permissions --print-timeout 150s
+ *     --input-format stream-json --output-format stream-json -p ""
+ *     (prompt on stdin as the stream-json {"event":"user",...} envelope)
+ *   Duration: 146s, exit 0, result.status = "SUCCESS".
+ *
+ * agy DID write a real, valid 100x100 PNG — but NOT to the requested cwd. It
+ * landed in a single global, non-session-scoped scratch directory
+ * (`~/.gemini/antigravity-cli/scratch/<name-the-model-chose>.png`), shared by
+ * every agy conversation on the machine, with the filename chosen freely by
+ * the model and reported only as free-form prose in its text response (no
+ * structured tool-call envelope to parse it from reliably).
+ *
+ * Unlike codex — which reports a per-turn `session_id` used to harvest
+ * `~/.codex/generated_images/<session-id>/` deterministically — agy's stdout
+ * carries no equivalent scoping handle. A harvester here would have to either
+ * (a) scan the shared scratch dir by newest mtime, which is exactly the
+ * concurrent-session race this task's codex contract explicitly forbids, or
+ * (b) regex-parse the model's prose for a path, which is not a contract any
+ * caller can rely on. So this tool returns `unsupported` rather than
+ * implementing an unsafe harvest.
+ */
+export async function agyGenerateImage(
+  _args: z.infer<typeof GenerateImageSchema>,
+): Promise<AgyGenerateImageResult> {
+  return {
+    status: "unsupported",
+    reason:
+      "agy (Antigravity CLI) can write a real PNG file via a headless turn, but only into a single " +
+      "global, non-session-scoped scratch directory (~/.gemini/antigravity-cli/scratch/) shared by every " +
+      "agy conversation on the machine, with the output filename chosen freely by the model and reported " +
+      "only in free-form prose. There is no session id or other scoping handle in agy's stdout to harvest " +
+      "deterministically (verified against a real probe, agy 1.2.5, 2026-09-17) — the only ways to locate " +
+      "the file would be scanning by newest mtime (races a concurrent agy session) or regex-parsing prose " +
+      "(unreliable). Use pp_codex.generate_image instead; callers should degrade to it rather than block " +
+      "on this tool.",
+  };
+}
+
 type AntigravityResult = {
   text: string;
   parsed?: unknown;
@@ -469,6 +533,16 @@ const TOOLS = [
       "Run the Antigravity CLI (agy) in headless mode against a working directory. Returns text plus token counts and cost. Pass output_schema (JSON Schema object) to ask for structured JSON. Untrusted inputs are wrapped in a no-instructions XML envelope.",
     schema: GenerateSchema,
     handler: (args: unknown) => agyGenerate(GenerateSchema.parse(args)),
+  },
+  {
+    name: "generate_image",
+    description:
+      "ALWAYS returns { status: \"unsupported\", reason }. A real headless probe (agy 1.2.5, 2026-09-17) confirmed agy can write a valid PNG, but only " +
+      "into a single global, non-session-scoped scratch directory (~/.gemini/antigravity-cli/scratch/) shared by every agy conversation, with the " +
+      "filename chosen freely by the model and reported only in prose — there is no session id or other scoping handle to harvest it deterministically " +
+      "without racing a concurrent agy session or parsing unreliable prose. Callers should degrade to pp_codex.generate_image instead of hanging.",
+    schema: GenerateImageSchema,
+    handler: (args: unknown) => agyGenerateImage(GenerateImageSchema.parse(args)),
   },
   {
     name: "critique",

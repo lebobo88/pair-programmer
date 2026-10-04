@@ -5,8 +5,9 @@ import {
   ListToolsRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
-import { mkdirSync, writeFileSync, readFileSync, existsSync } from "node:fs";
+import { mkdirSync, writeFileSync, readFileSync, existsSync, closeSync } from "node:fs";
 import { join, dirname, resolve } from "node:path";
+import { homedir } from "node:os";
 import { spawnSync } from "node:child_process";
 import { nanoid } from "nanoid";
 import { errorContent, jsonContent, zodToJsonSchema } from "./helpers.js";
@@ -14,9 +15,10 @@ import { extractLastJsonValue, buildCritiqueOutputSchema } from "./critique-sche
 import { stabilizeCritiqueResult } from "./critique-bridge.js";
 import { wrapUntrusted } from "../security/untrusted-envelope.js";
 import { computeCost } from "../util/prices.js";
-import { SANDBOX_DIR, ensureDirs } from "../util/paths.js";
+import { SANDBOX_DIR, ROOT_DIR, ensureDirs } from "../util/paths.js";
 import { log } from "../util/logger.js";
 import {
+  DEFAULT_CLI_TIMEOUT_MS,
   DEFAULT_MODELS,
   JUDGE_REASONING_EFFORTS,
   JUDGE_OVERRIDE_SOURCES,
@@ -24,7 +26,36 @@ import {
   type JudgeReasoningEffort,
   type JudgeOverrideSource,
 } from "../config.js";
-import { runCliWithRetry, type CliAttempt } from "./cli-runner.js";
+import { runCliWithRetry, type CliAttempt, type CliRunOptions, type CliRunResult } from "./cli-runner.js";
+import {
+  DOWNSCALE_FLOOR_PX,
+  MAX_DIMENSION_PX,
+  MAX_SOURCE_BYTES,
+  MAX_DECODED_PIXELS_PER_IMAGE,
+  MAX_IMAGES_PER_CALL,
+  MAX_DIR_ENTRIES_SCANNED,
+  MAX_DIR_ENTRIES_PER_CALL,
+  MAX_POLL_OPENS_PER_CALL,
+  MAX_OUTPUT_NAME_COLLISIONS,
+  HARVEST_POLL_TIMEOUT_MS,
+  STALE_MTIME_SLACK_MS,
+  isValidSessionId,
+  pollForSettledPngs,
+  openVerifiedFile,
+  assertMatchesObservation,
+  assertFdUnchanged,
+  readFdFully,
+  acceptPng,
+  prepareOutputDir,
+  writeImageSafely,
+  createStagingDir,
+  sweepStagingDirs,
+  type StagingDir,
+  type WriteHooks,
+  type FsIdentity,
+  downscaleImageToFit,
+  type FileOpenHooks,
+} from "./image-harvest.js";
 import { shutdownAndExit } from "../util/shutdown.js";
 import { getSession, setSession, synthesizeRecap } from "../orchestrator/sub-cli-sessions.js";
 
@@ -69,6 +100,41 @@ const GenerateSchema = z.object({
   })).optional(),
     skip_recap:       z.boolean().optional(),
     reasoning_effort: z.enum(["minimal", "low", "medium", "high", "xhigh"]).optional(),
+});
+
+/**
+ * `generate_image` — run ONE fresh codex exec turn and harvest the PNGs it
+ * wrote to `~/.codex/generated_images/<session-id>/`, downscaled to fit a byte
+ * budget, into a caller-supplied output directory.
+ *
+ * `output_dir` is REQUIRED (not defaulted) — the harvested files are copies,
+ * and silently choosing a location for them would surprise a caller more
+ * than an explicit argument.
+ */
+/**
+ * `timeout_ms` ceiling for `generate_image`. A larger value is CLAMPED (not
+ * rejected) so a caller cannot hold a CLI process and daemon worker slot open
+ * indefinitely. With the runner's retry disabled for this tool, this is also
+ * the bound on the codex turn's wall clock.
+ */
+export const MAX_GENERATE_IMAGE_TIMEOUT_MS = 15 * 60 * 1000;
+
+/** Effective codex-turn timeout for `generate_image`: default when omitted, clamped to the ceiling. */
+export function clampImageTimeoutMs(requested: number | undefined): number {
+  return Math.min(requested ?? DEFAULT_CLI_TIMEOUT_MS, MAX_GENERATE_IMAGE_TIMEOUT_MS);
+}
+
+export const GenerateImageSchema = z.object({
+  prompt:            z.string().min(1),
+  cwd:               z.string().min(1),
+  model:             z.string().default(DEFAULT_MODELS.codex_generate),
+  output_dir:        z.string().min(1),
+  /** Longest side a returned image is fit within. Outside [256, 4096] is REJECTED, not clamped. */
+  max_dimension:     z.number().int().min(DOWNSCALE_FLOOR_PX).max(MAX_DIMENSION_PX).default(768),
+  /** Byte budget per returned file. Bounded by the per-source size cap. */
+  byte_budget_bytes: z.number().int().positive().max(MAX_SOURCE_BYTES).default(300 * 1024),
+  /** Clamped (not rejected) to MAX_GENERATE_IMAGE_TIMEOUT_MS by `clampImageTimeoutMs`. */
+  timeout_ms:        z.number().int().positive().optional(),
 });
 
 /**
@@ -142,6 +208,22 @@ type CodexGenerateInternalOptions = {
    * Production code never sets this; the default path is always `codexGenerate`.
    */
   _invoke?: (genArgs: z.infer<typeof GenerateSchema>) => Promise<CodexResult>;
+  /**
+   * When true, this call NEVER resumes an existing `(cwd, "codex")` session
+   * and NEVER persists its own returned session id for future resumption.
+   * `generate_image` sets this — image-harvest turns must be hermetic: a
+   * resumed turn silently reuses (and can re-report) a PRIOR turn's session
+   * directory, which is exactly the stale-image path this flag closes.
+   */
+  fresh_session?: boolean;
+  /** Forwarded to `runCliWithRetry`; `generate_image` passes false (single attempt). */
+  retry_on_transient?: boolean;
+  /**
+   * Test-only DI seam: replaces `runCliWithRetry` so a test can drive the REAL
+   * `codexGenerate` (session lookup, argv construction, session persistence)
+   * without spawning the CLI. Production code never sets this.
+   */
+  _runCli?: (opts: CliRunOptions) => Promise<CliRunResult>;
 };
 
 /**
@@ -277,7 +359,9 @@ async function codexGenerate(
 
   // Session continuity: resume the prior Codex session for this project if
   // one exists, otherwise inject a recap so cold starts have grounding.
-  const existing = getSession(args.cwd, "codex");
+  // `fresh_session` (generate_image) bypasses this entirely — see the option's
+  // doc comment.
+  const existing = opts.fresh_session ? null : getSession(args.cwd, "codex");
   let reasoningEffort = args.reasoning_effort;
   // Pin reasoning effort per-invocation when the caller specifies one. The
   // user's ~/.codex/config.toml has `model_reasoning_effort = "xhigh"` as a
@@ -366,13 +450,14 @@ async function codexGenerate(
     linkedWorktreeCommonDir,
   });
 
-  const run = await runCliWithRetry({
+  const run = await (opts._runCli ?? runCliWithRetry)({
     bin: "codex",
     cliArgs,
     cwd: args.cwd,
     vendor: "codex",
     input: prompt,
     timeout_ms: args.timeout_ms,
+    ...(opts.retry_on_transient === false ? { retry_on_transient: false } : {}),
   });
 
   const parsed = parseCodexJsonl(run.stdout);
@@ -382,8 +467,10 @@ async function codexGenerate(
   let text         = parsed.text ?? run.stdout;
 
   // Capture session id for continuity. Codex emits this in the session_start
-  // event; if we got one, store it under (project_path, "codex").
-  if (parsed.session_id) {
+  // event; if we got one, store it under (project_path, "codex"). Skipped
+  // under fresh_session so an image-harvest turn's session id can never be
+  // resumed by a later, unrelated `generate`/`critique` call either.
+  if (parsed.session_id && !opts.fresh_session) {
     setSession(args.cwd, "codex", parsed.session_id);
   }
 
@@ -458,6 +545,294 @@ async function codexGenerate(
   // (AGY-SILENT-VENDOR-FALLTHROUGH, run_jc1UxeCMvyZR)
   return result;
 }
+
+// ─── generate_image ────────────────────────────────────────────────────────
+
+export type GeneratedImage = {
+  /** Absolute (real) path of the copy written into the caller's output_dir. */
+  path: string;
+  bytes: number;
+  width: number;
+  height: number;
+  generator: "codex";
+  model: string;
+  prompt: string;
+};
+
+/** A harvested PNG that could not be brought under `byte_budget_bytes` even at DOWNSCALE_FLOOR_PX. */
+export type OverBudgetImage = {
+  file: string;
+  path: string;
+  bytes: number;
+  width: number;
+  height: number;
+};
+
+/** A session-directory entry that could not be turned into a returned image, and why. */
+export type ImageFailure = {
+  file: string;
+  reason: string;
+};
+
+export type CodexGenerateImageResult = (
+  | {
+      /**
+       * "ok": at least one image, nothing over budget, no failures.
+       * "partial": something was written, but at least one image is over
+       * budget and/or failed — check `over_budget` and `failures`.
+       * "failed": nothing was written; `failures` says why per file.
+       */
+      status: "ok" | "partial" | "failed";
+      images: GeneratedImage[];
+      over_budget: OverBudgetImage[];
+      failures: ImageFailure[];
+      session_id: string;
+      /** Session-directory entries visited (never more than MAX_DIR_ENTRIES_SCANNED). */
+      scanned_entries: number;
+      /** True when the session directory held more entries than were examined. */
+      enumeration_truncated: boolean;
+      tokens_in: number;
+      tokens_out: number;
+      cost_usd: number;
+      wall_ms: number;
+    }
+  | { status: "no_session_id"; reason: string }
+  | { status: "invalid_session_id"; reason: string; session_id: string }
+  | { status: "invalid_session_dir"; reason: string; session_id: string }
+  | { status: "invalid_output_dir"; reason: string }
+  | { status: "cli_failure"; reason: string; exit_code: number; session_id?: string }
+  | { status: "empty_session_dir"; reason: string; session_id: string }
+  | { status: "staging_unavailable"; reason: string }
+) & {
+  /**
+   * The per-call staging directory. RETAINED by design: nothing is deleted
+   * during a call; stale staging directories are removed by the conservative
+   * sweep at the start of a later call.
+   */
+  staging_dir?: string;
+};
+
+export type CodexGenerateImageInternalOptions = {
+  /** Test-only DI seam: overrides PP_HOME/.pair-programmer/image-staging. */
+  _stagingParent?: string;
+  /** Test-only DI seam: fired around staging, hand-off and their verification. */
+  _writeHooks?: WriteHooks;
+  /**
+   * Test-only DI seam: replaces the whole codex turn (`codexGenerate`) so a
+   * test controls the reported `session_id` without spawning the CLI.
+   */
+  _invoke?: (genArgs: z.infer<typeof GenerateSchema>) => Promise<CodexResult>;
+  /**
+   * Test-only DI seam: keeps the REAL `codexGenerate` but replaces the CLI
+   * runner, so a test can prove the fresh-session / single-attempt wiring.
+   */
+  _runCli?: (opts: CliRunOptions) => Promise<CliRunResult>;
+  /** Test-only DI seam: overrides `~/.codex/generated_images`. */
+  _imagesRoot?: string;
+  /** Test-only DI seam: fired around each source file's verified open. */
+  _fileHooks?: FileOpenHooks;
+};
+
+/**
+ * Run ONE fresh codex exec turn and harvest ONLY the PNGs codex wrote to
+ * `<imagesRoot>/<session-id>/` for THAT turn's reported session id.
+ *
+ * Never scans the images root (no newest-mtime guess, no global snapshot):
+ * a concurrent codex session's directory is never read. A missing or unsafe
+ * session id is a structured failure. The turn is never resumed and never
+ * retried (`fresh_session`, `retry_on_transient: false`), and a non-zero exit
+ * is a hard failure rather than a harvest of whatever happens to be on disk.
+ * Files whose mtime pre-dates the call are stale carry-over and are refused.
+ */
+export async function codexGenerateImage(
+  rawArgs: z.input<typeof GenerateImageSchema>,
+  opts: CodexGenerateImageInternalOptions = {},
+): Promise<CodexGenerateImageResult> {
+  const args = GenerateImageSchema.parse(rawArgs);
+  const callStartMs = Date.now();
+
+  // Validate (and create) the destination BEFORE spending a codex turn.
+  const out = prepareOutputDir(args.output_dir);
+  if (!out.ok) return { status: "invalid_output_dir", reason: out.reason };
+
+  // Private, daemon-owned staging: every image is written and verified here
+  // first; output_dir only ever receives the single exclusive hand-off.
+  // Stale staging directories from EARLIER calls are swept conservatively
+  // first (skips and logs anything it cannot verify); this call's own staging
+  // directory is retained by design and never deleted during the call.
+  const stagingParent = opts._stagingParent ?? join(ROOT_DIR, "image-staging");
+  sweepStagingDirs(stagingParent);
+  const st = createStagingDir(stagingParent);
+  if (!st.ok) return { status: "staging_unavailable", reason: st.reason };
+  const result = await harvestIntoOutput(args, opts, out, st.staging, callStartMs);
+  result.staging_dir = st.staging.dirReal;
+  return result;
+}
+
+async function harvestIntoOutput(
+  args: z.infer<typeof GenerateImageSchema>,
+  opts: CodexGenerateImageInternalOptions,
+  out: { outReal: string; outId: FsIdentity },
+  staging: StagingDir,
+  callStartMs: number,
+): Promise<CodexGenerateImageResult> {
+  const genArgs: z.infer<typeof GenerateSchema> = {
+    prompt: args.prompt,
+    cwd: args.cwd,
+    model: args.model,
+    sandbox: "read-only",
+    skip_recap: true,
+    timeout_ms: clampImageTimeoutMs(args.timeout_ms),
+  };
+  const imagesRoot = opts._imagesRoot ?? join(homedir(), ".codex", "generated_images");
+  const invoker =
+    opts._invoke ??
+    ((ga: z.infer<typeof GenerateSchema>) =>
+      codexGenerate(ga, { fresh_session: true, retry_on_transient: false, _runCli: opts._runCli }));
+  const result = await invoker(genArgs);
+
+  if (result.exit_code !== 0) {
+    return {
+      status: "cli_failure",
+      reason: `codex exec exited with code ${result.exit_code}; refusing to harvest images from a failed/incomplete turn.`,
+      exit_code: result.exit_code,
+      session_id: result.session_id,
+    };
+  }
+  if (!result.session_id) {
+    return {
+      status: "no_session_id",
+      reason:
+        "codex exec did not report a session_id for this turn; refusing to guess a " +
+        "~/.codex/generated_images directory (scanning by newest mtime would risk " +
+        "harvesting a concurrent codex session's images).",
+    };
+  }
+  const sessionId: string = result.session_id;
+  if (!isValidSessionId(sessionId)) {
+    return {
+      status: "invalid_session_id",
+      reason: `codex reported a session_id ("${sessionId}") that does not match the expected hex/dash pattern; refusing to use it as a path segment.`,
+      session_id: sessionId,
+    };
+  }
+
+  const harvest = await pollForSettledPngs(imagesRoot, sessionId);
+  if (harvest.kind === "rejected") {
+    return { status: "invalid_session_dir", reason: harvest.reason, session_id: sessionId };
+  }
+  if (harvest.kind === "absent") {
+    return {
+      status: "empty_session_dir",
+      reason: `${harvest.reason} codex did not write an image this turn (polled for ${HARVEST_POLL_TIMEOUT_MS}ms).`,
+      session_id: sessionId,
+    };
+  }
+
+  const failures: ImageFailure[] = [
+    ...harvest.rejected.map(r => ({ file: r.name, reason: r.reason })),
+    ...harvest.unsettled.map(u => ({ file: u.name, reason: u.reason })),
+    ...harvest.overCap.map(file => ({ file, reason: `skipped: per-call image cap (${MAX_IMAGES_PER_CALL}) reached; not opened.` })),
+  ];
+  if (harvest.truncated) {
+    failures.push({
+      file: "*",
+      reason: `enumeration stopped after ${harvest.scanned} directory entries (per-poll cap ${MAX_DIR_ENTRIES_SCANNED}, per-call cap ${MAX_DIR_ENTRIES_PER_CALL}); the rest were not examined.`,
+    });
+  }
+  if (harvest.budgetExhausted) {
+    failures.push({
+      file: "*",
+      reason: `settle polling stopped early: per-call ${harvest.budgetExhausted} budget exhausted (${harvest.entriesExamined} entries examined, ${harvest.opens} opens).`,
+    });
+  }
+  const staleBefore = callStartMs - STALE_MTIME_SLACK_MS;
+  const fresh = harvest.settled.filter(s => s.obs.mtimeMs >= staleBefore);
+  const stale = harvest.settled.filter(s => s.obs.mtimeMs < staleBefore);
+  if (fresh.length === 0 && failures.length === 0) {
+    return {
+      status: "empty_session_dir",
+      reason:
+        stale.length > 0
+          ? `session directory ${harvest.dirReal} contains only files that pre-date this call (stale carry-over); no new images this turn.`
+          : `session directory ${harvest.dirReal} contains no PNG files (polled for ${HARVEST_POLL_TIMEOUT_MS}ms).`,
+      session_id: sessionId,
+    };
+  }
+  for (const s of stale) failures.push({ file: s.name, reason: "pre-dates this call (stale carry-over); not harvested." });
+
+  const images: GeneratedImage[] = [];
+  const overBudget: OverBudgetImage[] = [];
+  for (const { name, obs } of fresh) {
+    try {
+      const v = openVerifiedFile(harvest.dirReal, harvest.dirId, name, MAX_SOURCE_BYTES, opts._fileHooks);
+      if (!v.ok) {
+        failures.push({ file: name, reason: v.reason });
+        continue;
+      }
+      let raw: Buffer;
+      try {
+        // The file read must be the very file that settled (dev+ino, size,
+        // mtime), and must not change while it is read.
+        assertMatchesObservation(v, obs);
+        raw = readFdFully(v.fd, v.size);
+        opts._fileHooks?.afterRead?.(join(harvest.dirReal, name));
+        assertFdUnchanged(v.fd, obs);
+      } finally {
+        closeSync(v.fd);
+      }
+      // Acceptance gate for every file, including the verbatim copy: pixel cap
+      // (before any inflation), container rules, inflation bounded to the
+      // IHDR-implied size, then a full decode (e.g. palette indices).
+      const accepted = acceptPng(raw, MAX_DECODED_PIXELS_PER_IMAGE);
+      if (!accepted.ok) {
+        failures.push({ file: name, reason: `malformed PNG: ${accepted.reason}` });
+        continue;
+      }
+      const png = accepted.structure;
+      const provenance = { generator: "codex" as const, model: result.model, prompt: args.prompt };
+      if (raw.length <= args.byte_budget_bytes && Math.max(png.width, png.height) <= args.max_dimension) {
+        // Already within both bounds: copy the accepted bytes VERBATIM — no
+        // re-encode, so palette/grayscale/16-bit/interlaced survive.
+        const path = writeImageSafely(out.outReal, out.outId, staging, name, raw, MAX_OUTPUT_NAME_COLLISIONS, opts._writeHooks);
+        images.push({ path, bytes: raw.length, width: png.width, height: png.height, ...provenance });
+        continue;
+      }
+      const { buffer, width, height } = downscaleImageToFit(accepted.decoded, args.max_dimension, args.byte_budget_bytes);
+      // The re-encoded output passes the same acceptance gate before it is staged.
+      const reencoded = acceptPng(buffer, MAX_DECODED_PIXELS_PER_IMAGE);
+      if (!reencoded.ok) {
+        failures.push({ file: name, reason: `re-encoded image failed validation: ${reencoded.reason}` });
+        continue;
+      }
+      const path = writeImageSafely(out.outReal, out.outId, staging, name, buffer, MAX_OUTPUT_NAME_COLLISIONS, opts._writeHooks);
+      if (buffer.length > args.byte_budget_bytes) {
+        // Floor reached and still over budget: NEVER reported as ok.
+        overBudget.push({ file: name, path, bytes: buffer.length, width, height });
+      } else {
+        images.push({ path, bytes: buffer.length, width, height, ...provenance });
+      }
+    } catch (err) {
+      failures.push({ file: name, reason: `unexpected error: ${(err as Error).message}` });
+    }
+  }
+
+  const wroteSomething = images.length + overBudget.length > 0;
+  return {
+    status: !wroteSomething ? "failed" : overBudget.length === 0 && failures.length === 0 ? "ok" : "partial",
+    images,
+    over_budget: overBudget,
+    failures,
+    session_id: sessionId,
+    scanned_entries: harvest.scanned,
+    enumeration_truncated: harvest.truncated,
+    tokens_in: result.tokens_in,
+    tokens_out: result.tokens_out,
+    cost_usd: result.cost_usd,
+    wall_ms: result.wall_ms,
+  };
+}
+
 
 /**
  * Select the pinned critique model based on the escalate flag.
@@ -692,6 +1067,89 @@ const TOOLS = [
       "Run `codex exec` headless against a worktree. Returns text plus token counts and cost. Pass output_schema (JSON Schema object) to constrain the response. Untrusted inputs (file content) should go in `untrusted_inputs` — the daemon wraps them in a no-instructions XML envelope before passing to Codex. Default sandbox is read-only; promote to workspace-write only when the active stage is an editing stage.",
     schema: GenerateSchema,
     handler: (args: unknown) => codexGenerate(GenerateSchema.parse(args)),
+  },
+  {
+    name: "generate_image",
+    description:
+      "Run ONE fresh `codex exec` turn and harvest the PNGs it wrote for THAT turn's session into a caller-supplied output_dir, downscaled to a byte budget. " +
+      "Returns absolute file paths plus width/height/bytes/provenance (generator, model, prompt) — NEVER base64. " +
+      "HARVEST: codex writes images to `~/.codex/generated_images/<session-id>/`; only the directory of the session id codex reports for this turn is read — " +
+      "never a newest-mtime scan, never another session's directory. The session id must be a hex/dash single path segment (else status invalid_session_id); " +
+      "no reported id is status no_session_id. The turn is never resumed and never retried; a non-zero codex exit is status cli_failure. " +
+      "CONTAINMENT: containment is physical (realpath), not lexical. A session directory that is a symlink/junction or resolves outside the images root is " +
+      "status invalid_session_dir; the session directory's dev/ino seen by lstat must match its realpath's, and is re-checked on every file open. Each source file is opened, then the open fd is fstat-checked (regular file, size cap) and its dev/ino re-checked against an " +
+      "lstat of the path and its realpath confined to the session directory, with the session-dir identity and the path-vs-fd identity re-checked LAST, after " +
+      "all resolution; bytes are read from that fd only. An output_dir that is a symlink/junction (or a " +
+      "component created for it that is one, or whose realpath is not the pinned existing ancestor plus the created names) is status invalid_output_dir, checked " +
+      "before the codex turn; each created component's parent is identity-checked before its mkdir. " +
+      "WRITES: no content byte is ever written through a path inside output_dir. Each image (already validated, and a re-encoded one validated again) is written " +
+      "into a private per-call staging directory the daemon owns (PP_HOME/.pair-programmer/image-staging/<mkdtemp>. The staging PARENT is verified first by the one check the " +
+      "sweep also uses (plain directory, not a link, realpath resolving to the same dev/ino, and on POSIX exactly mode 0700 owned by the daemon's uid; " +
+      "created 0700 if absent, never chmod-ed — an unsafe parent makes the call return staging_unavailable and the sweep report parent_rejected), " +
+      "pinned, and re-checked right before mkdtemp; the new directory must be a direct child of the pinned parent. mkdtemp creates it 0700 on POSIX and nothing is " +
+      "changed or written through its path before it is verified: refused if it is a link, resolves outside the staging parent or its identity changes, " +
+      "and on POSIX — checked after that — unless it is exactly mode 0700 and owned by the daemon's uid; on Windows it inherits the user-profile ACLs) and verified there (path still the exclusively-created file by dev/ino and size, realpath inside staging, bytes read back " +
+      "through the fd equal the image). It then reaches output_dir by ONE exclusive hand-off per candidate name: a HARD LINK of the staged file (a link never " +
+      "follows or replaces an existing entry — file, symlink or dangling symlink — so an occupied name is skipped and the next is tried). FAIL CLOSED: there is " +
+      "no copy fallback, because every copy primitive can follow a link at the destination (on Windows even an exclusive copy follows a dangling symlink); if " +
+      "a hard link is impossible (output_dir on a different filesystem from PP_HOME, or a filesystem without hard links) that image fails and nothing is " +
+      "written into output_dir. The handed-off file is then verified through a fresh fd (regular file, the staged dev/ino, exact size, identical bytes) with all path " +
+      "resolution first and the identity checks last (non-link, same dev/ino as the fd; output_dir's dev/ino pinned at preparation, so a same-path replacement " +
+      "directory is refused). Nothing in output_dir is ever deleted, and NOTHING is deleted during a call at all: the call's staging directory (returned " +
+      "as staging_dir) is RETAINED by design, also when setup fails after it was allocated. At the start of each call, staging directories older than 24h " +
+      "are swept conservatively: the staging parent's realpath and dev/ino, and each staging directory's once moved aside, are bound and re-checked " +
+      "(resolution first, identity last) before EVERY rename, unlink and rmdir and after EVERY listing attempt (also a failed one) — if either was replaced (e.g. by a link) the whole sweep stops and " +
+      "nothing further is renamed or deleted; a directory is observed (non-link, plain directory, dev/ino, stale mtime), moved aside under a fresh " +
+      "random name and re-checked (identity, and still stale); then a pre-pass requires EVERY entry to be a non-link regular file older than 24h — if any " +
+      "is not, nothing in that directory is deleted; then each file is observed, moved aside under a fresh random name and re-checked (type, identity " +
+      "AND staleness) immediately before its unlink. Uniform rule: ANY detected substitution — a directory or file whose identity or type no longer " +
+      "matches what was observed (the directory is re-checked right before and right after its move-aside; each file against its pre-pass identity, " +
+      "and again after its move-aside), or an observed file that is gone — and ANY filesystem failure during cleanup (rename, unlink, rmdir, lstat, " +
+      "listing: ENOENT, EPERM, ENOTEMPTY or anything else; there is no error-and-continue path) stops the WHOLE sweep, with the exact deletions kept, " +
+      "the location reported as unknown and every " +
+      "unprocessed directory reported as stopped; a refresh (same inode, newer mtime) only stops deletion in that directory. Staging " +
+      "cleanup reports deleted files exactly; remaining entries are never enumerated: on EVERY exit of a directory's processing (removal, " +
+      "never-touched, skips, exceptions, binding failures, a failed final rmdir, a refused or unlistable parent) one record is returned and " +
+      "logged with the directory's original name, its current name (null when removed or when its location is unknown after a binding failure), " +
+      "the exact files the sweep unlinked from it (by the name each had when unlinked) and the outcome; every record except a successful " +
+      "removal (never-touched directories included) states only \"remaining entries left in place in <current>; not enumerated\" (or " +
+      "\"remaining entries left in place; location unknown; not enumerated\"); directories " +
+      "are removed only when empty (rmdir); every listing reads at most 200 entries, and a staging " +
+      "directory whose listing reaches 200 is skipped. RESIDUAL RISKS (stated, operator-accepted): (1) staging directories are retained until a later " +
+      "call sweeps them; Node has no handle-bound rename/unlink/rmdir, so a same-user process swapping a path inside the daemon-private staging parent " +
+      "(0700 on POSIX) in the instant between a re-check and the following syscall is not excluded. (2) Node has no " +
+      "openat, so if output_dir or an ancestor is swapped for a link in the instant before the link syscall, the finished image can land in the link target; " +
+      "that is detected and the image is refused; the staged object is truncated through the staging fd (reported as applying to the staged object " +
+      "only, or as FAILED with its content UNKNOWN), and the state of the object at the published name is reported as UNKNOWN — never claimed to be " +
+      "truncated, removed or safe. After a successful hand-off, any process with write access to output_dir can of course move, replace or modify the " +
+      "finished file. (3) The per-call staging directory is private to the daemon's own OS user (0700 on POSIX; user-profile ACLs on Windows). A process " +
+      "able to substitute files inside it already runs with the daemon's privileges, so a substitution there is an accepted residual. It is still " +
+      "detected: if the published inode does not equal the verified staged object, the result is a per-file failure and the published object's state " +
+      "is reported as UNKNOWN — never as truncated, removed, or safe. " +
+      "VALIDATION: every PNG — including one copied verbatim — must pass a full structure check (signature, IHDR length 13 with legal fields, every chunk CRC, " +
+      "PLTE rules incl. palette size, no unknown critical chunks, terminating IEND, no bytes after IEND). ONLY the four critical chunks IHDR, PLTE, IDAT " +
+      "and IEND are accepted: a PNG carrying ANY ancillary chunk (gAMA, cHRM, sRGB, iCCP, tEXt, zTXt, iTXt, eXIf, pHYs, tIME, tRNS, bKGD, …) is " +
+      "REFUSED, because the harvester does not validate metadata payloads. Its image data must inflate — with the inflater capped at the exact size IHDR " +
+      "implies, after the 4096x4096 pixel cap — to exactly that size with valid scanline filter bytes (unused padding after the zlib stream is ignored, per PNG §11.2.3), so a decompression bomb is refused and the later " +
+      "decode is bounded by the same size; it must then fully decode (e.g. every palette index within PLTE) before it is copied or downscaled. A file is harvested only once settled: the same dev/ino, size and mtime on two consecutive polls and ending in IEND; that observation must match the " +
+      "fd at the final open and still match after the read, so a settled file swapped for another is refused. " +
+      "Files whose mtime pre-dates the call are stale and refused. Malformed, unsettled, stale, linked or capped files are per-file `failures`, not a whole-call failure. " +
+      "LIMITS: max_dimension must be in [256, 4096] (default 768; outside that range is REJECTED, not clamped). byte_budget_bytes default 300KB, max 32MiB. " +
+      "Settle polling: at most 30 polls per call (hard cap), 100ms apart, and no poll starts after the 3s deadline. Budgets are CUMULATIVE per call " +
+      "across all polls: each enumeration examines at most 200 session-directory entries and reads at most one more to detect truncation, and at most " +
+      "1000 entries are READ per call, probes included (more sets enumeration_truncated / a budget failure); at most 20 distinct PNG NAMES are ever opened; each name is bound to " +
+      "the first file identity seen under it and refused once that changes, so at most 40 distinct file OBJECTS are opened while polling and at most 20 " +
+      "more at the final reads (a final-read object that is not the settled one is refused, never read into output) — at most 60 objects per call; at " +
+      "most 180 open ATTEMPTS while polling plus at most 20 final reads (200 per call); exhausting a budget stops polling and reports what had not settled. Each PNG is at most 32MiB " +
+      "(checked by fstat before reading) and 4096x4096 pixels (checked from IHDR before decoding); at most 100 alternative names are tried on an output name " +
+      "collision. Downscaling starts directly at min(max_dimension, longest side) and halves toward the 256px floor: at most 5 encodes per image. " +
+      "An image already within both bounds is copied byte-for-byte. One still over budget at the floor is written but listed in `over_budget` and the status is " +
+      "\"partial\", never \"ok\". status: ok (all images clean) | partial (something written, plus over_budget/failures) | failed (nothing written). " +
+      "WORST-CASE WALL CLOCK: one codex attempt bounded by timeout_ms (default 5 minutes; larger values are CLAMPED to 15 minutes; the runner's transient " +
+      "retry is disabled for this tool), plus a git worktree probe capped at 5s, plus settle polling (no poll starts after 3s; the last poll's own work " +
+      "may finish after it), plus the capped image processing above.",
+    schema: GenerateImageSchema,
+    handler: (args: unknown) => codexGenerateImage(GenerateImageSchema.parse(args)),
   },
   {
     name: "critique",
