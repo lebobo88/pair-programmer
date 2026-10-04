@@ -1083,7 +1083,10 @@ const TOOLS = [
       "component created for it that is one, or whose realpath is not the pinned existing ancestor plus the created names) is status invalid_output_dir, checked " +
       "before the codex turn; each created component's parent is identity-checked before its mkdir. " +
       "WRITES: no content byte is ever written through a path inside output_dir. Each image (already validated, and a re-encoded one validated again) is written " +
-      "into a private per-call staging directory the daemon owns (PP_HOME/.pair-programmer/image-staging/<mkdtemp>; mkdtemp creates it 0700 on POSIX and nothing is " +
+      "into a private per-call staging directory the daemon owns (PP_HOME/.pair-programmer/image-staging/<mkdtemp>. The staging PARENT is verified first by the one check the " +
+      "sweep also uses (plain directory, not a link, realpath resolving to the same dev/ino, and on POSIX exactly mode 0700 owned by the daemon's uid; " +
+      "created 0700 if absent, never chmod-ed — an unsafe parent makes the call return staging_unavailable and the sweep report parent_rejected), " +
+      "pinned, and re-checked right before mkdtemp; the new directory must be a direct child of the pinned parent. mkdtemp creates it 0700 on POSIX and nothing is " +
       "changed or written through its path before it is verified: refused if it is a link, resolves outside the staging parent or its identity changes, " +
       "and on POSIX — checked after that — unless it is exactly mode 0700 and owned by the daemon's uid; on Windows it inherits the user-profile ACLs) and verified there (path still the exclusively-created file by dev/ino and size, realpath inside staging, bytes read back " +
       "through the fd equal the image). It then reaches output_dir by ONE exclusive hand-off per candidate name: a HARD LINK of the staged file (a link never " +

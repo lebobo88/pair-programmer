@@ -1497,6 +1497,107 @@ describe("pp_codex.generate_image: private staging and exclusive hand-off", () =
     },
   );
 
+  test("staging PARENT privacy (unit): a 0777 parent and a parent owned by another uid are refused", async () => {
+    const { stagingPrivacyProblem } = await importDist("mcp/image-harvest.js");
+    const dir = (mode, uid) => ({ mode: BigInt(0o040000 | mode), uid: BigInt(uid) });
+    assert.match(stagingPrivacyProblem(dir(0o777, 1000), "linux", 1000), /mode is 0777, not 0700/);
+    assert.match(stagingPrivacyProblem(dir(0o1777, 1000), "linux", 1000), /mode is 0777, not 0700/, "sticky bit does not make a shared parent private");
+    assert.match(stagingPrivacyProblem(dir(0o700, 2000), "linux", 1000), /owner uid 2000 is not the daemon's \(1000\)/);
+  });
+
+  /** A real directory that is NOT 0700 on this host: 0666/0777 on Windows by nature, chmod 0777 on POSIX (a test fixture, not the code under test). */
+  const sharedParent = () => {
+    const parent = join(tmp("pp-img-stagebase-"), "image-staging");
+    mkdirSync(parent, { recursive: true });
+    if (process.platform !== "win32") chmodSync(parent, 0o777);
+    return parent;
+  };
+  const posixEnvFor = (p) => ({ platform: "linux", uid: Number(lstatSync(p, { bigint: true }).uid) });
+
+  test("staging PARENT privacy (all platforms, POSIX rules injected): BOTH createStagingDir and the sweep refuse a non-0700 parent through the shared check", async () => {
+    const { createStagingDir, verifyStagingParent, remainingStatement } = await importDist("mcp/image-harvest.js");
+    const parent = sharedParent();
+    const env = posixEnvFor(parent);
+    const v = verifyStagingParent(parent, false, env);
+    assert.equal(v.ok, false);
+    assert.match(v.reason, /staging parent .* is not private to the daemon: mode is 0\d+, not 0700/);
+    const r = createStagingDir(parent, { privacyEnv: env });
+    assert.equal(r.ok, false);
+    assert.match(r.reason, /staging parent .* is not private to the daemon/);
+    assert.deepEqual(readdirSync(parent), [], "nothing allocated in an unsafe parent");
+    mkdirSync(join(parent, "gi-old"));
+    ageTree(join(parent, "gi-old"));
+    const { report, logs, all } = await sweepLogged(parent, { privacyEnv: env });
+    assert.equal(all.length, 1);
+    assert.equal(all[0].outcome, "parent_rejected");
+    assert.equal(all[0].current, null);
+    assert.match(all[0].reason, /sweep STOPPED \(fail closed\): staging parent .* is not private to the daemon/);
+    assertRecordContract(all[0], logs, remainingStatement);
+    assert.deepEqual(report.removed, []);
+    assert.ok(statSync(join(parent, "gi-old")).isDirectory(), "nothing swept in an unsafe parent");
+    // The same parent passes under the host's own rules on Windows (profile ACLs), so the refusal above is the POSIX rule.
+    if (process.platform === "win32") assert.equal(verifyStagingParent(parent, false).ok, true);
+  });
+
+  test(
+    "staging PARENT privacy (POSIX, real host rules): a 0777 parent is refused by createStagingDir and the sweep",
+    { skip: process.platform === "win32" ? "POSIX mode/uid semantics: on Windows the parent inherits user-profile ACLs" : false },
+    async () => {
+      const { createStagingDir } = await importDist("mcp/image-harvest.js");
+      const parent = sharedParent();
+      const r = createStagingDir(parent);
+      assert.equal(r.ok, false);
+      assert.match(r.reason, /is not private to the daemon: mode is 0777, not 0700/);
+      const { all } = await sweepLogged(parent);
+      assert.equal(all[0]?.outcome, "parent_rejected");
+    },
+  );
+
+  test("createStagingDir: an ABSENT parent is created 0700 and verified (no chmod); POSIX rules then accept it", async () => {
+    const { createStagingDir, verifyStagingParent } = await importDist("mcp/image-harvest.js");
+    const parent = join(tmp("pp-img-stagebase-"), "nested", "image-staging");
+    const r = createStagingDir(parent);
+    assert.equal(r.ok, true, r.reason);
+    assert.equal(verifyStagingParent(parent, false).ok, true);
+    if (process.platform !== "win32") assert.equal(statSync(parent).mode & 0o777, 0o700);
+  });
+
+  test("verifyStagingParent: a parent swapped for a junction between its lstat and its realpath is refused (resolved identity checked)", async () => {
+    const { verifyStagingParent } = await importDist("mcp/image-harvest.js");
+    const outside = tmp("pp-img-outside-");
+    const parent = join(tmp("pp-img-stagebase-"), "image-staging");
+    mkdirSync(parent, { recursive: true, mode: 0o700 });
+    let swapped = false;
+    const v = verifyStagingParent(parent, false, undefined, (p) => {
+      swapped = true;
+      renameSync(p, `${p}-orig`);
+      symlinkSync(outside, p, "junction");
+    });
+    assert.equal(swapped, true, "precondition");
+    assert.equal(v.ok, false);
+    assert.match(v.reason, /resolves to .*, which is not the directory observed/);
+  });
+
+  test("createStagingDir: the staging PARENT swapped for a junction between its verification and mkdtemp is refused — nothing created outside", async () => {
+    const { createStagingDir } = await importDist("mcp/image-harvest.js");
+    const outside = tmp("pp-img-outside-");
+    const parent = join(tmp("pp-img-stagebase-"), "image-staging");
+    mkdirSync(parent, { recursive: true, mode: 0o700 });
+    let swapped = false;
+    const r = createStagingDir(parent, {
+      beforeMkdtemp: (parentReal) => {
+        swapped = true;
+        renameSync(parentReal, `${parentReal}-orig`);
+        symlinkSync(outside, parentReal, "junction");
+      },
+    });
+    assert.equal(swapped, true, "precondition: the parent really was swapped after its verification");
+    assert.equal(r.ok, false);
+    assert.match(r.reason, /staging parent .* (no longer resolves to itself|was replaced)/);
+    assert.deepEqual(readdirSync(outside), [], "nothing was created behind the link");
+    assert.deepEqual(readdirSync(join(real(dirname(parent)), "image-staging-orig")), [], "nothing allocated in the original either");
+  });
+
   test("stagingPrivacyProblem: POSIX requires exactly mode 0700 and the daemon's uid; Windows is exempt (inherits profile ACLs)", async () => {
     const { stagingPrivacyProblem } = await importDist("mcp/image-harvest.js");
     const dir = (mode, uid) => ({ mode: BigInt(0o040000 | mode), uid: BigInt(uid) });
@@ -2214,7 +2315,7 @@ describe("pp_codex.generate_image: private staging and exclusive hand-off", () =
     assert.equal(all.length, 1);
     const s = all[0];
     assert.equal(s.outcome, "parent_rejected");
-    assert.match(s.reason, /sweep STOPPED \(fail closed\): could not observe the staging parent/);
+    assert.match(s.reason, /sweep STOPPED \(fail closed\): could not verify the staging parent/);
     assert.equal(s.current, null);
     assertRecordContract(s, logs, remainingStatement);
     assert.deepEqual(report.removed, []);
@@ -2864,6 +2965,14 @@ describe("pp_agy.generate_image", () => {
  *   NOTE (disclosed, platform-bound): dropping the privacy check at the createStagingDir call site stays GREEN on
  *   this Windows host — the check is a no-op on win32 by design; it is covered by the POSIX-only fixture
  *   "an allocated dir that is not mode 0700 is refused at the call site" (skipped here with an explicit message).
+ *
+ * Operator decision "Enforce parent privacy" (one shared parent check, verifyStagingParent, for create and sweep):
+ *   createStagingDir does not apply the parent privacy rule -> POSIX rules injected: both call sites refuse
+ *   sweep does not apply the parent privacy rule           -> same test
+ *   privacy dropped from the shared parent check            -> same test
+ *   pinned parent not re-checked before mkdtemp             -> parent swapped for a junction before mkdtemp
+ *   resolved parent identity not checked                    -> parent swapped between its lstat and realpath
+ *   parent link refusal dropped from the shared check       -> linked staging parent
  *   NOT FALSIFIABLE (disclosed): re-validating the RE-ENCODED output with acceptPng — pngjs always emits a valid PNG, so
  *   no fixture can make that defence-in-depth check fire without replacing the encoder.
  *   NOTE: removing only the link/type clause of the output_dir check stays GREEN — it is subsumed, not missing:

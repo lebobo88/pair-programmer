@@ -33,7 +33,6 @@ import {
   linkSync,
   ftruncateSync,
   constants as FS,
-  type BigIntStats,
 } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { join, dirname, basename, extname, resolve, relative } from "node:path";
@@ -1060,7 +1059,62 @@ function neutraliseAndThrow(fd: number, path: string, err: unknown, hooks: Write
 export type StagingDir = { dirReal: string; id: FsIdentity };
 
 /** Test-only seam fired right after the staging directory is allocated. Production never sets it. */
-export type StagingHooks = { afterMkdtemp?: (dir: string) => void };
+/** Test-only seams. Production never sets them. */
+export type StagingHooks = {
+  /** Fired right after the staging parent was verified and pinned, before its re-check and mkdtemp. */
+  beforeMkdtemp?: (parentReal: string) => void;
+  afterMkdtemp?: (dir: string) => void;
+  /** Overrides the platform / daemon uid the privacy check uses (lets POSIX rules be exercised on any host). */
+  privacyEnv?: PrivacyEnv;
+};
+
+/** The platform and daemon uid the POSIX privacy rule is evaluated against. */
+export type PrivacyEnv = { platform: NodeJS.Platform; uid: number | undefined };
+const hostPrivacyEnv = (): PrivacyEnv => ({ platform: process.platform, uid: process.getuid?.() });
+
+/** The staging parent, physically bound: its realpath and dev/ino. */
+export type BoundStagingParent = { real: string; id: FsIdentity };
+
+/**
+ * The ONE check both `createStagingDir` and `sweepStagingDirs` apply to the
+ * staging parent before allocating in it or sweeping it: it must be a plain
+ * directory (lstat: not a link), resolve (realpath) to a directory with the
+ * SAME dev/ino, and — on POSIX — be private to the daemon (exactly mode 0700,
+ * owned by the daemon's uid; `stagingPrivacyProblem`). Nothing is ever
+ * chmod-ed: an unsafe parent is refused. When `create` is set and the parent
+ * does not exist it is created with mode 0700 and then verified the same way;
+ * otherwise an absent parent is reported as `absent`.
+ */
+export function verifyStagingParent(
+  parent: string,
+  create: boolean,
+  env: PrivacyEnv = hostPrivacyEnv(),
+  /** Test-only seam fired between the parent's lstat and its realpath. */
+  afterLstat?: (parent: string) => void,
+): { ok: true; parent: BoundStagingParent } | { ok: false; absent: boolean; reason: string } {
+  try {
+    let st = lstatSync(parent, { bigint: true, throwIfNoEntry: false });
+    if (!st) {
+      if (!create) return { ok: false, absent: true, reason: `staging parent ${parent} does not exist.` };
+      mkdirSync(parent, { recursive: true, mode: 0o700 });
+      st = lstatSync(parent, { bigint: true });
+    }
+    if (st.isSymbolicLink() || !st.isDirectory()) return { ok: false, absent: false, reason: `staging parent ${parent} is not a plain directory.` };
+    afterLstat?.(parent);
+    const real = realpathSync.native(parent);
+    const id = { dev: st.dev, ino: st.ino };
+    // Resolution first, identity last: the resolved directory must be the very directory observed.
+    const rst = lstatSync(real, { bigint: true, throwIfNoEntry: false });
+    if (!rst || rst.isSymbolicLink() || !rst.isDirectory() || !sameIdentity(rst, id)) {
+      return { ok: false, absent: false, reason: `staging parent ${parent} resolves to ${real}, which is not the directory observed.` };
+    }
+    const privacy = stagingPrivacyProblem(rst, env.platform, env.uid);
+    if (privacy) return { ok: false, absent: false, reason: `staging parent ${real} is not private to the daemon: ${privacy}.` };
+    return { ok: true, parent: { real, id } };
+  } catch (err) {
+    return { ok: false, absent: false, reason: `could not verify the staging parent ${parent}: ${(err as Error).message}` };
+  }
+}
 
 /**
  * POSIX only: the staging directory must be private to the daemon — exactly
@@ -1109,10 +1163,14 @@ export function createStagingDir(
       ? { ok: false, reason }
       : { ok: false, reason: `${reason} The staging directory it had allocated (${allocated}) is retained by design and will be swept once stale.` };
   try {
-    mkdirSync(parent, { recursive: true, mode: 0o700 });
-    const pst = lstatSync(parent);
-    if (pst.isSymbolicLink() || !pst.isDirectory()) return fail(`staging parent ${parent} is not a plain directory.`);
-    const parentReal = realpathSync.native(parent);
+    const env = hooks.privacyEnv ?? hostPrivacyEnv();
+    const vp = verifyStagingParent(parent, true, env);
+    if (!vp.ok) return fail(vp.reason);
+    const { real: parentReal, id: parentId } = vp.parent;
+    hooks.beforeMkdtemp?.(parentReal);
+    // The pinned parent is re-checked right before mkdtemp (resolution first, identity last).
+    if (!samePath(realpathSync.native(parentReal), parentReal)) return fail(`staging parent ${parentReal} no longer resolves to itself.`);
+    assertDirIdentity(parentReal, parentId, "staging parent");
     allocated = mkdtempSync(join(parentReal, "gi-"));
     hooks.afterMkdtemp?.(allocated);
     // No pathname chmod: it would follow a link substituted after mkdtemp and
@@ -1124,7 +1182,8 @@ export function createStagingDir(
     if (!isDirectChildReal(parentReal, dirReal)) return fail(`staging directory resolves to ${dirReal}, outside ${parentReal}.`);
     const id = { dev: st.dev, ino: st.ino };
     assertDirIdentity(dirReal, id, "staging directory");
-    const privacy = stagingPrivacyProblem(st, process.platform, process.getuid?.());
+    assertDirIdentity(parentReal, parentId, "staging parent");
+    const privacy = stagingPrivacyProblem(st, env.platform, env.uid);
     if (privacy) return fail(`staging directory ${dirReal} is not private to the daemon: ${privacy}.`);
     return { ok: true, staging: { dirReal, id } };
   } catch (err) {
@@ -1164,6 +1223,8 @@ export type SweepHooks = {
   afterMove?: (movedDir: string) => void;
   /** Fired right after a moved-aside staging directory has been listed (and re-checked), before its pre-pass. */
   afterList?: (movedDir: string) => void;
+  /** Overrides the platform / daemon uid the parent privacy check uses. */
+  privacyEnv?: PrivacyEnv;
   /** Receives every sweep log line exactly as it is passed to the logger. */
   onLog?: (level: "info" | "warn", fields: SweepRecord, message: string) => void;
 };
@@ -1329,32 +1390,15 @@ export function sweepStagingDirs(
     log[level](rec, message);
     hooks.onLog?.(level, rec, message);
   };
-  let pst: BigIntStats | undefined;
-  try {
-    pst = lstatSync(parent, { bigint: true, throwIfNoEntry: false });
-  } catch (err) {
-    emit("parent_rejected", parent, null, `sweep STOPPED (fail closed): could not observe the staging parent (${(err as Error).message}); nothing was swept.`);
+  // The same parent check as createStagingDir: plain directory, physically
+  // bound, and (POSIX) private to the daemon — or nothing is swept.
+  const vp = verifyStagingParent(parent, false, hooks.privacyEnv ?? hostPrivacyEnv());
+  if (!vp.ok) {
+    if (vp.absent) return report; // no staging parent yet: nothing exists to sweep
+    emit("parent_rejected", parent, null, `sweep STOPPED (fail closed): ${vp.reason} Nothing was swept.`);
     return report;
   }
-  if (!pst) return report; // no staging parent yet: nothing exists to sweep
-  if (pst.isSymbolicLink() || !pst.isDirectory()) {
-    emit("parent_rejected", parent, null, "staging parent is not a plain directory; nothing was swept.");
-    return report;
-  }
-  let parentReal: string;
-  try {
-    parentReal = realpathSync.native(parent);
-  } catch (err) {
-    emit("parent_rejected", parent, null, `could not resolve the staging parent (${(err as Error).message}); nothing was swept.`);
-    return report;
-  }
-  const parentId = { dev: pst.dev, ino: pst.ino };
-  try {
-    assertBoundDir(parentReal, parentId, "staging parent");
-  } catch (err) {
-    emit("parent_rejected", parent, null, `${(err as Error).message} Nothing was swept.`);
-    return report;
-  }
+  const { real: parentReal, id: parentId } = vp.parent;
   let names: string[] = [];
   let listError: Error | undefined;
   try {
