@@ -1621,6 +1621,70 @@ describe("pp_codex.generate_image: private staging and exclusive hand-off", () =
     assert.deepEqual(readdirSync(moved).sort(), ["fresh.png", "old.png"], "nothing was deleted");
   });
 
+  test("sweep: a file refreshed IN PLACE (same inode) after observation is not unlinked — staleness re-checked before every unlink", async () => {
+    const { sweepStagingDirs } = await importDist("mcp/image-harvest.js");
+    const parent = join(tmp("pp-img-stagebase-"), "image-staging");
+    const dir = join(parent, "gi-a");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "f.png"), "ours");
+    ageTree(dir);
+    const report = sweepStagingDirs(parent, undefined, {
+      afterObserve: (p) => {
+        if (!p.endsWith("f.png")) return;
+        const now = new Date();
+        utimesSync(p, now, now); // same inode, now fresh
+      },
+    });
+    assert.deepEqual(report.removed, []);
+    const s = report.skipped[0];
+    assert.match(s?.reason ?? "", /was refreshed after it was observed \(no longer stale\); it was moved aside to .* and NOT deleted/);
+    assert.match(s.reason, /Deleted from this directory: 0 files\./);
+    assert.deepEqual(s.deleted, []);
+    assert.equal(readFileSync(s.path, "utf8"), "ours", "the refreshed file survives (moved aside)");
+  });
+
+  test("sweep: a mixed directory (old regular file + old subdirectory) has NOTHING deleted, and the report says 0 files", async () => {
+    const { sweepStagingDirs } = await importDist("mcp/image-harvest.js");
+    const parent = join(tmp("pp-img-stagebase-"), "image-staging");
+    const dir = join(parent, "gi-a");
+    mkdirSync(join(dir, "z-subdir"), { recursive: true });
+    writeFileSync(join(dir, "a.png"), "old");
+    ageTree(dir);
+    const report = sweepStagingDirs(parent);
+    assert.deepEqual(report.removed, []);
+    const s = report.skipped[0];
+    assert.match(s?.reason ?? "", /not a regular file/);
+    assert.match(s.reason, /Deleted from this directory: 0 files\./);
+    assert.deepEqual(s.deleted, []);
+    const moved = dirname(s.path);
+    assert.deepEqual(readdirSync(moved).sort(), ["a.png", "z-subdir"], "the old regular file was NOT deleted before the subdirectory was found");
+  });
+
+  test("sweep: if a later file fails its re-check after deletions began, the report names exactly what was deleted and what remains", async () => {
+    const { sweepStagingDirs } = await importDist("mcp/image-harvest.js");
+    const parent = join(tmp("pp-img-stagebase-"), "image-staging");
+    const dir = join(parent, "gi-a");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "a.png"), "a");
+    writeFileSync(join(dir, "b.png"), "b");
+    ageTree(dir);
+    const observed = [];
+    const report = sweepStagingDirs(parent, undefined, {
+      afterObserve: (p) => {
+        if (!p.endsWith(".png")) return;
+        observed.push(basename(p));
+        if (observed.length === 2) utimesSync(p, new Date(), new Date()); // refresh the SECOND file only
+      },
+    });
+    assert.deepEqual(report.removed, []);
+    const s = report.skipped[0];
+    const [first, second] = observed;
+    assert.deepEqual(s.deleted, [first], "exactly the first file was deleted");
+    assert.match(s.reason, new RegExp(`Deleted from this directory: 1 file\\(s\\) \\[${first.replace(".", "\\.")}\\]`));
+    assert.equal(lstatSync(join(dirname(s.path), first), { throwIfNoEntry: false }), undefined, "the reported deletion really happened");
+    assert.equal(readFileSync(s.path, "utf8"), second.replace(".png", ""), `${second} survives (moved aside), as reported`);
+  });
+
   test("sweep: a fresh ENTRY inside a still-stale-looking directory makes the sweep skip it — nothing deleted", async () => {
     const { sweepStagingDirs } = await importDist("mcp/image-harvest.js");
     const parent = join(tmp("pp-img-stagebase-"), "image-staging");
@@ -2107,6 +2171,15 @@ describe("pp_agy.generate_image", () => {
  *   hand-off failures not passing the published name     -> the same three tests
  *   sweep skips the post-move directory mtime re-check   -> directory refreshed with fresh content after observation
  *   sweep skips the post-move entry freshness re-check   -> fresh entry inside a stale-looking directory
+ *
+ * Operator decision "Fix the sweep":
+ *   staleness not re-checked before an unlink    -> same-inode refresh; partial-deletion report
+ *   pre-pass not validating entry types           -> mixed directory (old file + old subdirectory) has nothing deleted
+ *                                                    (relies on NTFS/ext4 listing "a.png" before "z-subdir"; with the
+ *                                                    pre-pass in place the outcome is order-independent)
+ *   skip log claiming 0 deletions regardless     -> partial-deletion report names exactly what was deleted
+ *   deletions not tracked                         -> partial-deletion report
+ *   (re-run red: post-move directory mtime re-check, entry freshness pre-pass)
  *   NOT FALSIFIABLE (disclosed): re-validating the RE-ENCODED output with acceptPng — pngjs always emits a valid PNG, so
  *   no fixture can make that defence-in-depth check fire without replacing the encoder.
  *   NOTE: removing only the link/type clause of the output_dir check stays GREEN — it is subsumed, not missing:

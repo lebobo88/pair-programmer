@@ -1095,9 +1095,12 @@ const TOOLS = [
       "as staging_dir) is RETAINED by design, also when setup fails after it was allocated. At the start of each call, staging directories older than 24h " +
       "are swept conservatively: the staging parent's realpath and dev/ino, and each staging directory's once moved aside, are bound and re-checked " +
       "(resolution first, identity last) before EVERY rename, unlink and rmdir — if either was replaced (e.g. by a link) the whole sweep stops and " +
-      "nothing further is renamed or deleted; each directory and then each file in it is observed (non-link, plain type, dev/ino), moved aside under a " +
-      "fresh random name and re-checked; anything replaced after observation, any link or unexpected type, or any error makes the sweep skip and log that " +
-      "directory and leave it in place; directories are removed only when empty (rmdir); every listing reads at most 200 entries, and a staging " +
+      "nothing further is renamed or deleted; a directory is observed (non-link, plain directory, dev/ino, stale mtime), moved aside under a fresh " +
+      "random name and re-checked (identity, and still stale); then a pre-pass requires EVERY entry to be a non-link regular file older than 24h — if any " +
+      "is not, nothing in that directory is deleted; then each file is observed, moved aside under a fresh random name and re-checked (type, identity " +
+      "AND staleness) immediately before its unlink; anything replaced or refreshed after observation stops deletion in that directory; every skip is " +
+      "logged with the exact number and names of files already deleted from that directory (0 unless deletion had begun) and what remains; directories " +
+      "are removed only when empty (rmdir); every listing reads at most 200 entries, and a staging " +
       "directory whose listing reaches 200 is skipped. RESIDUAL RISKS (stated, operator-accepted): (1) staging directories are retained until a later " +
       "call sweeps them; Node has no handle-bound rename/unlink/rmdir, so a same-user process swapping a path inside the daemon-private staging parent " +
       "(0700 on POSIX) in the instant between a re-check and the following syscall is not excluded. (2) Node has no " +

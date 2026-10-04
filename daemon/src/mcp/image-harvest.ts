@@ -1131,8 +1131,11 @@ export type SweepHooks = { afterObserve?: (path: string) => void };
 export type SweepReport = {
   /** Stale staging directories removed (original paths). */
   removed: string[];
-  /** Paths the sweep did not delete, and why. Each is also logged. */
-  skipped: { path: string; reason: string }[];
+  /**
+   * Paths the sweep stopped at, and why, with the exact files it had already
+   * deleted from that directory (usually none). Each is also logged.
+   */
+  skipped: { path: string; reason: string; deleted: string[] }[];
 };
 
 /** Thrown when a directory the sweep is working in no longer is the directory it bound: the WHOLE sweep stops. */
@@ -1187,9 +1190,15 @@ export function sweepStagingDirs(
   now: number = Date.now(),
 ): SweepReport {
   const report: SweepReport = { removed: [], skipped: [] };
-  const skip = (path: string, reason: string): void => {
-    report.skipped.push({ path, reason });
-    log.warn({ path, reason }, "generate_image staging sweep skipped a path (nothing deleted)");
+  // Every skip states exactly how many files of that directory had already
+  // been deleted (0 unless the deletion pass had begun) — never a blanket claim.
+  const skip = (path: string, reason: string, deleted: string[] = []): void => {
+    const outcome =
+      deleted.length === 0
+        ? "Deleted from this directory: 0 files."
+        : `Deleted from this directory: ${deleted.length} file(s) [${deleted.join(", ")}].`;
+    report.skipped.push({ path, reason: `${reason} ${outcome}`, deleted: [...deleted] });
+    log.warn({ path, reason, deletedCount: deleted.length, deleted }, `generate_image staging sweep skipped a path. ${outcome}`);
   };
   const pst = lstatSync(parent, { bigint: true, throwIfNoEntry: false });
   if (!pst) return report;
@@ -1252,7 +1261,7 @@ function sweepOne(
   now: number,
   hooks: SweepHooks,
   report: SweepReport,
-  skip: (path: string, reason: string) => void,
+  skip: (path: string, reason: string, deleted?: string[]) => void,
 ): void {
   const st = lstatSync(dir, { bigint: true, throwIfNoEntry: false });
   if (!st) return;
@@ -1275,37 +1284,58 @@ function sweepOne(
   bound();
   // Staleness is re-checked AFTER the move and BEFORE anything is deleted: the
   // directory's mtime must be unchanged since it was observed (stale then) or
-  // still older than maxAgeMs, and every entry in it (within the listing cap)
-  // must be older than maxAgeMs. A directory refreshed or given new content
-  // after observation no longer qualifies and is skipped, nothing deleted.
+  // still older than maxAgeMs.
   const dirMtime = Number(mst.mtimeMs);
   if (dirMtime !== observedMtime && now - dirMtime < maxAgeMs) {
     return skip(moved, `no longer stale after it was observed (directory modified); moved aside to ${moved} and left in place.`);
   }
   const entries = boundedNames(moved, MAX_SWEEP_ENTRIES);
   if (entries.length >= MAX_SWEEP_ENTRIES) return skip(moved, `listing reached ${MAX_SWEEP_ENTRIES} entries; left in place.`);
+  // Pre-pass over EVERY entry before anything is deleted: each must be a
+  // non-link regular file older than maxAgeMs. If any is not, nothing in this
+  // directory is deleted.
   for (const e of entries) {
     const est = lstatSync(join(moved, e), { bigint: true, throwIfNoEntry: false });
-    if (est && now - Number(est.mtimeMs) < maxAgeMs) {
-      return skip(moved, `contains an entry newer than the staleness threshold (${e}); moved aside to ${moved}, nothing deleted.`);
+    if (!est) continue;
+    if (est.isSymbolicLink() || !est.isFile()) return skip(join(moved, e), `not a regular file; moved aside to ${moved} and left in place.`);
+    if (now - Number(est.mtimeMs) < maxAgeMs) {
+      return skip(moved, `contains an entry newer than the staleness threshold (${e}); moved aside to ${moved} and left in place.`);
     }
   }
-  for (const e of entries) {
-    const p = join(moved, e);
-    const fst = lstatSync(p, { bigint: true, throwIfNoEntry: false });
-    if (!fst) continue;
-    if (fst.isSymbolicLink() || !fst.isFile()) return skip(p, "not a regular file; directory left in place.");
-    const fileId = { dev: fst.dev, ino: fst.ino };
-    hooks.afterObserve?.(p);
-    const aside = join(moved, `del-${randomUUID()}`);
-    bound();
-    renameSync(p, aside);
-    const ast = lstatSync(aside, { bigint: true, throwIfNoEntry: false });
-    if (!ast || ast.isSymbolicLink() || !ast.isFile() || !sameIdentity(ast, fileId)) {
-      return skip(aside, `the file at ${p} was replaced after it was observed; it was moved aside to ${aside} and left in place.`);
+  // Deletion pass. Every file is re-checked after it is moved aside — type,
+  // identity AND staleness — immediately before its unlink. If any check
+  // fails, the sweep stops in this directory and reports exactly which files
+  // it had already deleted and which remain.
+  const deleted: string[] = [];
+  const remaining = (from: number): string[] => entries.slice(from);
+  for (const [i, e] of entries.entries()) {
+    try {
+      const p = join(moved, e);
+      const fst = lstatSync(p, { bigint: true, throwIfNoEntry: false });
+      if (!fst) continue;
+      if (fst.isSymbolicLink() || !fst.isFile()) {
+        return skip(p, `not a regular file (changed after the pre-pass); left in place. Remaining: ${remaining(i).join(", ")}.`, deleted);
+      }
+      const fileId = { dev: fst.dev, ino: fst.ino };
+      hooks.afterObserve?.(p);
+      const aside = join(moved, `del-${randomUUID()}`);
+      bound();
+      renameSync(p, aside);
+      const ast = lstatSync(aside, { bigint: true, throwIfNoEntry: false });
+      if (!ast || ast.isSymbolicLink() || !ast.isFile() || !sameIdentity(ast, fileId)) {
+        return skip(aside, `the file at ${p} was replaced after it was observed; it was moved aside to ${aside} and left in place. Remaining: ${remaining(i + 1).join(", ") || "none"} (plus ${aside}).`, deleted);
+      }
+      if (now - Number(ast.mtimeMs) < maxAgeMs) {
+        return skip(aside, `the file at ${p} was refreshed after it was observed (no longer stale); it was moved aside to ${aside} and NOT deleted. Remaining: ${remaining(i + 1).join(", ") || "none"} (plus ${aside}).`, deleted);
+      }
+      bound();
+      unlinkSync(aside);
+      deleted.push(e);
+    } catch (err) {
+      const where = `In ${moved}: deleted ${deleted.length} file(s) [${deleted.join(", ")}]; remaining: [${remaining(i).join(", ")}].`;
+      if (err instanceof SweepAbort) throw new SweepAbort(`${err.message} ${where}`);
+      throw new Error(`${(err as Error).message} ${where}`);
     }
-    bound();
-    unlinkSync(aside);
   }
   bound();
   rmdirSync(moved);
