@@ -1098,8 +1098,10 @@ const TOOLS = [
       "nothing further is renamed or deleted; a directory is observed (non-link, plain directory, dev/ino, stale mtime), moved aside under a fresh " +
       "random name and re-checked (identity, and still stale); then a pre-pass requires EVERY entry to be a non-link regular file older than 24h — if any " +
       "is not, nothing in that directory is deleted; then each file is observed, moved aside under a fresh random name and re-checked (type, identity " +
-      "AND staleness) immediately before its unlink; anything replaced or refreshed after observation stops deletion in that directory; every skip is " +
-      "logged with the exact number and names of files already deleted from that directory (0 unless deletion had begun) and what remains; directories " +
+      "AND staleness) immediately before its unlink; anything replaced or refreshed after observation stops deletion in that directory; on EVERY exit " +
+      "(skips, exceptions, binding failures, a failed final rmdir) the report and log give the exact files unlinked from that directory (by the name " +
+      "each had when unlinked; 0 unless deletion had begun) and one bounded re-listing (at most 50 names, truncation or unavailability stated) of the " +
+      "directory under its CURRENT name, never names from an earlier listing; directories " +
       "are removed only when empty (rmdir); every listing reads at most 200 entries, and a staging " +
       "directory whose listing reaches 200 is skipped. RESIDUAL RISKS (stated, operator-accepted): (1) staging directories are retained until a later " +
       "call sweeps them; Node has no handle-bound rename/unlink/rmdir, so a same-user process swapping a path inside the daemon-private staging parent " +

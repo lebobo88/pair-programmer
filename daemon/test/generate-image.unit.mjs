@@ -1641,6 +1641,11 @@ describe("pp_codex.generate_image: private staging and exclusive hand-off", () =
     assert.match(s.reason, /Deleted from this directory: 0 files\./);
     assert.deepEqual(s.deleted, []);
     assert.equal(readFileSync(s.path, "utf8"), "ours", "the refreshed file survives (moved aside)");
+    // Failure after a file rename: the report lists the CURRENT (del-<uuid>) name, not the original "f.png".
+    assert.equal(s.leftInPlace.dir, dirname(s.path));
+    assert.deepEqual(s.leftInPlace.entries, [basename(s.path)]);
+    assert.match(s.leftInPlace.entries[0], /^del-/);
+    assert.match(s.reason, new RegExp(`Left in place in .*: \\[${basename(s.path)}\\]`));
   });
 
   test("sweep: a mixed directory (old regular file + old subdirectory) has NOTHING deleted, and the report says 0 files", async () => {
@@ -1658,6 +1663,9 @@ describe("pp_codex.generate_image: private staging and exclusive hand-off", () =
     assert.deepEqual(s.deleted, []);
     const moved = dirname(s.path);
     assert.deepEqual(readdirSync(moved).sort(), ["a.png", "z-subdir"], "the old regular file was NOT deleted before the subdirectory was found");
+    assert.equal(s.leftInPlace.dir, moved, "reported as left in place in the moved directory's CURRENT path");
+    assert.deepEqual([...s.leftInPlace.entries].sort(), ["a.png", "z-subdir"], "the re-listing names ALL remaining entries");
+    assert.equal(s.leftInPlace.truncated, false);
   });
 
   test("sweep: if a later file fails its re-check after deletions began, the report names exactly what was deleted and what remains", async () => {
@@ -1679,10 +1687,72 @@ describe("pp_codex.generate_image: private staging and exclusive hand-off", () =
     assert.deepEqual(report.removed, []);
     const s = report.skipped[0];
     const [first, second] = observed;
-    assert.deepEqual(s.deleted, [first], "exactly the first file was deleted");
-    assert.match(s.reason, new RegExp(`Deleted from this directory: 1 file\\(s\\) \\[${first.replace(".", "\\.")}\\]`));
-    assert.equal(lstatSync(join(dirname(s.path), first), { throwIfNoEntry: false }), undefined, "the reported deletion really happened");
+    assert.equal(observed.length, 2, "precondition: both files were observed");
+    assert.equal(s.deleted.length, 1, "exactly one file was deleted");
+    assert.match(basename(s.deleted[0]), /^del-/, "recorded by the name it had when it was unlinked");
+    assert.equal(lstatSync(s.deleted[0], { throwIfNoEntry: false }), undefined, "the reported deletion really happened");
+    assert.match(s.reason, /Deleted from this directory: 1 file\(s\)/);
     assert.equal(readFileSync(s.path, "utf8"), second.replace(".png", ""), `${second} survives (moved aside), as reported`);
+    assert.deepEqual(s.leftInPlace.entries, [basename(s.path)], `only ${second}'s moved-aside name remains, and it is the one listed`);
+    assert.ok(!s.leftInPlace.entries.includes(first) && !s.leftInPlace.entries.includes(second), "no stale original names are reported");
+  });
+
+  test("sweep: the left-in-place re-listing is bounded and says when it was truncated", async () => {
+    const { sweepStagingDirs, SWEEP_REPORT_LIST_CAP } = await importDist("mcp/image-harvest.js");
+    const parent = join(tmp("pp-img-stagebase-"), "image-staging");
+    const dir = join(parent, "gi-a");
+    mkdirSync(join(dir, "z-subdir"), { recursive: true }); // makes the pre-pass refuse the directory
+    for (let i = 0; i < SWEEP_REPORT_LIST_CAP + 10; i++) writeFileSync(join(dir, `f${String(i).padStart(3, "0")}.png`), "");
+    ageTree(dir);
+    const s = sweepStagingDirs(parent).skipped[0];
+    assert.equal(s.leftInPlace.entries.length, SWEEP_REPORT_LIST_CAP);
+    assert.equal(s.leftInPlace.truncated, true);
+    assert.match(s.reason, new RegExp(`listing truncated after ${SWEEP_REPORT_LIST_CAP} entries`));
+  });
+
+  test("sweep: an ABORT after one deletion still reports the true deleted list (structured report and log reason)", async () => {
+    const { sweepStagingDirs } = await importDist("mcp/image-harvest.js");
+    const parent = join(tmp("pp-img-stagebase-"), "image-staging");
+    const dir = join(parent, "gi-a");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "a.png"), "a");
+    writeFileSync(join(dir, "b.png"), "b");
+    ageTree(dir);
+    const escape = tmp("pp-img-escape-");
+    let n = 0;
+    const report = sweepStagingDirs(parent, undefined, {
+      afterObserve: (p) => {
+        if (!p.endsWith(".png") || ++n !== 2) return;
+        const moved = dirname(p);
+        renameSync(moved, `${moved}-orig`); // the moved directory is replaced after the first deletion
+        symlinkSync(escape, moved, "junction");
+      },
+    });
+    const s = report.skipped[0];
+    assert.match(s?.reason ?? "", /sweep STOPPED \(fail closed\)/);
+    assert.equal(s.deleted.length, 1, "the first file's deletion is carried through the abort");
+    assert.match(s.reason, /Deleted from this directory: 1 file\(s\)/);
+    assert.match(basename(s.deleted[0]), /^del-/);
+  });
+
+  test("sweep: a FINAL rmdir failure after deletions (entry added after the pre-pass) reports every deletion and what is left", async () => {
+    const { sweepStagingDirs } = await importDist("mcp/image-harvest.js");
+    const parent = join(tmp("pp-img-stagebase-"), "image-staging");
+    const dir = join(parent, "gi-a");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "a.png"), "a");
+    writeFileSync(join(dir, "b.png"), "b");
+    ageTree(dir);
+    const report = sweepStagingDirs(parent, undefined, {
+      beforeRmdir: (moved) => writeFileSync(join(moved, "late.png"), "arrived after the pre-pass"),
+    });
+    assert.deepEqual(report.removed, []);
+    const s = report.skipped[0];
+    assert.match(s?.reason ?? "", /sweep error: .*ENOTEMPTY/);
+    assert.equal(s.deleted.length, 2, "both deletions are reported, not zero");
+    for (const d of s.deleted) assert.equal(lstatSync(d, { throwIfNoEntry: false }), undefined, `${d} really was deleted`);
+    assert.deepEqual(s.leftInPlace.entries, ["late.png"], "the re-listing names exactly what is left");
+    assert.equal(readFileSync(join(s.leftInPlace.dir, "late.png"), "utf8"), "arrived after the pre-pass");
   });
 
   test("sweep: a fresh ENTRY inside a still-stale-looking directory makes the sweep skip it — nothing deleted", async () => {
@@ -2180,6 +2250,15 @@ describe("pp_agy.generate_image", () => {
  *   skip log claiming 0 deletions regardless     -> partial-deletion report names exactly what was deleted
  *   deletions not tracked                         -> partial-deletion report
  *   (re-run red: post-move directory mtime re-check, entry freshness pre-pass)
+ *
+ * Operator decision "Truthful report":
+ *   abort report without the per-directory state   -> abort after one deletion
+ *   error report without the per-directory state   -> final rmdir failure after deletions
+ *   unlinks not recorded                           -> partial deletion; abort; final rmdir failure
+ *   current (moved-aside) name not tracked         -> 5 tests (re-listings of the wrong path)
+ *   remaining entries not re-listed at skip time   -> 5 tests
+ *   truncated re-listing not marked                -> bounded re-listing says when it was truncated
+ *   (re-run red on the new code: per-unlink staleness re-check, pre-pass type validation)
  *   NOT FALSIFIABLE (disclosed): re-validating the RE-ENCODED output with acceptPng — pngjs always emits a valid PNG, so
  *   no fixture can make that defence-in-depth check fire without replacing the encoder.
  *   NOTE: removing only the link/type clause of the output_dir check stays GREEN — it is subsumed, not missing:
