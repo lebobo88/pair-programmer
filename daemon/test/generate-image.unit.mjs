@@ -19,6 +19,7 @@
  */
 import { test, describe, after } from "node:test";
 import assert from "node:assert/strict";
+import { isDeepStrictEqual } from "node:util";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { basename, dirname, join } from "node:path";
 import { tmpdir } from "node:os";
@@ -1475,13 +1476,87 @@ describe("pp_codex.generate_image: private staging and exclusive hand-off", () =
     assert.equal(readdirSync(result.staging_dir).length, 1, "the staged image is still there: nothing was deleted during the call");
   });
 
+  // ─── staging sweep: reporting contract ("No enumeration") ────────────────
+  // Every exit of a directory's processing yields ONE record, returned and
+  // logged with identical fields. Remaining entries are never enumerated.
+
+  /** Run the sweep, capturing every log line exactly as it is handed to the logger. */
+  const sweepLogged = async (parent, hooks = {}, maxAgeMs) => {
+    const { sweepStagingDirs } = await importDist("mcp/image-harvest.js");
+    const logs = [];
+    const report = sweepStagingDirs(parent, maxAgeMs, { ...hooks, onLog: (level, fields, message) => logs.push({ level, fields, message }) });
+    return { report, logs, all: [...report.removed, ...report.skipped] };
+  };
+
+  const RECORD_KEYS = new Set(["dir", "current", "deleted", "outcome", "reason", "remaining", "path"]);
+  const SUCCESS_OR_UNTOUCHED = new Set(["removed", "not_stale", "vanished"]);
+
+  /**
+   * The named contract check every exit-path fixture calls: the record has only
+   * the documented fields (no listing of any kind), is logged exactly once with
+   * the same fields at the matching level, reports its deletions exactly (and
+   * each really happened), and — for non-success outcomes — carries the literal
+   * remaining-entries statement for its current location in both the record and
+   * the log message.
+   */
+  function assertRecordContract(rec, logs, remainingStatement) {
+    for (const k of Object.keys(rec)) assert.ok(RECORD_KEYS.has(k), `undocumented record field ${k}`);
+    const logged = logs.filter((l) => isDeepStrictEqual(l.fields, rec));
+    assert.equal(logged.length, 1, `record for ${rec.dir} (${rec.outcome}) is logged exactly once with identical fields`);
+    const [line] = logged;
+    const n = rec.deleted.length;
+    const deletedText = n === 0 ? "Deleted from this directory: 0 files." : `Deleted from this directory: ${n} file(s) [${rec.deleted.join(", ")}].`;
+    assert.ok(rec.reason.includes(deletedText) && line.message.includes(deletedText), `deleted list stated exactly: ${rec.reason}`);
+    for (const d of rec.deleted) assert.equal(lstatSync(d, { throwIfNoEntry: false }), undefined, `${d} reported deleted and really gone`);
+    if (SUCCESS_OR_UNTOUCHED.has(rec.outcome)) {
+      assert.equal(rec.remaining, null);
+      assert.equal(line.level, "info");
+      assert.ok(!/remaining entries left in place/.test(line.message));
+    } else {
+      assert.equal(rec.remaining, remainingStatement(rec.current), "the literal remaining-entries statement for the CURRENT location");
+      assert.ok(rec.reason.includes(rec.remaining) && line.message.includes(rec.remaining), "stated in the record and the log");
+      assert.equal(line.level, "warn");
+    }
+  }
+
+  /** Named check: none of `names` appears anywhere in the report or in any log line. */
+  function assertNeverMentioned(names, report, logs) {
+    const text = JSON.stringify(report) + JSON.stringify(logs);
+    assert.ok(names.length > 0, "precondition: there are names to look for");
+    for (const n of names) assert.ok(!text.includes(n), `${n} must not appear in the report or logs`);
+  }
+
+  test("sweep contract check is falsifiable: a record with a listing field, a wrong statement or an unlogged record is refused", async () => {
+    const { remainingStatement } = await importDist("mcp/image-harvest.js");
+    const parent = join(tmp("pp-img-stagebase-"), "image-staging");
+    mkdirSync(join(parent, "gi-a", "z-subdir"), { recursive: true });
+    ageTree(join(parent, "gi-a"));
+    const { report, logs } = await sweepLogged(parent);
+    const rec = report.skipped[0];
+    assert.doesNotThrow(() => assertRecordContract(rec, logs, remainingStatement));
+    assert.throws(() => assertRecordContract({ ...rec, entries: ["z-subdir"] }, logs, remainingStatement), /undocumented record field entries/);
+    assert.throws(() => assertRecordContract({ ...rec, remaining: "left somewhere" }, logs, remainingStatement));
+    assert.throws(() => assertRecordContract(rec, [], remainingStatement), /logged exactly once/);
+    assert.throws(() => assertNeverMentioned([basename(rec.current)], report, logs), /must not appear/);
+  });
+
+  test("remainingStatement: a location only when known, never an enumeration", async () => {
+    const { remainingStatement } = await importDist("mcp/image-harvest.js");
+    assert.equal(remainingStatement("C:\\x\\sweep-1"), "remaining entries left in place in C:\\x\\sweep-1; not enumerated");
+    assert.equal(remainingStatement(null), "remaining entries left in place; location unknown; not enumerated");
+  });
+
   test("sweepStagingDirs removes only STALE staging directories, and a later call sweeps an earlier call's directory", async () => {
-    const { sweepStagingDirs, STAGING_SWEEP_AGE_MS } = await importDist("mcp/image-harvest.js");
+    const { STAGING_SWEEP_AGE_MS, remainingStatement } = await importDist("mcp/image-harvest.js");
     const stagingParent = join(tmp("pp-img-stagebase-"), "image-staging");
     const first = await runHarvest({ write: writePngs({ "exec-call-1.png": makeSolidPng(4, 4) }), opts: { _stagingParent: stagingParent } });
     const oldDir = first.result.staging_dir;
-    const fresh = sweepStagingDirs(stagingParent);
-    assert.deepEqual(fresh.removed, [], "a fresh staging directory is not swept");
+    const fresh = await sweepLogged(stagingParent);
+    assert.deepEqual(fresh.report.removed, [], "a fresh staging directory is not swept");
+    assert.equal(fresh.report.skipped.length, 1);
+    assert.equal(fresh.report.skipped[0].outcome, "not_stale");
+    assert.equal(fresh.report.skipped[0].dir, oldDir);
+    assertRecordContract(fresh.report.skipped[0], fresh.logs, remainingStatement);
     const old = new Date(Date.now() - STAGING_SWEEP_AGE_MS - 60_000);
     ageTree(oldDir, old);
     const second = await runHarvest({ write: writePngs({ "exec-call-1.png": makeSolidPng(4, 4) }), opts: { _stagingParent: stagingParent } });
@@ -1489,14 +1564,36 @@ describe("pp_codex.generate_image: private staging and exclusive hand-off", () =
     assert.deepEqual(readdirSync(stagingParent), [basename(second.result.staging_dir)], "only the later call's own directory remains");
   });
 
+  test("sweep: successful removal records { dir, deleted[] } exactly and emits a completion log", async () => {
+    const { remainingStatement } = await importDist("mcp/image-harvest.js");
+    const parent = join(tmp("pp-img-stagebase-"), "image-staging");
+    const dir = join(parent, "gi-a");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "a.png"), "a");
+    writeFileSync(join(dir, "b.png"), "b");
+    ageTree(dir);
+    const { report, logs } = await sweepLogged(parent);
+    assert.deepEqual(report.skipped, []);
+    assert.equal(report.removed.length, 1);
+    const r = report.removed[0];
+    assert.equal(r.dir, join(real(parent), "gi-a"));
+    assert.equal(r.outcome, "removed");
+    assert.equal(r.current, null, "gone");
+    assert.equal(r.deleted.length, 2, "both files, exactly");
+    for (const d of r.deleted) assert.match(basename(d), /^del-/, "by the name each had when unlinked");
+    assertRecordContract(r, logs, remainingStatement);
+    assert.match(logs.find((l) => l.fields === r).message, /gi-a removed\./, "a completion log line");
+    assert.equal(lstatSync(dir, { throwIfNoEntry: false }), undefined);
+  });
+
   test("sweep: a file replaced AFTER it was observed is moved aside and left in place, never deleted", async () => {
-    const { sweepStagingDirs, createStagingDir } = await importDist("mcp/image-harvest.js");
+    const { createStagingDir, remainingStatement } = await importDist("mcp/image-harvest.js");
     const parent = join(tmp("pp-img-stagebase-"), "image-staging");
     const { staging } = createStagingDir(parent);
     writeFileSync(join(staging.dirReal, "staged.png"), "ours");
     const old = new Date(Date.now() - 48 * 3600_000);
     ageTree(staging.dirReal, old);
-    const report = sweepStagingDirs(parent, undefined, {
+    const { report, logs } = await sweepLogged(parent, {
       afterObserve: (p) => {
         if (!p.endsWith("staged.png")) return;
         rmSync(p);
@@ -1504,18 +1601,21 @@ describe("pp_codex.generate_image: private staging and exclusive hand-off", () =
       },
     });
     assert.deepEqual(report.removed, []);
-    assert.match(report.skipped[0]?.reason ?? "", /replaced after it was observed; .* left in place/);
-    const aside = report.skipped[0].path;
-    assert.equal(readFileSync(aside, "utf8"), "theirs", "the replacement survives (moved aside, not deleted)");
+    const s = report.skipped[0];
+    assert.equal(s.outcome, "left_in_place");
+    assert.match(s.reason, /replaced after it was observed; .* not deleted/);
+    assert.equal(readFileSync(s.path, "utf8"), "theirs", "the replacement survives (moved aside, not deleted)");
+    assert.equal(s.current, dirname(s.path));
+    assertRecordContract(s, logs, remainingStatement);
   });
 
   test("sweep: a staging DIRECTORY replaced after it was observed is moved aside and left in place, never deleted", async () => {
-    const { sweepStagingDirs, createStagingDir } = await importDist("mcp/image-harvest.js");
+    const { createStagingDir, remainingStatement } = await importDist("mcp/image-harvest.js");
     const parent = join(tmp("pp-img-stagebase-"), "image-staging");
     const { staging } = createStagingDir(parent);
     const old = new Date(Date.now() - 48 * 3600_000);
     ageTree(staging.dirReal, old);
-    const report = sweepStagingDirs(parent, undefined, {
+    const { report, logs } = await sweepLogged(parent, {
       afterObserve: (p) => {
         if (p !== staging.dirReal) return;
         renameSync(p, `${p}-orig`);
@@ -1524,13 +1624,16 @@ describe("pp_codex.generate_image: private staging and exclusive hand-off", () =
       },
     });
     assert.deepEqual(report.removed, []);
-    assert.match(report.skipped[0]?.reason ?? "", /was replaced after it was observed/);
-    assert.equal(readFileSync(join(report.skipped[0].path, "theirs.txt"), "utf8"), "keep", "the replacement directory and its content survive");
+    const s = report.skipped[0];
+    assert.match(s.reason, /was replaced after it was observed/);
+    assert.equal(readFileSync(join(s.current, "theirs.txt"), "utf8"), "keep", "the replacement directory and its content survive");
     assert.ok(statSync(`${staging.dirReal}-orig`).isDirectory(), "the original is untouched too");
+    assertRecordContract(s, logs, remainingStatement);
+    assertNeverMentioned(["theirs.txt"], report, logs);
   });
 
-  test("sweep: a staging PARENT swapped for a junction mid-sweep stops the whole sweep — nothing behind the link is renamed or deleted", async () => {
-    const { sweepStagingDirs } = await importDist("mcp/image-harvest.js");
+  test("sweep: a staging PARENT swapped for a junction mid-sweep stops the whole sweep — nothing behind the link is renamed, deleted or named", async () => {
+    const { remainingStatement } = await importDist("mcp/image-harvest.js");
     const base = tmp("pp-img-stagebase-");
     const parent = join(base, "image-staging");
     const escape = tmp("pp-img-escape-");
@@ -1538,12 +1641,12 @@ describe("pp_codex.generate_image: private staging and exclusive hand-off", () =
     for (const root of [parent, escape]) {
       for (const n of ["gi-a", "gi-b"]) {
         mkdirSync(join(root, n), { recursive: true });
-        writeFileSync(join(root, n, "f.txt"), root === escape ? "victim" : "ours");
+        writeFileSync(join(root, n, root === escape ? "TARGET-ONLY-f.txt" : "f.txt"), root === escape ? "victim" : "ours");
         ageTree(join(root, n), old);
       }
     }
     let swapped = false;
-    const report = sweepStagingDirs(parent, undefined, {
+    const { report, logs, all } = await sweepLogged(parent, {
       afterObserve: () => {
         if (swapped) return;
         swapped = true;
@@ -1553,13 +1656,20 @@ describe("pp_codex.generate_image: private staging and exclusive hand-off", () =
     });
     assert.equal(swapped, true, "precondition: the parent really was swapped after the first observation");
     assert.deepEqual(report.removed, []);
-    assert.ok(report.skipped.some((s) => /sweep STOPPED \(fail closed\)/.test(s.reason)), JSON.stringify(report.skipped));
+    assert.deepEqual(all.map((r) => r.outcome), ["stopped", "stopped"], "the failing directory, then the unprocessed one");
+    assert.match(all[0].reason, /sweep STOPPED \(fail closed\)/);
+    assert.match(all[1].reason, /not processed: the sweep stopped earlier/);
+    for (const r of all) {
+      assert.equal(r.current, null, "location unknown after a binding failure");
+      assertRecordContract(r, logs, remainingStatement);
+    }
     assert.deepEqual(readdirSync(escape).sort(), ["gi-a", "gi-b"], "nothing behind the link was renamed");
-    for (const n of ["gi-a", "gi-b"]) assert.equal(readFileSync(join(escape, n, "f.txt"), "utf8"), "victim", `${n} intact`);
+    for (const n of ["gi-a", "gi-b"]) assert.equal(readFileSync(join(escape, n, "TARGET-ONLY-f.txt"), "utf8"), "victim", `${n} intact`);
+    assertNeverMentioned(["TARGET-ONLY-f.txt"], report, logs);
   });
 
   test("sweep: a moved-aside directory swapped for a junction to a hard link of the SAME file stops the sweep — the outside name survives", async () => {
-    const { sweepStagingDirs } = await importDist("mcp/image-harvest.js");
+    const { remainingStatement } = await importDist("mcp/image-harvest.js");
     const parent = join(tmp("pp-img-stagebase-"), "image-staging");
     mkdirSync(join(parent, "gi-a"), { recursive: true });
     writeFileSync(join(parent, "gi-a", "f.png"), "ours");
@@ -1567,7 +1677,7 @@ describe("pp_codex.generate_image: private staging and exclusive hand-off", () =
     ageTree(join(parent, "gi-a"), old);
     const escape = tmp("pp-img-escape-");
     let staged = false;
-    const report = sweepStagingDirs(parent, undefined, {
+    const { report, logs } = await sweepLogged(parent, {
       afterObserve: (p) => {
         if (!p.endsWith("f.png") || staged) return;
         staged = true;
@@ -1579,12 +1689,47 @@ describe("pp_codex.generate_image: private staging and exclusive hand-off", () =
       },
     });
     assert.equal(staged, true, "precondition: the swap really happened");
-    assert.ok(report.skipped.some((s) => /sweep STOPPED \(fail closed\)/.test(s.reason)), JSON.stringify(report.skipped));
+    const s = report.skipped[0];
+    assert.equal(s.outcome, "stopped");
+    assert.equal(s.current, null);
+    assertRecordContract(s, logs, remainingStatement);
     assert.equal(readFileSync(join(escape, "f.png"), "utf8"), "ours", "the outside name was neither renamed nor deleted");
   });
 
+  test("sweep: a moved directory swapped for a junction BEFORE it is listed — the target's distinguishable names never reach the report or logs", async () => {
+    const { remainingStatement } = await importDist("mcp/image-harvest.js");
+    const parent = join(tmp("pp-img-stagebase-"), "image-staging");
+    const dir = join(parent, "gi-a");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "ours.png"), "ours");
+    ageTree(dir);
+    const target = tmp("pp-img-target-");
+    const targetNames = ["TARGET-SENTINEL-alpha.png", "TARGET-SENTINEL-beta"];
+    writeFileSync(join(target, targetNames[0]), "victim");
+    mkdirSync(join(target, targetNames[1])); // a directory: a pre-pass reading the target would reject and name it
+    ageTree(target);
+    let swapped = false;
+    const { report, logs } = await sweepLogged(parent, {
+      beforeList: (d) => {
+        if (basename(d).startsWith("sweep-") && !swapped) {
+          swapped = true;
+          renameSync(d, `${d}-orig`);
+          symlinkSync(target, d, "junction");
+        }
+      },
+    });
+    assert.equal(swapped, true, "precondition: the swap really happened before the listing");
+    const s = report.skipped[0];
+    assert.equal(s.outcome, "stopped");
+    assert.equal(s.current, null, "location unknown");
+    assert.deepEqual(s.deleted, []);
+    assertRecordContract(s, logs, remainingStatement);
+    assertNeverMentioned(targetNames, report, logs);
+    assert.deepEqual(readdirSync(target).sort(), [...targetNames].sort(), "nothing in the target was renamed or deleted");
+  });
+
   test("sweep: listings read at most 200 entries; a staging directory reaching 200 is skipped without reading more", async () => {
-    const { sweepStagingDirs, boundedNames, MAX_SWEEP_ENTRIES } = await importDist("mcp/image-harvest.js");
+    const { boundedNames, MAX_SWEEP_ENTRIES, remainingStatement } = await importDist("mcp/image-harvest.js");
     const listDir = tmp("pp-img-list-");
     for (let i = 0; i < 5; i++) writeFileSync(join(listDir, `f${i}`), "");
     assert.equal(boundedNames(listDir, 3).length, 3);
@@ -1596,18 +1741,21 @@ describe("pp_codex.generate_image: private staging and exclusive hand-off", () =
       for (let i = 0; i < count; i++) writeFileSync(join(parent, n, `f${i}`), "");
       ageTree(join(parent, n), old);
     }
-    const report = sweepStagingDirs(parent);
-    assert.deepEqual(report.removed.map((p) => basename(p)), ["gi-small"], "199 entries: swept");
-    assert.ok(report.skipped.some((s) => /listing reached 200 entries/.test(s.reason)), "200 entries: skipped, left in place");
+    const { report, logs, all } = await sweepLogged(parent);
+    assert.deepEqual(report.removed.map((r) => basename(r.dir)), ["gi-small"], "199 entries: swept");
+    assert.equal(report.removed[0].deleted.length, MAX_SWEEP_ENTRIES - 1, "every deletion recorded");
+    const full = report.skipped.find((s) => basename(s.dir) === "gi-full");
+    assert.match(full.reason, /listing reached 200 entries/);
+    for (const r of all) assertRecordContract(r, logs, remainingStatement);
   });
 
   test("sweep: a directory REFRESHED with fresh content after observation no longer qualifies — skipped, nothing deleted", async () => {
-    const { sweepStagingDirs } = await importDist("mcp/image-harvest.js");
+    const { remainingStatement } = await importDist("mcp/image-harvest.js");
     const parent = join(tmp("pp-img-stagebase-"), "image-staging");
     mkdirSync(join(parent, "gi-a"), { recursive: true });
     writeFileSync(join(parent, "gi-a", "old.png"), "old");
     ageTree(join(parent, "gi-a"));
-    const report = sweepStagingDirs(parent, undefined, {
+    const { report, logs } = await sweepLogged(parent, {
       afterObserve: (p) => {
         if (!p.endsWith("gi-a")) return;
         const now = new Date();
@@ -1616,19 +1764,20 @@ describe("pp_codex.generate_image: private staging and exclusive hand-off", () =
       },
     });
     assert.deepEqual(report.removed, []);
-    assert.match(report.skipped[0]?.reason ?? "", /no longer stale after it was observed/);
-    const moved = report.skipped[0].path;
-    assert.deepEqual(readdirSync(moved).sort(), ["fresh.png", "old.png"], "nothing was deleted");
+    const s = report.skipped[0];
+    assert.match(s.reason, /no longer stale after it was observed/);
+    assert.deepEqual(readdirSync(s.current).sort(), ["fresh.png", "old.png"], "nothing was deleted");
+    assertRecordContract(s, logs, remainingStatement);
   });
 
   test("sweep: a file refreshed IN PLACE (same inode) after observation is not unlinked — staleness re-checked before every unlink", async () => {
-    const { sweepStagingDirs } = await importDist("mcp/image-harvest.js");
+    const { remainingStatement } = await importDist("mcp/image-harvest.js");
     const parent = join(tmp("pp-img-stagebase-"), "image-staging");
     const dir = join(parent, "gi-a");
     mkdirSync(dir, { recursive: true });
     writeFileSync(join(dir, "f.png"), "ours");
     ageTree(dir);
-    const report = sweepStagingDirs(parent, undefined, {
+    const { report, logs } = await sweepLogged(parent, {
       afterObserve: (p) => {
         if (!p.endsWith("f.png")) return;
         const now = new Date();
@@ -1637,39 +1786,35 @@ describe("pp_codex.generate_image: private staging and exclusive hand-off", () =
     });
     assert.deepEqual(report.removed, []);
     const s = report.skipped[0];
-    assert.match(s?.reason ?? "", /was refreshed after it was observed \(no longer stale\); it was moved aside to .* and NOT deleted/);
-    assert.match(s.reason, /Deleted from this directory: 0 files\./);
+    assert.match(s.reason, /was refreshed after it was observed \(no longer stale\); it was moved aside to .* and NOT deleted/);
     assert.deepEqual(s.deleted, []);
     assert.equal(readFileSync(s.path, "utf8"), "ours", "the refreshed file survives (moved aside)");
-    // Failure after a file rename: the report lists the CURRENT (del-<uuid>) name, not the original "f.png".
-    assert.equal(s.leftInPlace.dir, dirname(s.path));
-    assert.deepEqual(s.leftInPlace.entries, [basename(s.path)]);
-    assert.match(s.leftInPlace.entries[0], /^del-/);
-    assert.match(s.reason, new RegExp(`Left in place in .*: \\[${basename(s.path)}\\]`));
+    // Failure after a file rename: current is the moved directory, and the record names it, never a listing.
+    assert.equal(s.current, dirname(s.path));
+    assertRecordContract(s, logs, remainingStatement);
   });
 
-  test("sweep: a mixed directory (old regular file + old subdirectory) has NOTHING deleted, and the report says 0 files", async () => {
-    const { sweepStagingDirs } = await importDist("mcp/image-harvest.js");
+  test("sweep: pre-pass rejection of a mixed directory deletes NOTHING and reports 0 files at the moved directory's current path", async () => {
+    const { remainingStatement } = await importDist("mcp/image-harvest.js");
     const parent = join(tmp("pp-img-stagebase-"), "image-staging");
     const dir = join(parent, "gi-a");
     mkdirSync(join(dir, "z-subdir"), { recursive: true });
     writeFileSync(join(dir, "a.png"), "old");
     ageTree(dir);
-    const report = sweepStagingDirs(parent);
+    const { report, logs } = await sweepLogged(parent);
     assert.deepEqual(report.removed, []);
     const s = report.skipped[0];
-    assert.match(s?.reason ?? "", /not a regular file/);
-    assert.match(s.reason, /Deleted from this directory: 0 files\./);
+    assert.equal(s.outcome, "left_in_place");
+    assert.match(s.reason, /not a regular file/);
     assert.deepEqual(s.deleted, []);
-    const moved = dirname(s.path);
-    assert.deepEqual(readdirSync(moved).sort(), ["a.png", "z-subdir"], "the old regular file was NOT deleted before the subdirectory was found");
-    assert.equal(s.leftInPlace.dir, moved, "reported as left in place in the moved directory's CURRENT path");
-    assert.deepEqual([...s.leftInPlace.entries].sort(), ["a.png", "z-subdir"], "the re-listing names ALL remaining entries");
-    assert.equal(s.leftInPlace.truncated, false);
+    assert.match(basename(s.current), /^sweep-/, "the moved directory's CURRENT name");
+    assert.deepEqual(readdirSync(s.current).sort(), ["a.png", "z-subdir"], "the old regular file was NOT deleted before the subdirectory was found");
+    assertRecordContract(s, logs, remainingStatement);
+    assertNeverMentioned(["a.png"], report, logs); // a remaining entry that was not the cause is never listed
   });
 
-  test("sweep: if a later file fails its re-check after deletions began, the report names exactly what was deleted and what remains", async () => {
-    const { sweepStagingDirs } = await importDist("mcp/image-harvest.js");
+  test("sweep: if a later file fails its re-check after deletions began, the report names exactly what was deleted", async () => {
+    const { remainingStatement } = await importDist("mcp/image-harvest.js");
     const parent = join(tmp("pp-img-stagebase-"), "image-staging");
     const dir = join(parent, "gi-a");
     mkdirSync(dir, { recursive: true });
@@ -1677,7 +1822,7 @@ describe("pp_codex.generate_image: private staging and exclusive hand-off", () =
     writeFileSync(join(dir, "b.png"), "b");
     ageTree(dir);
     const observed = [];
-    const report = sweepStagingDirs(parent, undefined, {
+    const { report, logs } = await sweepLogged(parent, {
       afterObserve: (p) => {
         if (!p.endsWith(".png")) return;
         observed.push(basename(p));
@@ -1686,84 +1831,116 @@ describe("pp_codex.generate_image: private staging and exclusive hand-off", () =
     });
     assert.deepEqual(report.removed, []);
     const s = report.skipped[0];
-    const [first, second] = observed;
+    const [, second] = observed;
     assert.equal(observed.length, 2, "precondition: both files were observed");
     assert.equal(s.deleted.length, 1, "exactly one file was deleted");
     assert.match(basename(s.deleted[0]), /^del-/, "recorded by the name it had when it was unlinked");
-    assert.equal(lstatSync(s.deleted[0], { throwIfNoEntry: false }), undefined, "the reported deletion really happened");
-    assert.match(s.reason, /Deleted from this directory: 1 file\(s\)/);
     assert.equal(readFileSync(s.path, "utf8"), second.replace(".png", ""), `${second} survives (moved aside), as reported`);
-    assert.deepEqual(s.leftInPlace.entries, [basename(s.path)], `only ${second}'s moved-aside name remains, and it is the one listed`);
-    assert.ok(!s.leftInPlace.entries.includes(first) && !s.leftInPlace.entries.includes(second), "no stale original names are reported");
+    assertRecordContract(s, logs, remainingStatement);
   });
 
-  test("sweep: the left-in-place re-listing is bounded and says when it was truncated", async () => {
-    const { sweepStagingDirs, SWEEP_REPORT_LIST_CAP } = await importDist("mcp/image-harvest.js");
+  test("sweep: remaining entries are never enumerated, however many there are", async () => {
+    const { remainingStatement } = await importDist("mcp/image-harvest.js");
     const parent = join(tmp("pp-img-stagebase-"), "image-staging");
     const dir = join(parent, "gi-a");
     mkdirSync(join(dir, "z-subdir"), { recursive: true }); // makes the pre-pass refuse the directory
-    for (let i = 0; i < SWEEP_REPORT_LIST_CAP + 10; i++) writeFileSync(join(dir, `f${String(i).padStart(3, "0")}.png`), "");
+    const names = [];
+    for (let i = 0; i < 60; i++) {
+      names.push(`many-${String(i).padStart(3, "0")}.png`);
+      writeFileSync(join(dir, names[i]), "");
+    }
     ageTree(dir);
-    const s = sweepStagingDirs(parent).skipped[0];
-    assert.equal(s.leftInPlace.entries.length, SWEEP_REPORT_LIST_CAP);
-    assert.equal(s.leftInPlace.truncated, true);
-    assert.match(s.reason, new RegExp(`listing truncated after ${SWEEP_REPORT_LIST_CAP} entries`));
+    const { report, logs } = await sweepLogged(parent);
+    const s = report.skipped[0];
+    assertRecordContract(s, logs, remainingStatement);
+    assertNeverMentioned(names, report, logs);
+    assert.equal(readdirSync(s.current).length, 61, "all left in place");
   });
 
-  test("sweep: an ABORT after one deletion still reports the true deleted list (structured report and log reason)", async () => {
-    const { sweepStagingDirs } = await importDist("mcp/image-harvest.js");
+  test("sweep: an ABORT after one deletion reports the true deleted list, location unknown, and never the junction target's names", async () => {
+    const { remainingStatement } = await importDist("mcp/image-harvest.js");
     const parent = join(tmp("pp-img-stagebase-"), "image-staging");
     const dir = join(parent, "gi-a");
     mkdirSync(dir, { recursive: true });
     writeFileSync(join(dir, "a.png"), "a");
     writeFileSync(join(dir, "b.png"), "b");
     ageTree(dir);
-    const escape = tmp("pp-img-escape-");
+    const target = tmp("pp-img-target-");
+    const targetNames = ["TARGET-SENTINEL-one.png", "TARGET-SENTINEL-two.png"];
+    for (const n of targetNames) writeFileSync(join(target, n), "victim");
     let n = 0;
-    const report = sweepStagingDirs(parent, undefined, {
+    const { report, logs } = await sweepLogged(parent, {
       afterObserve: (p) => {
         if (!p.endsWith(".png") || ++n !== 2) return;
         const moved = dirname(p);
         renameSync(moved, `${moved}-orig`); // the moved directory is replaced after the first deletion
-        symlinkSync(escape, moved, "junction");
+        symlinkSync(target, moved, "junction");
       },
     });
     const s = report.skipped[0];
-    assert.match(s?.reason ?? "", /sweep STOPPED \(fail closed\)/);
+    assert.equal(s.outcome, "stopped");
+    assert.match(s.reason, /sweep STOPPED \(fail closed\)/);
     assert.equal(s.deleted.length, 1, "the first file's deletion is carried through the abort");
-    assert.match(s.reason, /Deleted from this directory: 1 file\(s\)/);
     assert.match(basename(s.deleted[0]), /^del-/);
+    assert.equal(s.current, null, "location unknown after the binding failure");
+    assertRecordContract(s, logs, remainingStatement);
+    assertNeverMentioned(targetNames, report, logs);
+    assert.deepEqual(readdirSync(target).sort(), targetNames, "the target is untouched");
   });
 
-  test("sweep: a FINAL rmdir failure after deletions (entry added after the pre-pass) reports every deletion and what is left", async () => {
-    const { sweepStagingDirs } = await importDist("mcp/image-harvest.js");
+  test("sweep: an inner exception after a deletion reports the deleted list and the current location", async () => {
+    const { remainingStatement } = await importDist("mcp/image-harvest.js");
     const parent = join(tmp("pp-img-stagebase-"), "image-staging");
     const dir = join(parent, "gi-a");
     mkdirSync(dir, { recursive: true });
     writeFileSync(join(dir, "a.png"), "a");
     writeFileSync(join(dir, "b.png"), "b");
     ageTree(dir);
-    const report = sweepStagingDirs(parent, undefined, {
-      beforeRmdir: (moved) => writeFileSync(join(moved, "late.png"), "arrived after the pre-pass"),
+    let n = 0;
+    const { report, logs } = await sweepLogged(parent, {
+      beforeUnlink: () => {
+        if (++n === 2) throw Object.assign(new Error("forced EIO on unlink"), { code: "EIO" });
+      },
+    });
+    const s = report.skipped[0];
+    assert.equal(s.outcome, "error");
+    assert.match(s.reason, /sweep error: forced EIO on unlink/);
+    assert.equal(s.deleted.length, 1);
+    assert.match(basename(s.current), /^sweep-/);
+    assert.equal(readdirSync(s.current).length, 1, "the second file is still there");
+    assertRecordContract(s, logs, remainingStatement);
+  });
+
+  test("sweep: a FINAL rmdir failure after deletions reports every deletion and the current location, without listing what is left", async () => {
+    const { remainingStatement } = await importDist("mcp/image-harvest.js");
+    const parent = join(tmp("pp-img-stagebase-"), "image-staging");
+    const dir = join(parent, "gi-a");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "a.png"), "a");
+    writeFileSync(join(dir, "b.png"), "b");
+    ageTree(dir);
+    const { report, logs } = await sweepLogged(parent, {
+      beforeRmdir: (moved) => writeFileSync(join(moved, "late-arrival.png"), "arrived after the pre-pass"),
     });
     assert.deepEqual(report.removed, []);
     const s = report.skipped[0];
-    assert.match(s?.reason ?? "", /sweep error: .*ENOTEMPTY/);
+    assert.equal(s.outcome, "error");
+    assert.match(s.reason, /sweep error: .*ENOTEMPTY/);
     assert.equal(s.deleted.length, 2, "both deletions are reported, not zero");
-    for (const d of s.deleted) assert.equal(lstatSync(d, { throwIfNoEntry: false }), undefined, `${d} really was deleted`);
-    assert.deepEqual(s.leftInPlace.entries, ["late.png"], "the re-listing names exactly what is left");
-    assert.equal(readFileSync(join(s.leftInPlace.dir, "late.png"), "utf8"), "arrived after the pre-pass");
+    assertRecordContract(s, logs, remainingStatement);
+    assertNeverMentioned(["late-arrival.png"], report, logs);
+    assert.equal(readFileSync(join(s.current, "late-arrival.png"), "utf8"), "arrived after the pre-pass", "left in place at the reported location");
   });
 
   test("sweep: a fresh ENTRY inside a still-stale-looking directory makes the sweep skip it — nothing deleted", async () => {
-    const { sweepStagingDirs } = await importDist("mcp/image-harvest.js");
+    const { remainingStatement } = await importDist("mcp/image-harvest.js");
     const parent = join(tmp("pp-img-stagebase-"), "image-staging");
     const dir = join(parent, "gi-a");
     mkdirSync(dir, { recursive: true });
     writeFileSync(join(dir, "old.png"), "old");
     const old = new Date(Date.now() - 48 * 3600_000);
     ageTree(dir, old);
-    const report = sweepStagingDirs(parent, undefined, {
+    const { report, logs } = await sweepLogged(parent, {
       afterObserve: (p) => {
         if (p !== dir) return;
         writeFileSync(join(p, "fresh.png"), "new work");
@@ -1771,26 +1948,94 @@ describe("pp_codex.generate_image: private staging and exclusive hand-off", () =
       },
     });
     assert.deepEqual(report.removed, []);
-    assert.match(report.skipped[0]?.reason ?? "", /contains an entry newer than the staleness threshold \(fresh\.png\)/);
-    assert.deepEqual(readdirSync(report.skipped[0].path).sort(), ["fresh.png", "old.png"], "nothing was deleted");
+    const s = report.skipped[0];
+    assert.match(s.reason, /contains an entry newer than the staleness threshold \(fresh\.png\)/);
+    assert.deepEqual(readdirSync(s.current).sort(), ["fresh.png", "old.png"], "nothing was deleted");
+    assertRecordContract(s, logs, remainingStatement);
   });
 
   test("sweep: links and unexpected entries are skipped and logged, never followed or deleted", async () => {
-    const { sweepStagingDirs, createStagingDir } = await importDist("mcp/image-harvest.js");
+    const { createStagingDir, remainingStatement } = await importDist("mcp/image-harvest.js");
     const parent = join(tmp("pp-img-stagebase-"), "image-staging");
     const { staging } = createStagingDir(parent);
     const escape = tmp("pp-img-escape-");
-    writeFileSync(join(escape, "victim.txt"), "keep");
+    writeFileSync(join(escape, "TARGET-SENTINEL-victim.txt"), "keep");
     symlinkSync(escape, join(parent, "gi-linked"), "junction");
     mkdirSync(join(staging.dirReal, "subdir"));
     const old = new Date(Date.now() - 48 * 3600_000);
     ageTree(staging.dirReal, old);
     lutimesSync(join(parent, "gi-linked"), old, old); // the LINK itself looks stale, so only the link check can stop the sweep
-    const report = sweepStagingDirs(parent);
+    const { report, logs, all } = await sweepLogged(parent);
     assert.deepEqual(report.removed, []);
-    assert.ok(report.skipped.some((s) => s.path === join(real(parent), "gi-linked") && /link/.test(s.reason)));
+    const linked = report.skipped.find((s) => s.dir === join(real(parent), "gi-linked"));
+    assert.equal(linked.outcome, "not_a_directory");
+    assert.equal(linked.current, linked.dir, "left where it is");
     assert.ok(report.skipped.some((s) => /not a regular file/.test(s.reason)));
-    assert.equal(readFileSync(join(escape, "victim.txt"), "utf8"), "keep", "nothing deleted through the link");
+    for (const r of all) assertRecordContract(r, logs, remainingStatement);
+    assertNeverMentioned(["TARGET-SENTINEL-victim.txt"], report, logs);
+    assert.equal(readFileSync(join(escape, "TARGET-SENTINEL-victim.txt"), "utf8"), "keep", "nothing deleted through the link");
+  });
+
+  test("sweep: a staging PARENT that is a junction is refused with location unknown; nothing behind it is touched or named", async () => {
+    const { remainingStatement } = await importDist("mcp/image-harvest.js");
+    const target = tmp("pp-img-target-");
+    mkdirSync(join(target, "gi-TARGET-SENTINEL"));
+    ageTree(join(target, "gi-TARGET-SENTINEL"));
+    const parent = join(tmp("pp-img-stagebase-"), "image-staging");
+    symlinkSync(target, parent, "junction");
+    const { report, logs, all } = await sweepLogged(parent);
+    assert.equal(all.length, 1);
+    const s = all[0];
+    assert.equal(s.outcome, "parent_rejected");
+    assert.equal(s.dir, parent);
+    assert.equal(s.current, null);
+    assertRecordContract(s, logs, remainingStatement);
+    assertNeverMentioned(["gi-TARGET-SENTINEL"], report, logs);
+    assert.deepEqual(readdirSync(target), ["gi-TARGET-SENTINEL"]);
+  });
+
+  test("sweep: a staging parent that cannot be listed is reported at its location; nothing swept", async () => {
+    const { remainingStatement } = await importDist("mcp/image-harvest.js");
+    const parent = join(tmp("pp-img-stagebase-"), "image-staging");
+    mkdirSync(join(parent, "gi-a"), { recursive: true });
+    ageTree(join(parent, "gi-a"));
+    const { report, logs, all } = await sweepLogged(parent, {
+      beforeList: (d) => {
+        if (d === real(parent)) throw Object.assign(new Error("forced EACCES on opendir"), { code: "EACCES" });
+      },
+    });
+    assert.equal(all.length, 1);
+    const s = all[0];
+    assert.equal(s.outcome, "parent_rejected");
+    assert.match(s.reason, /could not list the staging parent \(forced EACCES on opendir\)/);
+    assert.equal(s.current, real(parent));
+    assertRecordContract(s, logs, remainingStatement);
+    assert.ok(statSync(join(parent, "gi-a")).isDirectory(), "nothing swept");
+  });
+
+  test("sweep: a staging parent swapped for a junction while it is being listed — the listing is discarded, never reported", async () => {
+    const { remainingStatement } = await importDist("mcp/image-harvest.js");
+    const target = tmp("pp-img-target-");
+    mkdirSync(join(target, "gi-TARGET-SENTINEL-listed"));
+    ageTree(join(target, "gi-TARGET-SENTINEL-listed"));
+    const parent = join(tmp("pp-img-stagebase-"), "image-staging");
+    mkdirSync(join(parent, "gi-ours"), { recursive: true });
+    ageTree(join(parent, "gi-ours"));
+    const { report, logs, all } = await sweepLogged(parent, {
+      beforeList: (d) => {
+        if (d !== real(parent)) return;
+        renameSync(d, `${d}-orig`);
+        symlinkSync(target, d, "junction");
+      },
+    });
+    assert.equal(all.length, 1);
+    const s = all[0];
+    assert.equal(s.outcome, "parent_rejected");
+    assert.match(s.reason, /The listing was discarded/);
+    assert.equal(s.current, null);
+    assertRecordContract(s, logs, remainingStatement);
+    assertNeverMentioned(["gi-TARGET-SENTINEL-listed"], report, logs);
+    assert.deepEqual(readdirSync(target), ["gi-TARGET-SENTINEL-listed"], "nothing behind the link touched");
   });
 });
 
@@ -2259,6 +2504,26 @@ describe("pp_agy.generate_image", () => {
  *   remaining entries not re-listed at skip time   -> 5 tests
  *   truncated re-listing not marked                -> bounded re-listing says when it was truncated
  *   (re-run red on the new code: per-unlink staleness re-check, pre-pass type validation)
+ *
+ * Operator decision "No enumeration" (supersedes the re-listing entries of "Truthful report" above: the
+ * re-listing was REMOVED; every exit now yields one returned+logged record, remaining entries never listed):
+ *   abort record names a location (not null)       -> 4 tests (parent swap, moved-dir swaps, abort after a deletion)
+ *   abort record without the deleted list          -> abort after one deletion
+ *   error record without the deleted list          -> inner exception; final rmdir failure
+ *   error record without the current location      -> inner exception; final rmdir failure
+ *   success record without the deleted list        -> successful removal; 200-entry bound
+ *   success / never-touched not logged at info     -> 3 tests (not_stale, removal, 200-entry bound)
+ *   remaining statement dropped from the reason    -> 20 tests (every exit-path fixture + the contract self-test)
+ *   remaining entries enumerated again             -> 6 tests (incl. "never enumerated, however many" and rmdir failure)
+ *   moved dir not re-checked after its listing     -> junction substituted BEFORE the listing (target names never reported)
+ *   parent not re-checked after its listing        -> parent swapped while being listed (listing discarded)
+ *   not-stale / non-directory / rejected-parent exits not reported -> the matching fixture each
+ *   parent listing failure misreported             -> unlistable parent
+ *   dirs left unprocessed by an abort not reported -> parent swapped mid-sweep
+ *   left-in-place record without moved location    -> 7 tests
+ *   left-in-place record without the deleted list  -> partial deletion then refresh
+ *   (re-run red on the new code: every unlink recorded, 200-entry skip, entry freshness, per-unlink staleness,
+ *   pre-pass type validation, parent re-check before a move, bound() before file ops)
  *   NOT FALSIFIABLE (disclosed): re-validating the RE-ENCODED output with acceptPng — pngjs always emits a valid PNG, so
  *   no fixture can make that defence-in-depth check fire without replacing the encoder.
  *   NOTE: removing only the link/type clause of the output_dir check stays GREEN — it is subsumed, not missing:

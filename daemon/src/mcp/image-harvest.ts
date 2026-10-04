@@ -1133,34 +1133,74 @@ export type SweepHooks = {
   beforeUnlink?: (asidePath: string) => void;
   /** Fired just before the emptied directory is removed. */
   beforeRmdir?: (movedDir: string) => void;
+  /** Fired just before a bound directory (the parent, or a moved-aside staging directory) is listed. */
+  beforeList?: (dir: string) => void;
+  /** Receives every sweep log line exactly as it is passed to the logger. */
+  onLog?: (level: "info" | "warn", fields: SweepRecord, message: string) => void;
 };
 
-/** Entries named in a skip report's re-listing of what was left in place (the listing says when it was truncated). */
-export const SWEEP_REPORT_LIST_CAP = 50;
+/** How the processing of one directory ended. */
+export type SweepOutcome =
+  /** Removed: every file unlinked, then the empty directory removed. */
+  | "removed"
+  /** Not stale yet: not touched. */
+  | "not_stale"
+  /** Gone before it was observed: not touched. */
+  | "vanished"
+  /** The staging parent was refused (link, other type, unresolvable, replaced) or could not be listed. */
+  | "parent_rejected"
+  /** A `gi-*` entry that is a link or not a directory: not touched. */
+  | "not_a_directory"
+  /** The directory was replaced, refreshed, too large, held an unsafe entry, or a file was replaced/refreshed. */
+  | "left_in_place"
+  /** A bound directory no longer was the directory bound: the WHOLE sweep stopped (fail closed). */
+  | "stopped"
+  /** A filesystem error (e.g. a failed rename, unlink or the final rmdir). */
+  | "error";
 
-/** What a skip report says was left in place: ONE bounded re-listing of the directory, taken at skip time. */
-export type LeftInPlace = {
-  /** The directory as it is named NOW (the moved-aside `sweep-*` name once the move happened). */
+/**
+ * The report for ONE directory, produced on every exit of its processing and
+ * logged with exactly these fields. Remaining entries are NEVER enumerated:
+ * the sweep reports only what it itself unlinked and where the rest was left.
+ */
+export type SweepRecord = {
+  /** The directory as it was named when the sweep found it. */
   dir: string;
-  /** Current entry names, at most SWEEP_REPORT_LIST_CAP. */
-  entries: string[];
-  /** True when the directory held more entries than were listed. */
-  truncated: boolean;
-  /** Set when the re-listing itself could not be taken. */
-  unavailable?: string;
+  /**
+   * Where the directory is now, as far as the sweep knows: its moved-aside
+   * `sweep-*` name once moved; null when it is gone (removed) or when its
+   * location is unknown because a binding check failed.
+   */
+  current: string | null;
+  /** Exactly the files unlinked from this directory, by the path each had when unlinked. */
+  deleted: string[];
+  outcome: SweepOutcome;
+  /** Why processing ended, including the remaining-entries statement for non-success outcomes. */
+  reason: string;
+  /**
+   * For non-success outcomes, the literal statement
+   * "remaining entries left in place in <current>; not enumerated", or
+   * "remaining entries left in place; location unknown; not enumerated".
+   * Null on success and for directories that were never touched.
+   */
+  remaining: string | null;
+  /** The specific object concerned when that is not the directory itself (e.g. a moved-aside file). */
+  path?: string;
 };
 
 export type SweepReport = {
-  /** Stale staging directories removed (original paths). */
-  removed: string[];
-  /**
-   * Where the sweep stopped, and why. `deleted` is the exact list of files it
-   * actually unlinked from that directory, by the path they had when unlinked
-   * (usually empty); `leftInPlace` is a bounded re-listing taken at skip time.
-   * Each skip is also logged with the same facts.
-   */
-  skipped: { path: string; reason: string; deleted: string[]; leftInPlace?: LeftInPlace }[];
+  /** Stale staging directories removed, each with the exact files unlinked from it. */
+  removed: SweepRecord[];
+  /** Every other directory exit (never-touched, left in place, stopped, error). */
+  skipped: SweepRecord[];
 };
+
+/** The literal remaining-entries statement: names a location only when it is known, never enumerates. */
+export function remainingStatement(current: string | null): string {
+  return current === null
+    ? "remaining entries left in place; location unknown; not enumerated"
+    : `remaining entries left in place in ${current}; not enumerated`;
+}
 
 /** Per-directory sweep state, carried through EVERY exit of `sweepOne` (returns, skips and exceptions alike). */
 type DirSweepState = {
@@ -1190,15 +1230,7 @@ function assertBoundDir(dirReal: string, id: FsIdentity, label: string): void {
   }
 }
 
-/** One bounded re-listing of `dir` for a skip report (reads at most SWEEP_REPORT_LIST_CAP + 1 entries). */
-function observeLeftInPlace(dir: string): LeftInPlace {
-  try {
-    const names = boundedNames(dir, SWEEP_REPORT_LIST_CAP + 1);
-    return { dir, entries: names.slice(0, SWEEP_REPORT_LIST_CAP), truncated: names.length > SWEEP_REPORT_LIST_CAP };
-  } catch (err) {
-    return { dir, entries: [], truncated: false, unavailable: (err as Error).message };
-  }
-}
+type Emit = (outcome: SweepOutcome, dir: string, current: string | null, why: string, deleted?: string[], path?: string) => void;
 
 /**
  * Remove STALE per-call staging directories (`gi-*`, mtime older than
@@ -1218,11 +1250,13 @@ function observeLeftInPlace(dir: string): LeftInPlace {
  * staleness) immediately before its unlink. Anything that fails stops work in
  * that directory. Directories are removed only when empty (rmdir).
  *
- * Reporting is truthful on every exit: a per-directory state object records
- * exactly what was unlinked (by the path it had when unlinked), and every
- * skip — including exceptions, binding failures and a failed final rmdir —
- * reports that list plus ONE bounded re-listing of the directory as it is
- * named at skip time (never names derived from an earlier listing).
+ * Reporting: EVERY exit of a directory's processing — success, never-touched,
+ * every skip, exceptions, binding failures, a failed final rmdir, a refused or
+ * unlistable parent — produces one `SweepRecord` that is both returned and
+ * logged: the original name, the current name (null when gone or unknown),
+ * exactly the files the sweep unlinked, and the outcome. Remaining entries
+ * are never enumerated; a non-success record states only where they were left
+ * ("location unknown" once a binding check failed).
  *
  * Residual (stated, operator-accepted): Node has no handle-bound rename,
  * unlink or rmdir, so a same-user process swapping a path inside the
@@ -1236,51 +1270,68 @@ export function sweepStagingDirs(
   now: number = Date.now(),
 ): SweepReport {
   const report: SweepReport = { removed: [], skipped: [] };
-  const skip = (path: string, reason: string, state?: DirSweepState): void => {
-    const deleted = state ? [...state.deleted] : [];
-    const leftInPlace = state ? observeLeftInPlace(state.current) : undefined;
+  const emit: Emit = (outcome, dir, current, why, deleted = [], path) => {
+    const done = outcome === "removed";
+    const untouched = outcome === "not_stale" || outcome === "vanished";
+    const remaining = done || untouched ? null : remainingStatement(current);
     const deletedText =
       deleted.length === 0 ? "Deleted from this directory: 0 files." : `Deleted from this directory: ${deleted.length} file(s) [${deleted.join(", ")}].`;
-    const leftText = !leftInPlace
-      ? ""
-      : leftInPlace.unavailable
-        ? ` Left in place in ${leftInPlace.dir}: listing unavailable (${leftInPlace.unavailable}).`
-        : ` Left in place in ${leftInPlace.dir}: [${leftInPlace.entries.join(", ")}]${leftInPlace.truncated ? ` (listing truncated after ${SWEEP_REPORT_LIST_CAP} entries)` : ""}.`;
-    report.skipped.push({ path, reason: `${reason} ${deletedText}${leftText}`, deleted, ...(leftInPlace ? { leftInPlace } : {}) });
-    log.warn({ path, reason, deletedCount: deleted.length, deleted, leftInPlace }, `generate_image staging sweep skipped a path. ${deletedText}${leftText}`);
+    const reason = remaining === null ? `${why} ${deletedText}` : `${why} ${deletedText} ${remaining}.`;
+    const rec: SweepRecord = { dir, current, deleted: [...deleted], outcome, reason, remaining, ...(path !== undefined ? { path } : {}) };
+    (done ? report.removed : report.skipped).push(rec);
+    const level = remaining === null ? "info" : "warn";
+    const message = `generate_image staging sweep: ${dir} ${outcome}. ${reason}`;
+    log[level](rec, message);
+    hooks.onLog?.(level, rec, message);
   };
   const pst = lstatSync(parent, { bigint: true, throwIfNoEntry: false });
-  if (!pst) return report;
+  if (!pst) return report; // no staging parent yet: nothing exists to sweep
   if (pst.isSymbolicLink() || !pst.isDirectory()) {
-    skip(parent, "staging parent is not a plain directory.");
+    emit("parent_rejected", parent, null, "staging parent is not a plain directory; nothing was swept.");
     return report;
   }
   let parentReal: string;
   try {
     parentReal = realpathSync.native(parent);
   } catch (err) {
-    skip(parent, `could not resolve the staging parent: ${(err as Error).message}`);
+    emit("parent_rejected", parent, null, `could not resolve the staging parent (${(err as Error).message}); nothing was swept.`);
     return report;
   }
   const parentId = { dev: pst.dev, ino: pst.ino };
-  let names: string[];
   try {
     assertBoundDir(parentReal, parentId, "staging parent");
-    names = boundedNames(parentReal, MAX_SWEEP_ENTRIES).filter(n => n.startsWith("gi-"));
   } catch (err) {
-    skip(parent, `could not list the staging parent: ${(err as Error).message}`);
+    emit("parent_rejected", parent, null, `${(err as Error).message} Nothing was swept.`);
     return report;
   }
-  for (const name of names) {
+  let names: string[];
+  try {
+    hooks.beforeList?.(parentReal);
+    names = boundedNames(parentReal, MAX_SWEEP_ENTRIES).filter(n => n.startsWith("gi-"));
+  } catch (err) {
+    emit("parent_rejected", parent, parentReal, `could not list the staging parent (${(err as Error).message}); nothing was swept.`);
+    return report;
+  }
+  try {
+    // Re-checked after the listing: names read through a swapped parent are never used or reported.
+    assertBoundDir(parentReal, parentId, "staging parent");
+  } catch (err) {
+    emit("parent_rejected", parent, null, `${(err as Error).message} The listing was discarded; nothing was swept.`);
+    return report;
+  }
+  for (const [i, name] of names.entries()) {
     const state: DirSweepState = { original: join(parentReal, name), current: join(parentReal, name), deleted: [] };
     try {
-      sweepOne(parentReal, parentId, state, maxAgeMs, now, hooks, report, skip);
+      sweepOne(parentReal, parentId, state, maxAgeMs, now, hooks, emit);
     } catch (err) {
       if (err instanceof SweepAbort) {
-        skip(state.current, `sweep STOPPED (fail closed): ${err.message} Nothing further was renamed or deleted.`, state);
+        emit("stopped", state.original, null, `sweep STOPPED (fail closed): ${err.message} Nothing further was renamed or deleted.`, state.deleted);
+        for (const rest of names.slice(i + 1)) {
+          emit("stopped", join(parentReal, rest), null, "not processed: the sweep stopped earlier (fail closed); not touched.");
+        }
         return report;
       }
-      skip(state.current, `sweep error: ${(err as Error).message}`, state);
+      emit("error", state.original, state.current, `sweep error: ${(err as Error).message}`, state.deleted);
     }
   }
   return report;
@@ -1309,14 +1360,15 @@ function sweepOne(
   maxAgeMs: number,
   now: number,
   hooks: SweepHooks,
-  report: SweepReport,
-  skip: (path: string, reason: string, state?: DirSweepState) => void,
+  emit: Emit,
 ): void {
   const dir = state.original;
   const st = lstatSync(dir, { bigint: true, throwIfNoEntry: false });
-  if (!st) return;
-  if (st.isSymbolicLink() || !st.isDirectory()) return skip(dir, "not a plain directory (link or other type); left in place.");
-  if (now - Number(st.mtimeMs) < maxAgeMs) return; // not stale yet
+  if (!st) return emit("vanished", dir, null, "gone before it was observed; not touched.");
+  if (st.isSymbolicLink() || !st.isDirectory()) {
+    return emit("not_a_directory", dir, dir, "not a plain directory (link or other type); not followed, not touched.", [], dir);
+  }
+  if (now - Number(st.mtimeMs) < maxAgeMs) return emit("not_stale", dir, dir, "not stale yet; not touched.");
   const observedMtime = Number(st.mtimeMs);
   const dirId = { dev: st.dev, ino: st.ino };
   hooks.afterObserve?.(dir);
@@ -1324,9 +1376,10 @@ function sweepOne(
   assertBoundDir(parentReal, parentId, "staging parent");
   renameSync(dir, moved);
   state.current = moved;
+  const left = (why: string, path?: string): void => emit("left_in_place", dir, moved, why, state.deleted, path);
   const mst = lstatSync(moved, { bigint: true, throwIfNoEntry: false });
   if (!mst || mst.isSymbolicLink() || !mst.isDirectory() || !sameIdentity(mst, dirId)) {
-    return skip(moved, `the object at ${dir} was replaced after it was observed; it was moved aside to ${moved} and left in place.`, state);
+    return left(`the object at ${dir} was replaced after it was observed; it was moved aside to ${moved}.`);
   }
   const bound = (): void => {
     assertBoundDir(parentReal, parentId, "staging parent");
@@ -1338,18 +1391,23 @@ function sweepOne(
   // still older than maxAgeMs.
   const dirMtime = Number(mst.mtimeMs);
   if (dirMtime !== observedMtime && now - dirMtime < maxAgeMs) {
-    return skip(moved, `no longer stale after it was observed (directory modified).`, state);
+    return left("no longer stale after it was observed (directory modified); nothing deleted.");
   }
+  hooks.beforeList?.(moved);
   const entries = boundedNames(moved, MAX_SWEEP_ENTRIES);
-  if (entries.length >= MAX_SWEEP_ENTRIES) return skip(moved, `listing reached ${MAX_SWEEP_ENTRIES} entries.`, state);
+  // Re-checked AFTER the listing too: if the directory was swapped (e.g. for a
+  // link) before it was listed, the names read belong to something else and
+  // the sweep stops without using or reporting any of them.
+  bound();
+  if (entries.length >= MAX_SWEEP_ENTRIES) return left(`listing reached ${MAX_SWEEP_ENTRIES} entries; nothing deleted.`);
   // Pre-pass over EVERY entry before anything is deleted: each must be a
   // non-link regular file older than maxAgeMs. If any is not, nothing in this
   // directory is deleted.
   for (const e of entries) {
     const est = lstatSync(join(moved, e), { bigint: true, throwIfNoEntry: false });
     if (!est) continue;
-    if (est.isSymbolicLink() || !est.isFile()) return skip(join(moved, e), `${e} is not a regular file.`, state);
-    if (now - Number(est.mtimeMs) < maxAgeMs) return skip(moved, `contains an entry newer than the staleness threshold (${e}).`, state);
+    if (est.isSymbolicLink() || !est.isFile()) return left(`an entry is not a regular file (${e}); nothing deleted.`, join(moved, e));
+    if (now - Number(est.mtimeMs) < maxAgeMs) return left(`contains an entry newer than the staleness threshold (${e}); nothing deleted.`, join(moved, e));
   }
   // Deletion pass. Every file is re-checked after it is moved aside — type,
   // identity AND staleness — immediately before its unlink. If any check
@@ -1359,7 +1417,7 @@ function sweepOne(
     const p = join(moved, e);
     const fst = lstatSync(p, { bigint: true, throwIfNoEntry: false });
     if (!fst) continue;
-    if (fst.isSymbolicLink() || !fst.isFile()) return skip(p, `${e} is not a regular file (changed after the pre-pass).`, state);
+    if (fst.isSymbolicLink() || !fst.isFile()) return left(`${e} is not a regular file (changed after the pre-pass).`, p);
     const fileId = { dev: fst.dev, ino: fst.ino };
     hooks.afterObserve?.(p);
     const aside = join(moved, `del-${randomUUID()}`);
@@ -1367,10 +1425,10 @@ function sweepOne(
     renameSync(p, aside);
     const ast = lstatSync(aside, { bigint: true, throwIfNoEntry: false });
     if (!ast || ast.isSymbolicLink() || !ast.isFile() || !sameIdentity(ast, fileId)) {
-      return skip(aside, `the file at ${p} was replaced after it was observed; it was moved aside to ${aside} and left in place.`, state);
+      return left(`the file at ${p} was replaced after it was observed; it was moved aside to ${aside} and not deleted.`, aside);
     }
     if (now - Number(ast.mtimeMs) < maxAgeMs) {
-      return skip(aside, `the file at ${p} was refreshed after it was observed (no longer stale); it was moved aside to ${aside} and NOT deleted.`, state);
+      return left(`the file at ${p} was refreshed after it was observed (no longer stale); it was moved aside to ${aside} and NOT deleted.`, aside);
     }
     hooks.beforeUnlink?.(aside);
     bound();
@@ -1380,8 +1438,9 @@ function sweepOne(
   hooks.beforeRmdir?.(moved);
   bound();
   rmdirSync(moved);
-  report.removed.push(dir);
+  emit("removed", dir, null, `removed (moved aside to ${moved}, emptied, rmdir).`, state.deleted);
 }
+
 
 export type StagedFile = { path: string; fd: number; id: FsIdentity };
 
