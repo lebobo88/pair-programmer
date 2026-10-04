@@ -34,6 +34,7 @@ import {
   linkSync,
   ftruncateSync,
   constants as FS,
+  type BigIntStats,
 } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { join, dirname, basename, extname, resolve, relative } from "node:path";
@@ -1157,10 +1158,15 @@ export type SweepOutcome =
   | "not_a_directory"
   /** The directory was refreshed, too large or held an unsafe/fresh entry, or a file was refreshed (same inode). Never a substitution. */
   | "left_in_place"
-  /** Any detected substitution (a bound or observed directory or file no longer being what was observed, or an observed file gone): the WHOLE sweep stopped (fail closed). */
-  | "stopped"
-  /** A filesystem error (e.g. a failed rename, unlink or the final rmdir). */
-  | "error";
+  /**
+   * The WHOLE sweep stopped (fail closed): any detected substitution (a bound
+   * or observed directory or file no longer being what was observed, or an
+   * observed file gone) or ANY filesystem failure while a staging directory
+   * was being processed (rename, unlink, rmdir, lstat, listing — ENOENT,
+   * EPERM, ENOTEMPTY or anything else). Also recorded for every directory the
+   * sweep had not yet processed.
+   */
+  | "stopped";
 
 /**
  * The report for ONE directory, produced on every exit of its processing and
@@ -1257,7 +1263,10 @@ type Emit = (outcome: SweepOutcome, dir: string, current: string | null, why: st
  * and is then moved aside and re-checked (type, identity, staleness)
  * immediately before its unlink. Uniform rule: ANY detected substitution — a
  * directory or file whose identity or type no longer matches its observation,
- * or an observed file that is gone — stops the WHOLE sweep (SweepAbort). A
+ * or an observed file that is gone — and ANY filesystem failure while a
+ * staging directory is processed (rename, unlink, rmdir, lstat, listing:
+ * ENOENT, EPERM, ENOTEMPTY or anything else) stops the WHOLE sweep; there is
+ * no error-and-continue path. A
  * refresh (same inode, newer mtime), a fresh or non-regular entry, or a full
  * listing only stops work in that directory. Directories are removed only
  * when empty (rmdir).
@@ -1296,7 +1305,13 @@ export function sweepStagingDirs(
     log[level](rec, message);
     hooks.onLog?.(level, rec, message);
   };
-  const pst = lstatSync(parent, { bigint: true, throwIfNoEntry: false });
+  let pst: BigIntStats | undefined;
+  try {
+    pst = lstatSync(parent, { bigint: true, throwIfNoEntry: false });
+  } catch (err) {
+    emit("parent_rejected", parent, null, `sweep STOPPED (fail closed): could not observe the staging parent (${(err as Error).message}); nothing was swept.`);
+    return report;
+  }
   if (!pst) return report; // no staging parent yet: nothing exists to sweep
   if (pst.isSymbolicLink() || !pst.isDirectory()) {
     emit("parent_rejected", parent, null, "staging parent is not a plain directory; nothing was swept.");
@@ -1341,14 +1356,16 @@ export function sweepStagingDirs(
     try {
       sweepOne(parentReal, parentId, state, maxAgeMs, now, hooks, emit);
     } catch (err) {
-      if (err instanceof SweepAbort) {
-        emit("stopped", state.original, null, `sweep STOPPED (fail closed): ${err.message} Nothing further was renamed or deleted.`, state.deleted);
-        for (const rest of names.slice(i + 1)) {
-          emit("stopped", join(parentReal, rest), null, "not processed: the sweep stopped earlier (fail closed); not touched.");
-        }
-        return report;
+      // ANY exception — a detected substitution (SweepAbort) or any filesystem
+      // failure — stops the WHOLE sweep. There is no error-and-continue path:
+      // the location of this directory is reported as unknown, its exact
+      // deletions are kept, and every unprocessed directory is recorded.
+      const what = err instanceof SweepAbort ? err.message : `filesystem failure: ${(err as Error).message}`;
+      emit("stopped", state.original, null, `sweep STOPPED (fail closed): ${what} Nothing further was renamed or deleted.`, state.deleted);
+      for (const rest of names.slice(i + 1)) {
+        emit("stopped", join(parentReal, rest), null, "not processed: the sweep stopped earlier (fail closed); not touched.");
       }
-      emit("error", state.original, state.current, `sweep error: ${(err as Error).message}`, state.deleted);
+      return report;
     }
   }
   return report;

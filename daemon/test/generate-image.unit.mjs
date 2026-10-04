@@ -29,6 +29,7 @@ import {
   writeFileSync,
   appendFileSync,
   readFileSync,
+  chmodSync,
   readdirSync,
   renameSync,
   rmSync,
@@ -1699,7 +1700,7 @@ describe("pp_codex.generate_image: private staging and exclusive hand-off", () =
   function assertSubstitutionStoppedSweep(parent, report, logs, all, remainingStatement, files = { "a.png": "a" }) {
     assert.deepEqual(report.removed, [], "nothing removed");
     assert.deepEqual(all.map((r) => [basename(r.dir), r.outcome]), [["gi-a", "stopped"], ["gi-b", "stopped"]]);
-    assert.match(all[0].reason, /sweep STOPPED \(fail closed\): .*(replaced|removed|disappeared)/);
+    assert.match(all[0].reason, /sweep STOPPED \(fail closed\): .*(replaced|removed|disappeared|filesystem failure)/);
     assert.match(all[1].reason, /not processed: the sweep stopped earlier/);
     for (const r of all) {
       assert.equal(r.current, null, `${basename(r.dir)}: location unknown`);
@@ -2088,48 +2089,92 @@ describe("pp_codex.generate_image: private staging and exclusive hand-off", () =
     assert.deepEqual(readdirSync(target).sort(), targetNames, "the target is untouched");
   });
 
-  test("sweep: an inner exception after a deletion reports the deleted list and the current location", async () => {
+  test("sweep: a thrown exception after a deletion stops the WHOLE sweep — deleted list kept, location unknown, gi-b untouched", async () => {
     const { remainingStatement } = await importDist("mcp/image-harvest.js");
-    const parent = join(tmp("pp-img-stagebase-"), "image-staging");
-    const dir = join(parent, "gi-a");
-    mkdirSync(dir, { recursive: true });
-    writeFileSync(join(dir, "a.png"), "a");
-    writeFileSync(join(dir, "b.png"), "b");
-    ageTree(dir);
+    const files = { "a.png": "a", "b.png": "b" };
+    const parent = twoStaleDirs(files);
     let n = 0;
-    const { report, logs } = await sweepLogged(parent, {
+    const { report, logs, all } = await sweepLogged(parent, {
       beforeUnlink: () => {
         if (++n === 2) throw Object.assign(new Error("forced EIO on unlink"), { code: "EIO" });
       },
     });
-    const s = report.skipped[0];
-    assert.equal(s.outcome, "error");
-    assert.match(s.reason, /sweep error: forced EIO on unlink/);
-    assert.equal(s.deleted.length, 1);
-    assert.match(basename(s.current), /^sweep-/);
-    assert.equal(readdirSync(s.current).length, 1, "the second file is still there");
-    assertRecordContract(s, logs, remainingStatement);
+    assertSubstitutionStoppedSweep(parent, report, logs, all, remainingStatement, files);
+    assert.match(all[0].reason, /filesystem failure: forced EIO on unlink/);
+    assert.equal(all[0].deleted.length, 1, "the first deletion is kept in the report");
   });
 
-  test("sweep: a FINAL rmdir failure after deletions reports every deletion and the current location, without listing what is left", async () => {
+  test("sweep: rename ENOENT — the observed file removed just before its move-aside — stops the WHOLE sweep, gi-b untouched", async () => {
     const { remainingStatement } = await importDist("mcp/image-harvest.js");
-    const parent = join(tmp("pp-img-stagebase-"), "image-staging");
-    const dir = join(parent, "gi-a");
-    mkdirSync(dir, { recursive: true });
-    writeFileSync(join(dir, "a.png"), "a");
-    writeFileSync(join(dir, "b.png"), "b");
-    ageTree(dir);
-    const { report, logs } = await sweepLogged(parent, {
-      beforeRmdir: (moved) => writeFileSync(join(moved, "late-arrival.png"), "arrived after the pre-pass"),
+    const parent = twoStaleDirs();
+    let removed = false;
+    const { report, logs, all } = await sweepLogged(parent, {
+      afterObserve: (p) => {
+        if (!p.endsWith("a.png") || removed) return;
+        removed = true;
+        rmSync(p); // the currently observed file disappears before its rename
+      },
     });
-    assert.deepEqual(report.removed, []);
-    const s = report.skipped[0];
-    assert.equal(s.outcome, "error");
-    assert.match(s.reason, /sweep error: .*ENOTEMPTY/);
-    assert.equal(s.deleted.length, 2, "both deletions are reported, not zero");
+    assert.equal(removed, true, "precondition: the observed file really was removed before its rename");
+    assertSubstitutionStoppedSweep(parent, report, logs, all, remainingStatement);
+    assert.match(all[0].reason, /filesystem failure: .*ENOENT/);
+    assert.deepEqual(all[0].deleted, []);
+  });
+
+  test("sweep: a REAL unlink failure stops the WHOLE sweep — deleted list kept, gi-b untouched", async () => {
+    const { remainingStatement } = await importDist("mcp/image-harvest.js");
+    const files = { "a.png": "a", "b.png": "b" };
+    const parent = twoStaleDirs(files);
+    let n = 0;
+    let blocked = null;
+    const { report, logs, all } = await sweepLogged(parent, {
+      beforeUnlink: (aside) => {
+        if (++n !== 2) return;
+        // Make the REAL unlinkSync fail (no thrown hook): a directory now sits at the moved-aside name,
+        // and unlink refuses a directory on every platform (libuv clears read-only bits on Windows, so
+        // a read-only file would not do). The verified file itself is kept under another name.
+        blocked = aside;
+        renameSync(aside, `${aside}.kept`);
+        mkdirSync(aside);
+      },
+    });
+    assert.ok(blocked, "precondition: the second unlink was made to fail");
+    assertSubstitutionStoppedSweep(parent, report, logs, all, remainingStatement, files);
+    assert.match(all[0].reason, /filesystem failure: .*(EPERM|EISDIR|EACCES)/);
+    assert.equal(all[0].deleted.length, 1, "the first deletion is kept in the report");
+    assert.ok(statSync(blocked).isDirectory(), "the unlink really failed");
+  });
+
+  test("sweep: a staging parent that cannot even be observed (lstat throws) is reported, never thrown to the caller", async () => {
+    const { remainingStatement } = await importDist("mcp/image-harvest.js");
+    const bad = join(tmp("pp-img-stagebase-"), "image\0staging"); // lstatSync throws synchronously on a NUL byte
+    const { report, logs, all } = await sweepLogged(bad); // throws (red) if the lstat failure escapes
+    assert.equal(all.length, 1);
+    const s = all[0];
+    assert.equal(s.outcome, "parent_rejected");
+    assert.match(s.reason, /sweep STOPPED \(fail closed\): could not observe the staging parent/);
+    assert.equal(s.current, null);
     assertRecordContract(s, logs, remainingStatement);
+    assert.deepEqual(report.removed, []);
+  });
+
+  test("sweep: a FINAL rmdir failure after deletions stops the WHOLE sweep — every deletion kept, nothing listed, gi-b untouched", async () => {
+    const { remainingStatement } = await importDist("mcp/image-harvest.js");
+    const files = { "a.png": "a", "b.png": "b" };
+    const parent = twoStaleDirs(files);
+    let lateDir = null;
+    const { report, logs, all } = await sweepLogged(parent, {
+      beforeRmdir: (moved) => {
+        if (lateDir) return;
+        lateDir = moved;
+        writeFileSync(join(moved, "late-arrival.png"), "arrived after the pre-pass");
+      },
+    });
+    assertSubstitutionStoppedSweep(parent, report, logs, all, remainingStatement, files);
+    assert.match(all[0].reason, /filesystem failure: .*ENOTEMPTY/);
+    assert.equal(all[0].deleted.length, 2, "both deletions are reported, not zero");
     assertNeverMentioned(["late-arrival.png"], report, logs);
-    assert.equal(readFileSync(join(s.current, "late-arrival.png"), "utf8"), "arrived after the pre-pass", "left in place at the reported location");
+    assert.equal(readFileSync(join(lateDir, "late-arrival.png"), "utf8"), "arrived after the pre-pass", "left in place");
   });
 
   test("sweep: a fresh ENTRY inside a still-stale-looking directory makes the sweep skip it — nothing deleted", async () => {
@@ -2741,6 +2786,13 @@ describe("pp_agy.generate_image", () => {
  *   post-move file mismatch -> left_in_place (sweep continues) -> file substituted after observation (two-dir)
  *   file gone after the pre-pass skipped                       -> later file removed after the pre-pass
  *   entry gone between listing and pre-pass skipped            -> entry gone between the listing and the pre-pass
+ *
+ * Operator decision "Any error stops the sweep" (the "error" outcome and its error-and-continue path were REMOVED):
+ *   error-and-continue restored for non-SweepAbort exceptions  -> thrown exception; rename ENOENT; real unlink failure;
+ *                                                                final rmdir failure (each two-dir, gi-b untouched)
+ *   unprocessed directories not recorded after a stop          -> 12 tests
+ *   deleted list dropped from the stopped record               -> 5 tests (incl. thrown exception, unlink, rmdir)
+ *   parent lstat failure thrown to the caller                  -> parent that cannot even be observed
  *   NOT FALSIFIABLE (disclosed): re-validating the RE-ENCODED output with acceptPng — pngjs always emits a valid PNG, so
  *   no fixture can make that defence-in-depth check fire without replacing the encoder.
  *   NOTE: removing only the link/type clause of the output_dir check stays GREEN — it is subsumed, not missing:

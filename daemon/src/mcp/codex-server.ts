@@ -1100,7 +1100,9 @@ const TOOLS = [
       "is not, nothing in that directory is deleted; then each file is observed, moved aside under a fresh random name and re-checked (type, identity " +
       "AND staleness) immediately before its unlink. Uniform rule: ANY detected substitution — a directory or file whose identity or type no longer " +
       "matches what was observed (the directory is re-checked right before and right after its move-aside; each file against its pre-pass identity, " +
-      "and again after its move-aside), or an observed file that is gone — stops the WHOLE sweep, with the location reported as unknown and every " +
+      "and again after its move-aside), or an observed file that is gone — and ANY filesystem failure during cleanup (rename, unlink, rmdir, lstat, " +
+      "listing: ENOENT, EPERM, ENOTEMPTY or anything else; there is no error-and-continue path) stops the WHOLE sweep, with the exact deletions kept, " +
+      "the location reported as unknown and every " +
       "unprocessed directory reported as stopped; a refresh (same inode, newer mtime) only stops deletion in that directory. Staging " +
       "cleanup reports deleted files exactly; remaining entries are never enumerated: on EVERY exit of a directory's processing (removal, " +
       "never-touched, skips, exceptions, binding failures, a failed final rmdir, a refused or unlistable parent) one record is returned and " +
