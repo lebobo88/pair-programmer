@@ -1098,7 +1098,10 @@ const TOOLS = [
       "nothing further is renamed or deleted; a directory is observed (non-link, plain directory, dev/ino, stale mtime), moved aside under a fresh " +
       "random name and re-checked (identity, and still stale); then a pre-pass requires EVERY entry to be a non-link regular file older than 24h — if any " +
       "is not, nothing in that directory is deleted; then each file is observed, moved aside under a fresh random name and re-checked (type, identity " +
-      "AND staleness) immediately before its unlink; anything replaced or refreshed after observation stops deletion in that directory. Staging " +
+      "AND staleness) immediately before its unlink. Uniform rule: ANY detected substitution — a directory or file whose identity or type no longer " +
+      "matches what was observed (the directory is re-checked right before and right after its move-aside; each file against its pre-pass identity, " +
+      "and again after its move-aside), or an observed file that is gone — stops the WHOLE sweep, with the location reported as unknown and every " +
+      "unprocessed directory reported as stopped; a refresh (same inode, newer mtime) only stops deletion in that directory. Staging " +
       "cleanup reports deleted files exactly; remaining entries are never enumerated: on EVERY exit of a directory's processing (removal, " +
       "never-touched, skips, exceptions, binding failures, a failed final rmdir, a refused or unlistable parent) one record is returned and " +
       "logged with the directory's original name, its current name (null when removed or when its location is unknown after a binding failure), " +

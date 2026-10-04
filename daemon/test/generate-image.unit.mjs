@@ -1684,50 +1684,152 @@ describe("pp_codex.generate_image: private staging and exclusive hand-off", () =
     assert.equal(lstatSync(dir, { throwIfNoEntry: false }), undefined);
   });
 
-  test("sweep: a file replaced AFTER it was observed is moved aside and left in place, never deleted", async () => {
-    const { createStagingDir, remainingStatement } = await importDist("mcp/image-harvest.js");
+  /** Two stale staging directories, gi-a and gi-b, each holding the given files. */
+  const twoStaleDirs = (files = { "a.png": "a" }) => {
     const parent = join(tmp("pp-img-stagebase-"), "image-staging");
-    const { staging } = createStagingDir(parent);
-    writeFileSync(join(staging.dirReal, "staged.png"), "ours");
-    const old = new Date(Date.now() - 48 * 3600_000);
-    ageTree(staging.dirReal, old);
-    const { report, logs } = await sweepLogged(parent, {
-      afterObserve: (p) => {
-        if (!p.endsWith("staged.png")) return;
-        rmSync(p);
-        writeFileSync(p, "theirs"); // swapped in after the sweep's lstat
-      },
-    });
-    assert.deepEqual(report.removed, []);
-    const s = report.skipped[0];
-    assert.equal(s.outcome, "left_in_place");
-    assert.match(s.reason, /replaced after it was observed; .* not deleted/);
-    assert.equal(readFileSync(s.path, "utf8"), "theirs", "the replacement survives (moved aside, not deleted)");
-    assert.equal(s.current, dirname(s.path));
-    assertRecordContract(s, logs, remainingStatement);
-  });
+    for (const n of ["gi-a", "gi-b"]) {
+      mkdirSync(join(parent, n), { recursive: true });
+      for (const [f, body] of Object.entries(files)) writeFileSync(join(parent, n, f), `${n}:${body}`);
+      ageTree(join(parent, n));
+    }
+    return parent;
+  };
 
-  test("sweep: a staging DIRECTORY replaced after it was observed is moved aside and left in place, never deleted", async () => {
-    const { createStagingDir, remainingStatement } = await importDist("mcp/image-harvest.js");
-    const parent = join(tmp("pp-img-stagebase-"), "image-staging");
-    const { staging } = createStagingDir(parent);
-    const old = new Date(Date.now() - 48 * 3600_000);
-    ageTree(staging.dirReal, old);
-    const { report, logs } = await sweepLogged(parent, {
+  /** Named check: a detected substitution stopped the WHOLE sweep — gi-a and gi-b both `stopped`, location unknown, gi-b untouched. */
+  function assertSubstitutionStoppedSweep(parent, report, logs, all, remainingStatement, files = { "a.png": "a" }) {
+    assert.deepEqual(report.removed, [], "nothing removed");
+    assert.deepEqual(all.map((r) => [basename(r.dir), r.outcome]), [["gi-a", "stopped"], ["gi-b", "stopped"]]);
+    assert.match(all[0].reason, /sweep STOPPED \(fail closed\): .*(replaced|removed|disappeared)/);
+    assert.match(all[1].reason, /not processed: the sweep stopped earlier/);
+    for (const r of all) {
+      assert.equal(r.current, null, `${basename(r.dir)}: location unknown`);
+      assertRecordContract(r, logs, remainingStatement);
+    }
+    for (const [f, body] of Object.entries(files)) {
+      assert.equal(readFileSync(join(real(parent), "gi-b", f), "utf8"), `gi-b:${body}`, `gi-b/${f} untouched`);
+    }
+  }
+
+  test("sweep: a staging DIRECTORY substituted after it was observed stops the WHOLE sweep — both stopped, location unknown, gi-b untouched", async () => {
+    const { remainingStatement } = await importDist("mcp/image-harvest.js");
+    const parent = twoStaleDirs();
+    const gia = join(real(parent), "gi-a");
+    let swapped = false;
+    const { report, logs, all } = await sweepLogged(parent, {
       afterObserve: (p) => {
-        if (p !== staging.dirReal) return;
+        if (p !== gia || swapped) return;
+        swapped = true;
         renameSync(p, `${p}-orig`);
         mkdirSync(p);
         writeFileSync(join(p, "theirs.txt"), "keep");
+        ageTree(p); // stale too: only the identity check can tell
       },
     });
-    assert.deepEqual(report.removed, []);
-    const s = report.skipped[0];
-    assert.match(s.reason, /was replaced after it was observed/);
-    assert.equal(readFileSync(join(s.current, "theirs.txt"), "utf8"), "keep", "the replacement directory and its content survive");
-    assert.ok(statSync(`${staging.dirReal}-orig`).isDirectory(), "the original is untouched too");
-    assertRecordContract(s, logs, remainingStatement);
+    assert.equal(swapped, true, "precondition: gi-a really was substituted after its observation");
+    assertSubstitutionStoppedSweep(parent, report, logs, all, remainingStatement);
+    assert.equal(readFileSync(join(gia, "theirs.txt"), "utf8"), "keep", "the substitute was not moved or deleted");
+    assert.equal(readFileSync(join(`${gia}-orig`, "a.png"), "utf8"), "gi-a:a", "the original is untouched too");
     assertNeverMentioned(["theirs.txt"], report, logs);
+  });
+
+  test("sweep: a FILE substituted after it was observed (identity mismatch after its move-aside) stops the WHOLE sweep — gi-b untouched", async () => {
+    const { remainingStatement } = await importDist("mcp/image-harvest.js");
+    const parent = twoStaleDirs();
+    let swapped = false;
+    const { report, logs, all } = await sweepLogged(parent, {
+      afterObserve: (p) => {
+        if (!p.endsWith("a.png") || swapped) return;
+        swapped = true;
+        // Created while the original still exists, so it is guaranteed a different inode (NTFS can reuse a freed one at once).
+        writeFileSync(`${p}.sub`, "theirs");
+        renameSync(`${p}.sub`, p);
+      },
+    });
+    assert.equal(swapped, true, "precondition: the file really was substituted after its observation");
+    assertSubstitutionStoppedSweep(parent, report, logs, all, remainingStatement);
+    assert.equal(all[0].deleted.length, 0);
+    const moved = readdirSync(real(parent)).filter((n) => n.startsWith("sweep-"));
+    assert.equal(moved.length, 1, "gi-a was moved aside before the substitution was detected");
+    const left = readdirSync(join(real(parent), moved[0]));
+    assert.equal(left.length, 1);
+    assert.equal(readFileSync(join(real(parent), moved[0], left[0]), "utf8"), "theirs", "the substitute survives (moved aside, not deleted)");
+  });
+
+  test("sweep: a later FILE substituted after the pre-pass observed it stops the WHOLE sweep — only the verified earlier file was deleted", async () => {
+    const { remainingStatement } = await importDist("mcp/image-harvest.js");
+    const files = { "a.png": "a", "b.png": "b" };
+    const parent = twoStaleDirs(files);
+    let swapped = false;
+    const { report, logs, all } = await sweepLogged(parent, {
+      afterObserve: (p) => {
+        if (!p.endsWith("a.png") || swapped) return;
+        swapped = true;
+        const b = join(dirname(p), "b.png");
+        writeFileSync(`${b}.sub`, "theirs"); // created while b.png still exists: a guaranteed different inode
+        renameSync(`${b}.sub`, b);
+        const old = new Date(Date.now() - 48 * 3600_000);
+        utimesSync(b, old, old); // still stale and still a regular file: only the identity check can tell
+      },
+    });
+    assert.equal(swapped, true, "precondition: b.png really was substituted after the pre-pass");
+    assertSubstitutionStoppedSweep(parent, report, logs, all, remainingStatement, files);
+    assert.equal(all[0].deleted.length, 1, "a.png (verified) was deleted before b.png's substitution was detected");
+    const moved = readdirSync(real(parent)).filter((n) => n.startsWith("sweep-"));
+    assert.equal(readFileSync(join(real(parent), moved[0], "b.png"), "utf8"), "theirs", "the substitute was neither moved nor deleted");
+  });
+
+  test("sweep: a staging DIRECTORY substituted right AFTER its move-aside (post-move identity mismatch) stops the WHOLE sweep", async () => {
+    const { remainingStatement } = await importDist("mcp/image-harvest.js");
+    const parent = twoStaleDirs();
+    let swapped = null;
+    const { report, logs, all } = await sweepLogged(parent, {
+      afterMove: (moved) => {
+        if (swapped) return;
+        swapped = moved;
+        renameSync(moved, `${moved}-orig`);
+        mkdirSync(moved);
+        writeFileSync(join(moved, "theirs.txt"), "keep");
+        ageTree(moved); // stale too: only the identity check can tell
+      },
+    });
+    assert.ok(swapped, "precondition: the moved directory really was substituted right after the move");
+    assertSubstitutionStoppedSweep(parent, report, logs, all, remainingStatement);
+    assert.equal(readFileSync(join(swapped, "theirs.txt"), "utf8"), "keep", "the substitute was not deleted");
+    assert.equal(readFileSync(join(`${swapped}-orig`, "a.png"), "utf8"), "gi-a:a", "the original is untouched too");
+  });
+
+  test("sweep: an entry gone between the listing and the pre-pass stops the WHOLE sweep", async () => {
+    const { remainingStatement } = await importDist("mcp/image-harvest.js");
+    const files = { "a.png": "a", "b.png": "b" };
+    const parent = twoStaleDirs(files);
+    let removed = false;
+    const { report, logs, all } = await sweepLogged(parent, {
+      afterList: (moved) => {
+        if (removed) return;
+        removed = true;
+        rmSync(join(moved, "a.png"));
+      },
+    });
+    assert.equal(removed, true, "precondition");
+    assertSubstitutionStoppedSweep(parent, report, logs, all, remainingStatement, files);
+    assert.match(all[0].reason, /disappeared between its listing and its observation/);
+    assert.deepEqual(all[0].deleted, [], "nothing deleted from gi-a");
+  });
+
+  test("sweep: a later FILE removed after the pre-pass observed it stops the WHOLE sweep", async () => {
+    const { remainingStatement } = await importDist("mcp/image-harvest.js");
+    const files = { "a.png": "a", "b.png": "b" };
+    const parent = twoStaleDirs(files);
+    let removed = false;
+    const { report, logs, all } = await sweepLogged(parent, {
+      afterObserve: (p) => {
+        if (!p.endsWith("a.png") || removed) return;
+        removed = true;
+        rmSync(join(dirname(p), "b.png"));
+      },
+    });
+    assert.equal(removed, true, "precondition");
+    assertSubstitutionStoppedSweep(parent, report, logs, all, remainingStatement, files);
   });
 
   test("sweep: a staging PARENT swapped for a junction mid-sweep stops the whole sweep — nothing behind the link is renamed, deleted or named", async () => {
@@ -2631,6 +2733,14 @@ describe("pp_agy.generate_image", () => {
  *   parent not re-checked after its listing at all   -> parent replaced by a file; parent swapped for a junction while listed
  *   moved dir not re-checked after its listing at all -> ENOTDIR fixture; junction substituted before the listing
  *   (re-run red: parent listing failure reported as such)
+ *
+ * Operator decision "Fix dir + file paths" (uniform rule: ANY detected substitution stops the WHOLE sweep):
+ *   dir not re-checked against its observation before the move -> directory substituted after observation (two-dir)
+ *   post-move dir mismatch -> left_in_place (sweep continues)  -> directory substituted right after its move-aside
+ *   file not checked against its pre-pass identity             -> later file substituted after the pre-pass
+ *   post-move file mismatch -> left_in_place (sweep continues) -> file substituted after observation (two-dir)
+ *   file gone after the pre-pass skipped                       -> later file removed after the pre-pass
+ *   entry gone between listing and pre-pass skipped            -> entry gone between the listing and the pre-pass
  *   NOT FALSIFIABLE (disclosed): re-validating the RE-ENCODED output with acceptPng — pngjs always emits a valid PNG, so
  *   no fixture can make that defence-in-depth check fire without replacing the encoder.
  *   NOTE: removing only the link/type clause of the output_dir check stays GREEN — it is subsumed, not missing:

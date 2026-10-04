@@ -1135,6 +1135,10 @@ export type SweepHooks = {
   beforeRmdir?: (movedDir: string) => void;
   /** Fired just before a bound directory (the parent, or a moved-aside staging directory) is listed. */
   beforeList?: (dir: string) => void;
+  /** Fired right after a staging directory has been moved aside, before its post-move check. */
+  afterMove?: (movedDir: string) => void;
+  /** Fired right after a moved-aside staging directory has been listed (and re-checked), before its pre-pass. */
+  afterList?: (movedDir: string) => void;
   /** Receives every sweep log line exactly as it is passed to the logger. */
   onLog?: (level: "info" | "warn", fields: SweepRecord, message: string) => void;
 };
@@ -1151,9 +1155,9 @@ export type SweepOutcome =
   | "parent_rejected"
   /** A `gi-*` entry that is a link or not a directory: not touched. */
   | "not_a_directory"
-  /** The directory was replaced, refreshed, too large, held an unsafe entry, or a file was replaced/refreshed. */
+  /** The directory was refreshed, too large or held an unsafe/fresh entry, or a file was refreshed (same inode). Never a substitution. */
   | "left_in_place"
-  /** A bound directory no longer was the directory bound: the WHOLE sweep stopped (fail closed). */
+  /** Any detected substitution (a bound or observed directory or file no longer being what was observed, or an observed file gone): the WHOLE sweep stopped (fail closed). */
   | "stopped"
   /** A filesystem error (e.g. a failed rename, unlink or the final rmdir). */
   | "error";
@@ -1245,12 +1249,18 @@ type Emit = (outcome: SweepOutcome, dir: string, current: string | null, why: st
  * threw, so a listing failure caused by a substitution is a binding failure. If either was replaced — e.g. by a link — the
  * WHOLE sweep stops (fail closed): nothing further is renamed or deleted.
  *
- * A directory is observed, moved aside under a fresh random name and
- * re-checked (identity, still stale); a pre-pass then requires every entry to
- * be a non-link regular file older than the threshold before anything is
- * deleted; each file is then moved aside and re-checked (type, identity,
- * staleness) immediately before its unlink. Anything that fails stops work in
- * that directory. Directories are removed only when empty (rmdir).
+ * A directory is observed, re-checked against that observation right before
+ * it is moved aside under a fresh random name, and re-checked after the move
+ * (identity, still stale); a pre-pass then requires every entry to be a
+ * non-link regular file older than the threshold before anything is deleted,
+ * recording each entry's identity; each file must still have that identity,
+ * and is then moved aside and re-checked (type, identity, staleness)
+ * immediately before its unlink. Uniform rule: ANY detected substitution — a
+ * directory or file whose identity or type no longer matches its observation,
+ * or an observed file that is gone — stops the WHOLE sweep (SweepAbort). A
+ * refresh (same inode, newer mtime), a fresh or non-regular entry, or a full
+ * listing only stops work in that directory. Directories are removed only
+ * when empty (rmdir).
  *
  * Reporting: EVERY exit of a directory's processing — success, never-touched,
  * every skip, exceptions, binding failures, a failed final rmdir, a refused or
@@ -1380,13 +1390,18 @@ function sweepOne(
   const dirId = { dev: st.dev, ino: st.ino };
   hooks.afterObserve?.(dir);
   const moved = join(parentReal, `sweep-${randomUUID()}`);
+  // Uniform rule: ANY detected substitution stops the WHOLE sweep (SweepAbort).
+  // The directory itself is re-checked against its observed identity right
+  // before the move, and again right after it.
   assertBoundDir(parentReal, parentId, "staging parent");
+  assertBoundDir(dir, dirId, "staging directory as observed");
   renameSync(dir, moved);
   state.current = moved;
+  hooks.afterMove?.(moved);
   const left = (why: string, path?: string): void => emit("left_in_place", dir, moved, why, state.deleted, path);
   const mst = lstatSync(moved, { bigint: true, throwIfNoEntry: false });
   if (!mst || mst.isSymbolicLink() || !mst.isDirectory() || !sameIdentity(mst, dirId)) {
-    return left(`the object at ${dir} was replaced after it was observed; it was moved aside to ${moved}.`);
+    throw new SweepAbort(`the object at ${dir} was replaced after it was observed (identity mismatch after the move to ${moved}).`);
   }
   const bound = (): void => {
     assertBoundDir(parentReal, parentId, "staging parent");
@@ -1412,33 +1427,41 @@ function sweepOne(
     // listing error) without using or reporting any name.
     bound();
   }
+  hooks.afterList?.(moved);
   if (entries.length >= MAX_SWEEP_ENTRIES) return left(`listing reached ${MAX_SWEEP_ENTRIES} entries; nothing deleted.`);
   // Pre-pass over EVERY entry before anything is deleted: each must be a
   // non-link regular file older than maxAgeMs. If any is not, nothing in this
-  // directory is deleted.
+  // directory is deleted. Each entry's identity is recorded here; a listed
+  // entry that is gone by now is a detected change and stops the sweep.
+  const observed = new Map<string, FsIdentity>();
   for (const e of entries) {
     const est = lstatSync(join(moved, e), { bigint: true, throwIfNoEntry: false });
-    if (!est) continue;
+    if (!est) throw new SweepAbort(`an entry of ${moved} disappeared between its listing and its observation.`);
     if (est.isSymbolicLink() || !est.isFile()) return left(`an entry is not a regular file (${e}); nothing deleted.`, join(moved, e));
     if (now - Number(est.mtimeMs) < maxAgeMs) return left(`contains an entry newer than the staleness threshold (${e}); nothing deleted.`, join(moved, e));
+    observed.set(e, { dev: est.dev, ino: est.ino });
   }
-  // Deletion pass. Every file is re-checked after it is moved aside — type,
-  // identity AND staleness — immediately before its unlink. If any check
-  // fails, work in this directory stops; exceptions propagate to the caller,
+  // Deletion pass. Every file must still be the non-link regular file the
+  // pre-pass observed (same dev/ino); it is then moved aside and re-checked —
+  // type, identity AND staleness — immediately before its unlink. Any
+  // identity mismatch, disappearance or type change is a detected
+  // substitution and stops the WHOLE sweep (SweepAbort); a same-inode refresh
+  // stops work in this directory only. Exceptions propagate to the caller,
   // which reports from the same `state`.
   for (const e of entries) {
     const p = join(moved, e);
+    const fileId = observed.get(e) as FsIdentity;
     const fst = lstatSync(p, { bigint: true, throwIfNoEntry: false });
-    if (!fst) continue;
-    if (fst.isSymbolicLink() || !fst.isFile()) return left(`${e} is not a regular file (changed after the pre-pass).`, p);
-    const fileId = { dev: fst.dev, ino: fst.ino };
+    if (!fst || fst.isSymbolicLink() || !fst.isFile() || !sameIdentity(fst, fileId)) {
+      throw new SweepAbort(`the file at ${p} was replaced or removed after the pre-pass observed it.`);
+    }
     hooks.afterObserve?.(p);
     const aside = join(moved, `del-${randomUUID()}`);
     bound();
     renameSync(p, aside);
     const ast = lstatSync(aside, { bigint: true, throwIfNoEntry: false });
     if (!ast || ast.isSymbolicLink() || !ast.isFile() || !sameIdentity(ast, fileId)) {
-      return left(`the file at ${p} was replaced after it was observed; it was moved aside to ${aside} and not deleted.`, aside);
+      throw new SweepAbort(`the file at ${p} was replaced after it was observed (identity mismatch after the move to ${aside}).`);
     }
     if (now - Number(ast.mtimeMs) < maxAgeMs) {
       return left(`the file at ${p} was refreshed after it was observed (no longer stale); it was moved aside to ${aside} and NOT deleted.`, aside);
