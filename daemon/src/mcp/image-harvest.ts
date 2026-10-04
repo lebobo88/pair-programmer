@@ -1178,10 +1178,11 @@ export type SweepRecord = {
   /** Why processing ended, including the remaining-entries statement for non-success outcomes. */
   reason: string;
   /**
-   * For non-success outcomes, the literal statement
+   * For EVERY outcome except a successful removal (never-touched ones
+   * included), the literal statement
    * "remaining entries left in place in <current>; not enumerated", or
    * "remaining entries left in place; location unknown; not enumerated".
-   * Null on success and for directories that were never touched.
+   * Null only for a successful removal.
    */
   remaining: string | null;
   /** The specific object concerned when that is not the directory itself (e.g. a moved-aside file). */
@@ -1240,7 +1241,8 @@ type Emit = (outcome: SweepOutcome, dir: string, current: string | null, why: st
  * Bound directories: the staging parent's realpath and dev+ino are bound once,
  * and so is each staging directory once it has been moved aside; BOTH are
  * re-checked (resolution first, identity last) immediately before every
- * rename, unlink and rmdir. If either was replaced — e.g. by a link — the
+ * rename, unlink and rmdir, and after every listing attempt — also one that
+ * threw, so a listing failure caused by a substitution is a binding failure. If either was replaced — e.g. by a link — the
  * WHOLE sweep stops (fail closed): nothing further is renamed or deleted.
  *
  * A directory is observed, moved aside under a fresh random name and
@@ -1272,14 +1274,14 @@ export function sweepStagingDirs(
   const report: SweepReport = { removed: [], skipped: [] };
   const emit: Emit = (outcome, dir, current, why, deleted = [], path) => {
     const done = outcome === "removed";
-    const untouched = outcome === "not_stale" || outcome === "vanished";
-    const remaining = done || untouched ? null : remainingStatement(current);
+    // Only a successful removal is exempt: every other record states where the remaining entries were left.
+    const remaining = done ? null : remainingStatement(current);
     const deletedText =
       deleted.length === 0 ? "Deleted from this directory: 0 files." : `Deleted from this directory: ${deleted.length} file(s) [${deleted.join(", ")}].`;
     const reason = remaining === null ? `${why} ${deletedText}` : `${why} ${deletedText} ${remaining}.`;
     const rec: SweepRecord = { dir, current, deleted: [...deleted], outcome, reason, remaining, ...(path !== undefined ? { path } : {}) };
     (done ? report.removed : report.skipped).push(rec);
-    const level = remaining === null ? "info" : "warn";
+    const level = done || outcome === "not_stale" || outcome === "vanished" ? "info" : "warn";
     const message = `generate_image staging sweep: ${dir} ${outcome}. ${reason}`;
     log[level](rec, message);
     hooks.onLog?.(level, rec, message);
@@ -1304,19 +1306,24 @@ export function sweepStagingDirs(
     emit("parent_rejected", parent, null, `${(err as Error).message} Nothing was swept.`);
     return report;
   }
-  let names: string[];
+  let names: string[] = [];
+  let listError: Error | undefined;
   try {
     hooks.beforeList?.(parentReal);
     names = boundedNames(parentReal, MAX_SWEEP_ENTRIES).filter(n => n.startsWith("gi-"));
   } catch (err) {
-    emit("parent_rejected", parent, parentReal, `could not list the staging parent (${(err as Error).message}); nothing was swept.`);
-    return report;
+    listError = err as Error;
   }
   try {
-    // Re-checked after the listing: names read through a swapped parent are never used or reported.
+    // Re-checked after the listing attempt — whether it succeeded or threw: names read through a swapped
+    // parent are never used or reported, and a failed listing of a swapped parent is a binding failure.
     assertBoundDir(parentReal, parentId, "staging parent");
   } catch (err) {
-    emit("parent_rejected", parent, null, `${(err as Error).message} The listing was discarded; nothing was swept.`);
+    emit("parent_rejected", parent, null, `sweep STOPPED (fail closed): ${(err as Error).message} Any listing was discarded; nothing was swept.`);
+    return report;
+  }
+  if (listError) {
+    emit("parent_rejected", parent, parentReal, `could not list the staging parent (${listError.message}); nothing was swept.`);
     return report;
   }
   for (const [i, name] of names.entries()) {
@@ -1393,12 +1400,18 @@ function sweepOne(
   if (dirMtime !== observedMtime && now - dirMtime < maxAgeMs) {
     return left("no longer stale after it was observed (directory modified); nothing deleted.");
   }
-  hooks.beforeList?.(moved);
-  const entries = boundedNames(moved, MAX_SWEEP_ENTRIES);
-  // Re-checked AFTER the listing too: if the directory was swapped (e.g. for a
-  // link) before it was listed, the names read belong to something else and
-  // the sweep stops without using or reporting any of them.
-  bound();
+  let entries: string[];
+  try {
+    hooks.beforeList?.(moved);
+    entries = boundedNames(moved, MAX_SWEEP_ENTRIES);
+  } finally {
+    // Re-checked AFTER the listing attempt, also when it threw: if the
+    // directory was swapped (e.g. for a link or a file) before it was listed,
+    // the names read belong to something else, or the failure is a binding
+    // failure — either way SweepAbort stops the WHOLE sweep (it replaces the
+    // listing error) without using or reporting any name.
+    bound();
+  }
   if (entries.length >= MAX_SWEEP_ENTRIES) return left(`listing reached ${MAX_SWEEP_ENTRIES} entries; nothing deleted.`);
   // Pre-pass over EVERY entry before anything is deleted: each must be a
   // non-link regular file older than maxAgeMs. If any is not, nothing in this

@@ -1489,15 +1489,16 @@ describe("pp_codex.generate_image: private staging and exclusive hand-off", () =
   };
 
   const RECORD_KEYS = new Set(["dir", "current", "deleted", "outcome", "reason", "remaining", "path"]);
-  const SUCCESS_OR_UNTOUCHED = new Set(["removed", "not_stale", "vanished"]);
+  /** Logged at info; everything else at warn. */
+  const INFO_OUTCOMES = new Set(["removed", "not_stale", "vanished"]);
 
   /**
    * The named contract check every exit-path fixture calls: the record has only
    * the documented fields (no listing of any kind), is logged exactly once with
    * the same fields at the matching level, reports its deletions exactly (and
-   * each really happened), and — for non-success outcomes — carries the literal
-   * remaining-entries statement for its current location in both the record and
-   * the log message.
+   * each really happened), and — for EVERY outcome except a successful removal,
+   * never-touched ones included — carries the literal remaining-entries
+   * statement for its current location in both the record and the log message.
    */
   function assertRecordContract(rec, logs, remainingStatement) {
     for (const k of Object.keys(rec)) assert.ok(RECORD_KEYS.has(k), `undocumented record field ${k}`);
@@ -1508,15 +1509,15 @@ describe("pp_codex.generate_image: private staging and exclusive hand-off", () =
     const deletedText = n === 0 ? "Deleted from this directory: 0 files." : `Deleted from this directory: ${n} file(s) [${rec.deleted.join(", ")}].`;
     assert.ok(rec.reason.includes(deletedText) && line.message.includes(deletedText), `deleted list stated exactly: ${rec.reason}`);
     for (const d of rec.deleted) assert.equal(lstatSync(d, { throwIfNoEntry: false }), undefined, `${d} reported deleted and really gone`);
-    if (SUCCESS_OR_UNTOUCHED.has(rec.outcome)) {
-      assert.equal(rec.remaining, null);
-      assert.equal(line.level, "info");
+    if (rec.outcome === "removed") {
+      assert.equal(rec.remaining, null, "only a successful removal is exempt");
+      assert.equal(rec.current, null, "a removed directory is gone");
       assert.ok(!/remaining entries left in place/.test(line.message));
     } else {
-      assert.equal(rec.remaining, remainingStatement(rec.current), "the literal remaining-entries statement for the CURRENT location");
+      assert.equal(rec.remaining, remainingStatement(rec.current), `the literal remaining-entries statement for the CURRENT location (${rec.outcome})`);
       assert.ok(rec.reason.includes(rec.remaining) && line.message.includes(rec.remaining), "stated in the record and the log");
-      assert.equal(line.level, "warn");
     }
+    assert.equal(line.level, INFO_OUTCOMES.has(rec.outcome) ? "info" : "warn");
   }
 
   /** Named check: none of `names` appears anywhere in the report or in any log line. */
@@ -1538,6 +1539,103 @@ describe("pp_codex.generate_image: private staging and exclusive hand-off", () =
     assert.throws(() => assertRecordContract({ ...rec, remaining: "left somewhere" }, logs, remainingStatement));
     assert.throws(() => assertRecordContract(rec, [], remainingStatement), /logged exactly once/);
     assert.throws(() => assertNeverMentioned([basename(rec.current)], report, logs), /must not appear/);
+  });
+
+  test("sweep contract check refuses a never-touched record WITHOUT the remaining-entries statement", async () => {
+    const { remainingStatement } = await importDist("mcp/image-harvest.js");
+    const parent = join(tmp("pp-img-stagebase-"), "image-staging");
+    mkdirSync(join(parent, "gi-fresh"), { recursive: true });
+    const { report, logs } = await sweepLogged(parent);
+    const rec = report.skipped[0];
+    assert.equal(rec.outcome, "not_stale");
+    assert.doesNotThrow(() => assertRecordContract(rec, logs, remainingStatement));
+    for (const outcome of ["not_stale", "vanished"]) {
+      // A self-consistent record + log line that merely omits the statement: only the statement check can refuse it.
+      const bare = { ...rec, outcome, remaining: null, reason: rec.reason.replace(` ${rec.remaining}.`, "") };
+      const bareLogs = [{ level: "info", fields: bare, message: `generate_image staging sweep: ${bare.dir} ${outcome}. ${bare.reason}` }];
+      assert.throws(() => assertRecordContract(bare, bareLogs, remainingStatement), /literal remaining-entries statement/, outcome);
+    }
+  });
+
+  test("sweep: never-touched directories (not stale, vanished) carry the remaining-entries statement too", async () => {
+    const { remainingStatement } = await importDist("mcp/image-harvest.js");
+    const parent = join(tmp("pp-img-stagebase-"), "image-staging");
+    mkdirSync(join(parent, "gi-a"), { recursive: true });
+    mkdirSync(join(parent, "gi-b"), { recursive: true });
+    mkdirSync(join(parent, "gi-c"), { recursive: true }); // fresh: not stale
+    writeFileSync(join(parent, "gi-a", "a.png"), "a");
+    ageTree(join(parent, "gi-a"));
+    ageTree(join(parent, "gi-b"));
+    const { all, logs } = await sweepLogged(parent, {
+      afterObserve: (p) => {
+        if (basename(p) === "gi-a") rmSync(join(parent, "gi-b"), { recursive: true }); // listed, then gone before it is observed
+      },
+    });
+    const byName = Object.fromEntries(all.map((r) => [basename(r.dir), r]));
+    assert.equal(byName["gi-a"].outcome, "removed");
+    assert.equal(byName["gi-b"].outcome, "vanished");
+    assert.equal(byName["gi-b"].current, null);
+    assert.equal(byName["gi-b"].remaining, "remaining entries left in place; location unknown; not enumerated");
+    assert.equal(byName["gi-c"].outcome, "not_stale");
+    assert.equal(byName["gi-c"].current, byName["gi-c"].dir);
+    assert.equal(byName["gi-c"].remaining, `remaining entries left in place in ${byName["gi-c"].dir}; not enumerated`);
+    for (const r of all) assertRecordContract(r, logs, remainingStatement);
+  });
+
+  test("sweep: a moved directory replaced by a regular FILE right before its listing (ENOTDIR) stops the WHOLE sweep — the next stale directory is NOT deleted", async () => {
+    const { remainingStatement } = await importDist("mcp/image-harvest.js");
+    const parent = join(tmp("pp-img-stagebase-"), "image-staging");
+    for (const n of ["gi-a", "gi-b"]) {
+      mkdirSync(join(parent, n), { recursive: true });
+      writeFileSync(join(parent, n, "f.png"), n);
+      ageTree(join(parent, n));
+    }
+    let swapped = null;
+    const { report, logs, all } = await sweepLogged(parent, {
+      beforeList: (d) => {
+        if (!basename(d).startsWith("sweep-") || swapped) return;
+        swapped = d;
+        renameSync(d, `${d}-orig`);
+        writeFileSync(d, "a regular file where the bound directory was");
+      },
+    });
+    assert.ok(swapped, "precondition: the moved directory really was replaced before its listing");
+    assert.deepEqual(report.removed, []);
+    assert.deepEqual(all.map((r) => [basename(r.dir), r.outcome]), [["gi-a", "stopped"], ["gi-b", "stopped"]]);
+    assert.match(all[0].reason, /sweep STOPPED \(fail closed\)/, "a binding failure, not an ordinary listing error");
+    assert.match(all[1].reason, /not processed: the sweep stopped earlier/);
+    for (const r of all) {
+      assert.equal(r.current, null, "location unknown");
+      assertRecordContract(r, logs, remainingStatement);
+    }
+    assert.equal(readFileSync(join(real(parent), "gi-b", "f.png"), "utf8"), "gi-b", "the next stale directory was NOT deleted");
+    assert.equal(readFileSync(join(`${swapped}-orig`, "f.png"), "utf8"), "gi-a", "the original directory's file survives");
+  });
+
+  test("sweep: a staging PARENT replaced by a regular FILE right before its listing (ENOTDIR) is a binding failure — location unknown, nothing swept", async () => {
+    const { remainingStatement } = await importDist("mcp/image-harvest.js");
+    const parent = join(tmp("pp-img-stagebase-"), "image-staging");
+    mkdirSync(join(parent, "gi-a"), { recursive: true });
+    writeFileSync(join(parent, "gi-a", "f.png"), "ours");
+    ageTree(join(parent, "gi-a"));
+    let swapped = false;
+    const { report, logs, all } = await sweepLogged(parent, {
+      beforeList: (d) => {
+        if (d !== real(parent) || swapped) return;
+        swapped = true;
+        renameSync(d, `${d}-orig`);
+        writeFileSync(d, "a regular file where the bound parent was");
+      },
+    });
+    assert.equal(swapped, true, "precondition: the parent really was replaced before its listing");
+    assert.deepEqual(report.removed, []);
+    assert.equal(all.length, 1);
+    const s = all[0];
+    assert.equal(s.outcome, "parent_rejected");
+    assert.match(s.reason, /sweep STOPPED \(fail closed\)/, "a binding failure, not an ordinary listing error");
+    assert.equal(s.current, null, "location unknown");
+    assertRecordContract(s, logs, remainingStatement);
+    assert.equal(readFileSync(join(`${real(parent)}-orig`, "gi-a", "f.png"), "utf8"), "ours", "nothing swept");
   });
 
   test("remainingStatement: a location only when known, never an enumeration", async () => {
@@ -2031,7 +2129,7 @@ describe("pp_codex.generate_image: private staging and exclusive hand-off", () =
     assert.equal(all.length, 1);
     const s = all[0];
     assert.equal(s.outcome, "parent_rejected");
-    assert.match(s.reason, /The listing was discarded/);
+    assert.match(s.reason, /sweep STOPPED \(fail closed\): .* Any listing was discarded/);
     assert.equal(s.current, null);
     assertRecordContract(s, logs, remainingStatement);
     assertNeverMentioned(["gi-TARGET-SENTINEL-listed"], report, logs);
@@ -2524,6 +2622,15 @@ describe("pp_agy.generate_image", () => {
  *   left-in-place record without the deleted list  -> partial deletion then refresh
  *   (re-run red on the new code: every unlink recorded, 200-entry skip, entry freshness, per-unlink staleness,
  *   pre-pass type validation, parent re-check before a move, bound() before file ops)
+ *
+ * Operator decision "Fix both" (only a successful removal is exempt from the statement; fail closed when a
+ * listing throws):
+ *   not_stale / vanished exempted from the statement -> contract self-test; never-touched fixture; STALE-only test
+ *   moved dir not re-checked when its listing throws -> moved dir replaced by a regular file before listing (ENOTDIR)
+ *   parent not re-checked when its listing throws    -> parent replaced by a regular file before listing (ENOTDIR)
+ *   parent not re-checked after its listing at all   -> parent replaced by a file; parent swapped for a junction while listed
+ *   moved dir not re-checked after its listing at all -> ENOTDIR fixture; junction substituted before the listing
+ *   (re-run red: parent listing failure reported as such)
  *   NOT FALSIFIABLE (disclosed): re-validating the RE-ENCODED output with acceptPng — pngjs always emits a valid PNG, so
  *   no fixture can make that defence-in-depth check fire without replacing the encoder.
  *   NOTE: removing only the link/type clause of the output_dir check stays GREEN — it is subsumed, not missing:

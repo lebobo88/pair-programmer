@@ -1094,7 +1094,7 @@ const TOOLS = [
       "directory is refused). Nothing in output_dir is ever deleted, and NOTHING is deleted during a call at all: the call's staging directory (returned " +
       "as staging_dir) is RETAINED by design, also when setup fails after it was allocated. At the start of each call, staging directories older than 24h " +
       "are swept conservatively: the staging parent's realpath and dev/ino, and each staging directory's once moved aside, are bound and re-checked " +
-      "(resolution first, identity last) before EVERY rename, unlink and rmdir — if either was replaced (e.g. by a link) the whole sweep stops and " +
+      "(resolution first, identity last) before EVERY rename, unlink and rmdir and after EVERY listing attempt (also a failed one) — if either was replaced (e.g. by a link) the whole sweep stops and " +
       "nothing further is renamed or deleted; a directory is observed (non-link, plain directory, dev/ino, stale mtime), moved aside under a fresh " +
       "random name and re-checked (identity, and still stale); then a pre-pass requires EVERY entry to be a non-link regular file older than 24h — if any " +
       "is not, nothing in that directory is deleted; then each file is observed, moved aside under a fresh random name and re-checked (type, identity " +
@@ -1102,8 +1102,9 @@ const TOOLS = [
       "cleanup reports deleted files exactly; remaining entries are never enumerated: on EVERY exit of a directory's processing (removal, " +
       "never-touched, skips, exceptions, binding failures, a failed final rmdir, a refused or unlistable parent) one record is returned and " +
       "logged with the directory's original name, its current name (null when removed or when its location is unknown after a binding failure), " +
-      "the exact files the sweep unlinked from it (by the name each had when unlinked) and the outcome; a non-success record states only " +
-      "\"remaining entries left in place in <current>; not enumerated\" (or \"location unknown\"); directories " +
+      "the exact files the sweep unlinked from it (by the name each had when unlinked) and the outcome; every record except a successful " +
+      "removal (never-touched directories included) states only \"remaining entries left in place in <current>; not enumerated\" (or " +
+      "\"remaining entries left in place; location unknown; not enumerated\"); directories " +
       "are removed only when empty (rmdir); every listing reads at most 200 entries, and a staging " +
       "directory whose listing reaches 200 is skipped. RESIDUAL RISKS (stated, operator-accepted): (1) staging directories are retained until a later " +
       "call sweeps them; Node has no handle-bound rename/unlink/rmdir, so a same-user process swapping a path inside the daemon-private staging parent " +
