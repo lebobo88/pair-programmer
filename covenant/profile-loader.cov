@@ -1,6 +1,8 @@
 // Imported by `cov import` from .claude/agents/profile-loader.md, .github/agents/profile-loader.agent.md.
 covenant ProfileLoaderImported {
-  // No rules: the original agent files declare none.
+  // The rules only remove tool names the effects add, so the Claude tools equal the original.
+  invariant no_glob "exact tools" = forbid harness("Glob")
+  invariant no_grep "exact tools" = forbid harness("Grep")
 }
 
 agent ProfileLoader under ProfileLoaderImported {
@@ -11,9 +13,8 @@ agent ProfileLoader under ProfileLoaderImported {
   // 6 turns leaves margin above the <=2 tool calls any single branch needs.
   describe "Loads `<project>/.harness/profile.yaml` and applies overrides. Returns the profile snapshot the driver passes to subsequent steps. Falls back to a built-in template when an exact name is known but the file is absent. Use ONLY inside an active /pp:* run, in step 2 of the lifecycle."
   model "claude-haiku-4-5-20251001"
-  // harness(...) names kept on purpose: exact Claude tools; see docs/covenant-port.md, Tools.
   uses mcp.pp_harness.get_profile, mcp.pp_harness.get_builtin_profile, mcp.pp_harness.list_profiles,
-       mcp.pp_harness.detect_profile, mcp.pp_harness.write_profile, harness("Read")
+       mcp.pp_harness.detect_profile, mcp.pp_harness.write_profile, fs.read("**")
   effort low
   // TODO(import): usd, tokens and wall budget not present in source
   budget { turns: 6 }

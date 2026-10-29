@@ -1,6 +1,8 @@
 // Imported by `cov import` from .claude/agents/judge-same-vendor.md, .github/agents/judge-same-vendor.agent.md.
 covenant JudgeSameVendorImported {
-  // No rules: the original agent files declare none.
+  // The rules only remove tool names the effects add, so the Claude tools equal the original.
+  invariant no_glob "exact tools" = forbid harness("Glob")
+  invariant no_grep "exact tools" = forbid harness("Grep")
 }
 
 agent JudgeSameVendor under JudgeSameVendorImported {
@@ -12,9 +14,8 @@ agent JudgeSameVendor under JudgeSameVendorImported {
   // judge / haiku generator → sonnet judge). Codex/Antigravity (agy) branches likewise pick
   // their own model id from the agent body rather than inheriting frontmatter.
   describe "Same-vendor different-model judge for the pair-programmer harness. Dispatches to the matching vendor's critique tool — Codex for codex generators, agy for agy generators, Claude (via direct reasoning) for claude generators — using a different model id from the generator. Used at code_style / docs_polish / lint_class gates and at any team stage that explicitly requests `judge.tier: same_vendor`."
-  // harness(...) names kept on purpose: exact Claude tools; see docs/covenant-port.md, Tools.
   uses mcp.pp_codex.critique, mcp.pp_agy.critique, mcp.pp_harness.record_verdict,
-       mcp.pp_harness.get_rubric, harness("Read")
+       mcp.pp_harness.get_rubric, fs.read("**")
   skills "judge-policy", "rubric-application"
   // TODO(import): budget not present in source
   extra claude { "color": "purple" }

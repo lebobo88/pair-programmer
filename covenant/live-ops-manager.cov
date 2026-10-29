@@ -1,13 +1,13 @@
 // Imported by `cov import` from .claude/agents/live-ops-manager.md, .github/agents/live-ops-manager.agent.md.
 covenant LiveOpsManagerImported {
-  // No rules: the original agent files declare none.
+  // The rules only remove tool names the effects add, so the Claude tools equal the original.
+  invariant no_nb "exact tools" = forbid harness("NotebookEdit")
 }
 
 agent LiveOpsManager under LiveOpsManagerImported {
   describe "Live-ops manager sub-agent. Produces season plans, event cadences, store-page A/B plans, hotfix flow, retention-KPI plans (taxonomy 4.5, 4.11, 4.12). Used by game-live-ops-team for live-service: true projects."
   model "claude-sonnet-5"
-  // harness(...) names kept on purpose: exact Claude tools; see docs/covenant-port.md, Tools.
-  uses fs.read("**"), harness("Write"), harness("Edit"), mcp.pp_codex.generate, mcp.pp_agy.generate,
+  uses fs.read("**"), fs.write("**"), mcp.pp_codex.generate, mcp.pp_agy.generate,
        mcp.pp_harness.archive_artifact, mcp.pp_harness.record_attempt
   // TODO(import): budget not present in source
   extra claude { "color": "yellow" }

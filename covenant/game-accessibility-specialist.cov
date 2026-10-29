@@ -1,13 +1,13 @@
 // Imported by `cov import` from .claude/agents/game-accessibility-specialist.md, .github/agents/game-accessibility-specialist.agent.md.
 covenant GameAccessibilitySpecialistImported {
-  // No rules: the original agent files declare none.
+  // The rules only remove tool names the effects add, so the Claude tools equal the original.
+  invariant no_nb "exact tools" = forbid harness("NotebookEdit")
 }
 
 agent GameAccessibilitySpecialist under GameAccessibilitySpecialistImported {
   describe "Game accessibility specialist sub-agent. Produces accessibility plans grounded in Game Accessibility Guidelines (GAG), Xbox Accessibility Guidelines (XAG), AbleGamers APX, IGDA-GASIG (taxonomy 4.4). Richer than web-a11y. Used by game-accessibility-team and game-feature-team."
   model "claude-sonnet-5"
-  // harness(...) names kept on purpose: exact Claude tools; see docs/covenant-port.md, Tools.
-  uses fs.read("**"), harness("Write"), harness("Edit"), mcp.pp_codex.generate, mcp.pp_agy.generate,
+  uses fs.read("**"), fs.write("**"), mcp.pp_codex.generate, mcp.pp_agy.generate,
        mcp.pp_harness.archive_artifact, mcp.pp_harness.record_attempt
   // TODO(import): budget not present in source
   extra claude { "color": "green" }

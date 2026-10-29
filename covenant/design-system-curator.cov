@@ -1,14 +1,14 @@
 // Imported by `cov import` from .claude/agents/design-system-curator.md, .github/agents/design-system-curator.agent.md.
 covenant DesignSystemCuratorImported {
-  // No rules: the original agent files declare none.
+  // The rules only remove tool names the effects add, so the Claude tools equal the original.
+  invariant no_nb "exact tools" = forbid harness("NotebookEdit")
 }
 
 agent DesignSystemCurator under DesignSystemCuratorImported {
   describe "Curates design tokens (color/type/space/radius/motion), component specs (props/states/a11y/content slots), and component-preview artifacts (taxonomy 4.4 + 4.7). Uses design-token-extract when a real token/theme source exists and design-polish-review as a self-check before archiving. Used by design-system-team."
   model "claude-sonnet-5"
-  // harness(...) names kept on purpose: exact Claude tools; see docs/covenant-port.md, Tools.
-  uses fs.read("**"), harness("Write"), harness("Edit"), harness("Skill"),
-       mcp.pp_harness.archive_artifact, mcp.pp_harness.record_attempt
+  uses fs.read("**"), fs.write("**"), harness("Skill"), mcp.pp_harness.archive_artifact,
+       mcp.pp_harness.record_attempt
   skills "design-discovery", "design-polish-review", "design-token-extract"
   // TODO(import): budget not present in source
   extra claude { "color": "green" }

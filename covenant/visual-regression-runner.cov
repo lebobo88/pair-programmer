@@ -1,13 +1,13 @@
 // Imported by `cov import` from .claude/agents/visual-regression-runner.md, .github/agents/visual-regression-runner.agent.md.
 covenant VisualRegressionRunnerImported {
-  // No rules: the original agent files declare none.
+  // The rules only remove tool names the effects add, so the Claude tools equal the original.
+  invariant no_ps "exact tools" = forbid harness("PowerShell")
 }
 
 agent VisualRegressionRunner under VisualRegressionRunnerImported {
   describe "Captures before/after screenshots of touched routes/components via Playwright and emits a diff report. Used by design-system-team, ux-team, and feature-team on web-ui / mobile profiles."
   model "claude-haiku-4-5-20251001"
-  // harness(...) names kept on purpose: exact Claude tools; see docs/covenant-port.md, Tools.
-  uses fs.read("**"), harness("Bash"), mcp.pp_harness.visual_regression_capture,
+  uses fs.read("**"), shell("*"), mcp.pp_harness.visual_regression_capture,
        mcp.pp_harness.visual_regression_diff, mcp.pp_harness.archive_artifact,
        mcp.pp_harness.record_attempt
   // TODO(import): budget not present in source

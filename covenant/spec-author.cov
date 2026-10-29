@@ -1,14 +1,13 @@
 // Imported by `cov import` from .claude/agents/spec-author.md, .github/agents/spec-author.agent.md.
 covenant SpecAuthorImported {
-  // No rules: the original agent files declare none.
+  // The rules only remove tool names the effects add, so the Claude tools equal the original.
+  invariant no_nb "exact tools" = forbid harness("NotebookEdit")
 }
 
 agent SpecAuthor under SpecAuthorImported {
   describe "Drafts PRD / feature-spec / acceptance-criteria artifacts (taxonomy 4.3) using RFC 2119 normative language. Used by feature-team, bug-fix-team (repro), refactor-team (invariants), strategy-team, and discovery-team."
   model "claude-opus-5"
-  // harness(...) names kept on purpose: exact Claude tools; see docs/covenant-port.md, Tools.
-  uses fs.read("**"), harness("Write"), harness("Edit"), mcp.pp_harness.archive_artifact,
-       mcp.pp_harness.record_attempt
+  uses fs.read("**"), fs.write("**"), mcp.pp_harness.archive_artifact, mcp.pp_harness.record_attempt
   // TODO(import): budget not present in source
   extra claude { "color": "blue" }
   extra copilot { "target": "github-copilot" }

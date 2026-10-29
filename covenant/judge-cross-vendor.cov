@@ -1,6 +1,8 @@
 // Imported by `cov import` from .claude/agents/judge-cross-vendor.md, .github/agents/judge-cross-vendor.agent.md.
 covenant JudgeCrossVendorImported {
-  // No rules: the original agent files declare none.
+  // The rules only remove tool names the effects add, so the Claude tools equal the original.
+  invariant no_glob "exact tools" = forbid harness("Glob")
+  invariant no_grep "exact tools" = forbid harness("Grep")
 }
 
 agent JudgeCrossVendor under JudgeCrossVendorImported {
@@ -21,9 +23,8 @@ agent JudgeCrossVendor under JudgeCrossVendorImported {
   // stay pinned unless an explicit JUDGE-1a override is made in the
   // Procedure's tool call). Do not mistake this field for a verdict escalation.
   describe "Cross-vendor judge for the pair-programmer harness. Used when gate_eligible_judges returns required_cross_vendor=true (spec/design/security/contract gates, or any gate when profile=enterprise, or any gate whose prompt contains concurrency/security/data-integrity keywords). MUST use a different vendor from the generator."
-  // harness(...) names kept on purpose: exact Claude tools; see docs/covenant-port.md, Tools.
   uses mcp.pp_codex.critique, mcp.pp_agy.critique, mcp.pp_harness.record_verdict,
-       mcp.pp_harness.get_rubric, harness("Read")
+       mcp.pp_harness.get_rubric, fs.read("**")
   skills "judge-policy", "rubric-application"
   effort high
   // TODO(import): budget not present in source
