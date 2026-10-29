@@ -126,6 +126,8 @@ A strict loader (PyYAML `safe_load`) rejects 4 of the 42 `.claude/agents` files 
 
 ## Covenant bugs and spec gaps
 
+Filed on lebobo88/Covenant: #52 (the Claude emitter leaves out `tools` when no effect maps, so the agent inherits every tool; found by repro, not hit by these 42 agents), #53 (`harness("Read"|"Write"|"Edit"|"Bash"|...)` accepted, written by `cov import` and dropped on Copilot; items 2 below), #54 (no effect grants exactly one Claude file or shell tool; item 2), #55 (`modelPolicy: "required"` always written; `server/*` not expressible; items 4 and 5), #56 (importer: not fmt-clean, strict-invalid YAML silent, comments lost; items 1, 9, 10), #57 (no per-target prompt or model; items 7 and 8). Item 3 is the existing #47.
+
 1. `cov import` output is not `cov fmt` clean. Repro: `cov import --out d .claude/agents .github/agents && cd d && cov fmt --check` reports "would reformat" for all 42 files (multi-line `uses` and `extra` blocks that fmt joins). Building before and after `cov fmt` gives identical output.
 2. Resolved in round 2, no Covenant change needed: effects plus `forbid harness("X")` rules keep the Claude effective set exact and keep the Copilot aliases (see Tools). Cost: the rules are written as prose under "Rules" on both targets (L0202), and W0205 fires for every MCP tool next to a rule (143). A rule that only exists to subtract tool names reads as a policy in the output, which is not what it means.
 3. `{{` in a prompt is not unescaped by the emitters (Covenant issue #47). LANGUAGE.md §1 says `{{` renders as `{`, and `cov import` writes the original `{{critique_md}}` as `{{{{critique_md}}}}` accordingly, but `cov build` writes the prompt text raw, so `reflexion-coach` is emitted with `{{{{critique_md}}}}` and its 8 other placeholders doubled, on both targets. The source keeps the spec-correct form, so the output becomes faithful once #47 is fixed; writing `{{x}}` in the source would hide the bug and break when it is fixed.
@@ -142,7 +144,7 @@ A strict loader (PyYAML `safe_load`) rejects 4 of the 42 `.claude/agents` files 
 - Round 2: effects plus `forbid harness(...)` rules instead of `harness(...)` names, so Claude stays exact and Copilot keeps its aliases. Rules were derived from the measured difference (`compare-tools.mjs` before the rules: extra `NotebookEdit` in 28 agents, `PowerShell` in 3, `Grep` in 6, `Glob` in 5), not guessed.
 - Rule ids `no_nb`, `no_ps`, `no_grep`, `no_glob` with the description "exact tools", as in the review's scratch test; the rule block carries one comment line stating what the rules do.
 - Left the 7 agents with no added tool names (MCP-only, VS Code names) without rules.
-- `compare-tools.mjs` counts a missing Copilot `tools` key versus `tools: []` as a Copilot difference, though both lists are empty; the empty list disables tools, the missing key does not. It exits non-zero only for Claude differences, as asked.
+- `compare-tools.mjs` counts a missing `tools` key versus a list as a difference on both targets (a missing key inherits every tool on Claude Code and leaves the CLI default set on Copilot; `tools: []` disables tools on Copilot). It exits non-zero only for Claude differences.
 - Amended the first round-2 commit to include that script fix before the report was written (nothing pushed).
 - Kept MCP tools as the named tools instead of `mcp.S.*`, so no agent got a tool its Claude file does not list.
 - Used `super` for the orchestrator's Copilot model, and dropped its `copilot-model` key from `extra claude`.
@@ -360,3 +362,5 @@ copilot differs from mirror (excluding named-narrower): 7
 copilot agents with named tools narrower than a mirror wildcard: 40
 exit status: 1
 ```
+
+Further falsification runs after the review asked for them (each on a scratch copy of `covenant/out` with `covenant/engineer.md` changed; the committed output is untouched): removing `Write` from `tools` exits 1 ("missing from emitted: Write"); deleting the whole `tools` key exits 1 ("emitted has no `tools` key (inherits every tool)"); writing one list item at column 0 (`- Write`) and deleting `Bash` exits 1 reporting only `Bash` missing, so a column-0 item is still read. The unmodified output exits 0.

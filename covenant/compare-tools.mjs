@@ -38,7 +38,8 @@ function listField(file, key) {
   if (rest === "") {
     const items = [];
     for (const l of fm.slice(i + 1)) {
-      const m = /^\s+-\s+(.*)$/.exec(l);
+      // YAML allows a block list at the key's own indentation as well as indented.
+      const m = /^\s*-\s+(.*)$/.exec(l);
       if (!m) break;
       items.push(unquote(m[1]));
     }
@@ -61,14 +62,19 @@ let copilotDiffs = 0;
 let narrowed = 0;
 
 for (const name of names) {
-  const origClaude = new Set(listField(join(repo, ".claude/agents", `${name}.md`), "tools") ?? []);
+  const origList = listField(join(repo, ".claude/agents", `${name}.md`), "tools");
+  const origClaude = new Set(origList ?? []);
   const emClaudeFile = join(outDir, ".claude/agents", `${name}.md`);
-  const emTools = new Set(listField(emClaudeFile, "tools") ?? []);
+  const emList = listField(emClaudeFile, "tools");
+  // On Claude Code a missing `tools` key inherits every tool, so it is never the same
+  // as a list; only two missing keys compare equal.
+  const claudeKeyDiffers = (origList === null) !== (emList === null);
+  const emTools = new Set(emList ?? []);
   const emDeny = new Set(listField(emClaudeFile, "disallowedTools") ?? []);
   const effective = new Set([...emTools].filter((t) => !emDeny.has(t)));
   const missing = minus(origClaude, effective);
   const extra = minus(effective, origClaude);
-  const same = missing.length === 0 && extra.length === 0;
+  const same = missing.length === 0 && extra.length === 0 && !claudeKeyDiffers;
   if (!same) claudeDiffs++;
 
   const mirrorList = listField(join(repo, ".github/agents", `${name}.agent.md`), "tools");
@@ -97,6 +103,8 @@ for (const name of names) {
     `  claude: effective set equals original: ${same ? "yes" : "NO"}` +
       ` (original ${origClaude.size}, effective ${effective.size}, disallowed ${emDeny.size})`,
   );
+  if (claudeKeyDiffers)
+    console.log(`    ${origList === null ? "original" : "emitted"} has no \`tools\` key (inherits every tool)`);
   if (missing.length) console.log(`    missing from emitted: ${missing.join(", ")}`);
   if (extra.length) console.log(`    extra in emitted: ${extra.join(", ")}`);
   console.log(`  copilot: ${copilotSame ? "matches mirror" : "differs from mirror"}`);
