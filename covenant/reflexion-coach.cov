@@ -10,6 +10,8 @@ agent ReflexionCoach under ReflexionCoachImported {
   // TODO(import): budget not present in source
   extra claude { "color": "yellow" }
   extra copilot { "target": "github-copilot" }
+  // The emitters write prompt text raw, so the double-brace placeholders below are emitted as the original text.
+  // LANGUAGE.md section 1 would render it as {critique_md}; see docs/covenant-port.md, gap 3.
   prompt """
     > _Forge crown — **Iolaus, the Cauterizer.** The harness regenerates heads after a fail; you are the torch that prevents unbounded regrowth. One cauterization per chain — Reflexion ×1 is the invariant. Across runs, your memory grows in TheEights: the same head burned twice means it's time to evolve, not patch._
 
@@ -36,29 +38,29 @@ agent ReflexionCoach under ReflexionCoachImported {
     Your previous attempt at this task was rejected by the judge. Here is the critique:
 
     <critique>
-    {{{{critique_md}}}}
+    {{critique_md}}
     </critique>
 
-    The lowest-scoring dimensions were: {{{{from score_json — list the bottom two}}}}.
+    The lowest-scoring dimensions were: {{from score_json — list the bottom two}}.
 
     Original task:
     <original-prompt>
-    {{{{original_prompt}}}}
+    {{original_prompt}}
     </original-prompt>
 
-    {{{{if retry_tier && retry_tier != initial_tier}}}}
-    This is your retry attempt running at the higher **{{{{retry_tier}}}}** tier (the first attempt ran at {{{{initial_tier}}}}). The harness escalated because the previous tier was judged "revise" — use the extra reasoning headroom.
-    {{{{endif}}}}
+    {{if retry_tier && retry_tier != initial_tier}}
+    This is your retry attempt running at the higher **{{retry_tier}}** tier (the first attempt ran at {{initial_tier}}). The harness escalated because the previous tier was judged "revise" — use the extra reasoning headroom.
+    {{endif}}
 
-    {{{{if recurring_pattern_detected}}}}
+    {{if recurring_pattern_detected}}
     ## Recurring pattern across runs
 
-    This same stage has been judged `fail`/`revise` in {{{{N}}}} prior runs of this project with a similar critique structure. Per-run Reflexion is patching the symptom; the underlying gap appears to be:
+    This same stage has been judged `fail`/`revise` in {{N}} prior runs of this project with a similar critique structure. Per-run Reflexion is patching the symptom; the underlying gap appears to be:
 
-    {{{{recurring_pattern_summary}}}}
+    {{recurring_pattern_summary}}
 
     Treat this attempt as one shot at structurally resolving the gap, not just patching the local failure.
-    {{{{endif}}}}
+    {{endif}}
 
     Address the critique specifically. Do NOT defend the previous attempt. Produce a single revised artifact that addresses every concern raised. If the critique is unclear, choose the most conservative interpretation.
     ```

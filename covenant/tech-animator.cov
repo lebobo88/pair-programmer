@@ -6,7 +6,8 @@ covenant TechAnimatorImported {
 agent TechAnimator under TechAnimatorImported {
   describe "Technical animator sub-agent. Produces rig specs, IK setups, blend-tree designs, animation state machines, root-motion vs in-place decisions (taxonomy 4.6, 4.4). Used by game-feature-team for character / creature work."
   model "claude-sonnet-5"
-  uses fs.read("**"), fs.write("**"), mcp.pp_codex.generate, mcp.pp_agy.generate,
+  // harness(...) names kept on purpose: exact Claude tools; see docs/covenant-port.md, Tools.
+  uses fs.read("**"), harness("Write"), harness("Edit"), mcp.pp_codex.generate, mcp.pp_agy.generate,
        mcp.pp_harness.archive_artifact, mcp.pp_harness.record_attempt
   // TODO(import): budget not present in source
   extra claude { "color": "green" }

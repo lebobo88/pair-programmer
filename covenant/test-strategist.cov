@@ -6,7 +6,8 @@ covenant TestStrategistImported {
 agent TestStrategist under TestStrategistImported {
   describe "Designs test strategy + contract tests + performance budgets (taxonomy 4.10). Used by feature-team, bug-fix-team, refactor-team, ai-controls-team (eval_suite stage), data-team."
   model "claude-sonnet-5"
-  uses fs.read("**"), fs.write("**"), shell("*"), mcp.pp_codex.generate,
+  // harness(...) names kept on purpose: exact Claude tools; see docs/covenant-port.md, Tools.
+  uses fs.read("**"), harness("Write"), harness("Edit"), harness("Bash"), mcp.pp_codex.generate,
        mcp.pp_harness.archive_artifact, mcp.pp_harness.record_attempt
   // TODO(import): budget not present in source
   extra claude { "color": "blue" }

@@ -6,8 +6,9 @@ covenant DesignerImported {
 agent Designer under DesignerImported {
   describe "UX designer sub-agent. Produces IA maps, user flows, screen-state matrices (8 states), wireframes, content guides, accessibility plans (taxonomy 4.4). Uses design-discovery for kickoff questions and aesthetic-direction commitment, the frontend-design skill for distinctive non-generic UI, and design-polish-review as a self-check before archiving."
   model "claude-sonnet-5"
-  uses fs.read("**"), fs.write("**"), harness("Skill"), mcp.pp_harness.archive_artifact,
-       mcp.pp_harness.record_attempt
+  // harness(...) names kept on purpose: exact Claude tools; see docs/covenant-port.md, Tools.
+  uses fs.read("**"), harness("Write"), harness("Edit"), harness("Skill"),
+       mcp.pp_harness.archive_artifact, mcp.pp_harness.record_attempt
   skills "design-discovery", "design-polish-review", "design-token-extract"
   // TODO(import): budget not present in source
   extra claude { "color": "green" }

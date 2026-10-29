@@ -6,7 +6,9 @@ covenant OpsAuthorImported {
 agent OpsAuthor under OpsAuthorImported {
   describe "SLOs, telemetry taxonomy, dashboards, alerts, runbooks (taxonomy 4.12). Used by ops-team and release-team (migration_runbook)."
   model "claude-sonnet-5"
-  uses fs.read("**"), fs.write("**"), mcp.pp_harness.archive_artifact, mcp.pp_harness.record_attempt
+  // harness(...) names kept on purpose: exact Claude tools; see docs/covenant-port.md, Tools.
+  uses fs.read("**"), harness("Write"), harness("Edit"), mcp.pp_harness.archive_artifact,
+       mcp.pp_harness.record_attempt
   // TODO(import): budget not present in source
   extra claude { "color": "blue" }
   extra copilot { "target": "github-copilot" }

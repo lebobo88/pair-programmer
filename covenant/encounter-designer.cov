@@ -6,8 +6,9 @@ covenant EncounterDesignerImported {
 agent EncounterDesigner under EncounterDesignerImported {
   describe "Game encounter / combat designer sub-agent. Produces enemy archetypes, boss phases, encounter pacing, AI tuning targets (taxonomy 4.4). Used by game-feature-team. Often shares prompt structure with level-designer."
   model "claude-opus-5"
-  uses fs.read("**"), fs.write("**"), harness("Skill"), mcp.pp_codex.generate, mcp.pp_agy.generate,
-       mcp.pp_harness.archive_artifact, mcp.pp_harness.record_attempt
+  // harness(...) names kept on purpose: exact Claude tools; see docs/covenant-port.md, Tools.
+  uses fs.read("**"), harness("Write"), harness("Edit"), harness("Skill"), mcp.pp_codex.generate,
+       mcp.pp_agy.generate, mcp.pp_harness.archive_artifact, mcp.pp_harness.record_attempt
   // TODO(import): budget not present in source
   extra claude { "color": "green" }
   extra copilot { "target": "github-copilot" }

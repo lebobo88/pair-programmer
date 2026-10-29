@@ -6,7 +6,9 @@ covenant StrategyAuthorImported {
 agent StrategyAuthor under StrategyAuthorImported {
   describe "Writes vision briefs, business cases, OKRs, kill-criteria (taxonomy 4.1). Used by strategy-team."
   model "claude-opus-5"
-  uses fs.read("**"), fs.write("**"), mcp.pp_harness.archive_artifact, mcp.pp_harness.record_attempt
+  // harness(...) names kept on purpose: exact Claude tools; see docs/covenant-port.md, Tools.
+  uses fs.read("**"), harness("Write"), harness("Edit"), mcp.pp_harness.archive_artifact,
+       mcp.pp_harness.record_attempt
   // TODO(import): budget not present in source
   extra claude { "color": "blue" }
   extra copilot { "target": "github-copilot" }

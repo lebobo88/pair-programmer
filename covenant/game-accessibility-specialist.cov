@@ -6,7 +6,8 @@ covenant GameAccessibilitySpecialistImported {
 agent GameAccessibilitySpecialist under GameAccessibilitySpecialistImported {
   describe "Game accessibility specialist sub-agent. Produces accessibility plans grounded in Game Accessibility Guidelines (GAG), Xbox Accessibility Guidelines (XAG), AbleGamers APX, IGDA-GASIG (taxonomy 4.4). Richer than web-a11y. Used by game-accessibility-team and game-feature-team."
   model "claude-sonnet-5"
-  uses fs.read("**"), fs.write("**"), mcp.pp_codex.generate, mcp.pp_agy.generate,
+  // harness(...) names kept on purpose: exact Claude tools; see docs/covenant-port.md, Tools.
+  uses fs.read("**"), harness("Write"), harness("Edit"), mcp.pp_codex.generate, mcp.pp_agy.generate,
        mcp.pp_harness.archive_artifact, mcp.pp_harness.record_attempt
   // TODO(import): budget not present in source
   extra claude { "color": "green" }

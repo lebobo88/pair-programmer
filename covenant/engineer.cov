@@ -12,8 +12,10 @@ agent Engineer under EngineerImported {
   // asserts by name that this agent carries none.
   describe "Code-generator sub-agent. Given a coding request, a stage_id, a producer, and a working directory, produces a code artifact. For best-of-N runs the producer is \"claude\" and the agent authors files directly using its native Write/Edit/Bash tools inside the candidate worktree, committing before returning. For non-best-of legacy paths it can dispatch to Codex or Antigravity (agy) via their MCP wrappers. Use ONLY inside an active /pp:* run."
   model "claude-sonnet-5"
+  // harness(...) names kept on purpose: exact Claude tools; see docs/covenant-port.md, Tools.
   uses mcp.pp_harness.archive_artifact, mcp.pp_harness.record_attempt,
-       mcp.pp_harness.record_smoke_status, fs.read("**"), fs.write("**"), shell("*")
+       mcp.pp_harness.record_smoke_status, fs.read("**"), harness("Write"), harness("Edit"),
+       harness("Bash")
   // TODO(import): budget not present in source
   extra claude { "color": "blue" }
   extra copilot { "target": "github-copilot" }

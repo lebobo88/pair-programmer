@@ -6,8 +6,9 @@ covenant EconomyDesignerImported {
 agent EconomyDesigner under EconomyDesignerImported {
   describe "Game economy / live-service designer sub-agent. Produces currencies, source/sink tables, gacha math, loot tables, balance matrices, progression curves (taxonomy 4.5). Used by game-live-ops-team and game-feature-team for monetized titles. Invokes loot-box-jurisdiction rubric."
   model "claude-sonnet-5"
-  uses fs.read("**"), fs.write("**"), harness("Skill"), mcp.pp_codex.generate, mcp.pp_agy.generate,
-       mcp.pp_harness.archive_artifact, mcp.pp_harness.record_attempt
+  // harness(...) names kept on purpose: exact Claude tools; see docs/covenant-port.md, Tools.
+  uses fs.read("**"), harness("Write"), harness("Edit"), harness("Skill"), mcp.pp_codex.generate,
+       mcp.pp_agy.generate, mcp.pp_harness.archive_artifact, mcp.pp_harness.record_attempt
   // TODO(import): budget not present in source
   extra claude { "color": "green" }
   extra copilot { "target": "github-copilot" }

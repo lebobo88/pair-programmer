@@ -6,7 +6,9 @@ covenant ReleasePlannerImported {
 agent ReleasePlanner under ReleasePlannerImported {
   describe "Rollout, rollback, migration runbook, comms (taxonomy 4.11). Used by release-team."
   model "claude-sonnet-5"
-  uses fs.read("**"), fs.write("**"), mcp.pp_harness.archive_artifact, mcp.pp_harness.record_attempt
+  // harness(...) names kept on purpose: exact Claude tools; see docs/covenant-port.md, Tools.
+  uses fs.read("**"), harness("Write"), harness("Edit"), mcp.pp_harness.archive_artifact,
+       mcp.pp_harness.record_attempt
   // TODO(import): budget not present in source
   extra claude { "color": "blue" }
   extra copilot { "target": "github-copilot" }

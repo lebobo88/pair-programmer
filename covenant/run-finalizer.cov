@@ -6,10 +6,11 @@ covenant RunFinalizerImported {
 agent RunFinalizer under RunFinalizerImported {
   describe "Writes the run summary, patches PROJECT_MASTER.md, archives any best-of-N losers, and calls `finalize_run`. The last agent invoked in every /pp:* run. Use ONLY inside an active /pp:* run, in step 8 of the lifecycle (after missability has passed)."
   model "claude-haiku-4-5-20251001"
+  // harness(...) names kept on purpose: exact Claude tools; see docs/covenant-port.md, Tools.
   uses mcp.pp_harness.finalize_run, mcp.pp_harness.archive_artifact, mcp.pp_harness.get_run,
        mcp.pp_harness.master_plan_status, mcp.pp_harness.apply_master_plan_patch,
        mcp.pp_harness.ensure_master_plan, mcp.pp_harness.archive_winner_and_losers,
-       mcp.pp_harness.teardown_candidates, fs.read("**")
+       mcp.pp_harness.teardown_candidates, harness("Read"), harness("Glob")
   effort low
   // TODO(import): budget not present in source
   extra claude { "color": "yellow" }
