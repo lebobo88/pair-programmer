@@ -4,7 +4,7 @@ Trial port of the 42 agents in `.claude/agents` and `.github/agents` to Covenant
 
 ## Result in one paragraph
 
-All 42 agents import, `cov check` is clean (exit 0, no diagnostics), `cov fmt --check` is clean, and `cov build --target claude,copilot` and `cov check --emitted` exit 0 with 124 warnings and no errors. The Claude `tools` lists are exactly the originals' for 42 of 42 agents, and the prompt text of 42 of 42 agents is identical to the original, plus appended sections where the target cannot enforce a setting. The Copilot side is **not** equivalent: no Covenant effect grants an exact Claude tool and its Copilot alias, so the exact Claude names cost every agent that uses `Write`/`Edit`/`Bash` (or a lone `Read`) its Copilot `edit`/`execute`/`read` (see Tools). The Copilot output also always carries a `tools` list and, with a model, `modelPolicy`, and the Copilot prompts keep Claude tool names. These are language gaps, not agent bugs.
+All 42 agents import, `cov check` is clean (exit 0, no diagnostics), `cov fmt --check` is clean, and `cov build --target claude,copilot` and `cov check --emitted` exit 0 with 124 warnings and no errors. The Claude `tools` lists are exactly the originals' for 42 of 42 agents, and the prompt text of 41 of 42 agents is identical to the original apart from appended sections where the target cannot enforce a setting (`reflexion-coach` differs, gap 3). The Copilot side is **not** equivalent: no Covenant effect grants an exact Claude tool and its Copilot alias, so the exact Claude names cost every agent that uses `Write`/`Edit`/`Bash` (or a lone `Read`) its Copilot `edit`/`execute`/`read` (see Tools). The Copilot output also always carries a `tools` list and, with a model, `modelPolicy`, and the Copilot prompts keep Claude tool names. These are language gaps, not agent bugs.
 
 ## Versions and counts
 
@@ -43,7 +43,7 @@ The importer wrote 130 `TODO(import)` comments. By kind: covenant rules not pres
 Claude: 42 agents have exactly the original tool set, 0 have the original set plus extra tool names, 0 miss a tool.
 Copilot: 0 agents have exactly the mirror's tool set, 42 do not.
 
-Spelling a tool as an effect widens Claude by tool name: `fs.write("**")` writes `Edit`, `NotebookEdit`, `Write`; `shell("*")` writes `Bash` and `PowerShell`; a lone `Read` as `fs.read("**")` writes `Read`, `Grep`, `Glob`. Spelling it as `harness(...)` is exact on Claude but Copilot drops it. No single effect gives both, so the port follows the task's no-widening rule and accepts the Copilot loss. Open decision for Rob: if Copilot parity matters more than exact Claude names, switch those agents to `fs.write`/`shell`/`fs.read`; that restores `edit`/`execute`/`read` on Copilot and adds `NotebookEdit`, `PowerShell`, `Grep`, `Glob` on Claude (the first version of this port, commit 22ebf8e, did that).
+Spelling a tool as an effect widens Claude by tool name: `fs.write("**")` writes `Edit`, `NotebookEdit`, `Write`; `shell("*")` writes `Bash` and `PowerShell`; a lone `Read` as `fs.read("**")` writes `Read`, `Grep`, `Glob`. Spelling it as `harness(...)` is exact on Claude but Copilot drops it. No single effect gives both, so the port follows the task's no-widening rule and accepts the Copilot loss. The port does not widen Claude to buy Copilot parity: widening is a permission change, and the real fix is in Covenant (an effect that names one tool on every target, gap 2), not in these sources. The widening variant was tried in commit 22ebf8e and reverted.
 Copilot differences from the mirrors: (a) the agents above lose the aliases the Claude `Read`/`Write`/`Edit`/`Bash` map to in the mirrors (per-agent column, "missing"); (b) `pp_harness/*`, `pp_codex/*`, `pp_agy/*` become the named tools of the Claude file (narrower, as in the Claude originals); (c) `browser-validator` and `pair-programmer-orchestrator` have no `tools` key in the mirror, and the Covenant output writes `tools: []`. The emitter's own comment says an empty list disables every tool, so these two lose their default tool set on Copilot, the orchestrator being the Copilot CLI's active agent. This is the worst regression in the port; it was not tested on a Copilot CLI, and no Covenant construct can omit the key (gap 5).
 
 ## Diagnostics from `cov build` (124, all warnings, no errors)
@@ -59,7 +59,7 @@ Copilot differences from the mirrors: (a) the agents above lose the aliases the 
 
 ## Per-agent table
 
-Columns: Claude tools same as the original; Copilot tools same as the mirror; model same (Claude and Copilot); prompt same as the original apart from headers. "yes (+X)" means all original tools are granted plus the named extras.
+Columns: Claude tools same as the original; Copilot tools same as the mirror; model same (Claude and Copilot); prompt same as the original apart from the generated header and the appended sections named in Notes. "yes (+X)" means all original tools are granted plus the named extras.
 
 | Agent | Claude tools | Copilot tools | Model | Prompt | Notes |
 |---|---|---|---|---|---|
@@ -92,7 +92,7 @@ Columns: Claude tools same as the original; Copilot tools same as the mirror; mo
 | ops-author | yes | no (pp_harness/* -> 2 named; missing edit) | yes | yes | appends "Allowed tools" (Claude); "Tools" (Copilot); Copilot gains `modelPolicy` |
 | pair-programmer-orchestrator | yes | no (mirror has no `tools` key; emitted `tools: []`) | yes | yes | appends "Allowed tools" (Claude); "Tools" (Copilot); mirror prompt differs from Claude in 2 line(s), tool names/paths only; Copilot gains `modelPolicy`; Copilot model gpt-5.4 carried via `super` tier mapping |
 | profile-loader | yes | no (pp_harness/* -> 5 named; missing read) | yes | yes | appends nothing (Claude); "Tools", "Budget" (Copilot); Copilot gains `modelPolicy`, `reasoningEffort` |
-| reflexion-coach | yes | no (pp_harness/* -> 2 named) | yes | yes | appends nothing (Claude); "Tools" (Copilot); Copilot gains `modelPolicy` |
+| reflexion-coach | yes | no (pp_harness/* -> 2 named) | yes | no (doubled braces, gap 3) | appends nothing (Claude); "Tools" (Copilot); Copilot gains `modelPolicy` |
 | release-planner | yes | no (pp_harness/* -> 2 named; missing edit) | yes | yes | appends "Allowed tools" (Claude); "Tools" (Copilot); Copilot gains `modelPolicy` |
 | retirement-planner | yes | no (pp_harness/* -> 2 named; missing edit) | yes | yes | appends "Allowed tools" (Claude); "Tools" (Copilot); Copilot gains `modelPolicy` |
 | run-finalizer | yes | no (pp_harness/* -> 8 named; missing read, search) | yes | yes | appends nothing (Claude); "Tools" (Copilot); Copilot gains `modelPolicy`, `reasoningEffort` |
@@ -112,13 +112,13 @@ Columns: Claude tools same as the original; Copilot tools same as the mirror; mo
 
 ## Original YAML that does not parse strictly
 
-A strict loader (PyYAML `safe_load`) rejects 4 of the 42 `.claude/agents` files ("mapping values are not allowed here": an unquoted `: ` inside `description`): `game-security` (line 3, column 263); `judge-same-vendor` (line 8, column 396); `live-ops-manager` (line 3, column 207); `netcode-programmer` (line 3, column 232). Claude Code most likely skips these four today. The importer accepted them silently (no warning). The emitted Claude and Copilot files quote the description, and all 84 emitted files parse strictly, so after the port those four agents become loadable. The original `.github/agents` mirrors parse (the sync script quotes descriptions).
+A strict loader (PyYAML `safe_load`) rejects 4 of the 42 `.claude/agents` files ("mapping values are not allowed here": an unquoted `: ` inside `description`): `game-security` (line 3, column 263); `judge-same-vendor` (line 8, column 396); `live-ops-manager` (line 3, column 207); `netcode-programmer` (line 3, column 232). Claude Code 2.1.312 loads all four anyway: a headless session in a folder holding only the original `.claude/agents` lists all 42 agents in its init event (48 with the 6 built-ins), so its loader is more lenient than PyYAML. What description it reads from them is unverified. The importer accepted them silently (no warning). The emitted Claude and Copilot files quote the description, and all 84 emitted files parse strictly, so after the port those four agents become loadable. The original `.github/agents` mirrors parse (the sync script quotes descriptions).
 
 ## Covenant bugs and spec gaps
 
 1. `cov import` output is not `cov fmt` clean. Repro: `cov import --out d .claude/agents .github/agents && cd d && cov fmt --check` reports "would reformat" for all 42 files (multi-line `uses` and `extra` blocks that fmt joins). Building before and after `cov fmt` gives identical output.
 2. No effect grants exactly one Claude tool and its Copilot alias. `covenant/architect.cov`: `fs.write("**")` emits `Edit`, `NotebookEdit`, `Write` for Claude; `harness("Write"), harness("Edit")` is exact for Claude but the Copilot `tools` list loses `edit` (L0201). Same for `shell("*")` (adds `PowerShell`) and a lone `Read` (`fs.read("**")` adds `Grep`, `Glob`, `search`). The importer's own warning ("the file-read effect grants both aliases when built") points at this.
-3. `{{` in a prompt is not unescaped by the emitters. LANGUAGE.md §1 says `{{` renders as `{`, and `cov import` writes the original `{{critique_md}}` as `{{{{critique_md}}}}` accordingly, but `cov build` writes the prompt text raw, so the faithful import emitted `{{{{critique_md}}}}` (9 placeholders in `reflexion-coach`). Repro: an agent whose prompt holds `{{{{x}}}}` builds to `{{{{x}}}}`. The source now holds `{{x}}` with a comment, so the emitted text equals the original; under §1 a renderer would show `{x}`. Revert that file to the imported form once the emitters render `{{`.
+3. `{{` in a prompt is not unescaped by the emitters (Covenant issue #47). LANGUAGE.md §1 says `{{` renders as `{`, and `cov import` writes the original `{{critique_md}}` as `{{{{critique_md}}}}` accordingly, but `cov build` writes the prompt text raw, so `reflexion-coach` is emitted with `{{{{critique_md}}}}` and its 8 other placeholders doubled, on both targets. The source keeps the spec-correct form, so the output becomes faithful once #47 is fixed; writing `{{x}}` in the source would hide the bug and break when it is fixed.
 4. `mcp.S.*` emits no entry in the Claude `tools` list, with or without `tool mcp.S.T` declarations (`covenant/architect.cov` with `uses mcp.pp_harness.*`); Copilot lists only declared tools. There is no way to write the mirrors' `pp_harness/*`.
 5. Copilot always gets `tools: [...]` (`[]` when empty) and, with any model, `modelPolicy: "required"` (`covenant/browser-validator.cov` gets `tools: []`, `covenant/triage.cov` gets `modelPolicy`). Neither can be omitted (`tools` and `modelPolicy` are governed keys, so `extra copilot` cannot set them). The mirrors omit both.
 6. `extra copilot { "target": "github-copilot" }` is W0215 on all 42 agents, although the mirrors in this repository carry that key. Only the report can say whether the Copilot CLI honors it.
@@ -132,9 +132,14 @@ A strict loader (PyYAML `safe_load`) rejects 4 of the 42 `.claude/agents` files 
 - Followed the no-widening rule: exact `harness(...)` Claude names where no complete tool group exists, accepting the Copilot loss. The alternative (effects) is described under Tools and needs Rob's decision.
 - Kept MCP tools as the named tools instead of `mcp.S.*`, so no agent got a tool its Claude file does not list.
 - Used `super` for the orchestrator's Copilot model, and dropped its `copilot-model` key from `extra claude`.
-- Wrote the `reflexion-coach` placeholders as `{{x}}` so the emitted text equals the original (gap 3).
+- Kept `reflexion-coach`'s spec-correct `{{{{x}}}}` source, accepting the doubled braces in the output until #47 is fixed (gap 3).
 - `super` appears only in `pair-programmer-orchestrator.cov` (`grep -l "model super" covenant/*.cov`); any new agent using it would get gpt-5.4 on Copilot.
 - Committed `covenant/out` (the verification commands read it).
+
+## Load check
+
+- Claude Code 2.1.312, headless, Haiku: a folder holding only `covenant/out/.claude/agents` lists all 42 agents in the session's init event, the same 42 as the originals. With `covenant/out/.github/agents` added beside it, the count is unchanged: Claude Code reads only `.claude/agents`.
+- Copilot CLI: not run. It is not installed in the cloud session and needs a GitHub sign-in, so whether it loads the emitted files, and which copy it prefers when it sees both `.github/agents` and `.claude/agents`, is unverified.
 
 ## Reproduce the numbers
 
