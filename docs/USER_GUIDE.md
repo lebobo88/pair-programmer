@@ -102,7 +102,7 @@ For lower-stakes gates (`code_style`, `docs_polish`, `lint_class`) the harness p
 
 ### Prerequisites
 
-- **Node 20+** (`node --version`).
+- **Node 26.12.1+** (`node --version`).
 - **Git** — used for per-candidate worktrees in best-of-N. Falls back to copy-mode for non-git projects.
 - **Codex CLI** — `npm i -g @openai/codex`. Auth via `codex login` or `OPENAI_API_KEY`.
 - **Antigravity CLI (agy)** — install via `irm https://antigravity.google/cli/install.ps1 | iex` (Windows PowerShell) or `curl -fsSL https://antigravity.google/cli/install.sh | bash` (macOS/Linux). Auth by running `agy` once (there is no separate `auth` subcommand) — it completes interactive Google Sign-In through the system keyring and reuses the legacy Gemini CLI's OAuth state at `~/.gemini/oauth_creds.json` when present, so an existing Google login carries over — or set `GEMINI_API_KEY` / `GOOGLE_API_KEY` / `ANTIGRAVITY_API_KEY` for headless/CI use.
