@@ -34,7 +34,7 @@ The regenerated files differ from the previous build in 20 files, 10 per target,
 | original `.claude/agents` (35720d4) | 42 | 197775 | |
 | original `.github/agents` (35720d4) | 42 | 202142 | |
 
-Also in `covenant/`: `covenant.toml` 330 bytes, `compare-tools.mjs` 11395 bytes. The `.cov` sources are 10616 bytes (5.0%) larger than the generated Claude tree and 6973 bytes (3.2%) larger than the generated Copilot tree. Against the originals the Claude tree grew by 16004 bytes and the Copilot tree by 15280 bytes.
+Also in `covenant/`: `covenant.toml` 330 bytes, `compare-tools.mjs` 13788 bytes. The `.cov` sources are 10616 bytes (5.0%) larger than the generated Claude tree and 6973 bytes (3.2%) larger than the generated Copilot tree. Against the originals the Claude tree grew by 16004 bytes and the Copilot tree by 15280 bytes.
 
 ## Diagnostics
 
@@ -102,7 +102,7 @@ Claude effective tools (tools minus disallowedTools; no key means every tool): 4
 
 ### The two `tools claude none` agents
 
-browser-validator and pair-programmer-orchestrator: the original Claude files list VS Code tool names (23 and 10, such as `execute/runInTerminal` and `browser/openBrowserPage`); the original Copilot mirrors have no `tools` key. Both sources are `uses harness("*")` (C.21) with `tools claude none` (C.28). The generated Claude files have `tools: []`, and the generated Copilot files have `tools: ["*"]`, as the mirrors' missing key meant. compare-tools prints both under their own heading with the original names, and never counts them as matching: "40 same, 0 differ, 2 under tools claude none". It also fails if a generated file's list is not empty, or if an original name is a Claude Code tool (none of the 23 or 10 is). The C.21 widening on Claude (every tool, `Bash`, `Write` and `Agent` included, where the original listed no Claude Code tool) is gone. What stays different from the original: the original named tools Claude Code does not know, which the Claude format notes (`RLM/research/target-formats/claude.md`, `tools` row) say leaves a subagent that "usually fails to launch"; the generated file says no tools in the documented empty form. The effective tool set is the same (none). One consequence: browser-validator's prompt says the claude-in-chrome tools "are scoped to this agent via the `tools:` frontmatter above". The generated Claude file has `tools: []` and the generated Copilot file has `tools: ["*"]`, so that sentence describes neither file. The prompt text is unchanged, as in the original, whose list named no Claude Code tool either.
+browser-validator and pair-programmer-orchestrator: the original Claude files list VS Code tool names (23 and 10, such as `execute/runInTerminal` and `browser/openBrowserPage`); the original Copilot mirrors have no `tools` key. Both sources are `uses harness("*")` (C.21) with `tools claude none` (C.28). The generated Claude files have `tools: []`, and the generated Copilot files have `tools: ["*"]`, as the mirrors' missing key meant. compare-tools prints both under their own heading with the original names, and never counts them as matching: "40 same, 0 differ, 2 under tools claude none". It also fails, and prints why, if a generated file's list is not empty or an original name is a Claude Code tool (any `mcp__` name, or a name in the tool rows of Covenant's transcription of the vendor's tools reference, `RLM/research/target-formats/claude-tools-addendum.md`); none of the 23 or 10 is. Both failures are shown below. The C.21 widening on Claude (every tool, `Bash`, `Write` and `Agent` included, where the original listed no Claude Code tool) is gone. What stays different from the original: the original named tools Claude Code does not know, which the Claude format notes (`RLM/research/target-formats/claude.md`, `tools` row) say leaves a subagent that "usually fails to launch"; the generated file says no tools in the documented empty form. The effective tool set is the same (none). One consequence: browser-validator's prompt says the claude-in-chrome tools "are scoped to this agent via the `tools:` frontmatter above". The generated Claude file has `tools: []` and the generated Copilot file has `tools: ["*"]`, so that sentence describes neither file. The prompt text is unchanged, as in the original, whose list named no Claude Code tool either.
 
 ## Remaining differences against the originals
 
@@ -127,7 +127,7 @@ Classified by `/home/user/covenant/packages/import/NORMALIZATIONS.md` (FTR-010, 
 | difference | class |
 |---|---|
 | four `#` header lines, replacing the sync script's `<!-- Generated from ... -->` body comment | header; List 2 item 2 (sync comments dropped) |
-| the sync script's preserved frontmatter-rationale comment block in 7 mirror bodies not carried (engineer, judge-cross-vendor, judge-same-vendor, pair-programmer-orchestrator, profile-loader, security-reviewer, triage: -11 to -22 lines) | the same comment text is kept once in the `.cov` (List 2 item 5); NORMALIZATIONS.md names only the `Generated from` form under item 2, so this block is covered by item 5 only through that |
+| the sync script's preserved frontmatter-rationale comment block in 7 mirror bodies not carried (engineer, judge-cross-vendor, judge-same-vendor, pair-programmer-orchestrator, profile-loader, security-reviewer, triage: -11 to -22 lines) | the same comment text is kept once in the `.cov`. The importer drops the block (`import.ts` line 138), but as of Covenant 2344a00 List 2 item 2 names only the `Generated from` form, so neither list names it; Covenant #68 (docs only, waits on Rob) adds it to item 2 |
 | `modelPolicy: "preferred"` added to 40 files | List 2 item 2 (`modelPolicy` written "preferred" where the source left it out) |
 | no `reasoningEffort` written for the 7 agents whose Claude file has `effort` (the 7 mirrors set none); the Claude `effort` is unchanged | List 2 item 2 (Effort): `effort copilot inherit`. Equal to the mirrors, not a difference from them; the import note "sets no reasoningEffort where ... sets effort" appears for the same 7. ADR-013's Copilot row names `reasoningEffort` as the native key, and no file has `reasoning-effort` |
 | tools named (`pp_harness/x`) where the mirror has `pp_harness/*` (40) | List 2 item 2 (Copilot `tools` that the Claude tool list cannot build are lost as reported) |
@@ -137,7 +137,7 @@ Classified by `/home/user/covenant/packages/import/NORMALIZATIONS.md` (FTR-010, 
 | `target: "github-copilot"` as `extra copilot` (W0215, 42) | `extra` passthrough |
 | `tools: ["*"]` for the two `harness("*")` agents (mirrors had no `tools` key; both mean every tool) | List 2 item 2 (Tools) and item 7; same behavior |
 
-In none of the lists: nothing found. Every difference found by compare-tools, the diffs read for the port, and (for the earlier build) three independent fresh-context readers who compared all 42 agents field by field on both targets falls in one of the rows above. The readers did not re-read this build; compare-tools' effort, description, model and tools checks cover the three kinds C.28 changed. One row rests on a thin reading: the mirrors' preserved frontmatter-rationale comment block (7 mirror bodies) is named by NORMALIZATIONS.md only through item 2's dropped `Generated from` comment and item 5's frontmatter comments, not as that block.
+In none of the lists: nothing found. Every difference found by compare-tools, the diffs read for the port, and (for the earlier build) three independent fresh-context readers who compared all 42 agents field by field on both targets falls in one of the rows above. The readers did not re-read this build; compare-tools' effort, description, model and tools checks cover the three kinds C.28 changed. One kind is outside the lists as written: the `<!-- Frontmatter rationale preserved from … -->` block in 7 mirror bodies. Covenant's importer drops it with the `<!-- Generated from … -->` comment (`packages/import/src/import.ts` line 138, `withoutSyncMarkers`), but as of Covenant `main` 2344a00 List 2 item 2 of NORMALIZATIONS.md names only the `Generated from` comment, so neither list names the block. Covenant PR #68 (docs only, waits on Rob) adds it to List 2 item 2.
 
 Word-level prompt differences between Claude and Copilot (tool names, the `.claude` and `.github` command paths) are reproduced by `text` items; for the six agents the generated Copilot body equals the original apart from the rows above (checked with diff).
 
@@ -157,6 +157,9 @@ compare-tools failing runs (scratch clones of this branch):
 
 - `Glob` removed from the generated `.claude/agents/architect.md` tools: exit 1, `architect | DIFFERS`, `Claude effective tool sets: 39 same, 1 differ, 2 under tools claude none`.
 - `reasoningEffort: low` inserted after `modelPolicy` in the generated `.github/agents/triage.agent.md` (a Copilot file regaining the line): exit 1, `effort and description differences (claude against the original, copilot against the mirror): 1`, `triage: copilot reasoningEffort: (none) -> "low"`. The same script on the real tree exits 0 with 0 such differences.
+- `tools claude none`, generated list not empty (`tools:` with `- Read` in place of `tools: []` in the generated browser-validator Claude file): exit 1, `tools claude none checks FAILED (1)`, `browser-validator: generated Claude tools are not empty: [Read]`.
+- `tools claude none`, an original name that is a Claude Code tool (a scratch base commit whose original browser-validator `tools` line gains `, Bash, mcp__s__t`, run with `--base`): exit 1, `browser-validator: original names Claude Code tools: Bash, mcp__s__t`; the heading prints the generated list (`[]`) and the original's names, and the "checks pass" line is not printed.
+- Copilot tools differ from the mirror (`"search"` added to the generated triage Copilot `tools`, where the mirror has only `pp_harness/*`): exit 1, `Copilot tools that differ from the mirror ... : 1`, `triage: copilot tools differ from the mirror: missing -; extra search`. The real tree has 0.
 
 ## pair-programmer's own tests (`cd daemon && npm ci && npm run build` both exit 0)
 
@@ -184,20 +187,21 @@ The criterion now reads (`/home/user/covenant/docs/ROADMAP.md`, M1 row, reworded
 
 1. "trees generated by `cov build`": yes. 84 files written once, 42 in each directory; the C.28 lines then `20 written, 64 unchanged, 0 stale`; `check --emitted` exit 0.
 2. "`.github/agents` in Copilot CLI format (ADR-013)": the emitter wrote it with `cov` 0.1.0 from 2344a00. The Copilot CLI has not loaded it (open, below).
-3. "diffs limited to headers and the documented differences of Lists 1 and 2": **yes, as measured.** Each kind of difference and where it is documented:
+3. "diffs limited to headers and the documented differences of Lists 1 and 2": **yes once Covenant #68 merges (see the verdict below).** Each kind of difference and where it is documented:
    - headers (§12): four `#` lines; the sync script's `<!-- Generated from ... -->` body comment dropped, List 2 item 2.
    - key order, quoting, list style, `tools` order, blank line after `---`, LF: List 1.
    - appended prompt sections for L0201 (78), L0203 (2) and L0206 (7): List 2 item 1.
    - `modelPolicy: "preferred"` added (40): List 2 item 2 (Model).
    - named `pp_harness/x` tools where the mirror has `pp_harness/*` (40): List 2 item 2 (Tools) and item 4 (`server/*`).
-   - dropped frontmatter comments (7 Claude originals): List 2 item 5; the mirrors' rationale blocks rest on the thin reading stated above.
+   - dropped frontmatter comments (7 Claude originals): List 2 item 5.
+   - the `Frontmatter rationale preserved from …` block in 7 mirror bodies (-11 to -22 lines): List 2 item 2 once Covenant #68 merges; named by neither list as of 2344a00 (see above).
    - `tools: []` on Claude and `tools: ["*"]` on Copilot for the two `harness("*")` agents: List 2 item 2 (Tools) and item 7.
    - `extra` passthrough (`target`, `color`, `copilot-model`): reported as W0215 and import notes.
-   No difference found is outside the two lists.
+   Verdict: **yes once Covenant #68 merges; until then one kind (the rationale block in 7 mirrors) is outside the lists as written.** Every other difference found is in List 1 or List 2 as listed.
 4. "none widens a tool an agent may use on a target": none does. Claude effective tool sets: 40 same as the original, and 2 `tools: []` where the originals listed no Claude Code tool (the same empty set; before C.28 they inherited every tool). Copilot: 2 `["*"]` equal to the mirrors' missing key, and 40 named lists narrower than the mirrors' `server/*`, never wider (compare-tools reports `differs` for any extra or missing name; there is none).
 5. "none changes the model, effort or description it runs with there": `model` equals the original on both targets for every agent. Claude `effort` and `description` equal the originals', and Copilot `reasoningEffort` (none in all 42) and `description` equal the mirrors' (compare-tools, 0 differences). `modelPolicy: "preferred"` is the Copilot default where the mirror left it out, documented in List 2 item 2; no model changes. The three findings of #66 are closed: no `reasoningEffort` line, engineer's description, and the C.21 widening are gone.
 6. "VS Code-only keys reported as W0215 warnings": yes, 43 W0215. The originals carry no `agents`, `reasoning-effort` or `handoffs`; the VS Code-only key present is `target`.
-7. "pair-programmer's `pnpm test` runs the drift check": root `package.json` has `"test": "cd covenant && cov check --emitted --target claude,copilot --out .."`. The package is not on the registry yet. On the earlier build, with the 0.1.0 tarball from the dry run installed (`npm install --no-save`), `npm test` and `pnpm test` (pnpm 9.15.0) both exited 0, and a hand edit made `npm test` exit 1. Not re-run through `npm test` for this update; the same check run directly (`cov check --emitted --target claude,copilot --out ..`) exits 0 here, and fails in the four drift runs above.
+7. "pair-programmer's `pnpm test` runs the drift check": root `package.json` has `"test": "cd covenant && cov check --emitted --target claude,copilot --out .."`. The package is not on the registry yet. On the earlier build, with the 0.1.0 tarball from the dry run installed (`npm install --no-save`), `npm test` and `pnpm test` (pnpm 9.15.0) both exited 0, and a hand edit made `npm test` exit 1. Run by the calling session on a fresh clone of caaf80a (this branch after the C.28 regeneration) with the 2344a00 0.1.0 tarball installed (`npm install --no-save`): root `npm test` exit 0; after appending a line to `.claude/agents/triage.md`, `npm test` exit 1 with the drift message. The same check run directly here (`cov check --emitted --target claude,copilot --out ..`) exits 0, and fails in the four drift runs above.
 
 For reference, criterion (c): `.cov` sources 224395 bytes; one generated tree 213779 (Claude) or 217422 (Copilot). The sources are larger, by 10616 and 6973 bytes.
 
@@ -216,7 +220,7 @@ Covenant #66 recorded the three differences no source could avoid: one `effort` 
 
 ## Claude Code load check
 
-Measured on the earlier build and not re-run after C.28 (the 20 regenerated files, including the two `tools: []` Claude files, were not loaded): Claude Code 2.1.314, headless (`claude -p`, haiku) in a temporary directory holding only the generated `.claude/agents`: the init event lists 48 agents, the 42 generated ones and 6 built-ins, none missing.
+Run by the calling session on a fresh clone of caaf80a (after C.28, so including the two `tools: []` Claude files): Claude Code 2.1.314 headless (`claude -p ... --output-format stream-json --verbose`) in a folder holding only the generated `.claude/agents`: the init event lists 48 agents, the 42 generated plus Explore, Plan, claude, claude-code-guide, general-purpose and statusline-setup, none missing. (The earlier build's run listed the same 42 and 6 built-ins.)
 
 ## Open
 

@@ -9,7 +9,9 @@
 //     tool) differs from the original, except for an agent whose .cov says `tools claude none`
 //     (C.28), which is printed under its own heading with the original's names and is never
 //     counted as matching; that agent must write `tools: []` and its original names must not
-//     include a Claude Code tool;
+//     include a Claude Code tool (the reason is printed);
+//   - a generated Copilot tool list differs from the mirror's (an extra or a missing name;
+//     a named list under the mirror's `server/*` is narrower, not a difference);
 //   - a generated Copilot file's `reasoningEffort` or `description` differs from the mirror's;
 //   - a generated Claude file's `effort` or `description` differs from the original's.
 // Node standard library only.
@@ -139,15 +141,43 @@ const toolsNone = (name) => {
   const p = join(root, "covenant", `${name}.cov`);
   return existsSync(p) && /^\s*tools\s+claude\s+none\s*$/m.test(readFileSync(p, "utf8"));
 };
-// The tools Claude Code ships; an original naming one of these is not the VS Code-only list C.28 describes.
-const CLAUDE_CODE_TOOLS = new Set(["Agent", "AskUserQuestion", "Bash", "Edit", "Glob", "Grep", "NotebookEdit", "Read", "Skill", "Task", "TodoWrite", "WebFetch", "WebSearch", "Write"]);
-const fieldDiff = (label, o, g, fm1, fm2, key) => {
+// Claude Code's built-in tools: the tool rows of the vendor's tools reference, as transcribed in
+// Covenant's RLM/research/target-formats/claude-tools-addendum.md (retrieved 2026-10-28). Any
+// `mcp__` name is also a Claude Code tool (an MCP tool's name there). An original naming one of
+// these is not the VS Code-only list C.28 describes.
+const CLAUDE_CODE_TOOLS = new Set([
+  "Agent", "Artifact", "AskUserQuestion", "Bash", "CronCreate", "CronDelete", "CronList", "Edit",
+  "EndConversation", "EnterPlanMode", "EnterWorktree", "ExitPlanMode", "ExitWorktree", "Glob", "Grep",
+  "LSP", "ListAgents", "ListMcpResourcesTool", "Monitor", "NotebookEdit", "PowerShell",
+  "PushNotification", "Read", "ReadMcpResourceTool", "RemoteTrigger", "ReportFindings",
+  "ScheduleWakeup", "SendFeedback", "SendMessage", "SendUserFile", "ShareOnboardingGuide", "Skill",
+  "SubagentHandback", "TaskCreate", "TaskGet", "TaskList", "TaskOutput", "TaskStop", "TaskUpdate",
+  "TodoWrite", "ToolSearch", "WaitForMcpServers", "WebFetch", "WebSearch", "Workflow", "Write",
+]);
+const isClaudeCodeTool = (x) => CLAUDE_CODE_TOOLS.has(x) || x.startsWith("mcp__");
+// Why a `tools claude none` agent fails: the generated list must be empty, and the original must
+// have listed names and none of them a Claude Code tool.
+function noneProblems(eo, eg) {
+  const out = [];
+  if (eg === null) out.push("generated Claude file has no tools key (every tool)");
+  else if (eg.size !== 0) out.push(`generated Claude tools are not empty: ${fmt(eg)}`);
+  if (eo === null) out.push("original has no tools key (every tool)");
+  else if (eo.size === 0) out.push("original lists no tools");
+  else {
+    const known = [...eo].filter(isClaudeCodeTool).sort();
+    if (known.length) out.push(`original names Claude Code tools: ${known.join(", ")}`);
+  }
+  return out;
+}
+const fieldDiff = (label, fm1, fm2, key) => {
   const a = strOf(fm1, key), b = strOf(fm2, key);
   return a === b ? null : `${label} ${key}: ${a === null ? "(none)" : JSON.stringify(a.length > 60 ? a.slice(0, 60) + "…" : a)} -> ${b === null ? "(none)" : JSON.stringify(b.length > 60 ? b.slice(0, 60) + "…" : b)}`;
 };
 
 let failures = 0;
-const star = [];
+const noneAgents = [];
+const noneFailures = [];
+const copilotFailures = [];
 const fieldFailures = [];
 const rows = [];
 for (const name of names) {
@@ -167,20 +197,19 @@ for (const name of names) {
 
   const eo = effective(co.fm), eg = effective(cgp.fm);
   const d = setDiff(eo, eg);
-  const isStar = toolsNone(name);
-  r.claudeTools = isStar ? "tools claude none" : d === null ? "same" : "DIFFERS";
-  if (isStar) {
-    const bad = eg === null || eg.size !== 0 || (eo ?? new Set()).size === 0 || [...eo].some((x) => CLAUDE_CODE_TOOLS.has(x));
-    star.push({ name, original: eo === null ? null : [...eo].sort() });
-    if (bad) failures++;
+  const isNone = toolsNone(name);
+  r.claudeTools = isNone ? "tools claude none" : d === null ? "same" : "DIFFERS";
+  if (isNone) {
+    noneAgents.push({ name, original: eo === null ? null : [...eo].sort(), generated: eg });
+    for (const why of noneProblems(eo, eg)) noneFailures.push(`${name}: ${why}`);
   } else if (d) {
     r.lines.push(`claude tools: original ${fmt(eo)}; generated ${fmt(eg)}`);
     if (d.missing.length) r.lines.push(`  missing from generated: ${d.missing.join(", ")}`);
     if (d.extra.length) r.lines.push(`  extra in generated: ${d.extra.join(", ")}`);
     failures++;
   }
-  for (const x of [fieldDiff("claude", 0, 0, co.fm, cgp.fm, "effort"), fieldDiff("claude", 0, 0, co.fm, cgp.fm, "description"),
-                   fieldDiff("copilot", 0, 0, po.fm, pgp.fm, "reasoningEffort"), fieldDiff("copilot", 0, 0, po.fm, pgp.fm, "description")])
+  for (const x of [fieldDiff("claude", co.fm, cgp.fm, "effort"), fieldDiff("claude", co.fm, cgp.fm, "description"),
+                   fieldDiff("copilot", po.fm, pgp.fm, "reasoningEffort"), fieldDiff("copilot", po.fm, pgp.fm, "description")])
     if (x) fieldFailures.push(`${name}: ${x}`);
   const ck = keyDiffs(co.fm, cgp.fm);
   r.claudeKeys = ck;
@@ -190,6 +219,7 @@ for (const name of names) {
   const rel = copilotRelation(copilotTools(po.fm), copilotTools(pgp.fm));
   r.copilotTools = rel.kind === "same" ? "same" : rel.kind === "narrower" ? "named, narrower" : "differs";
   if (rel.why) r.lines.push(`copilot tools (${r.copilotTools}): ${rel.why}`);
+  if (rel.kind === "differs") copilotFailures.push(`${name}: copilot tools differ from the mirror: ${rel.why}`);
   r.copilotModel = `${strOf(po.fm, "model") ?? "-"} -> ${strOf(pgp.fm, "model") ?? "-"}`;
   r.copilotPolicy = `${strOf(po.fm, "modelPolicy") ?? "-"} -> ${strOf(pgp.fm, "modelPolicy") ?? "-"}`;
   r.copilotKeys = keyDiffs(po.fm, pgp.fm).filter((x) => !/^[~+-](model|modelPolicy)\b/.test(x));
@@ -211,11 +241,20 @@ for (const r of rows) {
 console.log("\ntool detail");
 for (const r of rows) for (const l of r.lines) console.log(`${r.name}: ${l}`);
 
-console.log(`\nClaude effective tool sets: ${rows.filter((r) => r.claudeTools === "same").length} same, ${failures} differ, ${star.length} under tools claude none`);
-if (star.length) {
-  console.log(`\n\`tools claude none\` agents (not counted as matching; generated Claude file is \`tools: []\`, the original listed only these names, none a Claude Code tool):`);
-  for (const { name, original } of star) console.log(`  ${name}: original ${original === null ? "(every tool)" : `${original.length} names: ${original.join(", ")}`}`);
+console.log(`\nClaude effective tool sets: ${rows.filter((r) => r.claudeTools === "same").length} same, ${failures} differ, ${noneAgents.length} under tools claude none`);
+if (noneAgents.length) {
+  console.log("\n`tools claude none` agents (never counted as matching); generated Claude tools and the original's names:");
+  for (const { name, original, generated } of noneAgents)
+    console.log(`  ${name}: generated ${fmt(generated)}; original ${original === null ? "(every tool)" : `${original.length} names: ${original.join(", ")}`}`);
+  if (noneFailures.length) {
+    console.log(`\`tools claude none\` checks FAILED (${noneFailures.length}):`);
+    for (const l of noneFailures) console.log(`  ${l}`);
+  } else {
+    console.log("`tools claude none` checks pass: each generated list is empty, and no original name is a Claude Code tool.");
+  }
 }
+console.log(`\nCopilot tools that differ from the mirror (an extra or missing name; named-and-narrower is not one): ${copilotFailures.length}`);
+for (const l of copilotFailures) console.log(`  ${l}`);
 console.log(`\neffort and description differences (claude against the original, copilot against the mirror): ${fieldFailures.length}`);
 for (const l of fieldFailures) console.log(`  ${l}`);
-process.exit(failures || fieldFailures.length ? 1 : 0);
+process.exit(failures || noneFailures.length || copilotFailures.length || fieldFailures.length ? 1 : 0);
