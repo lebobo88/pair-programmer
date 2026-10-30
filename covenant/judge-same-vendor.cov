@@ -14,6 +14,7 @@ agent JudgeSameVendor under JudgeSameVendorImported {
   uses mcp.pp_codex.critique, mcp.pp_agy.critique, mcp.pp_harness.record_verdict,
        mcp.pp_harness.get_rubric, fs.read("**")
   tools claude except "Glob", "Grep"
+  tools copilot except "search"
   skills "judge-policy", "rubric-application"
   // TODO(import): budget not present in source
   extra claude { "color": "purple" }

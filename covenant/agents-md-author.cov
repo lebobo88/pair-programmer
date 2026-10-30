@@ -11,6 +11,7 @@ agent AgentsMdAuthor under AgentsMdAuthorImported {
        mcp.pp_harness.agents_md_status, mcp.pp_harness.master_plan_status,
        mcp.pp_harness.list_taxonomy_sections, fs.read("**")
   tools claude except "Glob", "Grep"
+  tools copilot except "search"
   // TODO(import): budget not present in source
   extra claude { "color": "blue" }
   extra copilot { "target": "github-copilot" }

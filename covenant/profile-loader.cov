@@ -10,6 +10,7 @@ agent ProfileLoader under ProfileLoaderImported {
   uses mcp.pp_harness.get_profile, mcp.pp_harness.get_builtin_profile, mcp.pp_harness.list_profiles,
        mcp.pp_harness.detect_profile, mcp.pp_harness.write_profile, fs.read("**")
   tools claude except "Glob", "Grep"
+  tools copilot except "search"
   effort low
   // TODO(import): usd, tokens and wall budget not present in source
   // maxTurns=6: the three Procedure branches are mutually exclusive (project /
