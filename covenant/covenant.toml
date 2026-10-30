@@ -1,0 +1,9 @@
+# Written by `cov import`. Each model id the agent files named is listed so that it resolves (LANGUAGE.md §8).
+[project]
+name = "covenant"
+
+[models.claude]
+ids = ["claude-haiku-4-5-20251001", "claude-opus-5", "claude-sonnet-5"]
+
+[models.copilot]
+ids = ["claude-haiku-4-5-20251001", "claude-opus-5", "claude-sonnet-5", "gpt-5.4"]

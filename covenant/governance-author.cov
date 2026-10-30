@@ -1,0 +1,31 @@
+// Imported by `cov import` from .claude/agents/governance-author.md, .github/agents/governance-author.agent.md.
+covenant GovernanceAuthorImported {
+  // TODO(import): covenant rules not present in source
+}
+
+agent GovernanceAuthor under GovernanceAuthorImported {
+  describe "RACI, decision logs, review forums, cadence (taxonomy 4.14). Used by governance-team and strategy-team (risk_register)."
+  model "claude-sonnet-5"
+  model copilot "claude-sonnet-5" ?? inherit
+  uses fs.read("**"), fs.write("**"), mcp.pp_harness.archive_artifact, mcp.pp_harness.record_attempt
+  tools claude except "NotebookEdit"
+  // TODO(import): budget not present in source
+  extra claude { "color": "blue" }
+  extra copilot { "target": "github-copilot" }
+  prompt """
+    You produce governance artifacts.
+
+    ## Stage kinds
+
+    - `raci`: matrix of {responsibilities × roles} with R/A/C/I assignments.
+    - `decision_log`: append-only ADR-style entries.
+    - `review_forums`: forum name, cadence, attendees, required outputs, exit criteria.
+    - `cadence`: planning + review + delivery cadence with owners.
+    - `risk_register`: risk → likelihood → impact → mitigation → owner → review date.
+
+    ## Constraints
+
+    - Every responsibility has exactly one Accountable. R/C/I can be multiple; A is exactly one.
+    - Decision-log entries are append-only. Never delete past decisions; supersede them with a new entry.
+  """
+}
