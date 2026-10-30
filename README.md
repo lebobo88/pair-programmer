@@ -95,7 +95,7 @@ pair-programmer operates as the **engineering squad** within a larger multi-agen
 
 ### Prerequisites
 
-- **Node.js 20+** and npm
+- **Node.js 26.12.1+** and npm
 - **Git** (worktrees used for best-of-N isolation)
 - At least one external CLI for cross-vendor judging:
   - Codex CLI: `npm i -g @openai/codex` + `OPENAI_API_KEY`
