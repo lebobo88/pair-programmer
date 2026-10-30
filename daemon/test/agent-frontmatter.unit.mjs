@@ -29,9 +29,11 @@
  *      `skills:` preload)
  *   6. every `skills:` member resolves to a real `.claude/skills/<name>/SKILL.md`
  *      bundle
- *   7. the generator (`enumerateAgentSources`, `scripts/sync-copilot-assets.mjs`)
- *      finds a nested agent and throws on a cross-directory basename collision,
- *      before any write
+ *   7. the discovery used here (`listAgentSources`, below) finds a nested agent and
+ *      throws on a cross-directory basename collision, before any write. It replaces
+ *      `enumerateAgentSources` of scripts/sync-copilot-assets.mjs, removed with the
+ *      agent mirror in pair-programmer #71 (AGENTS.md Hard Rule 8: the assertions
+ *      are kept, moved onto `.claude/agents` read directly)
  *
  * PRE-EXISTING NON-DOCUMENTED KEY (found while writing this guard, reported
  * to the driver, NOT fixed here -- `.claude/` is off-limits for this stage):
@@ -57,8 +59,7 @@
  *
  * ANTI-STALL TEST RULE (AGENTS.md): self-contained -- no live daemon, no MCP
  * peer, no network, no database. Reads real repo markdown plus drives the
- * real `enumerateAgentSources` (now exported from `scripts/sync-copilot-assets.mjs`
- * for this purpose, per this stage's authorisation) against temp-directory
+ * real `.claude/agents` tree and `listAgentSources` against temp-directory
  * fixtures. All writes this file performs target `mkdtempSync(join(tmpdir(), ...))`
  * directories, removed in a `finally` block; nothing here ever writes under
  * `.claude/`, `.github/`, `docs/`, or `scripts/`.
@@ -71,7 +72,7 @@
  * `daemon/test/skill-discovery.unit.mjs` and `daemon/test/no-dangling-pointers.unit.mjs`.
  *
  * COUNT DISCIPLINE: no agent/skill count is transcribed. The agent set and
- * its size are derived from `enumerateAgentSources()` against the real
+ * its size are derived from `listAgentSources()` against the real
  * `.claude/agents/` tree; the author-name and judge-name lists below are
  * POLICY sets (which named agents must never carry `maxTurns`), not counts,
  * and every name in them is independently asserted to resolve to a real
@@ -95,7 +96,6 @@ import { describe, it } from "node:test";
 
 import { parse as parseYaml } from "yaml";
 
-import { enumerateAgentSources } from "../../scripts/sync-copilot-assets.mjs";
 import {
   splitFrontmatter,
   parseFrontmatter,
@@ -127,12 +127,50 @@ function makeTempDir(prefix) {
   return mkdtempSync(join(tmpdir(), prefix));
 }
 
+/**
+ * Recursive discovery of `*.md` under an agents directory, throwing on a basename
+ * collision across subdirectories. Claude Code scans `.claude/agents/` recursively and
+ * identifies subagents by `name`, and the generated Copilot files are keyed by
+ * basename (`<basename>.agent.md`), so two sources with one basename would silently
+ * share a target. REPLACES `enumerateAgentSources()` from
+ * scripts/sync-copilot-assets.mjs, which was removed with the agent mirror
+ * (pair-programmer #71, Covenant TASK-038): Covenant now generates both agent folders,
+ * so the guard reads `.claude/agents` directly instead of through the sync script.
+ */
+function listAgentSources(agentsDir) {
+  const sources = [];
+  const seenBasenames = new Map(); // basename -> sourcePath
+  function walk(dir) {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const entryPath = join(dir, entry.name);
+      if (entry.isDirectory()) {
+        walk(entryPath);
+        continue;
+      }
+      if (entry.isFile() && entry.name.endsWith(".md")) {
+        const base = entry.name.slice(0, -".md".length);
+        const prior = seenBasenames.get(base);
+        if (prior) {
+          throw new Error(
+            `agent basename collision: "${base}" is defined at both "${prior}" and "${entryPath}" -- ` +
+            `both would share the target "${base}.agent.md"; rename one of the source files.`,
+          );
+        }
+        seenBasenames.set(base, entryPath);
+        sources.push({ file: entry.name, sourcePath: entryPath });
+      }
+    }
+  }
+  walk(agentsDir);
+  return sources;
+}
+
 // ─── Real, filesystem-derived agent set ────────────────────────────────────
-// enumerateAgentSources() is the REAL generator function (Phase G export),
-// driven against the real .claude/agents/ tree. This is also, incidentally,
-// a live proof that the real tree has no basename collision today (it would
-// throw here if it did).
-const realAgentSources = enumerateAgentSources(CLAUDE_AGENTS_DIR);
+// listAgentSources() is the one named function both this scan of the real
+// .claude/agents/ tree and the item-7 fixtures call (so a red fixture is evidence
+// about the function, not about JavaScript). It is a live proof that the real
+// tree has no basename collision today (it would throw here if it did).
+const realAgentSources = listAgentSources(CLAUDE_AGENTS_DIR);
 const realAgentRecords = realAgentSources.map(({ file, sourcePath }) => {
   const base = file.replace(/\.md$/, "");
   // `parsed` carries data / lists / keys / comments / malformed / indented.
@@ -148,7 +186,7 @@ function setDiff(a, b) {
 // Non-emptiness sanity: the real tree actually has agents to check
 // ═══════════════════════════════════════════════════════════════════════
 describe("sanity: the real .claude/agents/ tree is non-empty", () => {
-  it("enumerateAgentSources(.claude/agents) returns at least one agent", () => {
+  it("listAgentSources(.claude/agents) returns at least one agent", () => {
     assert.ok(realAgentSources.length > 0, "derived zero agents -- every assertion below would pass vacuously");
   });
 });
@@ -515,12 +553,14 @@ describe("item 6: every agent skills: member resolves to a real skill bundle", (
 });
 
 // ═══════════════════════════════════════════════════════════════════════
-// Item 7 -- enumerateAgentSources(): recursive discovery + basename
-// collision throws, before any write. Drives the REAL exported function
-// against temp-directory fixtures, per the stage's explicit authorisation
-// to export it.
+// Item 7 -- listAgentSources(): recursive discovery + basename collision
+// throws, before any write. Drives the same function the real-tree scan uses
+// against temp-directory fixtures. Replaces the assertions that drove the
+// sync script's enumerateAgentSources() (removed in pair-programmer #71):
+// recursive discovery, empty dir, collision throw naming both paths, no throw
+// on distinct basenames -- each kept, now on .claude/agents read directly.
 // ═══════════════════════════════════════════════════════════════════════
-describe("item 7: enumerateAgentSources() discovers nested agents and throws on a cross-directory basename collision", () => {
+describe("item 7: listAgentSources() discovers nested agents and throws on a cross-directory basename collision", () => {
   it("a nested agent (under a subdirectory) is found", () => {
     const tmp = makeTempDir("pp-agent-enum-nested-");
     try {
@@ -529,7 +569,7 @@ describe("item 7: enumerateAgentSources() discovers nested agents and throws on 
       writeFileSync(join(subdir, "nested-agent.md"), "---\nname: nested-agent\ncolor: blue\ndescription: x\n---\nbody\n", "utf8");
       writeFileSync(join(tmp, "top-agent.md"), "---\nname: top-agent\ncolor: blue\ndescription: x\n---\nbody\n", "utf8");
 
-      const sources = enumerateAgentSources(tmp);
+      const sources = listAgentSources(tmp);
       const names = sources.map((s) => s.file).sort();
       assert.deepEqual(names, ["nested-agent.md", "top-agent.md"], "must find both the top-level and the nested agent");
       const nested = sources.find((s) => s.file === "nested-agent.md");
@@ -542,7 +582,7 @@ describe("item 7: enumerateAgentSources() discovers nested agents and throws on 
   it("an empty temp dir yields zero sources (the absence case, proven distinct from the nested-discovery case above)", () => {
     const tmp = makeTempDir("pp-agent-enum-empty-");
     try {
-      assert.deepEqual(enumerateAgentSources(tmp), []);
+      assert.deepEqual(listAgentSources(tmp), []);
     } finally {
       rmSync(tmp, { recursive: true, force: true });
     }
@@ -559,13 +599,13 @@ describe("item 7: enumerateAgentSources() discovers nested agents and throws on 
       writeFileSync(join(dirB, "dup.md"), "---\nname: dup\ncolor: blue\ndescription: second\n---\nbody\n", "utf8");
 
       // snapshot the fixture tree before the call, to prove the throw
-      // happens before any write (enumerateAgentSources is a pure read, so
+      // happens before any write (listAgentSources is a pure read, so
       // this should never change).
       const beforeA = readdirSync(dirA).sort();
       const beforeB = readdirSync(dirB).sort();
 
       assert.throws(
-        () => enumerateAgentSources(tmp),
+        () => listAgentSources(tmp),
         (err) => err instanceof Error && err.message.includes("dup") && err.message.includes(dirA) && err.message.includes(dirB),
         "must throw naming the colliding basename and both source paths",
       );
@@ -588,13 +628,13 @@ describe("item 7: enumerateAgentSources() discovers nested agents and throws on 
       mkdirSync(dirB, { recursive: true });
       writeFileSync(join(dirA, "alpha.md"), "---\nname: alpha\ncolor: blue\ndescription: x\n---\nbody\n", "utf8");
       writeFileSync(join(dirB, "beta.md"), "---\nname: beta\ncolor: blue\ndescription: x\n---\nbody\n", "utf8");
-      assert.doesNotThrow(() => enumerateAgentSources(tmp));
+      assert.doesNotThrow(() => listAgentSources(tmp));
     } finally {
       rmSync(tmp, { recursive: true, force: true });
     }
   });
 
-  it("the real .claude/agents/ tree itself has no basename collision (enumerateAgentSources already succeeded to build realAgentSources above)", () => {
+  it("the real .claude/agents/ tree itself has no basename collision (listAgentSources already succeeded to build realAgentSources above)", () => {
     assert.equal(realAgentSources.length, realAgentBasenames.size, "a collision would have thrown before this file's top-level enumeration completed, so this is really just confirming that succeeded");
   });
 });
@@ -747,7 +787,7 @@ describe("frontmatter parsing is strict: no malformed or indented line is silent
   it("no real agent frontmatter contains a malformed or indented line", () => {
     assert.ok(realAgentSources.length > 0, "derived zero agent sources -- the scan root is wrong and every assertion here would pass vacuously");
     const offenders = [];
-    // JA-3 (docs judge): this destructured `name`, but enumerateAgentSources
+    // JA-3 (docs judge): this destructured `name`, but listAgentSources
     // returns `{ file, sourcePath }` -- so every offender label printed
     // "undefined:" and the message named no file. The assertion still fired;
     // it just could not tell you where to look, which is most of the value.

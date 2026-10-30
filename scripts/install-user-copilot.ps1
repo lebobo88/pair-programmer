@@ -18,6 +18,7 @@ $PluginManifestPath = Join-Path $RepoRoot 'plugin.json'
 $DaemonPath = Join-Path $RepoRoot 'daemon\dist\index.js'
 $SyncScript = Join-Path $RepoRoot 'scripts\sync-copilot-assets.mjs'
 $HooksPath = Join-Path $RepoRoot 'hooks.json'
+# .github/agents is committed Covenant output (cov build in covenant/), not written by the sync script.
 $OrchestratorPath = Join-Path $RepoRoot '.github\agents\pair-programmer-orchestrator.agent.md'
 $DirectInstalledPluginPath = Join-Path $UserCopilot "installed-plugins\_direct\$PluginName"
 
@@ -64,7 +65,7 @@ Write-Host "  user:   $UserCopilot"
 Write-Host "  plugin: $PluginName"
 Write-Host ""
 
-Write-Host "Syncing generated Copilot assets..." -ForegroundColor Cyan
+Write-Host "Syncing generated Copilot assets (commands, skills, hooks)..." -ForegroundColor Cyan
 & node $SyncScript 2>&1 | Out-Host
 if ($LASTEXITCODE -ne 0) {
     throw "Asset sync failed with exit code $LASTEXITCODE."
@@ -73,7 +74,7 @@ if (-not (Test-Path $HooksPath)) {
     throw "Expected generated hooks at $HooksPath after sync, but the file was not created."
 }
 if (-not (Test-Path $OrchestratorPath)) {
-    throw "Expected generated orchestrator agent at $OrchestratorPath after sync, but the file was not created."
+    throw "Expected the committed orchestrator agent at $OrchestratorPath (Covenant output, run cov build in covenant/), but the file does not exist."
 }
 
 $pluginManifest = Get-Content $PluginManifestPath -Raw | ConvertFrom-Json

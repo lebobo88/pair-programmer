@@ -161,7 +161,7 @@ Procedure:
 1. Edit `JUDGE_MODEL_POLICY` (defaults, escalated lanes, `allowed_models`, `allowed_efforts`). Update `daemon/prices.json` for any newly reachable id.
 2. Run `agy models` and `codex --version` to confirm the CLIs actually serve the new ids. **agy 1.1.24 rejects unknown AND retired ids** — exit 1, status `ERROR`, `"invalid model selection"`. There is no silent fallback to a CLI default.
 3. Run `/pp:doctor --smoke` and check `agy_pin_served` (with its `per_pin` breakdown), `codex_pin_served`, `unpriced_models`, and `judge_capabilities[<vendor>]`.
-4. Update every mirror below, then run `scripts/sync-copilot-assets.mjs` to propagate the `.claude/**` surface into the `.github/**` Copilot mirror.
+4. Update every mirror below, then run `scripts/sync-copilot-assets.mjs` to propagate the `.claude/commands` and `.claude/skills` surface into the `.github/commands` and `.github/skills` Copilot mirror. Agents come from `cov build` in `covenant/`, not from the sync script.
 
 Mirror checklist:
 
@@ -178,7 +178,7 @@ Mirror checklist:
 - `.github/agents/judge-router.agent.md`
 - `README.md`
 - `PROJECT_MASTER.md` (dated append; never rewrite history)
-- `.github/**` — generated, never hand-edited; regenerate via `scripts/sync-copilot-assets.mjs`
+- `.github/**` — generated, never hand-edited; `.github/commands`, `.github/skills` and the hooks files regenerate via `scripts/sync-copilot-assets.mjs`, `.github/agents` via `cov build` in `covenant/`
 
 `CONSTITUTION.md` is **not** on this checklist: the JUDGE-1 / JUDGE-1a pins change there only through the HITL `/pp:constitution amend` path, and every mirror then quotes the new SHA.
 
