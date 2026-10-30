@@ -1,0 +1,10 @@
+{
+  "private": true,
+  "devDependencies": {
+    "@lebobo88/covenant-cli": "0.1.0"
+  },
+  "scripts": {
+    "cov": "cd covenant && cov",
+    "test": "cd covenant && cov check --emitted --target claude,copilot --out .."
+  }
+}
