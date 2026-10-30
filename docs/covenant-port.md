@@ -144,27 +144,25 @@ Word-level prompt differences between Claude and Copilot (tool names, the `.clau
 
 compare-tools failing run (scratch clone, `Glob` removed from the generated `.claude/agents/architect.md` tools): exit 1, `architect | DIFFERS`, `missing from generated: Glob`, `Claude effective tool sets: 39 same, 1 differ, 2 under harness("*")`.
 
-## pair-programmer's own tests (this branch; `cd daemon && npm ci && npm run build` both exit 0)
+## pair-programmer's own tests (`cd daemon && npm ci && npm run build` both exit 0)
 
-| suite | tests | pass | fail |
-|---|---|---|---|
-| agent-frontmatter | 149 | 103 | 46 |
-| cost-derivation | 1 | 1 | 0 |
-| no-dangling-pointers | 43 | 43 | 0 |
-| settings-policy | 16 | 16 | 0 |
-| skill-discovery | 91 | 82 | 9 |
-| sync-copilot-comments | 5 | 1 | 4 |
-| workflow-scripts | 41 | 41 | 0 |
+Generated agent trees broke three daemon suites (#73). The cause is in the tests, not the generated files, so the fix is under `daemon/test/` in this PR. TASK-019's "Must NOT change" allows a change outside its Files list when the report says why: its Test Requirements say pair-programmer's own suite passes, and it could not pass without this.
 
-On main agent-frontmatter is 156/0, skill-discovery 91/0, sync-copilot-comments 5/0. Nothing under `daemon/` and none of the `.cov` or generated files was changed to satisfy them. The failures, by the property of the generated files that causes them:
+| suite | before the fix (tests / pass / fail) | after |
+|---|---|---|
+| agent-frontmatter | 149 / 103 / 46 | 184 / 184 / 0 |
+| skill-discovery | 91 / 82 / 9 | 96 / 96 / 0 |
+| sync-copilot-comments | 5 / 1 / 4 | 7 / 7 / 0 |
+| cost-derivation, no-dangling-pointers, settings-policy, workflow-scripts | 1, 43, 16, 41, all pass | unchanged |
 
-- agent-frontmatter, `<agent>: has a color and it is documented` (43 tests) and `exactly 42 of 42 agents carry a documented color`: the assertion is `<agent> has undocumented color ""blue""`. The generated `color:` is quoted (`color: "blue"`) and the test's reader keeps the quotes.
-- agent-frontmatter, `every agent skills: member resolves to a real skill bundle`: `derived zero agents with a skills: field`. The generated `skills:` is a YAML block list, not the comma string the test reads, so it finds none.
-- agent-frontmatter, `every commented maxTurns=N matches the field, and at least one such comment exists`: `no agent frontmatter comment mentions maxTurns=N`. Frontmatter YAML comments are not emitted into built files.
-- skill-discovery (9): `skills: equals {...}` for seven agents, `no agent declared a skills: member across the whole tree` (the block-list property above), and `expected a #-prefixed frontmatter line mentioning the absent model: field` (the model-absence rationale comment is not emitted).
-- sync-copilot-comments (4): `source rationale comment removed`, `rationale must appear inside an HTML comment in the body`, `preserved-comment block must exist in the mirror`, `mirror lost the rationale`. The `copilot-model` rationale comment is in neither the generated Claude file nor the generated Copilot body.
+Causes, and what changed:
 
-Whole unit suite, fresh clones of this branch (e57ffc0) and of main (35720d4), `cd daemon && npm ci && npm run build && node --test --test-timeout=180000 test/*.unit.mjs`: main 1139 tests, 1104 pass, 35 fail; this branch 1132 tests, 1038 pass, 94 fail. Top-level failures on main (6, all present on both): `WS7-G: portable onPath probe`, `activeRunForProject ancestor ownership`, and four `pp_codex.generate_image` suites. Failing on this branch only (6): `item 1: every agent's color: is one of the 8 documented values`, `item 6: every agent skills: member resolves to a real skill bundle`, `a frontmatter comment naming maxTurns=N agrees with the maxTurns value it sits beside` and `frontmatter parsing is strict: no malformed or indented line is silently dropped` (agent-frontmatter), `R10.9: every R7.1 agent's skills: frontmatter matches exactly, and every member resolves` (skill-discovery), `sync-copilot-assets preserves frontmatter comments` (sync-copilot-comments). No suite outside those three fails on this branch and not on main. Reported as pair-programmer issue #73.
+- The tests' frontmatter reader kept YAML quotes (`color: "blue"` read as `"blue"` with the quotes), read `skills:` only as a comma string (the generated files write a YAML block list, which Claude Code documents as valid, `claude-sub-agents.md` l.300), and its strict guard rejected the block list's indented `  - name` lines. One shared reader, `daemon/test/fixtures/frontmatter-yaml.mjs`, now reads a quoted scalar as its value and a block list as the comma form, still rejects malformed lines, and normalizes CRLF at the read. The `yaml` package, already a daemon dependency, is checked against it on every real agent, and the strict guard counts the list lines it accepted against the `  - ` lines in the files.
+- Frontmatter comments are kept in the `.cov` sources and not emitted (Covenant NORMALIZATIONS.md List 2 item 5). The comment checks now read `covenant/<agent>.cov`, found through each generated file's `# source:` header: `maxTurns=N` must agree with the `budget { turns: N }` item under it and with the shipped `maxTurns:`; AC-F30's model-absence rationale is read from `judge-cross-vendor.cov`, and the shipped agent must have no `model:`; the `copilot-model` rationale is read from `pair-programmer-orchestrator.cov`, above its `model copilot` item.
+- Three sync-copilot-comments checks asserted what `scripts/sync-copilot-assets.mjs` wrote into the agent mirror, which is now `cov build` output. Each is replaced in the same commit (Hard Rule 8, listed in the test's header): the mirror names its `.cov` and that source carries the rationale; the "not in the frontmatter" half is kept on the mirror, and the "HTML comment in the body after the banner" half is replaced by driving the script's real `preservedFrontmatterComments()` with the real rationale, and once more with a hostile terminator line.
+- Every changed check has a mutation that turns it red (24 runs, each reverted and checked by sha256), for example a reader that keeps quotes turns 52 tests red, and `maxTurns=4` above `turns: 6` fails naming both values. The per-test RCA is in #73.
+
+Whole unit suite, `cd daemon && npm ci && npm run build && node --test --test-timeout=180000 test/*.unit.mjs`, fresh clones: main (35720d4) 1139 tests, 1104 pass, 35 fail; this branch (with the fix) 1174 tests, 1139 pass, 35 fail. Main's 6 failing top-level suites (`WS7-G: portable onPath probe`, `activeRunForProject ancestor ownership`, four `pp_codex.generate_image` suites) are the cloud environment's, and are the only ones failing on this branch.
 
 ## Gate 2 criterion (a), re-measured (ROADMAP M1 row)
 
@@ -172,7 +170,7 @@ Whole unit suite, fresh clones of this branch (e57ffc0) and of main (35720d4), `
 2. "`.github/agents` in Copilot CLI format (ADR-013)": the emitter wrote it with `cov` 0.1.0. The Copilot CLI has not loaded it (open, below).
 3. "diffs limited to headers and documented normalizations": **not as measured.** The differences are headers (§12), List 1 normalizations (key order, quoting, list style, `tools` order, blank lines, LF) and List 2 reported differences that are not normalizations: appended prompt sections for L0201 (78), L0203 (2) and L0206 (7); `modelPolicy` added (40); `reasoningEffort` added (7); named `pp_harness/x` tools where the mirror has `pp_harness/*` (40); dropped frontmatter comments (7 Claude originals, plus the mirrors' rationale blocks); one description (engineer). Outside both lists: the two C.21 `harness("*")` agents, whose Claude files go from a tool list that resolves to no Claude Code tool to every tool.
 4. "VS Code-only keys reported as W0215 warnings": yes, 43 W0215. The originals carry no `agents`, `reasoning-effort` or `handoffs`; the VS Code-only key present is `target`.
-5. "pair-programmer's `pnpm test` runs the drift check": root `package.json` has `"test": "cd covenant && cov check --emitted --target claude,copilot --out .."`. The package is not on the registry yet, so in a fresh clone of this branch the release tarball (`lebobo88-covenant-cli-0.1.0.tgz`, from the dry run above) was installed with `npm install --no-save`: `npm test` and `pnpm test` (pnpm 9.15.0) both exit 0; after appending a line to `.claude/agents/triage.md`, `npm test` exits 1 with `cov: .claude/agents/triage.md differs from what its sources generate, first at line 35; run cov build to regenerate it`; `pnpm cov build --target claude,copilot --out ..` prints `0 written, 84 unchanged, 0 stale`. The daemon's tests are separate and fail as above.
+5. "pair-programmer's `pnpm test` runs the drift check": root `package.json` has `"test": "cd covenant && cov check --emitted --target claude,copilot --out .."`. The package is not on the registry yet, so in a fresh clone of this branch the release tarball (`lebobo88-covenant-cli-0.1.0.tgz`, from the dry run above) was installed with `npm install --no-save`: `npm test` and `pnpm test` (pnpm 9.15.0) both exit 0; after appending a line to `.claude/agents/triage.md`, `npm test` exits 1 with `cov: .claude/agents/triage.md differs from what its sources generate, first at line 35; run cov build to regenerate it`; `pnpm cov build --target claude,copilot --out ..` prints `0 written, 84 unchanged, 0 stale`. The daemon's tests are separate (above).
 
 For reference, criterion (c): `.cov` sources 223719 bytes; one generated tree 213784 (Claude) or 217574 (Copilot). The sources are larger.
 
@@ -181,7 +179,7 @@ For reference, criterion (c): `.cov` sources 223719 bytes; one generated tree 21
 - Package name: the task says `@covenant/cli`; the package TASK-039 publishes is `@lebobo88/covenant-cli` (Covenant README "Install `cov` in another repo"). `package.json` uses it, pinned to `0.1.0`.
 - `pnpm cov build --target claude,copilot` does not regenerate the trees as written: `covenant.toml` lives in `covenant/` and `cov`'s output root is the directory of `covenant.toml`, so the `cov` script (`cd covenant && cov`) needs `--out ..`: `pnpm cov build --target claude,copilot --out ..`.
 - The package is unpublished (above). No lockfile was added. `.npmrc` has the two lines from the README (scope registry and an environment-variable reference for the auth token) and no token.
-- The task's Test Requirements say pair-programmer's own suite passes. It does not (above). `daemon/` is outside the task's Files list and the generated format is Covenant's (ADR-005, §12).
+- The task's Test Requirements say pair-programmer's own suite passes, and `daemon/` is outside its Files list. Three daemon suites failed on the generated format until their tests were fixed in this PR (above), with the reason stated as the task's "Must NOT change" asks.
 - The task says `pnpm`; this repository's daemon uses npm. The root `package.json` has no `packageManager` key.
 - `scripts/sync-copilot-assets.mjs` is untouched, and `.github/copilot-instructions.md` still says to run it. Run on a scratch clone of this branch it exits 0 and rewrites all 42 `.github/agents` files with no `tools` key, which on Copilot means every tool: it does not read the generated block-list `tools:`. `check --emitted` then fails until `cov build` runs again. It was not run on this branch. Removing its agent mirroring is the follow-up PR (pair-programmer #71).
 
@@ -196,4 +194,4 @@ Claude Code 2.1.314, headless (`claude -p`, haiku) in a temporary directory hold
 ## Open
 
 - Copilot CLI loads the generated agents, and which copy it picks when it sees both `.github/agents` and `.claude/agents`. This needs Rob's GitHub sign-in and is not done.
-- The Gate 2 decision (TASK-038), and the daemon test disagreements above.
+- The Gate 2 decision (TASK-038).
