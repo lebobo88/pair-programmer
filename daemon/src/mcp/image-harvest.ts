@@ -373,7 +373,7 @@ function crc32Fallback(buf: Uint8Array): number {
   for (let i = 0; i < buf.length; i++) crc = (crcTable[(crc ^ (buf[i] as number)) & 0xff] as number) ^ (crc >>> 8);
   return (crc ^ 0xffffffff) >>> 0;
 }
-// zlib.crc32 landed in Node 22.2; the engines floor is 22.0.
+// zlib.crc32 landed in Node 22.2; the engines floor (26.12.1) always has it, and the fallback stays as a guard.
 const crc32: (buf: Uint8Array) => number =
   typeof (zlib as { crc32?: unknown }).crc32 === "function"
     ? (buf) => zlib.crc32(buf) >>> 0

@@ -49,7 +49,7 @@ Three MCP servers, all spawned by the same `pp-daemon` binary (different entrypo
 
 ## Daemon design
 
-**Language**: TypeScript on Node 20+. Rationale: Claude Code is itself Node, the official MCP SDK is most mature in TS, `better-sqlite3` gives synchronous SQLite (no FFI), and `execa` handles Windows child-process quirks cleanly.
+**Language**: TypeScript on Node 26.12.1+. Rationale: Claude Code is itself Node, the official MCP SDK is most mature in TS, `better-sqlite3` gives synchronous SQLite (no FFI), and `execa` handles Windows child-process quirks cleanly.
 
 **Process model**: stdio MCP server spawned per Claude Code session; an optional read-only HTTP control plane on `127.0.0.1:7878` for cross-session `/pp:status` queries (lazily started, 10-min idle shutdown). No Windows service — keep install friction low.
 

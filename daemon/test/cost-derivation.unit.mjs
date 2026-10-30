@@ -25,8 +25,8 @@ import { spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { setIsolatedProcessEnv, isolatedChildEnv } from "./fixtures/isolated-env.mjs";
 
-/** Recursive *.md finder — avoids node:fs globSync (Node 22+ only; this
- * project targets Node 20+ per AGENTS.md). */
+/** Recursive *.md finder. Written when the floor was Node 20, before
+ * node:fs globSync (Node 22+); the floor is now 26.12.1 per AGENTS.md. */
 function findMarkdownFiles(dir) {
   const out = [];
   let entries;

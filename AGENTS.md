@@ -41,7 +41,9 @@ See `README.md` for the full capability table and quick-start.
 
 ## Engineering Standards
 
-- **Language**: TypeScript (strict mode), **Node 22+**. Daemon in `daemon/src/`. The floor moved from 20 to 22 on
+- **Language**: TypeScript (strict mode), **Node 26.12.1+**. Daemon in `daemon/src/`. The floor moved to Node
+  26.12.1 on 2026-10-30, matching Covenant; that move took `better-sqlite3` from 11 (whose native addon does not
+  compile against Node 26's V8) to 13 (a Node-API addon). Before that, the floor moved from 20 to 22 on
   2026-09-07: `npm test`'s unit portion is the glob `test/*.unit.mjs`, and glob expansion in `node --test`
   positional arguments is not available on Node 20 — npm runs scripts through `cmd.exe` on Windows, which does not
   expand it either, so on Node 20 the script would receive the pattern as a literal path and fail. Node 20 LTS is

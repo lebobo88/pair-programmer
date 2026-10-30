@@ -6,7 +6,7 @@ the daemon's MCP servers and subsystems, the nine-phase run lifecycle, and the
 concepts that shape judging (tiered cross-/same-vendor routing, judge
 escalation, and best-of-N + Borda selection).
 
-pair-programmer is a TypeScript daemon (`daemon/`, Node 20) that orchestrates
+pair-programmer is a TypeScript daemon (`daemon/`, Node 26) that orchestrates
 code generation across **Claude**, **OpenAI Codex (GPT)**, and **Google** (via
 the **Antigravity CLI**, `agy`) with tiered validation. It runs fully standalone, and also enrolls into the
 sibling AI ecosystem as the **engineering squad** behind Hydra.
@@ -140,7 +140,7 @@ graph LR
         CP["GitHub Copilot CLI"]
     end
 
-    subgraph Daemon["pp-daemon (Node 20 / TypeScript)"]
+    subgraph Daemon["pp-daemon (Node 26 / TypeScript)"]
         H["pp_harness<br/>75 MCP tools"]
         CX["pp_codex<br/>generate · critique"]
         GM["pp_agy<br/>generate · critique"]
@@ -171,7 +171,7 @@ graph LR
           |   MCP (stdio)         |
           v                       v
    +--------------------------------------------------+
-   |                pp-daemon (Node 20)               |
+   |                pp-daemon (Node 26)               |
    |  +-----------+  +----------+  +----------+        |
    |  | pp_harness|  | pp_codex |  | pp_agy   |        |
    |  | 75 tools  |  | gen/crit |  | gen/crit |        |
