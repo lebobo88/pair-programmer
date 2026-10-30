@@ -4,9 +4,15 @@
 //
 //   node covenant/compare-tools.mjs [--base <rev>]      (default base: 35720d4)
 //
-// Exit 1 when a Claude effective tool set (tools minus disallowedTools; no `tools` key means
-// every tool) differs from the original, except for an agent whose .cov uses harness("*"),
-// which is printed under its own heading. Node standard library only.
+// Exit 1 when
+//   - a Claude effective tool set (tools minus disallowedTools; no `tools` key means every
+//     tool) differs from the original, except for an agent whose .cov says `tools claude none`
+//     (C.28), which is printed under its own heading with the original's names and is never
+//     counted as matching; that agent must write `tools: []` and its original names must not
+//     include a Claude Code tool;
+//   - a generated Copilot file's `reasoningEffort` or `description` differs from the mirror's;
+//   - a generated Claude file's `effort` or `description` differs from the original's.
+// Node standard library only.
 import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -129,13 +135,20 @@ function keyDiffs(o, g) {
 }
 
 const names = git("ls-tree", "--name-only", base, ".claude/agents/").split("\n").filter((l) => l.endsWith(".md")).map((l) => l.replace(/^.*\//, "").replace(/\.md$/, "")).sort();
-const usesStar = (name) => {
+const toolsNone = (name) => {
   const p = join(root, "covenant", `${name}.cov`);
-  return existsSync(p) && /^[^/\n]*harness\("\*"\)/m.test(readFileSync(p, "utf8"));
+  return existsSync(p) && /^\s*tools\s+claude\s+none\s*$/m.test(readFileSync(p, "utf8"));
+};
+// The tools Claude Code ships; an original naming one of these is not the VS Code-only list C.28 describes.
+const CLAUDE_CODE_TOOLS = new Set(["Agent", "AskUserQuestion", "Bash", "Edit", "Glob", "Grep", "NotebookEdit", "Read", "Skill", "Task", "TodoWrite", "WebFetch", "WebSearch", "Write"]);
+const fieldDiff = (label, o, g, fm1, fm2, key) => {
+  const a = strOf(fm1, key), b = strOf(fm2, key);
+  return a === b ? null : `${label} ${key}: ${a === null ? "(none)" : JSON.stringify(a.length > 60 ? a.slice(0, 60) + "…" : a)} -> ${b === null ? "(none)" : JSON.stringify(b.length > 60 ? b.slice(0, 60) + "…" : b)}`;
 };
 
 let failures = 0;
 const star = [];
+const fieldFailures = [];
 const rows = [];
 for (const name of names) {
   const cPath = `.claude/agents/${name}.md`;
@@ -154,14 +167,21 @@ for (const name of names) {
 
   const eo = effective(co.fm), eg = effective(cgp.fm);
   const d = setDiff(eo, eg);
-  const isStar = usesStar(name);
-  r.claudeTools = d === null ? "same" : isStar ? "harness(*)" : "DIFFERS";
-  if (d) {
+  const isStar = toolsNone(name);
+  r.claudeTools = isStar ? "tools claude none" : d === null ? "same" : "DIFFERS";
+  if (isStar) {
+    const bad = eg === null || eg.size !== 0 || (eo ?? new Set()).size === 0 || [...eo].some((x) => CLAUDE_CODE_TOOLS.has(x));
+    star.push({ name, original: eo === null ? null : [...eo].sort() });
+    if (bad) failures++;
+  } else if (d) {
     r.lines.push(`claude tools: original ${fmt(eo)}; generated ${fmt(eg)}`);
     if (d.missing.length) r.lines.push(`  missing from generated: ${d.missing.join(", ")}`);
     if (d.extra.length) r.lines.push(`  extra in generated: ${d.extra.join(", ")}`);
-    if (isStar) star.push(name); else failures++;
+    failures++;
   }
+  for (const x of [fieldDiff("claude", 0, 0, co.fm, cgp.fm, "effort"), fieldDiff("claude", 0, 0, co.fm, cgp.fm, "description"),
+                   fieldDiff("copilot", 0, 0, po.fm, pgp.fm, "reasoningEffort"), fieldDiff("copilot", 0, 0, po.fm, pgp.fm, "description")])
+    if (x) fieldFailures.push(`${name}: ${x}`);
   const ck = keyDiffs(co.fm, cgp.fm);
   r.claudeKeys = ck;
   const cb = lineDiff(co.body, cgp.body);
@@ -191,9 +211,11 @@ for (const r of rows) {
 console.log("\ntool detail");
 for (const r of rows) for (const l of r.lines) console.log(`${r.name}: ${l}`);
 
-console.log(`\nClaude effective tool sets: ${rows.filter((r) => r.claudeTools === "same").length} same, ${failures} differ, ${star.length} under harness("*")`);
+console.log(`\nClaude effective tool sets: ${rows.filter((r) => r.claudeTools === "same").length} same, ${failures} differ, ${star.length} under tools claude none`);
 if (star.length) {
-  console.log(`\nharness("*") agents (own heading, not counted as failures; the generated Claude file has no tools key, so every tool):`);
-  for (const n of star) console.log(`  ${n}`);
+  console.log(`\n\`tools claude none\` agents (not counted as matching; generated Claude file is \`tools: []\`, the original listed only these names, none a Claude Code tool):`);
+  for (const { name, original } of star) console.log(`  ${name}: original ${original === null ? "(every tool)" : `${original.length} names: ${original.join(", ")}`}`);
 }
-process.exit(failures ? 1 : 0);
+console.log(`\neffort and description differences (claude against the original, copilot against the mirror): ${fieldFailures.length}`);
+for (const l of fieldFailures) console.log(`  ${l}`);
+process.exit(failures || fieldFailures.length ? 1 : 0);
