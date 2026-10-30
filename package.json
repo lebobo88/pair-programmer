@@ -1,7 +1,7 @@
 {
   "private": true,
   "devDependencies": {
-    "@lebobo88/covenant-cli": "0.1.0"
+    "@lebobo88/covenant-cli": "file:vendor/lebobo88-covenant-cli-0.1.0.tgz"
   },
   "scripts": {
     "cov": "cd covenant && cov",
