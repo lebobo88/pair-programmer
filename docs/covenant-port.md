@@ -170,7 +170,7 @@ On main agent-frontmatter is 156/0, skill-discovery 91/0, sync-copilot-comments 
 2. "`.github/agents` in Copilot CLI format (ADR-013)": the emitter wrote it with `cov` 0.1.0. The Copilot CLI has not loaded it (open, below).
 3. "diffs limited to headers and documented normalizations": **not as measured.** The differences are headers (§12), List 1 normalizations (key order, quoting, list style, `tools` order, blank lines, LF) and List 2 reported differences that are not normalizations: appended prompt sections for L0201 (78), L0203 (2) and L0206 (7); `modelPolicy` added (40); `reasoningEffort` added (7); named `pp_harness/x` tools where the mirror has `pp_harness/*` (40); dropped frontmatter comments (7 Claude originals, plus the mirrors' rationale blocks); one description (engineer); no `tools` key for 2 agents. No difference found in none of the lists.
 4. "VS Code-only keys reported as W0215 warnings": yes, 43 W0215. The originals carry no `agents`, `reasoning-effort` or `handoffs`; the VS Code-only key present is `target`.
-5. "pair-programmer's `pnpm test` runs the drift check": root `package.json` has `"test": "cd covenant && cov check --emitted --target claude,copilot --out .."`. The unpublished package cannot be installed, so that command was run with the release binary: exit 0. `npm test` and `pnpm test` themselves were not run. The daemon's tests are separate and fail as above.
+5. "pair-programmer's `pnpm test` runs the drift check": root `package.json` has `"test": "cd covenant && cov check --emitted --target claude,copilot --out .."`. The package is not on the registry yet, so in a fresh clone of this branch the release tarball (`lebobo88-covenant-cli-0.1.0.tgz`, from the dry run above) was installed with `npm install --no-save`: `npm test` and `pnpm test` (pnpm 9.15.0) both exit 0; after appending a line to `.claude/agents/triage.md`, `npm test` exits 1 with `cov: .claude/agents/triage.md differs from what its sources generate, first at line 35; run cov build to regenerate it`; `pnpm cov build --target claude,copilot --out ..` prints `0 written, 84 unchanged, 0 stale`. The daemon's tests are separate and fail as above.
 
 For reference, criterion (c): `.cov` sources 223559 bytes; one generated tree 213784 (Claude) or 217624 (Copilot). The sources are larger.
 
@@ -185,5 +185,6 @@ For reference, criterion (c): `.cov` sources 223559 bytes; one generated tree 21
 
 ## Open
 
-- Copilot CLI and Claude Code load the generated agents (manual check), including which copy the Copilot CLI picks when it sees both `.github/agents` and `.claude/agents`. This needs Rob's GitHub sign-in and is not done.
+- Claude Code loads the generated agents: Claude Code 2.1.314, headless (`claude -p`, haiku) in a temporary directory holding only the generated `.claude/agents`: the init event lists 48 agents, the 42 generated ones and 6 built-ins, none missing.
+- Copilot CLI loads the generated agents, and which copy it picks when it sees both `.github/agents` and `.claude/agents`. This needs Rob's GitHub sign-in and is not done.
 - The Gate 2 decision (TASK-038), and the daemon test disagreements above.
