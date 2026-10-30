@@ -227,3 +227,11 @@ Run by the calling session on a fresh clone of caaf80a (after C.28, so including
 
 - Copilot CLI loads the generated agents, and which copy it picks when it sees both `.github/agents` and `.claude/agents`. This needs Rob's GitHub sign-in and is not done.
 - The Gate 2 decision (TASK-038).
+
+## Agent mirroring removed from the sync script (TASK-038, pair-programmer #71)
+
+`scripts/sync-copilot-assets.mjs` no longer writes anything under `.github/agents`. Removed: the agent loop in `main()` (mirror, prune, count in the summary), `renderAgent`, `mapAgentTools`, `GENERATED_AGENTS_DIR` and its place in the rewrite pass, and the `enumerateAgentSources` export. Kept unchanged: the command, skill and hook mirrors, and the three `.claude/agents` path rewrite rules, which rewrite references to agents inside command and skill text.
+
+- Check on a copy of the repo: the script before and after the change, everything written outside `.github/agents` (`.github/commands`, `.github/skills`, `hooks.json`, `.github/hooks`, 32 files) is identical once each copy's own absolute path in the banners is normalized. The known Linux banner quirk is untouched.
+- `scripts/install-user-copilot.ps1` still checks that `.github/agents/pair-programmer-orchestrator.agent.md` exists; its comments and message now say it is committed Covenant output.
+- Tests (AGENTS.md Hard Rule 8): `agent-frontmatter` item 7 and the real-tree scan moved from `enumerateAgentSources()` to a `listAgentSources()` helper in the test file, same four fixtures (nested discovery, empty dir, basename collision throw, distinct basenames do not throw). `sync-copilot-comments` already asserts the rationale in `covenant/pair-programmer-orchestrator.cov` (#73), so it is unchanged. `no-dangling-pointers` AC-E5 still holds; only its failure text changed.

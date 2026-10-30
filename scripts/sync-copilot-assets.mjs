@@ -11,7 +11,6 @@ import { isPointerFile } from "./lib/pointer-file.mjs";
 const ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
 const CLAUDE_DIR = join(ROOT, ".claude");
 const GITHUB_DIR = join(ROOT, ".github");
-const GENERATED_AGENTS_DIR = join(GITHUB_DIR, "agents");
 const GENERATED_COMMANDS_DIR = join(GITHUB_DIR, "commands", "pp");
 const GENERATED_HOOKS_DIR = join(GITHUB_DIR, "hooks");
 const GENERATED_PLUGIN_HOOKS_PATH = join(ROOT, "hooks.json");
@@ -38,6 +37,9 @@ const COPILOT_MIRROR_REWRITES = [
   // finds nothing here — the name is a capture group, not a literal).
   [/\.claude\/skills\/([A-Za-z0-9_-]+)(?:\/SKILL\.md|\.md)/g, ".github/skills/$1/SKILL.md"],
   [/\.claude\/commands\/pp\//g, ".github/commands/pp/"],
+  // The three agent-path rules below rewrite REFERENCES to agents inside command and
+  // skill text. The agent files themselves are no longer written here (Covenant
+  // owns .github/agents, TASK-038), but the references still resolve to them.
   [/`\.claude\/agents\/\*\.md`/g, "`.github/agents/*.agent.md`"],
   [/\.claude\/agents\/([A-Za-z0-9_-]+)\.md/g, ".github/agents/$1.agent.md"],
   [/excluding `judge-cross-vendor\.md` and `judge-same-vendor\.md`/g, "excluding `judge-cross-vendor.agent.md` and `judge-same-vendor.agent.md`"],
@@ -94,7 +96,7 @@ function ensureDir(path) {
   mkdirSync(path, { recursive: true });
 }
 
-// NOTE: this script previously reset (rmSync + recreate) GENERATED_AGENTS_DIR,
+// NOTE: this script previously reset (rmSync + recreate) the agents mirror dir,
 // the commands mirror dir, and GENERATED_SKILLS_DIR unconditionally at the top
 // of main() before regenerating everything. That is incompatible with R6.1's
 // pointer-skip requirement -- a skip needs an EXISTING mirror to leave
@@ -209,65 +211,6 @@ function renderCommand(sourcePath) {
   return `${lines.join("\n").trimEnd()}\n`;
 }
 
-function mapAgentTools(rawTools) {
-  if (!rawTools) return [];
-  const mapped = new Set();
-  for (const token of rawTools.split(",").map((part) => part.trim()).filter(Boolean)) {
-    if (/^(Read|NotebookRead)$/i.test(token)) mapped.add("read");
-    else if (/^(Edit|Write|MultiEdit|NotebookEdit)$/i.test(token)) mapped.add("edit");
-    else if (/^(Glob|Grep)$/i.test(token)) mapped.add("search");
-    else if (/^(Bash|PowerShell|shell|execute)$/i.test(token)) mapped.add("execute");
-    else if (/^(Task|Agent|custom-agent)$/i.test(token)) mapped.add("agent");
-    else if (/^mcp__pp_harness__/i.test(token)) mapped.add("pp_harness/*");
-    else if (/^mcp__pp_codex__/i.test(token)) mapped.add("pp_codex/*");
-    else if (/^mcp__pp_agy__/i.test(token)) mapped.add("pp_agy/*");
-    else if (/^mcp__claude-in-chrome__/i.test(token)) mapped.add("web");
-  }
-  return [...mapped];
-}
-
-// skills-mirror-decision (R7.5, MED-2 carried forward from Phase F commit 2's
-// judge, verdict on 93a64db): the whitelist below (name/model/description/
-// target/tools) has NO unknown-key passthrough, so a source frontmatter's
-// `skills:` key -- added by R7 to seven .claude/agents/*.md files -- is
-// silently dropped from every .github/agents/*.agent.md mirror. That is
-// deliberate, option (b) from R7.5: (1) extending this whitelist means
-// touching this script, which Phase F's ordering constraint (R18.1/AC-F-A7)
-// reserved for commit 1 only -- commit 2 (the migration) and commit 3 (this
-// comment) are not allowed to extend it; (2) Copilot skill preloading is
-// unverified platform behaviour (spec R14), so silently carrying an
-// unverified capability into the mirror is higher risk than naming the gap
-// here, beside the whitelist itself, rather than only in a commit message
-// nobody re-reads.
-function renderAgent(sourcePath) {
-  const content = readText(sourcePath);
-  const { frontmatter, body } = splitFrontmatter(content);
-  const data = parseFlatFrontmatter(frontmatter);
-  const tools = mapAgentTools(data.tools ?? "");
-  const copilotModel = (data["copilot-model"] || data.model || "").replace(/^["']|["']$/g, "");
-
-  const lines = [];
-  lines.push("---");
-  lines.push(`name: ${quoteYaml(data.name || basename(sourcePath, ".md"))}`);
-  if (copilotModel) lines.push(`model: ${quoteYaml(copilotModel)}`);
-  lines.push(`description: ${quoteYaml((data.description || "").replace(/^["']|["']$/g, ""))}`);
-  lines.push("target: github-copilot");
-  if (tools.length) {
-    lines.push("tools:");
-    for (const tool of tools) lines.push(`  - ${quoteYaml(tool)}`);
-  }
-  lines.push("---");
-  lines.push("");
-  const relSource = sourcePath.replace(`${ROOT}\\`, "");
-  lines.push(
-    generatedBanner(relSource)
-    + preservedFrontmatterComments(frontmatter, relSource)
-    + body.trimStart(),
-  );
-
-  return `${lines.join("\n").trimEnd()}\n`;
-}
-
 // R3.3: the banner names whatever sourcePath the caller passes in, relative
 // to ROOT. During the transitional flat-layout state (R18.2, this commit)
 // that is `.claude/skills/<name>.md`; once R2 moves the sources it is
@@ -326,60 +269,6 @@ function enumerateSkillSources(skillsDir) {
   return sources;
 }
 
-/*
- * Phase G (GitHub #48): Claude Code scans `.claude/agents/` RECURSIVELY
- * (code.claude.com/docs/en/sub-agents.md -- "Claude Code scans
- * `.claude/agents/` and `~/.claude/agents/` recursively, so you can
- * organize definitions into subfolders... identity comes only from the
- * `name` frontmatter field"). The mirror generator used to do a single flat
- * `readdirSync(agentsDir)`, which would silently DROP any agent placed in a
- * subdirectory from the Copilot mirror -- a latent trap that only fires the
- * day someone reorganises `.claude/agents/` into subfolders, at which point
- * the drop would be invisible (no error, just a missing mirror). This
- * enumerator walks subdirectories so the generator's traversal matches the
- * platform's.
- *
- * Mirror target names are `<basename>.agent.md`, keyed only by basename
- * (see main()'s use of `basename(file, ".md")` for the target path) --
- * exactly like Claude Code's own name-only identity rule above. That means
- * two source agents with the same basename in different subdirectories
- * would collide on a single mirror target and one would silently overwrite
- * the other with no signal to the operator. Recursion makes that collision
- * reachable for the first time, so this enumerator detects it and FAILS
- * LOUDLY (throws) rather than let the last-writer win.
- */
-function enumerateAgentSources(agentsDir) {
-  const sources = [];
-  const seenBasenames = new Map(); // basename -> sourcePath, for collision detection
-
-  function walk(dir) {
-    for (const entry of readdirSync(dir, { withFileTypes: true })) {
-      const entryPath = join(dir, entry.name);
-      if (entry.isDirectory()) {
-        walk(entryPath);
-        continue;
-      }
-      if (entry.isFile() && entry.name.endsWith(".md")) {
-        const base = basename(entry.name, ".md");
-        const prior = seenBasenames.get(base);
-        if (prior) {
-          throw new Error(
-            `[sync-copilot-assets] agent basename collision: "${base}" is defined at both ` +
-            `"${prior}" and "${entryPath}" -- both would mirror to the same target ` +
-            `"${base}.agent.md", and Claude Code identifies subagents by \`name\` (not path), ` +
-            `so this cannot be resolved automatically. Rename one of the source files.`,
-          );
-        }
-        seenBasenames.set(base, entryPath);
-        sources.push({ file: entry.name, sourcePath: entryPath });
-      }
-    }
-  }
-
-  walk(agentsDir);
-  return sources;
-}
-
 // R6.4: refuse a mirror write whose new content drops below this fraction of
 // the existing mirror's byte size, unless overridden. Half is a deliberately
 // blunt heuristic: an ordinary content edit shrinks a file by a few percent
@@ -427,7 +316,7 @@ function writeMirrorSafely(targetPath, content, { allowShrink, counts }) {
 /**
  * Syncs one source -> one mirror target through the pointer-skip (R6.1-R6.3)
  * and shrink-refusal (R6.4-R6.5) guards. `render(sourcePath)` MUST be pure
- * text-in/text-out (renderCommand/renderAgent/renderSkill above) so the
+ * text-in/text-out (renderCommand/renderSkill above) so the
  * pointer check can run BEFORE any write happens, per R6.1.
  *
  * `keepSet` collects every target path that must survive this run's prune
@@ -802,7 +691,7 @@ function rewriteCopilotMirrorText(text) {
  * is counted twice.
  */
 function rewriteGeneratedCopilotMirrors({ pointerSkipSet, allowShrink, counts }) {
-  for (const rootPath of [GENERATED_AGENTS_DIR, join(GITHUB_DIR, "commands"), GENERATED_SKILLS_DIR]) {
+  for (const rootPath of [join(GITHUB_DIR, "commands"), GENERATED_SKILLS_DIR]) {
     for (const filePath of listMarkdownFiles(rootPath)) {
       if (pointerSkipSet.has(filePath)) {
         // NEW-1: this used to do `counts.skipped += 1`, which double-counted.
@@ -837,7 +726,7 @@ function rewriteGeneratedCopilotMirrors({ pointerSkipSet, allowShrink, counts })
  * ~673-line incident this phase's R6 exists to close off.
  *
  * Note on directory resets: `main()` no longer blanket-resets
- * GENERATED_AGENTS_DIR / commands / GENERATED_SKILLS_DIR before writing.
+ * commands / GENERATED_SKILLS_DIR before writing.
  * R6.1 requires a pointer-skip to leave the EXISTING mirror untouched, which
  * an upfront `resetDir` would have already destroyed by the time the skip
  * decision is made. Each category is now synced in place -- write or
@@ -848,24 +737,13 @@ function rewriteGeneratedCopilotMirrors({ pointerSkipSet, allowShrink, counts })
  */
 function main() {
   const allowShrink = process.argv.includes(ALLOW_SHRINK_FLAG);
-  const counts = { agentsSynced: 0, commandsSynced: 0, skillsSynced: 0, skipped: 0, rewritten: 0, rewriteSkipsHonoured: 0 };
+  const counts = { commandsSynced: 0, skillsSynced: 0, skipped: 0, rewritten: 0, rewriteSkipsHonoured: 0 };
   // HIGH-1: every target pointer-skipped by ANY of the three sync loops below
   // is collected here so the rewrite pass (which walks the same three
   // directories again) can refuse to touch it too -- a single source of
   // truth for "this run declined to overwrite this mirror", shared across
   // both write paths rather than re-derived.
   const pointerSkipSet = new Set();
-
-  // LOW-3 (Phase G judge): enumerateAgentSources() throws on a basename
-  // collision, and it used to be called only when the agent loop was reached
-  // -- i.e. AFTER the command mirrors had already been written and pruned. The
-  // throw is uncaught, so a collision left the tree half-synced with no
-  // summary, which is exactly the partial-write shape the normalizeHooks catch
-  // below was added to stop being silent about. Enumeration is a pure read, so
-  // it is hoisted here: a collision now aborts before anything has been
-  // written at all, which is strictly better than reporting the partial write
-  // after the fact.
-  const agentSources = enumerateAgentSources(join(CLAUDE_DIR, "agents"));
 
   ensureDir(GENERATED_COMMANDS_DIR);
   const keepCommandTargets = new Set();
@@ -883,26 +761,6 @@ function main() {
     if (written) counts.commandsSynced += 1;
   }
   pruneStaleMirrorFiles(GENERATED_COMMANDS_DIR, keepCommandTargets);
-
-  ensureDir(GENERATED_AGENTS_DIR);
-  const keepAgentTargets = new Set();
-  // Phase G (GitHub #48): recursive enumeration -- see enumerateAgentSources
-  // for why a flat readdirSync would silently drop nested agents, and why a
-  // basename collision across subdirectories must fail loudly instead of
-  // letting one mirror write silently overwrite the other.
-  for (const { file, sourcePath } of agentSources) {
-    const written = syncMirrorEntry({
-      sourcePath,
-      targetPath: join(GENERATED_AGENTS_DIR, `${basename(file, ".md")}.agent.md`),
-      render: renderAgent,
-      allowShrink,
-      counts,
-      keepSet: keepAgentTargets,
-      pointerSkipSet,
-    });
-    if (written) counts.agentsSynced += 1;
-  }
-  pruneStaleMirrorFiles(GENERATED_AGENTS_DIR, keepAgentTargets);
 
   ensureDir(GENERATED_SKILLS_DIR);
   const keepSkillTargets = new Set();
@@ -929,7 +787,7 @@ function main() {
   } catch (err) {
     // LOW-1: this branch used to write only the raw error to stderr, set
     // exitCode=1, and `return` -- skipping the summary entirely. Everything
-    // synced by the three mirror loops above (agents/commands/skills) had
+    // synced by the three mirror loops above (commands/skills) had
     // ALREADY been written to disk by this point (normalizeHooks runs after
     // them), so the run left partial state behind with no record of how far
     // it got before the R5.2 throw. printSummary() now runs on this path
@@ -972,8 +830,7 @@ function main() {
  */
 function printSummary(counts, { aborted, reason } = {}) {
   console.log(
-    `[sync-copilot-assets] agents synced: ${counts.agentsSynced}, ` +
-    `commands synced: ${counts.commandsSynced}, skills synced: ${counts.skillsSynced}, ` +
+    `[sync-copilot-assets] commands synced: ${counts.commandsSynced}, skills synced: ${counts.skillsSynced}, ` +
     `mirrors rewritten: ${counts.rewritten}, entries skipped: ${counts.skipped}, ` +
     `rewrite skips honoured: ${counts.rewriteSkipsHonoured}` +
     (aborted ? ` -- PARTIAL: run aborted before completion (${reason})` : ""),
@@ -985,7 +842,7 @@ function printSummary(counts, { aborted, reason } = {}) {
 // WHY: the script's main() rewrites and resets generated directories under
 // .github/. Exporting a helper for unit testing made the module importable, and
 // an unguarded top-level main() meant `import` alone performed those destructive
-// writes -- a test run actually triggered a partial reset of .github/agents
+// writes -- a test run actually triggered a partial reset of .github/agents (then a mirror this script wrote)
 // (it survived only because the rm hit EPERM). Flagged by a cross-vendor judge
 // on run_tYE0v6WrwFWs.
 // Compare REAL paths, case-normalised. A lexical argv[1] comparison breaks in
@@ -1063,18 +920,10 @@ if (invokedDirectly) {
 // the exact shape of the ~673-line incident: the skip itself worked, but
 // nothing proved the skip's target was protected from the prune pass that
 // runs immediately afterward in every real sync.
-//
-// Phase G (GitHub #48): `enumerateAgentSources` is a third, explicitly
-// authorised generator export (daemon/test/agent-frontmatter.unit.mjs). Its
-// recursive-scan and basename-collision-throws behaviour is the generator's
-// half of the recursive-scan platform fact; the guard drives this real
-// function against temp-directory fixtures rather than reimplementing the
-// walk, for the same reason as every other export in this block.
 export {
   preservedFrontmatterComments,
   isDirectInvocation,
   enumerateSkillSources,
-  enumerateAgentSources,
   normalizeHooks,
   writeMirrorSafely,
   syncMirrorEntry,
