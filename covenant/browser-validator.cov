@@ -8,6 +8,7 @@ agent BrowserValidator under BrowserValidatorImported {
   model "claude-haiku-4-5-20251001"
   model copilot "claude-haiku-4-5-20251001" ?? inherit
   uses harness("*")
+  tools claude none
   // TODO(import): budget not present in source
   extra claude { "color": "orange" }
   extra copilot { "target": "github-copilot" }

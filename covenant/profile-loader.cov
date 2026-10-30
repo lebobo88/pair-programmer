@@ -12,6 +12,7 @@ agent ProfileLoader under ProfileLoaderImported {
   tools claude except "Glob", "Grep"
   tools copilot except "search"
   effort low
+  effort copilot inherit
   // TODO(import): usd, tokens and wall budget not present in source
   // maxTurns=6: the three Procedure branches are mutually exclusive (project /
   // needs_bootstrap / builtin) and each resolves in at most 2 tool calls

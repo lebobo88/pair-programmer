@@ -11,6 +11,7 @@ agent TaxonomyMapper under TaxonomyMapperImported {
        mcp.pp_harness.record_taxonomy_mapping
   skills "taxonomy-adherence"
   effort low
+  effort copilot inherit
   // TODO(import): budget not present in source
   extra claude { "color": "yellow" }
   extra copilot { "target": "github-copilot" }

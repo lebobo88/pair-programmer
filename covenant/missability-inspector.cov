@@ -9,6 +9,7 @@ agent MissabilityInspector under MissabilityInspectorImported {
   model copilot "claude-haiku-4-5-20251001" ?? inherit
   uses mcp.pp_harness.run_missability_checks, mcp.pp_harness.list_missability_checks
   effort low
+  effort copilot inherit
   // TODO(import): budget not present in source
   extra claude { "color": "yellow" }
   extra copilot { "target": "github-copilot" }

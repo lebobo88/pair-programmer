@@ -5,6 +5,7 @@ covenant EngineerImported {
 
 agent Engineer under EngineerImported {
   describe "Code-generator sub-agent. Given a coding request, a stage_id, a producer, and a working directory, produces a code artifact. For best-of-N runs the producer is \"claude\" and the agent authors files directly using its native Write/Edit/Bash tools inside the candidate worktree, committing before returning. For non-best-of legacy paths it can dispatch to Codex or Antigravity (agy) via their MCP wrappers. Use ONLY inside an active /pp:* run."
+  describe copilot "Code-generator sub-agent. Given a coding request, a stage_id, a producer, and a working directory, produces a code artifact. For best-of-N runs the producer is \"claude\" and the agent authors files directly using its native edit/execute tools inside the candidate worktree, committing before returning. For non-best-of legacy paths it can dispatch to Codex or Antigravity (agy) via their MCP wrappers. Use ONLY inside an active /pp:* run."
   model "claude-sonnet-5"
   model copilot "claude-sonnet-5" ?? inherit
   uses mcp.pp_harness.archive_artifact, mcp.pp_harness.record_attempt,

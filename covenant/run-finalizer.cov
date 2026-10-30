@@ -13,6 +13,7 @@ agent RunFinalizer under RunFinalizerImported {
        mcp.pp_harness.teardown_candidates, fs.read("**")
   tools claude except "Grep"
   effort low
+  effort copilot inherit
   // TODO(import): budget not present in source
   extra claude { "color": "yellow" }
   extra copilot { "target": "github-copilot" }

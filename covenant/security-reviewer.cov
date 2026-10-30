@@ -10,6 +10,7 @@ agent SecurityReviewer under SecurityReviewerImported {
   uses fs.read("**"), fs.write("**"), mcp.pp_harness.archive_artifact, mcp.pp_harness.record_attempt
   tools claude except "NotebookEdit"
   effort high
+  effort copilot inherit
   // TODO(import): budget not present in source
   // `effort: high` here sets the Claude WRAPPER's reasoning effort for this
   // subagent session — it is orthogonal to `judge_reasoning_effort`, which is

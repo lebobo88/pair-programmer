@@ -18,6 +18,7 @@ agent JudgeCrossVendor under JudgeCrossVendorImported {
   tools copilot except "search"
   skills "judge-policy", "rubric-application"
   effort high
+  effort copilot inherit
   // TODO(import): budget not present in source
   // `effort: high` here sets the Claude WRAPPER's reasoning effort for this
   // subagent session — it is orthogonal to `judge_reasoning_effort`, which is

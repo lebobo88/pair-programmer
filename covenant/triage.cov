@@ -9,6 +9,7 @@ agent Triage under TriageImported {
   model copilot "claude-haiku-4-5-20251001" ?? inherit
   uses mcp.pp_harness.triage_request
   effort low
+  effort copilot inherit
   // TODO(import): usd, tokens and wall budget not present in source
   // maxTurns=6: the Procedure below is exactly one tool call
   // (mcp__pp_harness__triage_request) plus an optional override-reasoning step

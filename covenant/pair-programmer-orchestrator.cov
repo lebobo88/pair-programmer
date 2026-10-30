@@ -13,6 +13,7 @@ agent PairProgrammerOrchestrator under PairProgrammerOrchestratorImported {
   model "claude-sonnet-5"
   model copilot "gpt-5.4" ?? inherit
   uses harness("*")
+  tools claude none
   // TODO(import): budget not present in source
   extra claude { "copilot-model": "gpt-5.4", "color": "yellow" }
   extra copilot { "target": "github-copilot" }
