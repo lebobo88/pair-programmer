@@ -565,6 +565,11 @@ const HANDLERS: Record<string, Record<string, (input: HookInput) => Promise<void
       // Allow edits inside the .claude/ plugin (the user is editing the harness, not running with it).
       if (filePath.includes(".claude")) return reply(true);
 
+      // ExecutiveSuite agents (plugin namespace "executive-suite:", e.g. executive-suite:boardroom)
+      // write reports and briefs, not code, so they are not gated on an active run. Case-sensitive
+      // prefix match. Rob's decision, 2026-11-08. Other PreToolUse hooks still apply to them.
+      if (typeof input.agent_type === "string" && input.agent_type.startsWith("executive-suite:")) return reply(true);
+
       // Escape hatch for ad-hoc edits when the user explicitly opts out.
       if (process.env.PP_ALLOW_AD_HOC === "1") return reply(true);
 

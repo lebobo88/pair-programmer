@@ -1206,7 +1206,7 @@ Hooks are shell commands Claude Code runs at lifecycle events. They read a JSON 
 | Hook | Matcher | What it enforces | Bypass |
 |---|---|---|---|
 | `block-destructive-shell` | `Bash | PowerShell` | Refuses destructive shell patterns (`rm -rf`, `Remove-Item -Recurse -Force`, `find . -delete`, `git clean -fdx`, `git push --force` to protected refs, `dd`, `mkfs`, `shutdown`, `reboot`, fork bombs) when not anchored under a recognized project root. | None — adjust the command to be scoped. |
-| `enforce-active-run` | `Edit | Write | MultiEdit | NotebookEdit` | Blocks file edits outside `.harness/` / `.claude/` unless an active run owns them. | `PP_ALLOW_AD_HOC=1`. |
+| `enforce-active-run` | `Edit | Write | MultiEdit | NotebookEdit` | Blocks file edits outside `.harness/` / `.claude/` unless an active run owns them. Calls from ExecutiveSuite agents (`agent_type` starting with `executive-suite:`) are allowed. | `PP_ALLOW_AD_HOC=1`. |
 | `enforce-vendor-matrix` | `mcp__pp_codex__.* | mcp__pp_agy__.*` | Stage-aware: replicates `gate_eligible_judges` decision; blocks if cross-vendor required but matrix incomplete. | Configure the missing vendor. |
 | `enforce-sandbox-policy` | `mcp__pp_codex__generate` | Blocks `sandbox=danger-full-access` unless `PP_ALLOW_DANGER=1`. Stage-aware: spec/design/security/contract require `read-only`. | `PP_ALLOW_DANGER=1`. |
 | `enforce-no-secrets` | `Edit | Write | MultiEdit | mcp__pp_harness__archive_artifact` | Regex scan for API keys / passwords / SSH keys / JWT / OAuth tokens. | None — fix the artifact, then retry. |
